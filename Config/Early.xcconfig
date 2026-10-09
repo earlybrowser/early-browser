@@ -1,0 +1,17 @@
+// Development-only namespace. Select a verified owned namespace before release.
+PRODUCT_BUNDLE_IDENTIFIER = local.early.browser
+PRODUCT_NAME = Early
+MACOSX_DEPLOYMENT_TARGET = 14.0
+SWIFT_VERSION = 6.0
+SWIFT_STRICT_CONCURRENCY = complete
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+ENABLE_HARDENED_RUNTIME = NO
+ENABLE_APP_SANDBOX = YES
+CODE_SIGN_ENTITLEMENTS = Config/Early.entitlements
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_KEY_CFBundleDisplayName = Early
+INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.productivity
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
