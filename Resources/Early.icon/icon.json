@@ -1,88 +1,84 @@
 {
-  "fill": {
-    "linear-gradient": [
+  "fill" : {
+    "linear-gradient" : [
       "srgb:0.17255,0.29804,0.47843,1.00000",
       "srgb:0.04314,0.05882,0.12549,1.00000"
-    ],
-    "orientation": {
-      "start": {
-        "x": 0.5,
-        "y": 0
-      },
-      "stop": {
-        "x": 0.5,
-        "y": 1
-      }
-    }
+    ]
   },
-  "groups": [
+  "groups" : [
     {
-      "name": "03 — Early monogram",
-      "layers": [
+      "blur-material" : 0,
+      "layers" : [
         {
-          "image-name": "03-E-Upper.svg",
-          "name": "Warm upper arch",
-          "glass": true
+          "glass" : true,
+          "image-name" : "03-E-Upper.svg",
+          "name" : "Warm upper arch"
         },
         {
-          "image-name": "04-E-Lower.svg",
-          "name": "Cool lower curve",
-          "glass": true
+          "glass" : true,
+          "image-name" : "04-E-Lower.svg",
+          "name" : "Cool lower curve"
         }
       ],
-      "lighting": "combined",
-      "blur-material": 0,
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.12
+      "lighting" : "combined",
+      "name" : "03 — Early monogram",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.12
       },
-      "specular": true,
-      "translucency": {
-        "enabled": false,
-        "value": 0
+      "specular" : true,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
       }
     },
     {
-      "name": "02 — Ocean horizon",
-      "layers": [
+      "layers" : [
         {
-          "image-name": "02-Horizon.svg",
-          "name": "Ocean horizon",
-          "glass": false
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "system-dark"
+            }
+          ],
+          "glass" : false,
+          "image-name" : "02-Horizon.svg",
+          "name" : "Ocean horizon"
         }
       ],
-      "shadow": {
-        "kind": "none",
-        "opacity": 0
+      "name" : "02 — Ocean horizon",
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0
       },
-      "specular": false,
-      "translucency": {
-        "enabled": false,
-        "value": 0
+      "specular" : false,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
       }
     },
     {
-      "name": "01 — Sunset atmosphere",
-      "layers": [
+      "layers" : [
         {
-          "image-name": "01-Sunset.svg",
-          "name": "Sunset glow",
-          "glass": false
+          "glass" : false,
+          "image-name" : "01-Sunset.svg",
+          "name" : "Sunset glow"
         }
       ],
-      "shadow": {
-        "kind": "none",
-        "opacity": 0
+      "name" : "01 — Sunset atmosphere",
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0
       },
-      "specular": false,
-      "translucency": {
-        "enabled": false,
-        "value": 0
+      "specular" : false,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
       }
     }
   ],
-  "supported-platforms": {
-    "squares": [
+  "supported-platforms" : {
+    "squares" : [
       "macOS"
     ]
   }
