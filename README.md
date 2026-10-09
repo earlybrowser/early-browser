@@ -8,7 +8,8 @@ in the command bar explains that browsing is coming in the next build.
 
 ## Run
 
-Requires macOS 14 or later and Xcode with a Swift 6 toolchain. Open
+Requires macOS 14 or later and Xcode 26 or later with a Swift 6 toolchain (Xcode 27
+is verified). The app icon uses the Icon Composer resource compiler. Open
 `Early.xcodeproj`, select the **Early** scheme and **My Mac**, then Run.
 No Apple Developer account or development team is required; the app is signed
 locally with an ad-hoc identity. There are no third-party package dependencies.
@@ -60,6 +61,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for decisions and state transitions,
 [PROGRESS.md](PROGRESS.md) for actual verification results,
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for limitations, and
 [Docs/PERFORMANCE.md](Docs/PERFORMANCE.md) for measurement methodology.
+
+The editable app icon is [Resources/Early.icon](Resources/Early.icon).
+See [Branding/README.md](Branding/README.md) for its separate layers, previews,
+source reference and Icon Composer editing instructions.
 
 Early is a provisional product name. `local.early.browser` is a development-only
 bundle identifier, not a verified public namespace. This is not a notarized

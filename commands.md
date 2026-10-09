@@ -60,3 +60,14 @@ The current Phase 0 shell has a slim content frame and a sidebar address control
 Click that control or press Command-L to open the shared command bar; Command-T
 opens it for a new tab. Escape dismisses it. After the first launch, the bar stays
 closed until invoked. Website navigation arrives in Phase 1.
+
+## Edit the app icon
+
+```sh
+open -a "Icon Composer" /Users/rnp/Developer/Early/early-browser/Resources/Early.icon
+```
+
+The document contains a native navy background and four editable SVG artwork
+layers: sunset, horizon, warm upper arch, and cool lower curve. Save edits in
+Icon Composer, then rebuild the app using the commands above. The original PNG
+is preserved; the layers are a reconstruction of that flattened artwork.

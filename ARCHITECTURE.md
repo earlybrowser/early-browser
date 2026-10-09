@@ -177,6 +177,12 @@ migration before public release. Early's name and final artwork are not cleared.
 
 ## Reference inspection
 
+The working app icon is the native `Resources/Early.icon` package, compiled by
+Xcode's asset compiler. A native background gradient and four SVG artwork layers
+reconstruct the user's flattened reference. `Branding/README.md` documents editing,
+previews and provenance. Xcode 27 produced layered assets plus an `.icns` fallback
+while preserving the macOS 14 target; older-system icon rendering is unverified.
+
 Inspected on 2026-10-09; no external implementation or artwork was copied:
 
 - [Search product page](https://officecommun.com/search),

@@ -35,7 +35,11 @@
   controls, native menus, keyboard input, and no custom animated transitions.
 - Browser-level performance and Instruments profiling await real web content.
   The recorded SQLite probe is synthetic and not a release performance gate.
-- Name availability, owned bundle namespace, application icon, release license,
+- A layered working app icon is now present in `Resources/Early.icon`, reconstructed
+  from the user-supplied PNG. Native default/dark/tinted previews and compiled
+  `.icns` fallback are available; appearance on macOS 14/15 remains untested.
+  Final visual approval and source-artwork rights review remain release work.
+- Name availability, owned bundle namespace, release license,
   public distribution, Gatekeeper on a second Mac, signing and notarization need
   explicit release work. Local ad-hoc signing is not Developer ID/notarization.
 - Debug UI tests use unique `local.early.tests.*` preference suites. Small test

@@ -1,0 +1,89 @@
+{
+  "fill": {
+    "linear-gradient": [
+      "srgb:0.17255,0.29804,0.47843,1.00000",
+      "srgb:0.04314,0.05882,0.12549,1.00000"
+    ],
+    "orientation": {
+      "start": {
+        "x": 0.5,
+        "y": 0
+      },
+      "stop": {
+        "x": 0.5,
+        "y": 1
+      }
+    }
+  },
+  "groups": [
+    {
+      "name": "03 — Early monogram",
+      "layers": [
+        {
+          "image-name": "03-E-Upper.svg",
+          "name": "Warm upper arch",
+          "glass": true
+        },
+        {
+          "image-name": "04-E-Lower.svg",
+          "name": "Cool lower curve",
+          "glass": true
+        }
+      ],
+      "lighting": "combined",
+      "blur-material": 0,
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.12
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    },
+    {
+      "name": "02 — Ocean horizon",
+      "layers": [
+        {
+          "image-name": "02-Horizon.svg",
+          "name": "Ocean horizon",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    },
+    {
+      "name": "01 — Sunset atmosphere",
+      "layers": [
+        {
+          "image-name": "01-Sunset.svg",
+          "name": "Sunset glow",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

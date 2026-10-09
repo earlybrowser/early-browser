@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="sunset" cx="50%" cy="46%" r="46%" gradientTransform="translate(0 .03) scale(1 .94)">
+      <stop offset="0" stop-color="#fff6a7"/>
+      <stop offset=".18" stop-color="#ffd65a"/>
+      <stop offset=".37" stop-color="#ff9844" stop-opacity=".98"/>
+      <stop offset=".55" stop-color="#f77848" stop-opacity=".80"/>
+      <stop offset=".77" stop-color="#e46758" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#cf6178" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#sunset)"/>
+</svg>

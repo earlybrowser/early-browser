@@ -184,3 +184,37 @@ No new performance measurements or visual/accessibility audit are claimed.
 All work remained uncommitted at this checkpoint; the user subsequently authorized
 committing and pushing it. Local build/run commands are also mirrored into the
 repository's `commands.md` so they are included in the push.
+
+## Commit and icon work — 2026-10-09
+
+Committed the completed Phase 0/chrome work as `caea3a7` and successfully pushed
+it to `origin/main` (`git@github.com:rangaNP/early-browser.git`). The workspace
+commands file is mirrored in the repository. Phase 1 remains unstarted.
+
+Created `Resources/Early.icon` from the user's flattened PNG: native navy
+background plus separate sunset, horizon, upper-arch and lower-curve SVG artwork.
+This is a visual reconstruction, not recovery of original raster layers. The
+source PNG is retained unchanged in `Branding/Reference/Early-original.png`.
+The image-generation skill was tried for alpha extraction; residual-pixel drafts
+were rejected and are not shipped. Final assets are authored SVG paths/gradients
+rendered with Icon Composer. Prompts and workflow are recorded under `Branding/`.
+
+Verified the package with installed Icon Composer 27.0 (129), exported and
+visually inspected Default/Dark/TintedLight/TintedDark 1024-pixel previews and
+a Default 64-pixel preview. Corrected the package's group order to match the
+native renderer's front-to-back order. Omitted an optional color-space annotation
+rejected by the installed version. Opened the completed document in Icon Composer.
+
+Wired `Early.icon` into the app's Resources phase with the installed Xcode's
+`folder.iconcomposer.icon` file type and `ASSETCATALOG_COMPILER_APPICON_NAME = Early`.
+Both Debug and arm64 Release builds passed with the existing commands. Release
+`codesign --verify --strict --verbose=2` passed. The app bundles contain
+`Assets.car` and `Early.icns`; Info.plist identifies Early as the app icon and
+retains the macOS 14 minimum. This verifies compilation/fallback generation,
+not runtime appearance on older macOS versions. Browser logic did not change,
+so unit/UI tests were not repeated for this resource-only change.
+
+Added `Branding/README.md`, `Branding/IMAGE_WORKFLOW.md`, the preserved reference
+and native-renderer previews. Updated Xcode configuration, README, known issues,
+architecture and both commands files. The icon work is a separate commit from
+the Phase 0 checkpoint.
