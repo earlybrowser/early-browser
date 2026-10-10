@@ -25,7 +25,7 @@ struct CommandBarView: View {
                 .accessibilityIdentifier("commandBar.query")
                 .onSubmit { model.submit() }
                 Button {
-                    model.coordinator.dismissCommandBar()
+                    model.dismissCommandBar()
                 } label: {
                     Image(systemName: "xmark")
                 }
@@ -56,6 +56,6 @@ struct CommandBarView: View {
             guard !Task.isCancelled else { return }
             queryIsFocused = true
         }
-        .onExitCommand { model.coordinator.dismissCommandBar() }
+        .onExitCommand { model.dismissCommandBar() }
     }
 }

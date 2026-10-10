@@ -1,23 +1,33 @@
 {
-  "fill" : {
-    "linear-gradient" : [
-      "srgb:0.17255,0.29804,0.47843,1.00000",
-      "srgb:0.04314,0.05882,0.12549,1.00000"
-    ]
-  },
+  "fill-specializations" : [
+    {
+      "value" : {
+        "solid" : "display-p3:0.64867,0.82300,1.00000,1.00000"
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
   "groups" : [
     {
       "blur-material" : 0,
       "layers" : [
         {
+          "fill" : {
+            "solid" : "extended-srgb:0.00000,0.75294,0.90980,1.00000"
+          },
           "glass" : true,
-          "image-name" : "03-E-Upper.svg",
-          "name" : "Warm upper arch"
-        },
-        {
-          "glass" : true,
-          "image-name" : "04-E-Lower.svg",
-          "name" : "Cool lower curve"
+          "image-name" : "03-E-Monogram.svg",
+          "name" : "Circular Early monogram",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              -3
+            ]
+          }
         }
       ],
       "lighting" : "combined",
@@ -37,11 +47,24 @@
         {
           "fill-specializations" : [
             {
+              "value" : {
+                "linear-gradient" : [
+                  "extended-srgb:0.00000,0.53333,1.00000,0.75000",
+                  "display-p3:0.00000,0.00000,0.00000,1.00000"
+                ]
+              }
+            },
+            {
               "appearance" : "dark",
-              "value" : "system-dark"
+              "value" : {
+                "linear-gradient" : [
+                  "extended-srgb:0.00000,0.53333,1.00000,0.40000",
+                  "display-p3:0.00000,0.00000,0.00000,1.00000"
+                ]
+              }
             }
           ],
-          "glass" : false,
+          "glass" : true,
           "image-name" : "02-Horizon.svg",
           "name" : "Ocean horizon"
         }
@@ -59,11 +82,7 @@
     },
     {
       "layers" : [
-        {
-          "glass" : false,
-          "image-name" : "01-Sunset.svg",
-          "name" : "Sunset glow"
-        }
+
       ],
       "name" : "01 — Sunset atmosphere",
       "shadow" : {

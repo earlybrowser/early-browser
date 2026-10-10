@@ -50,8 +50,8 @@ public enum StartupContext: Sendable {
     case returningSession
 }
 
-/// An unvalidated request, not permission to load a URL. Phase 1's navigation
-/// service must validate the input before creating a tab or web view.
+/// An unvalidated request, not permission to load a URL. NavigationInput must
+/// validate it before the window model creates a tab or web view.
 public struct NavigationRequest: Equatable, Sendable {
     public enum Target: Equatable, Sendable {
         case newTab(spaceID: UUID)

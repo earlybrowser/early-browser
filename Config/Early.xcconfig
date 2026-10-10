@@ -12,6 +12,7 @@ ENABLE_HARDENED_RUNTIME = NO
 ENABLE_APP_SANDBOX = YES
 CODE_SIGN_ENTITLEMENTS = Config/Early.entitlements
 GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_FILE = Config/Info.plist
 INFOPLIST_KEY_CFBundleDisplayName = Early
 INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.productivity
 MARKETING_VERSION = 0.1.0

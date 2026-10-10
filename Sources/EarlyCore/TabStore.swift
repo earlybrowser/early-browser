@@ -16,6 +16,25 @@ public struct TabStore: Equatable, Sendable {
         tabs.filter { $0.spaceID == spaceID && $0.isOpen }
     }
 
+    public mutating func insert(_ tab: BrowserTab, at position: Int? = nil) {
+        guard !tabs.contains(where: { $0.id == tab.id }) else { return }
+        tabs.insert(tab, at: min(max(position ?? tabs.count, 0), tabs.count))
+    }
+
+    public mutating func reopen(_ id: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        tabs[index].isOpen = true
+    }
+
+    @discardableResult
+    public mutating func update(_ id: UUID, url: URL? = nil, title: String? = nil) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        let before = tabs[index]
+        if let url { tabs[index].currentURL = url }
+        if let title, !title.isEmpty { tabs[index].title = String(title.prefix(512)) }
+        return before != tabs[index]
+    }
+
     /// Closing a pin changes its open state, never its persistent identity.
     /// Prefer the next open neighbor, then the previous one, in this space only.
     @discardableResult
