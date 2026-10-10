@@ -125,9 +125,5 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
                 self.monitor = nil
             }
         }
-
-        deinit {
-            stopMonitoring()
-        }
     }
 }

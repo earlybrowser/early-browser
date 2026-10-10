@@ -150,8 +150,20 @@ struct WindowControls: NSViewRepresentable {
             appearanceOverlay.hovered = hovered
         }
 
+        private func findNativeTitlebarView() -> NSView? {
+            guard let window, let themeFrame = window.contentView?.superview else { return nil }
+            for container in themeFrame.subviews where container.className == "NSTitlebarContainerView" {
+                for subview in container.subviews where subview.className == "NSTitlebarView" {
+                    return subview
+                }
+                return container
+            }
+            return nil
+        }
+
         private func hideTitlebarContainer() {
-            guard let window, let themeFrame = window.contentView?.superview else { return }
+            guard let window, !window.styleMask.contains(.fullScreen),
+                  let themeFrame = window.contentView?.superview else { return }
             for subview in themeFrame.subviews where subview.className == "NSTitlebarContainerView" {
                 if !subview.isHidden { subview.isHidden = true }
             }
@@ -204,12 +216,14 @@ struct WindowControls: NSViewRepresentable {
             let hasSheet = window.attachedSheet != nil
 
             var currentButtons: [NativeControl] = []
+            let defaultParent = findNativeTitlebarView()
             for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
                 guard let button = window.standardWindowButton(kind) else { continue }
                 if button.superview !== nativeContainer {
-                    let parent = button.superview
+                    let rawParent = button.superview
+                    let parent = (rawParent is ControlsContainer) ? (defaultParent ?? rawParent) : (rawParent ?? defaultParent)
                     let wasHidden = button.isHidden
-                    let frame = button.frame
+                    let frame = (rawParent is ControlsContainer) ? (defaultParent?.bounds ?? button.frame) : button.frame
                     button.removeFromSuperview()
                     nativeContainer.addSubview(button)
                     currentButtons.append(NativeControl(button: button, parent: parent,
@@ -217,7 +231,7 @@ struct WindowControls: NSViewRepresentable {
                 } else if let existing = nativeControls.first(where: { $0.button === button }) {
                     currentButtons.append(existing)
                 } else {
-                    currentButtons.append(NativeControl(button: button, parent: nil,
+                    currentButtons.append(NativeControl(button: button, parent: defaultParent,
                                                         frame: button.frame, wasHidden: false))
                 }
                 button.isHidden = hasSheet
@@ -258,11 +272,16 @@ struct WindowControls: NSViewRepresentable {
         }
 
         @objc private func windowDidResize(_ notification: Notification) {
+            guard let window, !window.styleMask.contains(.fullScreen) else { return }
             hideTitlebarContainer()
             attach()
         }
 
         @objc private func windowStateDidChange(_ notification: Notification) {
+            guard let window, !window.styleMask.contains(.fullScreen) else {
+                refreshPointer()
+                return
+            }
             hideTitlebarContainer()
             refreshPointer()
         }
@@ -287,8 +306,10 @@ struct WindowControls: NSViewRepresentable {
         private func restore() {
             ControlsContainer.isPositioningButtons = true
             defer { ControlsContainer.isPositioningButtons = false }
+            let defaultParent = findNativeTitlebarView()
             for control in nativeControls {
-                control.parent?.addSubview(control.button)
+                let destination = (control.parent is ControlsContainer || control.parent == nil) ? defaultParent : control.parent
+                destination?.addSubview(control.button)
                 control.button.frame = control.frame
                 control.button.isHidden = control.wasHidden
             }
