@@ -113,13 +113,13 @@ struct WindowControls: NSViewRepresentable {
                             mark.stroke()
                         default:
                             if isFullScreen {
-                                mark.move(to: NSPoint(x: x - 0.5, y: y + 0.5))
-                                mark.line(to: NSPoint(x: x - 2.5, y: y + 0.5))
-                                mark.line(to: NSPoint(x: x - 0.5, y: y + 2.5))
+                                mark.move(to: NSPoint(x: x - 3.5, y: y + 0.5))
+                                mark.line(to: NSPoint(x: x - 0.5, y: y + 0.5))
+                                mark.line(to: NSPoint(x: x - 0.5, y: y + 3.5))
                                 mark.close()
-                                mark.move(to: NSPoint(x: x + 0.5, y: y - 0.5))
-                                mark.line(to: NSPoint(x: x + 2.5, y: y - 0.5))
-                                mark.line(to: NSPoint(x: x + 0.5, y: y - 2.5))
+                                mark.move(to: NSPoint(x: x + 3.5, y: y - 0.5))
+                                mark.line(to: NSPoint(x: x + 0.5, y: y - 0.5))
+                                mark.line(to: NSPoint(x: x + 0.5, y: y - 3.5))
                                 mark.close()
                                 mark.fill()
                             } else {
