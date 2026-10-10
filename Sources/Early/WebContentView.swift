@@ -9,6 +9,49 @@ struct WindowControls: NSViewRepresentable {
     func updateNSView(_ view: ControlsHost, context: Context) { view.synchronize() }
     static func dismantleNSView(_ view: ControlsHost, coordinator: ()) { view.detach() }
 
+    private final class ControlsContainer: NSView {
+        static var isPositioningButtons = false
+        private static let swizzleOnce: Void = {
+            guard let widgetClass = NSClassFromString("_NSThemeWidget") else { return }
+
+            let sel1 = #selector(NSView.setFrameOrigin(_:))
+            if let m1 = class_getInstanceMethod(widgetClass, sel1) {
+                typealias SetOriginIMP = @convention(c) (AnyObject, Selector, NSPoint) -> Void
+                let origIMP = unsafeBitCast(method_getImplementation(m1), to: SetOriginIMP.self)
+                let block1: @convention(block) (NSView, NSPoint) -> Void = { view, pt in
+                    if view.superview is ControlsContainer && !ControlsContainer.isPositioningButtons {
+                        return
+                    }
+                    origIMP(view, sel1, pt)
+                }
+                method_setImplementation(m1, imp_implementationWithBlock(block1))
+            }
+
+            let sel2 = NSSelectorFromString("setFrameOrigin:ignoreRentry:")
+            if let m2 = class_getInstanceMethod(widgetClass, sel2) {
+                typealias SetOriginIgnoreIMP = @convention(c) (AnyObject, Selector, NSPoint, Bool) -> Void
+                let origIMP = unsafeBitCast(method_getImplementation(m2), to: SetOriginIgnoreIMP.self)
+                let block2: @convention(block) (NSView, NSPoint, Bool) -> Void = { view, pt, ignore in
+                    if view.superview is ControlsContainer && !ControlsContainer.isPositioningButtons {
+                        return
+                    }
+                    origIMP(view, sel2, pt, ignore)
+                }
+                method_setImplementation(m2, imp_implementationWithBlock(block2))
+            }
+        }()
+
+        override init(frame: NSRect) {
+            Self.swizzleOnce
+            super.init(frame: frame)
+        }
+
+        required init?(coder: NSCoder) {
+            Self.swizzleOnce
+            super.init(coder: coder)
+        }
+    }
+
     final class ControlsHost: NSView {
         private struct NativeControl {
             let button: NSButton
@@ -17,7 +60,7 @@ struct WindowControls: NSViewRepresentable {
             let wasHidden: Bool
         }
         private var nativeControls: [NativeControl] = []
-        private let nativeContainer = NSView()
+        private let nativeContainer = ControlsContainer()
         private let appearanceOverlay = AppearanceOverlay()
         private var hoverTrackingArea: NSTrackingArea?
 
@@ -26,6 +69,7 @@ struct WindowControls: NSViewRepresentable {
             var hovered = false { didSet { if oldValue != hovered { needsDisplay = true } } }
             override func hitTest(_ point: NSPoint) -> NSView? { nil }
             override func isAccessibilityElement() -> Bool { false }
+            override var isOpaque: Bool { false }
             override func draw(_ dirtyRect: NSRect) {
                 if hovered {
                     // AppKit still draws the glass and handles clicks. Its normal
@@ -63,14 +107,18 @@ struct WindowControls: NSViewRepresentable {
                     }
                     return
                 }
-                NSColor.windowBackgroundColor.setFill()
-                bounds.fill()
                 let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-                NSColor.labelColor.withAlphaComponent(highContrast ? 0.25 : 0.12).setFill()
                 for frame in buttonFrames {
-                    // Match the native button's diameter; do not shrink the
-                    // resting circle relative to the glass hover appearance.
-                    NSBezierPath(ovalIn: frame).fill()
+                    // Cover the native button and its outer shadow to ensure
+                    // no color bleed, without drawing any rectangular background.
+                    let backing = NSBezierPath(ovalIn: frame.insetBy(dx: -1.5, dy: -1.5))
+                    NSColor.windowBackgroundColor.setFill()
+                    backing.fill()
+
+                    let circle = NSBezierPath(ovalIn: frame)
+                    circle.fill()
+                    NSColor.labelColor.withAlphaComponent(highContrast ? 0.25 : 0.12).setFill()
+                    circle.fill()
                 }
             }
         }
@@ -102,6 +150,13 @@ struct WindowControls: NSViewRepresentable {
             appearanceOverlay.hovered = hovered
         }
 
+        private func hideTitlebarContainer() {
+            guard let window, let themeFrame = window.contentView?.superview else { return }
+            for subview in themeFrame.subviews where subview.className == "NSTitlebarContainerView" {
+                if !subview.isHidden { subview.isHidden = true }
+            }
+        }
+
         func synchronize() {
             attach()
             refreshPointer()
@@ -115,8 +170,16 @@ struct WindowControls: NSViewRepresentable {
                 name: NSWindow.willEnterFullScreenNotification, object: window)
             NotificationCenter.default.addObserver(self, selector: #selector(exitFullscreen),
                 name: NSWindow.didExitFullScreenNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowDidResize),
+                name: NSWindow.didResizeNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowDidResize),
+                name: NSWindow.didEndLiveResizeNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(willBeginSheet),
+                name: NSWindow.willBeginSheetNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(didEndSheet),
+                name: NSWindow.didEndSheetNotification, object: window)
             for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
-                NotificationCenter.default.addObserver(self, selector: #selector(refreshPointer),
+                NotificationCenter.default.addObserver(self, selector: #selector(windowStateDidChange),
                     name: name, object: window)
             }
             synchronize()
@@ -128,35 +191,59 @@ struct WindowControls: NSViewRepresentable {
         }
 
         private func attach() {
-            guard nativeControls.isEmpty, let window, !window.styleMask.contains(.fullScreen) else { return }
+            guard let window, !window.styleMask.contains(.fullScreen) else { return }
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.isMovableByWindowBackground = false
+            hideTitlebarContainer()
+
             if nativeContainer.superview == nil { addSubview(nativeContainer) }
             nativeContainer.frame = bounds
             nativeContainer.autoresizingMask = [.width, .height]
             nativeContainer.wantsLayer = true
+            let hasSheet = window.attachedSheet != nil
+
+            var currentButtons: [NativeControl] = []
             for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
                 guard let button = window.standardWindowButton(kind) else { continue }
-                nativeControls.append(NativeControl(button: button, parent: button.superview,
-                                                    frame: button.frame, wasHidden: button.isHidden))
-                nativeContainer.addSubview(button)
-                button.isHidden = false
+                if button.superview !== nativeContainer {
+                    let parent = button.superview
+                    let wasHidden = button.isHidden
+                    let frame = button.frame
+                    button.removeFromSuperview()
+                    nativeContainer.addSubview(button)
+                    currentButtons.append(NativeControl(button: button, parent: parent,
+                                                        frame: frame, wasHidden: wasHidden))
+                } else if let existing = nativeControls.first(where: { $0.button === button }) {
+                    currentButtons.append(existing)
+                } else {
+                    currentButtons.append(NativeControl(button: button, parent: nil,
+                                                        frame: button.frame, wasHidden: false))
+                }
+                button.isHidden = hasSheet
             }
-            appearanceOverlay.hovered = false
-            appearanceOverlay.frame = bounds
-            appearanceOverlay.autoresizingMask = [.width, .height]
-            appearanceOverlay.wantsLayer = true
-            appearanceOverlay.layer?.zPosition = 1
-            addSubview(appearanceOverlay, positioned: .above, relativeTo: nativeContainer)
-            needsLayout = true
-            needsDisplay = true
+            if !currentButtons.isEmpty {
+                nativeControls = currentButtons
+            }
+
+            if appearanceOverlay.superview == nil {
+                appearanceOverlay.hovered = false
+                appearanceOverlay.frame = bounds
+                appearanceOverlay.autoresizingMask = [.width, .height]
+                appearanceOverlay.wantsLayer = true
+                appearanceOverlay.layer?.zPosition = 1
+                addSubview(appearanceOverlay, positioned: .above, relativeTo: nativeContainer)
+            }
+            layoutButtons()
         }
 
-        override func layout() {
-            super.layout()
+        private func layoutButtons() {
+            let hasSheet = window?.attachedSheet != nil
+            ControlsContainer.isPositioningButtons = true
+            defer { ControlsContainer.isPositioningButtons = false }
             for (index, control) in nativeControls.enumerated() {
                 let button = control.button
+                button.isHidden = hasSheet
                 button.setFrameOrigin(NSPoint(x: CGFloat(index) * 22,
                     y: (bounds.height - button.frame.height) / 2))
             }
@@ -165,7 +252,41 @@ struct WindowControls: NSViewRepresentable {
             refreshPointer()
         }
 
+        override func layout() {
+            super.layout()
+            layoutButtons()
+        }
+
+        @objc private func windowDidResize(_ notification: Notification) {
+            hideTitlebarContainer()
+            attach()
+        }
+
+        @objc private func windowStateDidChange(_ notification: Notification) {
+            hideTitlebarContainer()
+            refreshPointer()
+        }
+
+        @objc private func willBeginSheet(_ notification: Notification) {
+            hideTitlebarContainer()
+            for control in nativeControls {
+                control.button.isHidden = true
+            }
+            appearanceOverlay.needsDisplay = true
+        }
+
+        @objc private func didEndSheet(_ notification: Notification) {
+            hideTitlebarContainer()
+            attach()
+            for control in nativeControls {
+                control.button.isHidden = false
+            }
+            layoutButtons()
+        }
+
         private func restore() {
+            ControlsContainer.isPositioningButtons = true
+            defer { ControlsContainer.isPositioningButtons = false }
             for control in nativeControls {
                 control.parent?.addSubview(control.button)
                 control.button.frame = control.frame
@@ -175,9 +296,22 @@ struct WindowControls: NSViewRepresentable {
             appearanceOverlay.removeFromSuperview()
         }
 
-        func detach() { restore(); NotificationCenter.default.removeObserver(self) }
-        @objc private func enterFullscreen(_ notification: Notification) { restore() }
-        @objc private func exitFullscreen(_ notification: Notification) { synchronize() }
+        func detach() {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        @objc private func enterFullscreen(_ notification: Notification) {
+            if let window, let themeFrame = window.contentView?.superview {
+                for subview in themeFrame.subviews where subview.className == "NSTitlebarContainerView" {
+                    subview.isHidden = false
+                }
+            }
+            restore()
+        }
+
+        @objc private func exitFullscreen(_ notification: Notification) {
+            synchronize()
+        }
     }
 }
 

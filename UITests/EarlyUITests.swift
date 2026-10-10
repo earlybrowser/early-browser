@@ -219,7 +219,7 @@ final class EarlyUITests: XCTestCase {
     func testRealHTTPSWebsiteLoads() {
         let app = launchFreshApp()
         navigate(app, to: "https://example.com")
-        XCTAssertTrue(app.webViews.matching(NSPredicate(format: "label == %@", "Example Domain")).firstMatch.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.webViews.matching(NSPredicate(format: "label == %@ ", "Example Domain")).firstMatch.waitForExistence(timeout: 30))
         expectRuntime(app, tabs: 1, views: 1, created: 1)
         XCTAssertEqual(app.buttons["sidebar.addressBar"].value as? String, "https://example.com/")
     }
@@ -337,5 +337,37 @@ final class EarlyUITests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
         close.click()
         XCTAssertTrue(window.waitForNonExistence(timeout: 5))
+    }
+
+    func testClickOutsideDismissesCommandBar() {
+        let app = launchFreshApp()
+        let query = app.textFields["commandBar.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+
+        // 1. Clicking in the sidebar dismisses the command bar
+        let sidebar = app.descendants(matching: .any)["browser.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 3))
+        sidebar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)).click()
+        XCTAssertFalse(query.exists)
+
+        // 2. Open command bar again via Command-T
+        app.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+
+        // 3. Clicking in the content area (below command bar) dismisses the command bar
+        let content = app.descendants(matching: .any)["browser.content"]
+        XCTAssertTrue(content.waitForExistence(timeout: 3))
+        content.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).click()
+        XCTAssertFalse(query.exists)
+
+        // 4. Open command bar again via Command-T
+        app.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+
+        // 5. Clicking inside the command bar text field does NOT dismiss it
+        query.click()
+        XCTAssertTrue(query.exists)
+        app.typeText("testing")
+        XCTAssertEqual(query.value as? String, "testing")
     }
 }

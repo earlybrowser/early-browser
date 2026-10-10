@@ -1,3 +1,4 @@
+import AppKit
 import EarlyCore
 import SwiftUI
 
@@ -6,6 +7,36 @@ struct BrowserWindowView: View {
     @State private var sidebarAutoHides = false
     @State private var sidebarHovered = false
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
+
+    private static let windowCornerRadius: CGFloat = {
+        guard let tf = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        ).contentView?.superview else {
+            return 16
+        }
+        let sel = NSSelectorFromString("_getCachedDefaultWindowCornerRadius")
+        guard let method = class_getInstanceMethod(type(of: tf), sel) else { return 16 }
+        typealias FloatFunc = @convention(c) (AnyObject, Selector) -> CGFloat
+        let fn = unsafeBitCast(method_getImplementation(method), to: FloatFunc.self)
+        let r = fn(tf, sel)
+        return r > 0 ? r : 16
+    }()
+
+    /// Root window padding is 6 pt. For the inner content border to be concentric
+    /// with the window frame (constant 6 pt distance everywhere, including corner curves):
+    private var contentCornerRadius: CGFloat {
+        max(Self.windowCornerRadius - 6, 4)
+    }
+
+    /// When auto-hiding, the floating sidebar expands by 3 pt (sitting 3 pt from the window edge
+    /// and 3 pt outside the content border). For the sidebar to be concentric with both
+    /// the window frame (3 pt gap) and the content border (3 pt gap) everywhere around the corner:
+    private var sidebarCornerRadius: CGFloat {
+        sidebarAutoHides ? max(Self.windowCornerRadius - 3, 4) : contentCornerRadius
+    }
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -60,24 +91,32 @@ struct BrowserWindowView: View {
                     }
                     Spacer()
                 }
-                if model.coordinator.commandBar != nil {
-                    CommandBarView(model: model)
-                        .padding(32)
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .clipShape(RoundedRectangle(cornerRadius: contentCornerRadius))
             .overlay {
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: contentCornerRadius)
                     .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
             .padding(.leading, sidebarAutoHides ? 0 : 266)
+
             sidebar
-                .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: sidebarCornerRadius))
+                .clipShape(RoundedRectangle(cornerRadius: sidebarCornerRadius))
+                .overlay {
+                    if sidebarAutoHides {
+                        RoundedRectangle(cornerRadius: sidebarCornerRadius)
+                            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
                 .shadow(color: .black.opacity(sidebarAutoHides && sidebarVisible ? 0.15 : 0), radius: 8, x: 3)
                 .offset(x: sidebarVisible ? 0 : -280)
+                .padding(.leading, sidebarAutoHides ? -3 : 0)
+                .padding(.vertical, sidebarAutoHides ? -3 : 0)
                 .allowsHitTesting(sidebarVisible)
                 .accessibilityHidden(!sidebarVisible)
                 .onHover { inside in
@@ -85,6 +124,22 @@ struct BrowserWindowView: View {
                     // Ignore enter events from the offset sidebar's tracking area.
                     if !inside { sidebarHovered = false }
                 }
+
+            if model.coordinator.commandBar != nil {
+                ZStack {
+                    Color.black.opacity(0.001)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            model.dismissCommandBar()
+                        }
+                        .accessibilityHidden(true)
+                    CommandBarView(model: model)
+                        .padding(32)
+                        .padding(.leading, sidebarAutoHides ? 0 : 266)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .padding(6)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -165,10 +220,10 @@ struct BrowserWindowView: View {
             }
             #endif
         }
-        .padding(.horizontal, 6)
-        .padding(.top, 4)
-        .padding(.bottom, 14)
-        .frame(width: 260)
+        .padding(.horizontal, sidebarAutoHides ? 9 : 6)
+        .padding(.top, sidebarAutoHides ? 7 : 4)
+        .padding(.bottom, sidebarAutoHides ? 17 : 14)
+        .frame(width: sidebarAutoHides ? 263 : 260)
         .frame(maxHeight: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
