@@ -112,16 +112,27 @@ struct WindowControls: NSViewRepresentable {
                             mark.line(to: NSPoint(x: x + 3.5, y: y))
                             mark.stroke()
                         default:
-                            if isFullScreen { break }
-                            mark.move(to: NSPoint(x: x - 3.5, y: y - 1.5))
-                            mark.line(to: NSPoint(x: x - 3.5, y: y + 3.5))
-                            mark.line(to: NSPoint(x: x + 1.5, y: y + 3.5))
-                            mark.close()
-                            mark.move(to: NSPoint(x: x - 1.5, y: y - 3.5))
-                            mark.line(to: NSPoint(x: x + 3.5, y: y - 3.5))
-                            mark.line(to: NSPoint(x: x + 3.5, y: y + 1.5))
-                            mark.close()
-                            mark.fill()
+                            if isFullScreen {
+                                mark.move(to: NSPoint(x: x - 0.5, y: y + 0.5))
+                                mark.line(to: NSPoint(x: x - 2.5, y: y + 0.5))
+                                mark.line(to: NSPoint(x: x - 0.5, y: y + 2.5))
+                                mark.close()
+                                mark.move(to: NSPoint(x: x + 0.5, y: y - 0.5))
+                                mark.line(to: NSPoint(x: x + 2.5, y: y - 0.5))
+                                mark.line(to: NSPoint(x: x + 0.5, y: y - 2.5))
+                                mark.close()
+                                mark.fill()
+                            } else {
+                                mark.move(to: NSPoint(x: x - 3.5, y: y - 1.5))
+                                mark.line(to: NSPoint(x: x - 3.5, y: y + 3.5))
+                                mark.line(to: NSPoint(x: x + 1.5, y: y + 3.5))
+                                mark.close()
+                                mark.move(to: NSPoint(x: x - 1.5, y: y - 3.5))
+                                mark.line(to: NSPoint(x: x + 3.5, y: y - 3.5))
+                                mark.line(to: NSPoint(x: x + 3.5, y: y + 1.5))
+                                mark.close()
+                                mark.fill()
+                            }
                         }
                     }
                     return
@@ -148,10 +159,8 @@ struct WindowControls: NSViewRepresentable {
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
-            // A non-clipping SwiftUI host can report visibleRect larger than
-            // bounds. Never use inVisibleRect here: it can cover the whole window.
-            let area = NSTrackingArea(rect: bounds.intersection(visibleRect),
-                options: [.mouseEnteredAndExited, .activeAlways],
+            let area = NSTrackingArea(rect: bounds,
+                options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
                 owner: self, userInfo: nil)
             addTrackingArea(area)
             hoverTrackingArea = area
@@ -159,13 +168,14 @@ struct WindowControls: NSViewRepresentable {
         }
 
         override func mouseEntered(with event: NSEvent) { refreshPointer() }
-        override func mouseExited(with event: NSEvent) { setHovered(false) }
+        override func mouseMoved(with event: NSEvent) { refreshPointer() }
+        override func mouseExited(with event: NSEvent) { refreshPointer() }
 
         @objc private func refreshPointer() {
             guard let window else { setHovered(false); return }
             let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
             setHovered(window.isKeyWindow && !isHiddenOrHasHiddenAncestor
-                       && bounds.contains(point) && visibleRect.contains(point))
+                       && bounds.contains(point))
         }
 
         private func setHovered(_ hovered: Bool) {
