@@ -79,21 +79,6 @@
         "enabled" : false,
         "value" : 0
       }
-    },
-    {
-      "layers" : [
-
-      ],
-      "name" : "01 — Sunset atmosphere",
-      "shadow" : {
-        "kind" : "none",
-        "opacity" : 0
-      },
-      "specular" : false,
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0
-      }
     }
   ],
   "supported-platforms" : {
