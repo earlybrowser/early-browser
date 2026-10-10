@@ -71,6 +71,18 @@ private struct BrowserWindowRoot: View {
     let appDelegate: EarlyAppDelegate
     @State private var model: BrowserWindowModel?
 
+    init(launchStore: FirstLaunchStore, appDelegate: EarlyAppDelegate) {
+        self.launchStore = launchStore
+        self.appDelegate = appDelegate
+        if let existing = appDelegate.model {
+            _model = State(initialValue: existing)
+        } else {
+            let loaded = Self.loadModel(launchStore: launchStore)
+            appDelegate.model = loaded
+            _model = State(initialValue: loaded)
+        }
+    }
+
     var body: some View {
         Group {
             if let model {
@@ -80,34 +92,33 @@ private struct BrowserWindowRoot: View {
             }
         }
         .frame(minWidth: 640, minHeight: 420)
-        .task {
-            guard model == nil else { return }
-            if let existing = appDelegate.model { model = existing; return }
-            var testSuite: String?
-            #if DEBUG
-            if let value = ProcessInfo.processInfo.environment["EARLY_TEST_DEFAULTS_SUITE"],
-               value.hasPrefix("local.early.tests."),
-               value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) {
-                testSuite = value
-            }
-            #endif
-            let input = NavigationInput(allowedSchemes: testSuite == nil ? ["http", "https"] : ["http", "https", "early-test"])
-            var directory = URL.applicationSupportDirectory.appending(path: "Early", directoryHint: .isDirectory)
-            if let testSuite { directory.append(path: "UITests/\(testSuite)", directoryHint: .isDirectory) }
-            let repository = SessionRepository(fileURL: directory.appending(path: "session.sqlite"), input: input)
-            var session = BrowserSession()
-            var restorationError: String?
-            do { if let saved = try await repository.load() { session = saved } }
-            catch {
-                restorationError = "The existing session was left untouched. Browsing is temporary until storage is repaired. \(error.localizedDescription)"
-            }
-            guard !Task.isCancelled else { return }
-            let startup = launchStore.claimStartupContext()
-            let restored = BrowserWindowModel(startup: restorationError == nil ? startup : .returningSession,
-                session: session, repository: repository, input: input, isTesting: testSuite != nil,
-                restorationError: restorationError)
-            appDelegate.model = restored
-            model = restored
+    }
+
+    private static func loadModel(launchStore: FirstLaunchStore) -> BrowserWindowModel {
+        var testSuite: String?
+        #if DEBUG
+        if let value = ProcessInfo.processInfo.environment["EARLY_TEST_DEFAULTS_SUITE"],
+           value.hasPrefix("local.early.tests."),
+           value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) {
+            testSuite = value
         }
+        #endif
+        let input = NavigationInput(allowedSchemes: testSuite == nil ? ["http", "https"] : ["http", "https", "early-test"])
+        var directory = URL.applicationSupportDirectory.appending(path: "Early", directoryHint: .isDirectory)
+        if let testSuite { directory.append(path: "UITests/\(testSuite)", directoryHint: .isDirectory) }
+        let repository = SessionRepository(fileURL: directory.appending(path: "session.sqlite"), input: input)
+        var session = BrowserSession()
+        var restorationError: String?
+        do {
+            if let saved = try SessionRepository.loadSynchronously(fileURL: repository.fileURL, input: input) {
+                session = saved
+            }
+        } catch {
+            restorationError = "The existing session was left untouched. Browsing is temporary until storage is repaired. \(error.localizedDescription)"
+        }
+        let startup = launchStore.claimStartupContext()
+        return BrowserWindowModel(startup: restorationError == nil ? startup : .returningSession,
+            session: session, repository: repository, input: input, isTesting: testSuite != nil,
+            restorationError: restorationError)
     }
 }

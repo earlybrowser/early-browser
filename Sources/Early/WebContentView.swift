@@ -39,6 +39,22 @@ struct WindowControls: NSViewRepresentable {
                 }
                 method_setImplementation(m2, imp_implementationWithBlock(block2))
             }
+
+            // In full-screen mode, AppKit generates an internal NSTitlebarBackgroundView
+            // under the slide-down menu bar. Setting its layer opacity to 0 removes the grey
+            // titlebar box completely without modifying window hierarchy or space transitions.
+            if let bgClass = NSClassFromString("NSTitlebarBackgroundView") {
+                let updateLayerSel = NSSelectorFromString("updateLayer")
+                if let mUpdateLayer = class_getInstanceMethod(bgClass, updateLayerSel) {
+                    typealias UpdateLayerIMP = @convention(c) (AnyObject, Selector) -> Void
+                    let origUpdateLayer = unsafeBitCast(method_getImplementation(mUpdateLayer), to: UpdateLayerIMP.self)
+                    let blockUpdateLayer: @convention(block) (NSView) -> Void = { view in
+                        origUpdateLayer(view, updateLayerSel)
+                        view.layer?.opacity = 0
+                    }
+                    method_setImplementation(mUpdateLayer, imp_implementationWithBlock(blockUpdateLayer))
+                }
+            }
         }()
 
         override init(frame: NSRect) {
@@ -71,6 +87,7 @@ struct WindowControls: NSViewRepresentable {
             override func isAccessibilityElement() -> Bool { false }
             override var isOpaque: Bool { false }
             override func draw(_ dirtyRect: NSRect) {
+                let isFullScreen = window?.styleMask.contains(.fullScreen) == true
                 if hovered {
                     // AppKit still draws the glass and handles clicks. Its normal
                     // titlebar group supplies symbols, so supply just those here
@@ -90,25 +107,38 @@ struct WindowControls: NSViewRepresentable {
                             mark.line(to: NSPoint(x: x + 2.5, y: y - 2.5))
                             mark.stroke()
                         case 1:
+                            if isFullScreen { break }
                             mark.move(to: NSPoint(x: x - 3.5, y: y))
                             mark.line(to: NSPoint(x: x + 3.5, y: y))
                             mark.stroke()
                         default:
-                            mark.move(to: NSPoint(x: x - 3.5, y: y - 1.5))
-                            mark.line(to: NSPoint(x: x - 3.5, y: y + 3.5))
-                            mark.line(to: NSPoint(x: x + 1.5, y: y + 3.5))
-                            mark.close()
-                            mark.move(to: NSPoint(x: x - 1.5, y: y - 3.5))
-                            mark.line(to: NSPoint(x: x + 3.5, y: y - 3.5))
-                            mark.line(to: NSPoint(x: x + 3.5, y: y + 1.5))
-                            mark.close()
-                            mark.fill()
+                            if isFullScreen {
+                                mark.move(to: NSPoint(x: x - 0.5, y: y + 0.5))
+                                mark.line(to: NSPoint(x: x - 3.5, y: y + 0.5))
+                                mark.line(to: NSPoint(x: x - 0.5, y: y + 3.5))
+                                mark.close()
+                                mark.move(to: NSPoint(x: x + 0.5, y: y - 0.5))
+                                mark.line(to: NSPoint(x: x + 3.5, y: y - 0.5))
+                                mark.line(to: NSPoint(x: x + 0.5, y: y - 3.5))
+                                mark.close()
+                                mark.fill()
+                            } else {
+                                mark.move(to: NSPoint(x: x - 3.5, y: y - 1.5))
+                                mark.line(to: NSPoint(x: x - 3.5, y: y + 3.5))
+                                mark.line(to: NSPoint(x: x + 1.5, y: y + 3.5))
+                                mark.close()
+                                mark.move(to: NSPoint(x: x - 1.5, y: y - 3.5))
+                                mark.line(to: NSPoint(x: x + 3.5, y: y - 3.5))
+                                mark.line(to: NSPoint(x: x + 3.5, y: y + 1.5))
+                                mark.close()
+                                mark.fill()
+                            }
                         }
                     }
                     return
                 }
                 let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-                for frame in buttonFrames {
+                for (index, frame) in buttonFrames.enumerated() {
                     // Cover the native button and its outer shadow to ensure
                     // no color bleed, without drawing any rectangular background.
                     let backing = NSBezierPath(ovalIn: frame.insetBy(dx: -1.5, dy: -1.5))
@@ -117,7 +147,10 @@ struct WindowControls: NSViewRepresentable {
 
                     let circle = NSBezierPath(ovalIn: frame)
                     circle.fill()
-                    NSColor.labelColor.withAlphaComponent(highContrast ? 0.25 : 0.12).setFill()
+                    let alpha: CGFloat = (index == 1 && isFullScreen)
+                        ? (highContrast ? 0.12 : 0.06)
+                        : (highContrast ? 0.25 : 0.12)
+                    NSColor.labelColor.withAlphaComponent(alpha).setFill()
                     circle.fill()
                 }
             }
@@ -162,10 +195,15 @@ struct WindowControls: NSViewRepresentable {
         }
 
         private func hideTitlebarContainer() {
-            guard let window, !window.styleMask.contains(.fullScreen),
+            guard let window,
                   let themeFrame = window.contentView?.superview else { return }
             for subview in themeFrame.subviews where subview.className == "NSTitlebarContainerView" {
                 if !subview.isHidden { subview.isHidden = true }
+            }
+            if window.styleMask.contains(.fullScreen) {
+                for w in NSApp.windows where w.className == "NSToolbarFullScreenWindow" {
+                    if !w.ignoresMouseEvents { w.ignoresMouseEvents = true }
+                }
             }
         }
 
@@ -178,8 +216,12 @@ struct WindowControls: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard let window else { return }
             NotificationCenter.default.removeObserver(self)
-            NotificationCenter.default.addObserver(self, selector: #selector(enterFullscreen),
+            NotificationCenter.default.addObserver(self, selector: #selector(fullscreenTransitioning),
                 name: NSWindow.willEnterFullScreenNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(enterFullscreen),
+                name: NSWindow.didEnterFullScreenNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(fullscreenTransitioning),
+                name: NSWindow.willExitFullScreenNotification, object: window)
             NotificationCenter.default.addObserver(self, selector: #selector(exitFullscreen),
                 name: NSWindow.didExitFullScreenNotification, object: window)
             NotificationCenter.default.addObserver(self, selector: #selector(windowDidResize),
@@ -203,7 +245,7 @@ struct WindowControls: NSViewRepresentable {
         }
 
         private func attach() {
-            guard let window, !window.styleMask.contains(.fullScreen) else { return }
+            guard let window else { return }
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.isMovableByWindowBackground = false
@@ -222,12 +264,11 @@ struct WindowControls: NSViewRepresentable {
                 if button.superview !== nativeContainer {
                     let rawParent = button.superview
                     let parent = (rawParent is ControlsContainer) ? (defaultParent ?? rawParent) : (rawParent ?? defaultParent)
-                    let wasHidden = button.isHidden
                     let frame = (rawParent is ControlsContainer) ? (defaultParent?.bounds ?? button.frame) : button.frame
                     button.removeFromSuperview()
                     nativeContainer.addSubview(button)
                     currentButtons.append(NativeControl(button: button, parent: parent,
-                                                        frame: frame, wasHidden: wasHidden))
+                                                        frame: frame, wasHidden: false))
                 } else if let existing = nativeControls.first(where: { $0.button === button }) {
                     currentButtons.append(existing)
                 } else {
@@ -272,13 +313,13 @@ struct WindowControls: NSViewRepresentable {
         }
 
         @objc private func windowDidResize(_ notification: Notification) {
-            guard let window, !window.styleMask.contains(.fullScreen) else { return }
+            guard window != nil else { return }
             hideTitlebarContainer()
             attach()
         }
 
         @objc private func windowStateDidChange(_ notification: Notification) {
-            guard let window, !window.styleMask.contains(.fullScreen) else {
+            guard window != nil else {
                 refreshPointer()
                 return
             }
@@ -319,19 +360,29 @@ struct WindowControls: NSViewRepresentable {
 
         func detach() {
             NotificationCenter.default.removeObserver(self)
-        }
-
-        @objc private func enterFullscreen(_ notification: Notification) {
-            if let window, let themeFrame = window.contentView?.superview {
-                for subview in themeFrame.subviews where subview.className == "NSTitlebarContainerView" {
-                    subview.isHidden = false
-                }
-            }
             restore()
         }
 
-        @objc private func exitFullscreen(_ notification: Notification) {
+        @objc private func fullscreenTransitioning(_ notification: Notification) {
+            hideTitlebarContainer()
+        }
+
+        @objc private func enterFullscreen(_ notification: Notification) {
+            hideTitlebarContainer()
             synchronize()
+            DispatchQueue.main.async { [weak self] in
+                self?.hideTitlebarContainer()
+                self?.synchronize()
+            }
+        }
+
+        @objc private func exitFullscreen(_ notification: Notification) {
+            hideTitlebarContainer()
+            synchronize()
+            DispatchQueue.main.async { [weak self] in
+                self?.hideTitlebarContainer()
+                self?.synchronize()
+            }
         }
     }
 }

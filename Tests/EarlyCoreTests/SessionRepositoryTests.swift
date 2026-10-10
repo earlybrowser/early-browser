@@ -11,6 +11,7 @@ struct SessionRepositoryTests {
     @Test func missingSessionDoesNotCreateDatabase() async throws {
         let url = location()
         #expect(try await SessionRepository(fileURL: url).load() == nil)
+        #expect(try SessionRepository.loadSynchronously(fileURL: url) == nil)
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
@@ -23,11 +24,13 @@ struct SessionRepositoryTests {
         let open = coordinator.session
         try await repository.save(open, revision: 1)
         #expect(try await repository.load() == open)
+        #expect(try SessionRepository.loadSynchronously(fileURL: url) == open)
         coordinator.closeActiveTab()
         let empty = coordinator.session
         try await repository.save(empty, revision: 3)
         try await repository.save(open, revision: 2)
         #expect(try await SessionRepository(fileURL: url).load() == empty)
+        #expect(try SessionRepository.loadSynchronously(fileURL: url) == empty)
     }
 
     @Test func invalidSnapshotDoesNotReplaceGoodData() async throws {
@@ -40,6 +43,7 @@ struct SessionRepositoryTests {
         invalid.version = 99
         await #expect(throws: (any Error).self) { try await repository.save(invalid, revision: 2) }
         #expect(try await repository.load() == good)
+        #expect(try SessionRepository.loadSynchronously(fileURL: url) == good)
     }
 
     @Test func corruptDatabaseIsReportedWithoutReplacement() async throws {
@@ -49,6 +53,7 @@ struct SessionRepositoryTests {
         let original = Data("not a database".utf8)
         try original.write(to: url)
         await #expect(throws: (any Error).self) { try await SessionRepository(fileURL: url).load() }
+        #expect(throws: (any Error).self) { try SessionRepository.loadSynchronously(fileURL: url) }
         #expect(try Data(contentsOf: url) == original)
     }
 
@@ -62,6 +67,7 @@ struct SessionRepositoryTests {
         #expect(sqlite3_exec(db, "PRAGMA user_version=99", nil, nil, nil) == SQLITE_OK)
         sqlite3_close(db)
         await #expect(throws: (any Error).self) { try await repository.load() }
+        #expect(throws: (any Error).self) { try SessionRepository.loadSynchronously(fileURL: url) }
         await #expect(throws: (any Error).self) { try await repository.save(BrowserSession(), revision: 2) }
     }
 }
