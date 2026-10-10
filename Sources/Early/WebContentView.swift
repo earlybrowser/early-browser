@@ -55,6 +55,16 @@ struct WindowControls: NSViewRepresentable {
                     method_setImplementation(mUpdateLayer, imp_implementationWithBlock(blockUpdateLayer))
                 }
             }
+
+            // Suppress the native _NSThemeZoomWidgetCell rollover glyph so Early's AppearanceOverlay
+            // exclusively renders the glyph, preventing the smaller native icon from appearing.
+            if let zoomCellClass = NSClassFromString("_NSThemeZoomWidgetCell") {
+                let rolloverSel = NSSelectorFromString("_hasRolloverAppearance")
+                if let mRollover = class_getInstanceMethod(zoomCellClass, rolloverSel) {
+                    let blockRollover: @convention(block) (AnyObject) -> Bool = { _ in false }
+                    method_setImplementation(mRollover, imp_implementationWithBlock(blockRollover))
+                }
+            }
         }()
 
         override init(frame: NSRect) {
@@ -174,7 +184,8 @@ struct WindowControls: NSViewRepresentable {
         @objc private func refreshPointer() {
             guard let window else { setHovered(false); return }
             let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-            setHovered(window.isKeyWindow && !isHiddenOrHasHiddenAncestor
+            let isAppOrWindowActive = window.isKeyWindow || window.isMainWindow || NSApp.isActive
+            setHovered(isAppOrWindowActive && !isHiddenOrHasHiddenAncestor
                        && bounds.contains(point))
         }
 
@@ -208,6 +219,7 @@ struct WindowControls: NSViewRepresentable {
 
         func synchronize() {
             attach()
+            updateTrackingAreas()
             refreshPointer()
         }
 
