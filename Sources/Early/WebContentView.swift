@@ -55,24 +55,6 @@ struct WindowControls: NSViewRepresentable {
                     method_setImplementation(mUpdateLayer, imp_implementationWithBlock(blockUpdateLayer))
                 }
             }
-
-            // Suppress the native _NSThemeZoomWidgetCell internal glyph drawing when
-            // hosted inside ControlsContainer, ensuring AppearanceOverlay exclusively
-            // renders the authentic full-screen glyph and prevents small native icons underneath.
-            if let zoomCellClass = NSClassFromString("_NSThemeZoomWidgetCell") {
-                let drawInteriorSel = #selector(NSActionCell.drawInterior(withFrame:in:))
-                if let mDrawInterior = class_getInstanceMethod(zoomCellClass, drawInteriorSel) {
-                    typealias DrawInteriorIMP = @convention(c) (AnyObject, Selector, NSRect, NSView) -> Void
-                    let origDrawInterior = unsafeBitCast(method_getImplementation(mDrawInterior), to: DrawInteriorIMP.self)
-                    let blockDrawInterior: @convention(block) (AnyObject, NSRect, NSView) -> Void = { cell, frame, view in
-                        if view.superview is ControlsContainer {
-                            return
-                        }
-                        origDrawInterior(cell, drawInteriorSel, frame, view)
-                    }
-                    method_setImplementation(mDrawInterior, imp_implementationWithBlock(blockDrawInterior))
-                }
-            }
         }()
 
         override init(frame: NSRect) {
@@ -105,56 +87,12 @@ struct WindowControls: NSViewRepresentable {
             override func isAccessibilityElement() -> Bool { false }
             override var isOpaque: Bool { false }
             override func draw(_ dirtyRect: NSRect) {
-                let isFullScreen = window?.styleMask.contains(.fullScreen) == true
                 if hovered {
-                    // AppKit still draws the glass and handles clicks. Its normal
-                    // titlebar group supplies symbols, so supply just those here
-                    // when hosting the controls in our compact sidebar group.
-                    NSColor.black.withAlphaComponent(0.65).setStroke()
-                    NSColor.black.withAlphaComponent(0.65).setFill()
-                    for (index, frame) in buttonFrames.enumerated() {
-                        let x = frame.midX, y = frame.midY
-                        let mark = NSBezierPath()
-                        mark.lineWidth = 1.5
-                        mark.lineCapStyle = .round
-                        switch index {
-                        case 0:
-                            mark.move(to: NSPoint(x: x - 2.5, y: y - 2.5))
-                            mark.line(to: NSPoint(x: x + 2.5, y: y + 2.5))
-                            mark.move(to: NSPoint(x: x - 2.5, y: y + 2.5))
-                            mark.line(to: NSPoint(x: x + 2.5, y: y - 2.5))
-                            mark.stroke()
-                        case 1:
-                            if isFullScreen { break }
-                            mark.move(to: NSPoint(x: x - 3.5, y: y))
-                            mark.line(to: NSPoint(x: x + 3.5, y: y))
-                            mark.stroke()
-                        default:
-                            if isFullScreen {
-                                mark.move(to: NSPoint(x: x - 0.5, y: y + 0.5))
-                                mark.line(to: NSPoint(x: x - 3.5, y: y + 0.5))
-                                mark.line(to: NSPoint(x: x - 0.5, y: y + 3.5))
-                                mark.close()
-                                mark.move(to: NSPoint(x: x + 0.5, y: y - 0.5))
-                                mark.line(to: NSPoint(x: x + 3.5, y: y - 0.5))
-                                mark.line(to: NSPoint(x: x + 0.5, y: y - 3.5))
-                                mark.close()
-                                mark.fill()
-                            } else {
-                                mark.move(to: NSPoint(x: x - 3.5, y: y + 3.5))
-                                mark.line(to: NSPoint(x: x - 0.5, y: y + 3.5))
-                                mark.line(to: NSPoint(x: x - 3.5, y: y + 0.5))
-                                mark.close()
-                                mark.move(to: NSPoint(x: x + 3.5, y: y - 3.5))
-                                mark.line(to: NSPoint(x: x + 0.5, y: y - 3.5))
-                                mark.line(to: NSPoint(x: x + 3.5, y: y - 0.5))
-                                mark.close()
-                                mark.fill()
-                            }
-                        }
-                    }
+                    // When hovered, let macOS's built-in buttons render their own
+                    // native icons without any custom vector drawings on top.
                     return
                 }
+                let isFullScreen = window?.styleMask.contains(.fullScreen) == true
                 let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
                 for (index, frame) in buttonFrames.enumerated() {
                     // Cover the native button and its outer shadow to ensure
