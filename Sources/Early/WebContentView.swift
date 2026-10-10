@@ -55,16 +55,6 @@ struct WindowControls: NSViewRepresentable {
                     method_setImplementation(mUpdateLayer, imp_implementationWithBlock(blockUpdateLayer))
                 }
             }
-
-            // Suppress the native _NSThemeZoomWidgetCell rollover glyph so Early's AppearanceOverlay
-            // exclusively renders the glyph, preventing the smaller native icon from appearing.
-            if let zoomCellClass = NSClassFromString("_NSThemeZoomWidgetCell") {
-                let rolloverSel = NSSelectorFromString("_hasRolloverAppearance")
-                if let mRollover = class_getInstanceMethod(zoomCellClass, rolloverSel) {
-                    let blockRollover: @convention(block) (AnyObject) -> Bool = { _ in false }
-                    method_setImplementation(mRollover, imp_implementationWithBlock(blockRollover))
-                }
-            }
         }()
 
         override init(frame: NSRect) {
@@ -123,12 +113,12 @@ struct WindowControls: NSViewRepresentable {
                             mark.stroke()
                         default:
                             if isFullScreen {
-                                mark.move(to: NSPoint(x: x - 3.5, y: y + 0.5))
-                                mark.line(to: NSPoint(x: x - 1.0, y: y + 0.5))
+                                mark.move(to: NSPoint(x: x - 3.0, y: y + 1.0))
+                                mark.line(to: NSPoint(x: x - 1.0, y: y + 1.0))
                                 mark.line(to: NSPoint(x: x - 1.0, y: y + 3.0))
                                 mark.close()
-                                mark.move(to: NSPoint(x: x + 3.5, y: y - 0.5))
-                                mark.line(to: NSPoint(x: x + 1.0, y: y - 0.5))
+                                mark.move(to: NSPoint(x: x + 3.0, y: y - 1.0))
+                                mark.line(to: NSPoint(x: x + 1.0, y: y - 1.0))
                                 mark.line(to: NSPoint(x: x + 1.0, y: y - 3.0))
                                 mark.close()
                                 mark.fill()
@@ -243,9 +233,14 @@ struct WindowControls: NSViewRepresentable {
                 name: NSWindow.willBeginSheetNotification, object: window)
             NotificationCenter.default.addObserver(self, selector: #selector(didEndSheet),
                 name: NSWindow.didEndSheetNotification, object: window)
-            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                         NSWindow.didBecomeMainNotification, NSWindow.didResignMainNotification] {
                 NotificationCenter.default.addObserver(self, selector: #selector(windowStateDidChange),
                     name: name, object: window)
+            }
+            for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(windowStateDidChange),
+                    name: name, object: nil)
             }
             synchronize()
         }
