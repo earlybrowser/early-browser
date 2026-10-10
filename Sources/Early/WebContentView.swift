@@ -112,27 +112,16 @@ struct WindowControls: NSViewRepresentable {
                             mark.line(to: NSPoint(x: x + 3.5, y: y))
                             mark.stroke()
                         default:
-                            if isFullScreen {
-                                mark.move(to: NSPoint(x: x - 0.5, y: y + 0.5))
-                                mark.line(to: NSPoint(x: x - 3.5, y: y + 0.5))
-                                mark.line(to: NSPoint(x: x - 0.5, y: y + 3.5))
-                                mark.close()
-                                mark.move(to: NSPoint(x: x + 0.5, y: y - 0.5))
-                                mark.line(to: NSPoint(x: x + 3.5, y: y - 0.5))
-                                mark.line(to: NSPoint(x: x + 0.5, y: y - 3.5))
-                                mark.close()
-                                mark.fill()
-                            } else {
-                                mark.move(to: NSPoint(x: x - 3.5, y: y - 1.5))
-                                mark.line(to: NSPoint(x: x - 3.5, y: y + 3.5))
-                                mark.line(to: NSPoint(x: x + 1.5, y: y + 3.5))
-                                mark.close()
-                                mark.move(to: NSPoint(x: x - 1.5, y: y - 3.5))
-                                mark.line(to: NSPoint(x: x + 3.5, y: y - 3.5))
-                                mark.line(to: NSPoint(x: x + 3.5, y: y + 1.5))
-                                mark.close()
-                                mark.fill()
-                            }
+                            if isFullScreen { break }
+                            mark.move(to: NSPoint(x: x - 3.5, y: y - 1.5))
+                            mark.line(to: NSPoint(x: x - 3.5, y: y + 3.5))
+                            mark.line(to: NSPoint(x: x + 1.5, y: y + 3.5))
+                            mark.close()
+                            mark.move(to: NSPoint(x: x - 1.5, y: y - 3.5))
+                            mark.line(to: NSPoint(x: x + 3.5, y: y - 3.5))
+                            mark.line(to: NSPoint(x: x + 3.5, y: y + 1.5))
+                            mark.close()
+                            mark.fill()
                         }
                     }
                     return
@@ -286,7 +275,6 @@ struct WindowControls: NSViewRepresentable {
                 appearanceOverlay.frame = bounds
                 appearanceOverlay.autoresizingMask = [.width, .height]
                 appearanceOverlay.wantsLayer = true
-                appearanceOverlay.layer?.zPosition = 1
                 addSubview(appearanceOverlay, positioned: .above, relativeTo: nativeContainer)
             }
             layoutButtons()
