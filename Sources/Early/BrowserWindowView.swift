@@ -9,14 +9,13 @@ struct BrowserWindowView: View {
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
 
     private enum SidebarItem: Identifiable {
-        case pinnedHeading, divider, todayHeading, newTab
+        case pinnedHeading, divider, newTab
         case tab(BrowserTab)
 
         var id: String {
             switch self {
             case .pinnedHeading: "pinned-heading"
             case .divider: "divider"
-            case .todayHeading: "today-heading"
             case .newTab: "new-tab"
             case .tab(let tab): "tab-\(tab.id)"
             }
@@ -25,7 +24,7 @@ struct BrowserWindowView: View {
 
     private var sidebarItems: [SidebarItem] {
         [.pinnedHeading] + model.pinnedTabs.map(SidebarItem.tab)
-            + [.divider, .todayHeading, .newTab] + model.todayTabs.map(SidebarItem.tab)
+            + [.divider, .newTab] + model.todayTabs.map(SidebarItem.tab)
     }
 
     private static let windowCornerRadius: CGFloat = {
@@ -209,10 +208,6 @@ struct BrowserWindowView: View {
                                 .accessibilityIdentifier("sidebar.pinned.heading")
                         case .divider:
                             Divider().padding(.vertical, 8)
-                        case .todayHeading:
-                            sectionLabel("Today")
-                                .padding(.bottom, 8)
-                                .accessibilityIdentifier("sidebar.today.heading")
                         case .newTab:
                             newTabButton
                         case .tab(let tab):

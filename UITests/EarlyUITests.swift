@@ -71,7 +71,7 @@ final class EarlyUITests: XCTestCase {
         app.menuBars.menuBarItems["Tab"].click()
         visibleMenuAction("Pin Tab")
         XCTAssertEqual(row.value as? String, "Pinned, open")
-        XCTAssertLessThan(row.frame.maxY, app.staticTexts["sidebar.today.heading"].frame.minY)
+        XCTAssertLessThan(row.frame.maxY, app.buttons["sidebar.newTab"].frame.minY)
         XCTAssertEqual(saved.value as? String, "preserve pin state")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
         pinAction("Unpin Tab", on: row)
@@ -244,10 +244,8 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(last.isHittable)
         XCTAssertTrue(newTab.isHittable)
         let id = last.identifier
-        let today = app.staticTexts["sidebar.today.heading"]
-        XCTAssertLessThan(last.frame.maxY, today.frame.minY)
-        XCTAssertGreaterThanOrEqual(newTab.frame.minY, today.frame.maxY)
-        XCTAssertLessThanOrEqual(newTab.frame.minY - today.frame.maxY, 16)
+        XCTAssertLessThan(last.frame.maxY, newTab.frame.minY)
+        XCTAssertFalse(app.staticTexts["sidebar.today.heading"].exists)
         newTab.click()
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 3))
         app.typeKey(.escape, modifierFlags: [])
