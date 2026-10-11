@@ -156,6 +156,11 @@ struct BrowserWindowView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
+        .background {
+            #if DEBUG
+            if model.isTesting { TestWindowState().frame(width: 1, height: 1) }
+            #endif
+        }
         .focusedSceneValue(\.browserWindow, model)
         .onAppear { model.activateSelection() }
         .onDisappear { model.save(); model.webViews.discardAll() }

@@ -61,5 +61,15 @@ struct BrowserCommands: Commands {
                     .disabled(model?.openTabs.isEmpty != false)
             }
         }
+        #if DEBUG
+        // Deterministic layout coverage without relying on synthesized drags
+        // being accepted by the macOS window manager. No normal-user menu.
+        if model?.isTesting == true {
+            CommandMenu("Test Window") {
+                Button("Compact Test Window") { NSApp.keyWindow?.setContentSize(NSSize(width: 800, height: 600)) }
+                Button("Wide Test Window") { NSApp.keyWindow?.setContentSize(NSSize(width: 1120, height: 760)) }
+            }
+        }
+        #endif
     }
 }

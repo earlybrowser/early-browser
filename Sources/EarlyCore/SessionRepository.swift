@@ -15,17 +15,13 @@ public enum SessionError: LocalizedError, Sendable {
 /// SQLite work and JSON encoding run on this actor, never MainActor.
 /// Version 1 stores one coherent snapshot; later normalized schemas can migrate it.
 public actor SessionRepository {
-    public let fileURL: URL
+    private let fileURL: URL
     private let input: NavigationInput
     private var latestRevision: UInt64 = 0
 
     public init(fileURL: URL, input: NavigationInput = NavigationInput()) {
         self.fileURL = fileURL
         self.input = input
-    }
-
-    public static func loadSynchronously(fileURL: URL, input: NavigationInput = NavigationInput()) throws -> BrowserSession? {
-        try readSession(fileURL: fileURL, input: input)
     }
 
     public func load() throws -> BrowserSession? {

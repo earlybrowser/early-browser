@@ -38,6 +38,16 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        // App-local appearance coverage, after NSApplication exists. Never
+        // change system preferences or the appearance of a normal browser run.
+        let environment = ProcessInfo.processInfo.environment
+        if environment["EARLY_TEST_DEFAULTS_SUITE"]?.hasPrefix("local.early.tests.") == true,
+           let appearance = environment["EARLY_TEST_APPEARANCE"],
+           ["light", "dark"].contains(appearance) {
+            NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
+        }
+        #endif
         // Establish normal foreground app behavior when launched by developer tools.
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -74,13 +84,7 @@ private struct BrowserWindowRoot: View {
     init(launchStore: FirstLaunchStore, appDelegate: EarlyAppDelegate) {
         self.launchStore = launchStore
         self.appDelegate = appDelegate
-        if let existing = appDelegate.model {
-            _model = State(initialValue: existing)
-        } else {
-            let loaded = Self.loadModel(launchStore: launchStore)
-            appDelegate.model = loaded
-            _model = State(initialValue: loaded)
-        }
+        _model = State(initialValue: appDelegate.model)
     }
 
     var body: some View {
@@ -89,12 +93,29 @@ private struct BrowserWindowRoot: View {
                 BrowserWindowView(model: model)
             } else {
                 Color(nsColor: .windowBackgroundColor)
+                    .overlay(alignment: .topLeading) {
+                        // Present native, muted controls while the session loads.
+                        // The browser's host takes ownership without restoring an
+                        // intermediate colored titlebar when this shell disappears.
+                        WindowControls()
+                            .frame(width: 60, height: 32)
+                            .padding(.leading, 12)
+                            .padding(.top, 10)
+                    }
+                    .ignoresSafeArea(.container, edges: .top)
             }
         }
         .frame(minWidth: 640, minHeight: 420)
+        .task {
+            guard model == nil else { return }
+            if let existing = appDelegate.model { model = existing; return }
+            guard let loaded = await Self.loadModel(launchStore: launchStore) else { return }
+            appDelegate.model = loaded
+            model = loaded
+        }
     }
 
-    private static func loadModel(launchStore: FirstLaunchStore) -> BrowserWindowModel {
+    private static func loadModel(launchStore: FirstLaunchStore) async -> BrowserWindowModel? {
         var testSuite: String?
         #if DEBUG
         if let value = ProcessInfo.processInfo.environment["EARLY_TEST_DEFAULTS_SUITE"],
@@ -110,12 +131,15 @@ private struct BrowserWindowRoot: View {
         var session = BrowserSession()
         var restorationError: String?
         do {
-            if let saved = try SessionRepository.loadSynchronously(fileURL: repository.fileURL, input: input) {
+            if let saved = try await repository.load() {
                 session = saved
             }
         } catch {
             restorationError = "The existing session was left untouched. Browsing is temporary until storage is repaired. \(error.localizedDescription)"
         }
+        // A discarded SwiftUI task must not claim first launch, create web views,
+        // or start an autosaver after its window has disappeared.
+        guard !Task.isCancelled else { return nil }
         let startup = launchStore.claimStartupContext()
         return BrowserWindowModel(startup: restorationError == nil ? startup : .returningSession,
             session: session, repository: repository, input: input, isTesting: testSuite != nil,

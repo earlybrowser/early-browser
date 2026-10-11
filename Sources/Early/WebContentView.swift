@@ -2,14 +2,74 @@ import AppKit
 import SwiftUI
 import WebKit
 
+#if DEBUG
+/// Read-only test seam: fullscreen state must not be inferred from window width
+/// (a maximized window can have the same width). Not installed in normal runs.
+struct TestWindowState: NSViewRepresentable {
+    func makeNSView(context: Context) -> StateView { StateView() }
+    func updateNSView(_ view: StateView, context: Context) {}
+
+    final class StateView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+        override func accessibilityIdentifier() -> String { "test.windowState" }
+        override func accessibilityValue() -> Any? {
+            guard let window else { return "detached" }
+            let controls = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            let sizes = controls.compactMap { window.standardWindowButton($0)?.frame.size }
+            let fullscreen = window.styleMask.contains(.fullScreen)
+            let nativeSize = sizes.count == 3 && sizes.allSatisfy { $0 == NSSize(width: 14, height: 14) }
+            let details = controls.compactMap { kind -> String? in
+                guard let button = window.standardWindowButton(kind) else { return "missing" }
+                return "\(button.superview?.className ?? "nil") hidden=\(button.isHiddenOrHasHiddenAncestor) window=\(button.window === window) frame=\(button.frame)"
+            }.joined(separator: "; ")
+            return "\(fullscreen ? "fullscreen" : "windowed") · nativeSize \(nativeSize) · \(details)"
+        }
+    }
+}
+#endif
+
 /// Keep the real AppKit controls for native glass rendering and window actions.
-/// A mouse-transparent overlay draws neutral circles at rest and symbols on hover.
+/// A mouse-transparent overlay draws neutral circles only at rest. AppKit draws
+/// the glass and hover glyphs; each window has exactly one owning control host.
 struct WindowControls: NSViewRepresentable {
     func makeNSView(context: Context) -> ControlsHost { ControlsHost() }
     func updateNSView(_ view: ControlsHost, context: Context) { view.synchronize() }
     static func dismantleNSView(_ view: ControlsHost, coordinator: ()) { view.detach() }
 
     private final class ControlsContainer: NSView {
+        var mouseInside = false {
+            didSet {
+                guard oldValue != mouseInside else { return }
+                refreshButtonAppearance()
+            }
+        }
+
+        func refreshButtonAppearance() {
+            // Refresh the cells as a group, not just the view under the cursor.
+            // AppKit can invalidate individual widget cells after our tracking
+            // callback, while the group's mouseInside value remains unchanged.
+            for case let button as NSButton in subviews {
+                // Reparented widgets no longer receive NSTitlebarView's group
+                // rollover invalidation. Ask the native widget to recompute its
+                // own rollover state, including its glass glyph, before drawing.
+                let rollover = NSSelectorFromString("mouseEnteredOrExited")
+                if button.responds(to: rollover) { button.perform(rollover) }
+                if let cell = button.cell { button.updateCell(cell) }
+                button.needsDisplay = true
+            }
+        }
+
+        // AppKit's native titlebar widgets query their immediate parent for
+        // group rollover. Supply it locally instead of drawing replacement
+        // glyphs or swizzling the widget cells. This is an undocumented AppKit
+        // compatibility seam and needs coverage on each supported macOS version.
+        @objc(_mouseInGroup:)
+        func mouseInGroup(_ button: NSButton) -> Bool {
+            mouseInside && button.superview === self && button.isEnabled
+        }
+
         static var isPositioningButtons = false
         private static let swizzleOnce: Void = {
             guard let widgetClass = NSClassFromString("_NSThemeWidget") else { return }
@@ -24,7 +84,9 @@ struct WindowControls: NSViewRepresentable {
                     }
                     origIMP(view, sel1, pt)
                 }
-                method_setImplementation(m1, imp_implementationWithBlock(block1))
+                // Install on the widget class itself, even if a future AppKit
+                // version inherits this method. Never replace NSView's method.
+                class_replaceMethod(widgetClass, sel1, imp_implementationWithBlock(block1), method_getTypeEncoding(m1))
             }
 
             let sel2 = NSSelectorFromString("setFrameOrigin:ignoreRentry:")
@@ -37,7 +99,7 @@ struct WindowControls: NSViewRepresentable {
                     }
                     origIMP(view, sel2, pt, ignore)
                 }
-                method_setImplementation(m2, imp_implementationWithBlock(block2))
+                class_replaceMethod(widgetClass, sel2, imp_implementationWithBlock(block2), method_getTypeEncoding(m2))
             }
 
             // In full-screen mode, AppKit generates an internal NSTitlebarBackgroundView
@@ -52,7 +114,7 @@ struct WindowControls: NSViewRepresentable {
                         origUpdateLayer(view, updateLayerSel)
                         view.layer?.opacity = 0
                     }
-                    method_setImplementation(mUpdateLayer, imp_implementationWithBlock(blockUpdateLayer))
+                    class_replaceMethod(bgClass, updateLayerSel, imp_implementationWithBlock(blockUpdateLayer), method_getTypeEncoding(mUpdateLayer))
                 }
             }
         }()
@@ -69,19 +131,40 @@ struct WindowControls: NSViewRepresentable {
     }
 
     final class ControlsHost: NSView {
+        // Weak on both sides: this registry must not keep windows or SwiftUI
+        // representables alive. Only viewDidMoveToWindow may claim ownership;
+        // updates/notifications from a superseded host cannot steal it back.
+        private static let owners = NSMapTable<NSWindow, ControlsHost>.weakToWeakObjects()
+
         private struct NativeControl {
+            let kind: NSWindow.ButtonType
             let button: NSButton
             weak var parent: NSView?
             let frame: NSRect
             let wasHidden: Bool
+            let postedFrameChanges: Bool
+        }
+        private struct TitlebarVisibility {
+            weak var view: NSView?
+            let wasHidden: Bool
         }
         private var nativeControls: [NativeControl] = []
+        private var titlebarVisibility: [TitlebarVisibility] = []
+        private weak var attachedWindow: NSWindow?
+        private var sheetIsPresenting = false
+        private var reconciliationScheduled = false
+        private var hoverRefreshScheduled = false
         private let nativeContainer = ControlsContainer()
         private let appearanceOverlay = AppearanceOverlay()
         private var hoverTrackingArea: NSTrackingArea?
 
+        private var ownsControls: Bool {
+            guard let attachedWindow else { return false }
+            return Self.owners.object(forKey: attachedWindow) === self
+        }
+
         private final class AppearanceOverlay: NSView {
-            var buttonFrames: [NSRect] = [] { didSet { needsDisplay = true } }
+            var buttonFrames: [(kind: NSWindow.ButtonType, frame: NSRect)] = [] { didSet { needsDisplay = true } }
             var hovered = false { didSet { if oldValue != hovered { needsDisplay = true } } }
             override func hitTest(_ point: NSPoint) -> NSView? { nil }
             override func isAccessibilityElement() -> Bool { false }
@@ -94,7 +177,7 @@ struct WindowControls: NSViewRepresentable {
                 }
                 let isFullScreen = window?.styleMask.contains(.fullScreen) == true
                 let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-                for (index, frame) in buttonFrames.enumerated() {
+                for (kind, frame) in buttonFrames {
                     // Cover the native button and its outer shadow to ensure
                     // no color bleed, without drawing any rectangular background.
                     let backing = NSBezierPath(ovalIn: frame.insetBy(dx: -1.5, dy: -1.5))
@@ -103,7 +186,7 @@ struct WindowControls: NSViewRepresentable {
 
                     let circle = NSBezierPath(ovalIn: frame)
                     circle.fill()
-                    let alpha: CGFloat = (index == 1 && isFullScreen)
+                    let alpha: CGFloat = (kind == .miniaturizeButton && isFullScreen)
                         ? (highContrast ? 0.12 : 0.06)
                         : (highContrast ? 0.25 : 0.12)
                     NSColor.labelColor.withAlphaComponent(alpha).setFill()
@@ -114,33 +197,66 @@ struct WindowControls: NSViewRepresentable {
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
-            if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
-            let area = NSTrackingArea(rect: bounds,
-                options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
-                owner: self, userInfo: nil)
-            addTrackingArea(area)
-            hoverTrackingArea = area
+            let trackingRect = bounds.intersection(visibleRect)
+            guard !trackingRect.isNull, !trackingRect.isEmpty else {
+                if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+                hoverTrackingArea = nil
+                setHovered(false)
+                return
+            }
+            // Replacing an unchanged tracking area during SwiftUI updates can
+            // interrupt an in-progress rollover. Keep it until geometry changes.
+            if hoverTrackingArea?.rect != trackingRect {
+                if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+                let area = NSTrackingArea(rect: trackingRect,
+                    options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
+                    owner: self, userInfo: nil)
+                addTrackingArea(area)
+                hoverTrackingArea = area
+                scheduleHoverRefresh()
+            }
             refreshPointer()
         }
 
-        override func mouseEntered(with event: NSEvent) { refreshPointer() }
-        override func mouseMoved(with event: NSEvent) { refreshPointer() }
-        override func mouseExited(with event: NSEvent) { refreshPointer() }
+        override func mouseEntered(with event: NSEvent) { pointerDidChange() }
+        override func mouseMoved(with event: NSEvent) { pointerDidChange() }
+        override func mouseExited(with event: NSEvent) { pointerDidChange() }
+
+        private func pointerDidChange() {
+            refreshPointer()
+            scheduleHoverRefresh()
+        }
+
+        private func scheduleHoverRefresh() {
+            guard ownsControls, !hoverRefreshScheduled else { return }
+            hoverRefreshScheduled = true
+            // Reconcile once after AppKit's own tracking callbacks. Re-read the
+            // pointer rather than replaying a stale enter/exit event. No polling.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.hoverRefreshScheduled = false
+                guard self.ownsControls else { return }
+                self.refreshPointer()
+                self.nativeContainer.refreshButtonAppearance()
+            }
+        }
 
         @objc private func refreshPointer() {
-            guard let window else { setHovered(false); return }
+            guard ownsControls, let window else { setHovered(false); return }
             let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
             let isAppOrWindowActive = window.isKeyWindow || window.isMainWindow || NSApp.isActive
-            setHovered(isAppOrWindowActive && !isHiddenOrHasHiddenAncestor
-                       && bounds.contains(point))
+            setHovered(isAppOrWindowActive && !sheetIsPresenting && window.attachedSheet == nil
+                       && !isHiddenOrHasHiddenAncestor
+                       && bounds.contains(point) && visibleRect.contains(point))
         }
 
         private func setHovered(_ hovered: Bool) {
+            nativeContainer.mouseInside = hovered
             appearanceOverlay.hovered = hovered
         }
 
         private func findNativeTitlebarView() -> NSView? {
-            guard let window, let themeFrame = window.contentView?.superview else { return nil }
+            guard let window = attachedWindow, let themeFrame = window.contentView?.superview else { return nil }
             for container in themeFrame.subviews where container.className == "NSTitlebarContainerView" {
                 for subview in container.subviews where subview.className == "NSTitlebarView" {
                     return subview
@@ -151,9 +267,12 @@ struct WindowControls: NSViewRepresentable {
         }
 
         private func hideTitlebarContainer() {
-            guard let window,
+            guard ownsControls, let window = attachedWindow,
                   let themeFrame = window.contentView?.superview else { return }
             for subview in themeFrame.subviews where subview.className == "NSTitlebarContainerView" {
+                if !titlebarVisibility.contains(where: { $0.view === subview }) {
+                    titlebarVisibility.append(TitlebarVisibility(view: subview, wasHidden: subview.isHidden))
+                }
                 if !subview.isHidden { subview.isHidden = true }
             }
             if window.styleMask.contains(.fullScreen) {
@@ -164,14 +283,33 @@ struct WindowControls: NSViewRepresentable {
         }
 
         func synchronize() {
+            guard ownsControls else { return }
             attach()
             updateTrackingAreas()
             refreshPointer()
+            // A handoff or fullscreen transition may replace native cells while
+            // the pointer stays inside the group and no new enter event arrives.
+            scheduleHoverRefresh()
         }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
+            attachedWindow = window
+            if let previous = Self.owners.object(forKey: window), previous !== self {
+                // Transfer the original AppKit parents/frames, not the previous
+                // host's sidebar coordinates. Retire it before moving buttons.
+                nativeControls = previous.nativeControls
+                titlebarVisibility = previous.titlebarVisibility
+                previous.nativeControls.removeAll()
+                previous.titlebarVisibility.removeAll()
+                previous.appearanceOverlay.buttonFrames = []
+                previous.appearanceOverlay.isHidden = true
+                previous.setHovered(false)
+                NotificationCenter.default.removeObserver(previous)
+            }
+            Self.owners.setObject(self, forKey: window)
+            sheetIsPresenting = window.attachedSheet != nil
             NotificationCenter.default.removeObserver(self)
             NotificationCenter.default.addObserver(self, selector: #selector(fullscreenTransitioning),
                 name: NSWindow.willEnterFullScreenNotification, object: window)
@@ -199,15 +337,16 @@ struct WindowControls: NSViewRepresentable {
                     name: name, object: nil)
             }
             synchronize()
+            scheduleReconciliation()
         }
 
         override func viewWillMove(toWindow newWindow: NSWindow?) {
-            if newWindow == nil { detach() }
+            if newWindow !== window { detach() }
             super.viewWillMove(toWindow: newWindow)
         }
 
         private func attach() {
-            guard let window else { return }
+            guard ownsControls, let window else { return }
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.isMovableByWindowBackground = false
@@ -217,31 +356,45 @@ struct WindowControls: NSViewRepresentable {
             nativeContainer.frame = bounds
             nativeContainer.autoresizingMask = [.width, .height]
             nativeContainer.wantsLayer = true
-            let hasSheet = window.attachedSheet != nil
+            let hasSheet = sheetIsPresenting || window.attachedSheet != nil
 
             var currentButtons: [NativeControl] = []
             let defaultParent = findNativeTitlebarView()
             for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
                 guard let button = window.standardWindowButton(kind) else { continue }
+                let existing = nativeControls.first(where: { $0.button === button })
                 if button.superview !== nativeContainer {
                     let rawParent = button.superview
-                    let parent = (rawParent is ControlsContainer) ? (defaultParent ?? rawParent) : (rawParent ?? defaultParent)
-                    let frame = (rawParent is ControlsContainer) ? (defaultParent?.bounds ?? button.frame) : button.frame
+                    // A regular handoff already has an original record. Never
+                    // use a titlebar's entire bounds as a button's saved frame.
+                    let parent = (rawParent is ControlsContainer) ? defaultParent : (rawParent ?? defaultParent)
+                    let record = existing ?? NativeControl(kind: kind, button: button, parent: parent,
+                                                           frame: button.frame, wasHidden: button.isHidden,
+                                                           postedFrameChanges: button.postsFrameChangedNotifications)
                     button.removeFromSuperview()
                     nativeContainer.addSubview(button)
-                    currentButtons.append(NativeControl(button: button, parent: parent,
-                                                        frame: frame, wasHidden: false))
-                } else if let existing = nativeControls.first(where: { $0.button === button }) {
+                    currentButtons.append(record)
+                } else if let existing {
                     currentButtons.append(existing)
                 } else {
-                    currentButtons.append(NativeControl(button: button, parent: defaultParent,
-                                                        frame: button.frame, wasHidden: false))
+                    currentButtons.append(NativeControl(kind: kind, button: button, parent: defaultParent,
+                                                        frame: button.frame, wasHidden: button.isHidden,
+                                                        postedFrameChanges: button.postsFrameChangedNotifications))
                 }
                 button.isHidden = hasSheet
+                button.postsFrameChangedNotifications = true
+                NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: button)
+                NotificationCenter.default.addObserver(self, selector: #selector(nativeButtonFrameDidChange),
+                    name: NSView.frameDidChangeNotification, object: button)
             }
-            if !currentButtons.isEmpty {
-                nativeControls = currentButtons
+            // AppKit can replace widgets during window transitions. Remove only
+            // obsolete widgets still owned by this container, never another host.
+            for old in nativeControls where !currentButtons.contains(where: { $0.button === old.button }) {
+                NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: old.button)
+                old.button.postsFrameChangedNotifications = old.postedFrameChanges
+                if old.button.superview === nativeContainer { old.button.removeFromSuperview() }
             }
+            nativeControls = currentButtons
 
             if appearanceOverlay.superview == nil {
                 appearanceOverlay.hovered = false
@@ -250,20 +403,26 @@ struct WindowControls: NSViewRepresentable {
                 appearanceOverlay.wantsLayer = true
                 addSubview(appearanceOverlay, positioned: .above, relativeTo: nativeContainer)
             }
+            appearanceOverlay.isHidden = hasSheet
             layoutButtons()
         }
 
         private func layoutButtons() {
-            let hasSheet = window?.attachedSheet != nil
+            guard ownsControls else { return }
+            let hasSheet = sheetIsPresenting || window?.attachedSheet != nil
             ControlsContainer.isPositioningButtons = true
             defer { ControlsContainer.isPositioningButtons = false }
-            for (index, control) in nativeControls.enumerated() {
+            for control in nativeControls where control.button.superview === nativeContainer {
                 let button = control.button
+                let index: CGFloat = control.kind == .closeButton ? 0 : (control.kind == .miniaturizeButton ? 1 : 2)
                 button.isHidden = hasSheet
-                button.setFrameOrigin(NSPoint(x: CGFloat(index) * 22,
+                button.setFrameOrigin(NSPoint(x: index * 22,
                     y: (bounds.height - button.frame.height) / 2))
             }
-            appearanceOverlay.buttonFrames = nativeControls.map { $0.button.frame }
+            appearanceOverlay.isHidden = hasSheet
+            appearanceOverlay.buttonFrames = nativeControls
+                .filter { $0.button.superview === nativeContainer }
+                .map { (kind: $0.kind, frame: $0.button.frame) }
             needsDisplay = true
             refreshPointer()
         }
@@ -274,35 +433,47 @@ struct WindowControls: NSViewRepresentable {
         }
 
         @objc private func windowDidResize(_ notification: Notification) {
-            guard window != nil else { return }
-            hideTitlebarContainer()
-            attach()
+            synchronize()
+            scheduleReconciliation()
+        }
+
+        @objc private func nativeButtonFrameDidChange(_ notification: Notification) {
+            guard ownsControls, let button = notification.object as? NSButton,
+                  button.superview !== nativeContainer else { return }
+            // AppKit can return widgets to its titlebar *after* didExitFullScreen
+            // and our next-turn reconciliation. Observe that actual reset rather
+            // than guessing a delay or continuously polling the window.
+            scheduleReconciliation()
         }
 
         @objc private func windowStateDidChange(_ notification: Notification) {
-            guard window != nil else {
+            guard ownsControls, window != nil else {
                 refreshPointer()
                 return
             }
-            hideTitlebarContainer()
-            refreshPointer()
+            synchronize()
+            scheduleReconciliation()
         }
 
         @objc private func willBeginSheet(_ notification: Notification) {
+            guard ownsControls else { return }
+            // Intentional for the custom sidebar: while the parent is modal,
+            // hide both presentations so AppKit cannot expose a duplicate row
+            // or apparently available window actions. didEndSheet restores them.
+            sheetIsPresenting = true
+            setHovered(false)
             hideTitlebarContainer()
             for control in nativeControls {
                 control.button.isHidden = true
             }
-            appearanceOverlay.needsDisplay = true
+            appearanceOverlay.isHidden = true
         }
 
         @objc private func didEndSheet(_ notification: Notification) {
-            hideTitlebarContainer()
-            attach()
-            for control in nativeControls {
-                control.button.isHidden = false
-            }
-            layoutButtons()
+            guard ownsControls else { return }
+            sheetIsPresenting = false
+            synchronize()
+            scheduleReconciliation()
         }
 
         private func restore() {
@@ -310,6 +481,8 @@ struct WindowControls: NSViewRepresentable {
             defer { ControlsContainer.isPositioningButtons = false }
             let defaultParent = findNativeTitlebarView()
             for control in nativeControls {
+                control.button.postsFrameChangedNotifications = control.postedFrameChanges
+                guard control.button.superview === nativeContainer else { continue }
                 let destination = (control.parent is ControlsContainer || control.parent == nil) ? defaultParent : control.parent
                 destination?.addSubview(control.button)
                 control.button.frame = control.frame
@@ -317,32 +490,51 @@ struct WindowControls: NSViewRepresentable {
             }
             nativeControls.removeAll()
             appearanceOverlay.removeFromSuperview()
+            for state in titlebarVisibility { state.view?.isHidden = state.wasHidden }
+            titlebarVisibility.removeAll()
         }
 
         func detach() {
             NotificationCenter.default.removeObserver(self)
-            restore()
+            setHovered(false)
+            if ownsControls {
+                restore()
+                if let attachedWindow { Self.owners.removeObject(forKey: attachedWindow) }
+            } else {
+                nativeControls.removeAll()
+                titlebarVisibility.removeAll()
+                appearanceOverlay.removeFromSuperview()
+            }
+            attachedWindow = nil
+            if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+            hoverTrackingArea = nil
         }
 
         @objc private func fullscreenTransitioning(_ notification: Notification) {
+            setHovered(false)
             hideTitlebarContainer()
+            scheduleReconciliation()
         }
 
         @objc private func enterFullscreen(_ notification: Notification) {
-            hideTitlebarContainer()
             synchronize()
-            DispatchQueue.main.async { [weak self] in
-                self?.hideTitlebarContainer()
-                self?.synchronize()
-            }
+            scheduleReconciliation()
         }
 
         @objc private func exitFullscreen(_ notification: Notification) {
-            hideTitlebarContainer()
             synchronize()
+            scheduleReconciliation()
+        }
+
+        // AppKit may finish its own titlebar layout after posting a notification.
+        // Coalesce one follow-up; no polling or self-rescheduling loop.
+        private func scheduleReconciliation() {
+            guard ownsControls, !reconciliationScheduled else { return }
+            reconciliationScheduled = true
             DispatchQueue.main.async { [weak self] in
-                self?.hideTitlebarContainer()
-                self?.synchronize()
+                guard let self else { return }
+                self.reconciliationScheduled = false
+                self.synchronize()
             }
         }
     }

@@ -3,10 +3,20 @@ import XCTest
 
 @MainActor
 final class EarlyUITests: XCTestCase {
-    private func launchFreshApp() -> XCUIApplication {
+    override func setUp() {
+        super.setUp()
+        continueAfterFailure = false
+    }
+
+    private func launchFreshApp(appearance: String = "dark") -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["EARLY_TEST_DEFAULTS_SUITE"] = "local.early.tests.\(UUID().uuidString)"
+        app.launchEnvironment["EARLY_TEST_APPEARANCE"] = appearance
+        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
+        // Session loading is asynchronous. Native controls in the loading shell
+        // are not evidence that the browser model and keyboard commands are ready.
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 10))
         return app
     }
 
@@ -294,20 +304,6 @@ final class EarlyUITests: XCTestCase {
             return largest
         }
 
-        func hasHoverSymbol(_ button: XCUIElement) throws -> Bool {
-            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: button.screenshot().pngRepresentation))
-            var darkPixels = 0
-            for y in (bitmap.pixelsHigh / 3)..<(bitmap.pixelsHigh * 2 / 3) {
-                for x in (bitmap.pixelsWide / 3)..<(bitmap.pixelsWide * 2 / 3) {
-                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                    if max(color.redComponent, color.greenComponent, color.blueComponent) < 0.5 {
-                        darkPixels += 1
-                    }
-                }
-            }
-            return darkPixels >= 3
-        }
-
         away.hover()
         for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
         let idle = XCTAttachment(screenshot: window.screenshot())
@@ -317,7 +313,7 @@ final class EarlyUITests: XCTestCase {
         close.hover()
         for light in lights {
             XCTAssertGreaterThan(try colorSpread(light), 0.25)
-            XCTAssertTrue(try hasHoverSymbol(light), "Missing hover symbol on \(light.identifier)")
+            try assertHoverSymbol(light)
         }
         let hovered = XCTAttachment(screenshot: window.screenshot())
         hovered.name = "Hovered native traffic lights"
@@ -332,11 +328,154 @@ final class EarlyUITests: XCTestCase {
         // appearance without any hover event to initialize the control state.
         app.terminate()
         app.launch()
+        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 10))
         XCTAssertTrue(close.waitForExistence(timeout: 5))
         for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
         app.typeKey(.escape, modifierFlags: [])
         close.click()
         XCTAssertTrue(window.waitForNonExistence(timeout: 5))
+    }
+
+    // Native glass glyphs are tinted, not black. Detect a local dark stroke
+    // against its two neighbours, rejecting a solid circle or smooth gradient.
+    private func strokePixels(width: Int, height: Int, brightness: (Int, Int) -> CGFloat) -> Int {
+        let step = max(1, width / 10)
+        var count = 0
+        for y in (height / 3)..<(height * 2 / 3) {
+            for x in (width / 3)..<(width * 2 / 3) {
+                let center = brightness(x, y)
+                let horizontal = min(brightness(x - step, y), brightness(x + step, y)) - center
+                let vertical = min(brightness(x, y - step), brightness(x, y + step)) - center
+                if max(horizontal, vertical) > 0.08 { count += 1 }
+            }
+        }
+        return count
+    }
+
+    private func assertHoverSymbol(_ button: XCUIElement,
+                                  file: StaticString = #filePath, line: UInt = #line) throws {
+        var shot = button.screenshot()
+        var count = 0
+        let deadline = Date().addingTimeInterval(1)
+        while true {
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: shot.pngRepresentation))
+            count = strokePixels(width: bitmap.pixelsWide, height: bitmap.pixelsHigh) { x, y in
+                guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return 1 }
+                return max(c.redComponent, c.greenComponent, c.blueComponent)
+            }
+            if count >= 3 || Date() >= deadline { break }
+            // Glass rollover animates after XCTest considers the app idle.
+            // Allow that transition to settle, but do not retry the hover event.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            shot = button.screenshot()
+        }
+        if count < 3 {
+            let attachment = XCTAttachment(screenshot: shot)
+            attachment.name = "Missing glyph: \(button.identifier), stroke pixels \(count)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        XCTAssertGreaterThanOrEqual(count, 3, "Missing hover symbol on \(button.identifier)", file: file, line: line)
+    }
+
+    func testHoverSymbolDetectorRejectsBlankAndGradientCircles() {
+        XCTAssertEqual(strokePixels(width: 32, height: 32) { _, _ in 0.8 }, 0)
+        XCTAssertEqual(strokePixels(width: 32, height: 32) { x, y in 0.5 + CGFloat(x + y) / 128 }, 0)
+        XCTAssertGreaterThan(strokePixels(width: 32, height: 32) { _, y in
+            (15...16).contains(y) ? 0.65 : 0.9
+        }, 3)
+    }
+
+    func testWindowLifecycleAndTrafficLightsInLightAppearance() throws {
+        try verifyWindowLifecycle(appearance: "light")
+    }
+
+    func testWindowLifecycleAndTrafficLightsInDarkAppearance() throws {
+        try verifyWindowLifecycle(appearance: "dark")
+    }
+
+    private func verifyWindowLifecycle(appearance: String) throws {
+        let app = launchFreshApp(appearance: appearance)
+        app.typeKey(.escape, modifierFlags: [])
+        let window = app.windows["browser"]
+        let close = app.buttons["_XCUI:CloseWindow"]
+        let zoom = app.buttons["_XCUI:FullScreenWindow"]
+        let state = app.staticTexts["test.windowState"]
+        func expectState(_ name: String) {
+            let expected = "\(name) · nativeSize true"
+            let predicate = NSPredicate(format: "value BEGINSWITH %@", expected)
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: state)], timeout: 10), .completed)
+            XCTAssertTrue(close.waitForExistence(timeout: 5), "Native window state: \(state.value ?? "missing")")
+        }
+        func verifyControls(_ stage: String) throws {
+            XCTAssertTrue(close.waitForExistence(timeout: 5))
+            XCTAssertEqual(app.buttons.matching(identifier: "_XCUI:CloseWindow").count, 1)
+            XCTAssertEqual(close.frame.midY, app.buttons["navigation.back"].frame.midY, accuracy: 3)
+            let away = window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.6))
+            for _ in 0..<3 {
+                away.hover()
+                close.hover()
+                try assertHoverSymbol(close)
+                try assertHoverSymbol(zoom)
+                if app.buttons["_XCUI:MinimizeWindow"].isEnabled {
+                    try assertHoverSymbol(app.buttons["_XCUI:MinimizeWindow"])
+                }
+            }
+            away.hover()
+            let image = XCTAttachment(screenshot: window.screenshot())
+            image.name = "\(appearance) \(stage)"
+            image.lifetime = .keepAlways
+            add(image)
+        }
+        expectState("windowed")
+        for (title, width) in [("Compact Test Window", 800.0), ("Wide Test Window", 1120.0)] {
+            app.menuBars.menuBarItems["Test Window"].click()
+            app.menuItems[title].click()
+            XCTAssertEqual(window.frame.width, width, accuracy: 1)
+            let content = app.descendants(matching: .any)["browser.content"]
+            XCTAssertEqual(content.frame.minY - window.frame.minY, 6, accuracy: 1)
+            XCTAssertEqual(window.frame.maxX - content.frame.maxX, 6, accuracy: 1)
+            XCTAssertEqual(window.frame.maxY - content.frame.maxY, 6, accuracy: 1)
+            try verifyControls(title)
+        }
+        // Use the native menu action: XCTest's pointer dwell over the green
+        // button can open macOS's Move & Resize popover before it clicks.
+        app.menuBars.menuBarItems["View"].click()
+        app.menuItems["Enter Full Screen"].click()
+        expectState("fullscreen")
+        try verifyControls("fullscreen")
+        app.menuBars.menuBarItems["View"].click()
+        app.menuItems["Exit Full Screen"].click()
+        expectState("windowed")
+        try verifyControls("after fullscreen")
+
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        app.webViews.buttons["Alert"].click()
+        XCTAssertTrue(app.sheets.buttons["OK"].waitForExistence(timeout: 5))
+        XCTAssertTrue(!close.exists || !close.isHittable)
+        app.sheets.buttons["OK"].click()
+        XCTAssertTrue(app.webViews.staticTexts["Alert done"].waitForExistence(timeout: 5))
+        try verifyControls("after native sheet")
+
+        app.buttons["sidebar.toggle"].click()
+        app.webViews.firstMatch.hover()
+        XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
+        window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 5, dy: 200)).hover()
+        XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
+        app.descendants(matching: .any)["sidebar.reveal"].hover()
+        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 5))
+        // Keep the cursor in the floating sidebar while checking its controls.
+        close.hover()
+        try assertHoverSymbol(close)
+        try assertHoverSymbol(zoom)
+        let image = XCTAttachment(screenshot: window.screenshot())
+        image.name = "\(appearance) floating sidebar"
+        image.lifetime = .keepAlways
+        add(image)
+        app.typeKey("s", modifierFlags: [.command, .shift])
+        try verifyControls("after auto-hide")
+        app.terminate()
     }
 
     func testClickOutsideDismissesCommandBar() {
