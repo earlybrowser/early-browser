@@ -33,6 +33,79 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(app.windows.count, 1)
     }
 
+    func testTodayNewTabPlacementAndIntentInDarkAppearance() {
+        verifyTodayNewTab(appearance: "dark")
+    }
+
+    func testTodayNewTabPlacementAndIntentInLightAppearance() {
+        verifyTodayNewTab(appearance: "light")
+    }
+
+    private func verifyTodayNewTab(appearance: String) {
+        let app = launchFreshApp(appearance: appearance)
+        app.typeKey(.escape, modifierFlags: [])
+        let heading = app.staticTexts["sidebar.today.heading"]
+        let newTab = app.buttons["sidebar.newTab"]
+        let query = app.textFields["commandBar.query"]
+        XCTAssertTrue(heading.exists)
+        XCTAssertEqual(app.buttons.matching(identifier: "sidebar.newTab").count, 1)
+        XCTAssertGreaterThanOrEqual(newTab.frame.minY, heading.frame.maxY)
+        XCTAssertLessThanOrEqual(newTab.frame.minY - heading.frame.maxY, 16)
+        XCTAssertTrue(newTab.isHittable)
+
+        // Opening and cancelling the action in an empty window creates nothing.
+        newTab.click()
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        XCTAssertEqual(query.value as? String, "")
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        app.typeText("cancel this")
+        app.typeKey(.escape, modifierFlags: [])
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+
+        // The same action submits a new tab, rather than acting as a tab itself.
+        newTab.click()
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        app.typeText("early-test://fixture/one\n")
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        let firstTab = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch
+        XCTAssertTrue(firstTab.exists)
+        XCTAssertGreaterThanOrEqual(firstTab.frame.minY, newTab.frame.maxY)
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep this text")
+
+        newTab.click()
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        XCTAssertEqual(query.value as? String, "")
+        app.typeText("cancel again")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(saved.value as? String, "keep this text")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        newTab.click()
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        app.typeText("early-test://fixture/two\n")
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.typeKey("1", modifierFlags: .command)
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep this text")
+        XCTAssertGreaterThanOrEqual(firstTab.frame.minY, newTab.frame.maxY)
+
+        let image = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+        image.name = "\(appearance) Today New Tab placement"
+        image.lifetime = .keepAlways
+        add(image)
+
+        app.typeKey("w", modifierFlags: .command)
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 2)
+        XCTAssertFalse(query.exists)
+        XCTAssertTrue(newTab.isHittable)
+        XCTAssertLessThanOrEqual(newTab.frame.minY - heading.frame.maxY, 16)
+    }
+
     func testKeyboardCommandsLeaveEmptyWindowUsable() {
         let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])

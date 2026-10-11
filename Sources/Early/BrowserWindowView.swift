@@ -179,6 +179,8 @@ struct BrowserWindowView: View {
                 sectionLabel("Pinned")
                 Divider()
                 sectionLabel("Today")
+                    .accessibilityIdentifier("sidebar.today.heading")
+                newTabButton
             }
             ScrollView {
                 LazyVStack(spacing: 4) {
@@ -204,19 +206,6 @@ struct BrowserWindowView: View {
                     }
                 }
             }
-            Button {
-                model.presentCommandBar(.newTab)
-            } label: {
-                HStack {
-                    Label("New Tab", systemImage: "plus")
-                    Spacer()
-                    Text("⌘T").foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("sidebar.newTab")
-            .help("Open the command bar (Command-T)")
             #if DEBUG
             if model.isTesting {
                 Text("Tabs \(model.openTabs.count) · Views \(model.webViews.liveViewCount) · Created \(model.webViews.creationCount) · \(model.persistence.isSaving ? "Saving" : "Saved")")
@@ -233,6 +222,24 @@ struct BrowserWindowView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
+    }
+
+    private var newTabButton: some View {
+        Button {
+            model.presentCommandBar(.newTab)
+        } label: {
+            HStack {
+                Label("New Tab", systemImage: "plus")
+                Spacer()
+                Text("⌘T").foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("sidebar.newTab")
+        .help("Open the command bar (Command-T)")
     }
 
     private var navigationControls: some View {
