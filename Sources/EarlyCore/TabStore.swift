@@ -60,7 +60,7 @@ public struct TabStore: Equatable, Sendable {
         return before != tabs[index]
     }
 
-    /// Closing a pin changes its open state, never its persistent identity.
+    /// Closing a pin resets its address and unloads it, preserving its identity.
     /// Prefer the next open neighbor, then the previous one, in this space only.
     @discardableResult
     public mutating func close(id: UUID) -> UUID? {
@@ -72,8 +72,13 @@ public struct TabStore: Equatable, Sendable {
         let openIndex = candidates.firstIndex { $0.id == id }!
         let nextID = candidates.dropFirst(openIndex + 1).first?.id
             ?? candidates.prefix(openIndex).last?.id
-        if tab.pinnedURL != nil {
+        if let pinnedURL = tab.pinnedURL {
             tabs[index].isOpen = false
+            tabs[index].currentURL = pinnedURL
+            if tab.currentURL != pinnedURL {
+                // Do not label the reset pin with the departed page's title.
+                tabs[index].title = pinnedURL.host ?? pinnedURL.absoluteString
+            }
         } else {
             tabs.remove(at: index)
         }

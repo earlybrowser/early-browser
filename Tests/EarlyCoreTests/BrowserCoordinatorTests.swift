@@ -119,7 +119,7 @@ struct BrowserCoordinatorTests {
         #expect(browser.content == .empty)
     }
 
-    @Test func closingPinRetainsIdentityAndBothURLs() {
+    @Test func closingPinRetainsIdentityAndResetsURL() {
         var pin = tab(pinned: true)
         pin.currentURL = URL(string: "https://example.com/article")!
         let browser = coordinator(tabs: [pin], selected: pin.id)
@@ -127,7 +127,8 @@ struct BrowserCoordinatorTests {
         let stored = browser.tabStore.tab(id: pin.id)
         #expect(stored?.isOpen == false)
         #expect(stored?.pinnedURL == pin.pinnedURL)
-        #expect(stored?.currentURL == pin.currentURL)
+        #expect(stored?.currentURL == pin.pinnedURL)
+        #expect(stored?.title == "example.com")
         #expect(browser.content == .empty)
         #expect(browser.commandBar == nil)
         browser.selectOpenTab(pin.id)
@@ -209,7 +210,7 @@ struct BrowserCoordinatorTests {
         #expect(browser.tabStore.tabs.map(\.id) == [first.id, second.id])
     }
 
-    @Test func closedPinReopensSameIdentityAtLastURLAndClearsClosure() {
+    @Test func closedPinReopensSameIdentityAtPinnedURLAndClearsClosure() {
         var pin = tab(pinned: true)
         pin.currentURL = URL(string: "https://example.com/article")!
         let browser = coordinator(tabs: [pin], selected: pin.id)
@@ -222,7 +223,7 @@ struct BrowserCoordinatorTests {
         #expect(browser.openTab(pin.id))
         #expect(browser.tabStore.tabs.count == 1)
         #expect(browser.activeTabID == pin.id)
-        #expect(browser.tabStore.tab(id: pin.id)?.currentURL == pin.currentURL)
+        #expect(browser.tabStore.tab(id: pin.id)?.currentURL == pin.pinnedURL)
         #expect(browser.tabStore.tab(id: pin.id)?.pinnedURL == pin.pinnedURL)
         #expect(browser.recentlyClosed.isEmpty)
         #expect(browser.reopenLastTab() == nil)
@@ -240,6 +241,24 @@ struct BrowserCoordinatorTests {
         #expect(browser.tabStore.tabs.count == 1)
         #expect(browser.tabStore.tab(id: pin.id)?.isOpen == true)
         #expect(browser.recentlyClosed.isEmpty)
+    }
+
+    @Test func backgroundPinCloseAndHistoryReopenUseOriginalURL() {
+        let selected = tab()
+        var pin = tab(pinned: true)
+        pin.currentURL = URL(string: "https://example.com/video")!
+        pin.title = "Video"
+        let browser = coordinator(tabs: [selected, pin], selected: selected.id)
+        #expect(browser.tabStore.tab(id: pin.id)?.currentURL == pin.currentURL)
+        browser.closeTab(pin.id)
+        #expect(browser.activeTabID == selected.id)
+        #expect(browser.tabStore.tab(id: pin.id)?.currentURL == pin.pinnedURL)
+        #expect(browser.recentlyClosed.last?.tab.currentURL == pin.pinnedURL)
+        #expect(!browser.updateMetadata(pin.id, url: pin.currentURL, title: "Late video title"))
+        #expect(browser.tabStore.tab(id: pin.id)?.title == "example.com")
+        #expect(browser.reopenLastTab() == pin.id)
+        #expect(browser.tabStore.tab(id: pin.id)?.currentURL == pin.pinnedURL)
+        #expect(browser.tabStore.tabs.count == 2)
     }
 
     @Test func unpinningClosedPinMovesItToTodayWithoutSelection() {

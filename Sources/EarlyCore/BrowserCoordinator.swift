@@ -142,17 +142,20 @@ public final class BrowserCoordinator {
 
     @discardableResult
     public func updateMetadata(_ id: UUID, url: URL?, title: String?) -> Bool {
-        tabStore.update(id, url: url, title: title)
+        // A late page callback must not overwrite a closed pin's reset URL.
+        guard tabStore.tab(id: id)?.isOpen == true else { return false }
+        return tabStore.update(id, url: url, title: title)
     }
 
     @discardableResult
     public func closeTab(_ id: UUID) -> UUID? {
         guard let index = tabStore.tabs.firstIndex(where: { $0.id == id && $0.isOpen }) else { return nil }
         let tab = tabStore.tabs[index]
-        recentlyClosed.removeAll { $0.tab.id == id }
-        recentlyClosed.append(ClosedTab(tab: tab, position: index))
-        recentlyClosed = Array(recentlyClosed.suffix(20))
         let nextID = tabStore.close(id: id)
+        recentlyClosed.removeAll { $0.tab.id == id }
+        // History must use the reset pin too, including persisted reopen paths.
+        recentlyClosed.append(ClosedTab(tab: tabStore.tab(id: id) ?? tab, position: index))
+        recentlyClosed = Array(recentlyClosed.suffix(20))
         if selectionBySpace[tab.spaceID] == id { selectionBySpace[tab.spaceID] = nextID }
         if activeTabID == id {
             content = nextID.map { .web(tabID: $0) } ?? .empty

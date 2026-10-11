@@ -42,7 +42,7 @@ struct SessionRepositoryTests {
         #expect(try await repository.load() == good)
     }
 
-    @Test @MainActor func pinnedStateBothURLsAndOrderingSurviveRelaunch() async throws {
+    @Test @MainActor func pinnedResetOnCloseSurvivesRelaunch() async throws {
         let url = location()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let repository = SessionRepository(fileURL: url)
@@ -52,6 +52,7 @@ struct SessionRepositoryTests {
         let id = try #require(browser.navigate(to: original, target: .newTab(spaceID: browser.activeSpaceID)))
         #expect(browser.setPinned(id, pinned: true))
         browser.navigate(to: article, target: .currentTab(id))
+        #expect(browser.tabStore.tab(id: id)?.currentURL == article)
         browser.closeActiveTab()
         let closed = browser.session
         try await repository.save(closed, revision: 1)
@@ -62,7 +63,8 @@ struct SessionRepositoryTests {
             profileID: saved.profileID, recentlyClosed: saved.recentlyClosed)
         #expect(restored.content == .empty)
         #expect(restored.tabStore.tab(id: id)?.pinnedURL == original)
-        #expect(restored.tabStore.tab(id: id)?.currentURL == article)
+        #expect(restored.tabStore.tab(id: id)?.currentURL == original)
+        #expect(restored.recentlyClosed.last?.tab.currentURL == original)
         #expect(restored.setPinned(id, pinned: false))
         try await repository.save(restored.session, revision: 2)
         #expect(try await repository.load() == restored.session)

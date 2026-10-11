@@ -129,7 +129,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
         expectRuntime(app, tabs: 0, views: 0, created: 0)
         row.click()
-        expectPage(app, "Two") // Last current URL, not the original pinned URL.
+        expectPage(app, "One") // Closing reset the pin to its original URL.
         expectRuntime(app, tabs: 1, views: 1, created: 1)
         app.typeKey("w", modifierFlags: .command)
         expectRuntime(app, tabs: 0, views: 0, created: 1)
@@ -140,7 +140,7 @@ final class EarlyUITests: XCTestCase {
         app.typeKey("t", modifierFlags: [.command, .shift])
         expectRuntime(app, tabs: 1, views: 0, created: 1)
         row.click()
-        expectPage(app, "Two")
+        expectPage(app, "One")
         expectRuntime(app, tabs: 1, views: 1, created: 2)
     }
 
