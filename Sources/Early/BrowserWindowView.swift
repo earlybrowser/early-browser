@@ -242,10 +242,14 @@ struct BrowserWindowView: View {
 
     private func tabRow(_ tab: BrowserTab) -> some View {
         HStack(spacing: 4) {
+            if tab.pinnedURL != nil {
+                PinnedTabResetButton(tab: tab) { model.resetPinnedTab(tab.id) }
+            }
             Button { model.selectTab(tab.id) } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: tab.pinnedURL == nil ? "globe" : "pin")
-                        .accessibilityHidden(true)
+                    if tab.pinnedURL == nil {
+                        Image(systemName: "globe").accessibilityHidden(true)
+                    }
                     Text(tab.title).lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 0)
                 }
@@ -268,9 +272,10 @@ struct BrowserWindowView: View {
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
             }
         }
-        .padding(.horizontal, 8)
-        .background(model.coordinator.activeTabID == tab.id ? Color.primary.opacity(0.08) : .clear,
-                    in: RoundedRectangle(cornerRadius: 7))
+        .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
+        .padding(.trailing, 8)
+        .background(Color.primary.opacity(model.coordinator.activeTabID == tab.id ? 0.08 : (tab.pinnedURL == nil ? 0 : 0.035)))
+        .clipShape(RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
         .contextMenu {
             Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
                 model.setPinned(tab.id, pinned: tab.pinnedURL == nil)
@@ -281,6 +286,29 @@ struct BrowserWindowView: View {
             Divider()
             Button("Close Tab") { model.closeTab(tab.id) }
                 .disabled(!tab.isOpen)
+        }
+    }
+
+    /// Separate hit target: clicking a pin's title selects it without reloading;
+    /// clicking its icon explicitly navigates back to the original pinned page.
+    private struct PinnedTabResetButton: View {
+        let tab: BrowserTab
+        let reset: () -> Void
+        @State private var hovered = false
+
+        var body: some View {
+            Button(action: reset) {
+                Image(systemName: hovered ? "arrow.uturn.backward" : "pin")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 34, height: 34)
+                    .background(Color.primary.opacity(hovered ? 0.16 : 0.07))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovered = $0 }
+            .accessibilityIdentifier("pinReset.\(tab.id)")
+            .accessibilityLabel("Reset \(tab.pinnedTitle ?? tab.title) to pinned URL")
+            .help("Reset pinned tab")
         }
     }
 

@@ -110,6 +110,42 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(identifier: id).count, 1)
     }
 
+    func testPinnedIconResetsButTitleClickPreservesLivePage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch
+        let id = row.identifier
+        pinAction("Pin Tab", on: app.buttons[id])
+        let reset = app.buttons["pinReset.\(id.dropFirst(4))"]
+        XCTAssertTrue(reset.waitForExistence(timeout: 3))
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep video state")
+        app.buttons[id].click()
+        expectPage(app, "Two")
+        XCTAssertEqual(saved.value as? String, "keep video state")
+        reset.hover()
+        let image = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+        image.name = "Pinned icon reset control"
+        image.lifetime = .keepAlways
+        add(image)
+        reset.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        XCTAssertEqual(app.buttons[id].label, "Page One")
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+        reset.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        XCTAssertEqual(app.buttons.matching(identifier: id).count, 1)
+        pinAction("Unpin Tab", on: app.buttons[id])
+        XCTAssertFalse(reset.exists)
+    }
+
     func testClosedPinRestoresAndUnpinsWithoutCreatingAWebView() {
         let app = launchFreshApp(appearance: "light")
         navigate(app, to: "early-test://fixture/one")
