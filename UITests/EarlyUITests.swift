@@ -128,6 +128,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(row.value as? String, "Pinned, closed")
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
         expectRuntime(app, tabs: 0, views: 0, created: 0)
+        XCTAssertEqual(row.label, "Page One")
         row.click()
         expectPage(app, "One") // Closing reset the pin to its original URL.
         expectRuntime(app, tabs: 1, views: 1, created: 1)

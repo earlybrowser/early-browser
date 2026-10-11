@@ -50,8 +50,10 @@ struct SessionRepositoryTests {
         let original = URL(string: "https://example.com")!
         let article = URL(string: "https://example.com/article")!
         let id = try #require(browser.navigate(to: original, target: .newTab(spaceID: browser.activeSpaceID)))
+        browser.updateMetadata(id, url: nil, title: "Example")
         #expect(browser.setPinned(id, pinned: true))
         browser.navigate(to: article, target: .currentTab(id))
+        browser.updateMetadata(id, url: nil, title: "Article")
         #expect(browser.tabStore.tab(id: id)?.currentURL == article)
         browser.closeActiveTab()
         let closed = browser.session
@@ -64,6 +66,8 @@ struct SessionRepositoryTests {
         #expect(restored.content == .empty)
         #expect(restored.tabStore.tab(id: id)?.pinnedURL == original)
         #expect(restored.tabStore.tab(id: id)?.currentURL == original)
+        #expect(restored.tabStore.tab(id: id)?.title == "Example")
+        #expect(restored.tabStore.tab(id: id)?.pinnedTitle == "Example")
         #expect(restored.recentlyClosed.last?.tab.currentURL == original)
         #expect(restored.setPinned(id, pinned: false))
         try await repository.save(restored.session, revision: 2)

@@ -128,7 +128,7 @@ struct BrowserCoordinatorTests {
         #expect(stored?.isOpen == false)
         #expect(stored?.pinnedURL == pin.pinnedURL)
         #expect(stored?.currentURL == pin.pinnedURL)
-        #expect(stored?.title == "example.com")
+        #expect(stored?.title == "Example")
         #expect(browser.content == .empty)
         #expect(browser.commandBar == nil)
         browser.selectOpenTab(pin.id)
@@ -190,6 +190,39 @@ struct BrowserCoordinatorTests {
         let pin = tab(pinned: true)
         let data = try JSONEncoder().encode(pin)
         #expect(try JSONDecoder().decode(BrowserTab.self, from: data) == pin)
+    }
+
+    @Test func legacyPinWithoutSavedTitleLoadsAndLearnsOriginalPageName() throws {
+        var pin = tab(pinned: true)
+        pin.title = "example.com"
+        var payload = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(pin)) as? [String: Any])
+        payload.removeValue(forKey: "pinnedTitle")
+        let old = try JSONDecoder().decode(BrowserTab.self, from: JSONSerialization.data(withJSONObject: payload))
+        #expect(old.pinnedTitle == nil)
+        let browser = coordinator(tabs: [old], selected: old.id)
+        browser.updateMetadata(old.id, url: old.pinnedURL, title: "Example")
+        browser.updateMetadata(old.id, url: URL(string: "https://example.com/video")!, title: "Video")
+        browser.closeTab(old.id)
+        #expect(browser.tabStore.tab(id: old.id)?.title == "Example")
+        #expect(browser.tabStore.tab(id: old.id)?.pinnedTitle == "Example")
+    }
+
+    @Test func pinnedNameSurvivesNavigationResetAndClose() {
+        let page = tab()
+        let browser = coordinator(tabs: [page], selected: page.id)
+        browser.setPinned(page.id, pinned: true)
+        let video = URL(string: "https://example.com/video")!
+        browser.updateMetadata(page.id, url: video, title: "Video")
+        #expect(browser.tabStore.tab(id: page.id)?.title == "Video")
+        #expect(browser.tabStore.tab(id: page.id)?.pinnedTitle == "Example")
+        browser.resetPinnedTab(page.id)
+        #expect(browser.tabStore.tab(id: page.id)?.title == "Example")
+        browser.updateMetadata(page.id, url: video, title: "Another video")
+        browser.closeTab(page.id)
+        #expect(browser.tabStore.tab(id: page.id)?.title == "Example")
+        #expect(browser.recentlyClosed.last?.tab.title == "Example")
+        browser.setPinned(page.id, pinned: false)
+        #expect(browser.tabStore.tab(id: page.id)?.pinnedTitle == nil)
     }
 
     @Test func pinningCapturesURLOnceAndDoesNotChangeSelection() {
@@ -255,7 +288,7 @@ struct BrowserCoordinatorTests {
         #expect(browser.tabStore.tab(id: pin.id)?.currentURL == pin.pinnedURL)
         #expect(browser.recentlyClosed.last?.tab.currentURL == pin.pinnedURL)
         #expect(!browser.updateMetadata(pin.id, url: pin.currentURL, title: "Late video title"))
-        #expect(browser.tabStore.tab(id: pin.id)?.title == "example.com")
+        #expect(browser.tabStore.tab(id: pin.id)?.title == "Example")
         #expect(browser.reopenLastTab() == pin.id)
         #expect(browser.tabStore.tab(id: pin.id)?.currentURL == pin.pinnedURL)
         #expect(browser.tabStore.tabs.count == 2)

@@ -32,8 +32,10 @@ public struct TabStore: Equatable, Sendable {
         if pinned {
             guard tabs[index].isOpen else { return false }
             tabs[index].pinnedURL = tabs[index].currentURL
+            tabs[index].pinnedTitle = savedTitle(for: tabs[index])
         } else {
             tabs[index].pinnedURL = nil
+            tabs[index].pinnedTitle = nil
             // A closed pin becomes an unloaded Today tab, not orphaned metadata.
             // The runtime owner still loads only on explicit selection.
             tabs[index].isOpen = true
@@ -57,7 +59,29 @@ public struct TabStore: Equatable, Sendable {
         let before = tabs[index]
         if let url { tabs[index].currentURL = url }
         if let title, !title.isEmpty { tabs[index].title = String(title.prefix(512)) }
+        // Old sessions and pins made before a page finished loading have no
+        // saved name. Learn it only from the original page, never a subpage.
+        if title != nil, tabs[index].pinnedTitle == nil,
+           tabs[index].currentURL == tabs[index].pinnedURL {
+            tabs[index].pinnedTitle = savedTitle(for: tabs[index])
+        }
         return before != tabs[index]
+    }
+
+    private func savedTitle(for tab: BrowserTab) -> String? {
+        let title = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title != tab.currentURL.host,
+              title != tab.currentURL.absoluteString else { return nil }
+        return String(title.prefix(512))
+    }
+
+    @discardableResult
+    public mutating func resetPinnedLocation(_ id: UUID) -> URL? {
+        guard let index = tabs.firstIndex(where: { $0.id == id }),
+              let url = tabs[index].pinnedURL else { return nil }
+        tabs[index].currentURL = url
+        tabs[index].title = tabs[index].pinnedTitle ?? url.host ?? url.absoluteString
+        return url
     }
 
     /// Closing a pin resets its address and unloads it, preserving its identity.
@@ -72,13 +96,9 @@ public struct TabStore: Equatable, Sendable {
         let openIndex = candidates.firstIndex { $0.id == id }!
         let nextID = candidates.dropFirst(openIndex + 1).first?.id
             ?? candidates.prefix(openIndex).last?.id
-        if let pinnedURL = tab.pinnedURL {
+        if tab.pinnedURL != nil {
             tabs[index].isOpen = false
-            tabs[index].currentURL = pinnedURL
-            if tab.currentURL != pinnedURL {
-                // Do not label the reset pin with the departed page's title.
-                tabs[index].title = pinnedURL.host ?? pinnedURL.absoluteString
-            }
+            resetPinnedLocation(id)
         } else {
             tabs.remove(at: index)
         }

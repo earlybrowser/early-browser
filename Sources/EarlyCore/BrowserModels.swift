@@ -8,11 +8,14 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public var title: String
     public var currentURL: URL
     public var pinnedURL: URL?
+    /// The original page name, independent of the title of a page visited later.
+    public var pinnedTitle: String?
     public var isOpen: Bool
 
     public init(
         id: UUID = UUID(), spaceID: UUID, profileID: UUID,
-        title: String, currentURL: URL, pinnedURL: URL? = nil, isOpen: Bool = true
+        title: String, currentURL: URL, pinnedURL: URL? = nil, isOpen: Bool = true,
+        pinnedTitle: String? = nil
     ) {
         self.id = id
         self.spaceID = spaceID
@@ -20,6 +23,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
         self.title = title
         self.currentURL = currentURL
         self.pinnedURL = pinnedURL
+        self.pinnedTitle = pinnedURL == nil ? nil : (pinnedTitle ?? (currentURL == pinnedURL ? title : nil))
         self.isOpen = isOpen
     }
 }

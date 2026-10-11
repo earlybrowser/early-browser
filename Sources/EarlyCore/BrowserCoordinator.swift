@@ -96,7 +96,7 @@ public final class BrowserCoordinator {
     public func resetPinnedTab(_ id: UUID) -> URL? {
         guard let tab = tabStore.tab(id: id), tab.spaceID == activeSpaceID,
               let url = tab.pinnedURL else { return nil }
-        tabStore.update(id, url: url)
+        tabStore.resetPinnedLocation(id)
         _ = openTab(id)
         return url
     }
