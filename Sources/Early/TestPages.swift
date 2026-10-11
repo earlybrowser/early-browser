@@ -4,6 +4,21 @@ import WebKit
 /// Available only to explicitly isolated Debug UI-test sessions, never Release.
 @MainActor
 final class TestPages: NSObject, WKURLSchemeHandler {
+    /// Deterministic metadata fixture for scrolling/lazy-loading tests. Never
+    /// used in a normal profile, and does not allocate 32 WebKit processes.
+    static func installClosedPins(in model: BrowserWindowModel) {
+        guard model.isTesting, model.coordinator.tabStore.tabs.isEmpty else { return }
+        let coordinator = model.coordinator
+        for number in 1...32 {
+            let url = URL(string: "early-test://fixture/one?pin=\(number)")!
+            guard let id = coordinator.navigate(to: url, target: .newTab(spaceID: coordinator.activeSpaceID)) else { return }
+            coordinator.updateMetadata(id, url: nil, title: "Test Pin \(number)")
+            coordinator.setPinned(id, pinned: true)
+            coordinator.closeTab(id)
+        }
+        model.save()
+    }
+
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         guard let url = task.request.url else { return }
         if url.path == "/slow" { return } // Stop/close cancels this deliberate pending load.

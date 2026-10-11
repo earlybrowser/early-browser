@@ -13,7 +13,32 @@ public struct TabStore: Equatable, Sendable {
     }
 
     public func openTabs(in spaceID: UUID) -> [BrowserTab] {
-        tabs.filter { $0.spaceID == spaceID && $0.isOpen }
+        // Keyboard selection and close-neighbour selection follow sidebar order.
+        pinnedTabs(in: spaceID).filter(\.isOpen) + todayTabs(in: spaceID)
+    }
+
+    public func pinnedTabs(in spaceID: UUID) -> [BrowserTab] {
+        tabs.filter { $0.spaceID == spaceID && $0.pinnedURL != nil }
+    }
+
+    public func todayTabs(in spaceID: UUID) -> [BrowserTab] {
+        tabs.filter { $0.spaceID == spaceID && $0.pinnedURL == nil && $0.isOpen }
+    }
+
+    @discardableResult
+    public mutating func setPinned(_ id: UUID, pinned: Bool) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }),
+              (tabs[index].pinnedURL != nil) != pinned else { return false }
+        if pinned {
+            guard tabs[index].isOpen else { return false }
+            tabs[index].pinnedURL = tabs[index].currentURL
+        } else {
+            tabs[index].pinnedURL = nil
+            // A closed pin becomes an unloaded Today tab, not orphaned metadata.
+            // The runtime owner still loads only on explicit selection.
+            tabs[index].isOpen = true
+        }
+        return true
     }
 
     public mutating func insert(_ tab: BrowserTab, at position: Int? = nil) {

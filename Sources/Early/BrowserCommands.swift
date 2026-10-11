@@ -36,6 +36,16 @@ struct BrowserCommands: Commands {
             Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
+        CommandMenu("Tab") {
+            Button(model?.activeTab?.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
+                if let tab = model?.activeTab { model?.setPinned(tab.id, pinned: tab.pinnedURL == nil) }
+            }
+            .disabled(model?.activeTab == nil)
+            Button("Reset to Pinned URL") {
+                if let id = model?.activeTab?.id { model?.resetPinnedTab(id) }
+            }
+            .disabled(model?.activeTab?.pinnedURL == nil)
+        }
         CommandMenu("Navigate") {
             Button("Back") { model?.back() }.keyboardShortcut("[")
                 .disabled(model?.activePage?.canGoBack != true)
@@ -68,6 +78,10 @@ struct BrowserCommands: Commands {
             CommandMenu("Test Window") {
                 Button("Compact Test Window") { NSApp.keyWindow?.setContentSize(NSSize(width: 800, height: 600)) }
                 Button("Wide Test Window") { NSApp.keyWindow?.setContentSize(NSSize(width: 1120, height: 760)) }
+                Button("Install Closed Test Pins") {
+                    if let model { TestPages.installClosedPins(in: model) }
+                }
+                .disabled(model?.coordinator.tabStore.tabs.isEmpty != true)
             }
         }
         #endif

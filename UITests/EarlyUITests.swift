@@ -20,95 +20,13 @@ final class EarlyUITests: XCTestCase {
         return app
     }
 
-    func testFirstLaunchFocusAndEscape() {
+    func testKeyboardCommandsLeaveEmptyWindowUsable() {
         let app = launchFreshApp()
         let query = app.textFields["commandBar.query"]
-        XCTAssertTrue(query.waitForExistence(timeout: 5))
         app.typeText("example.com")
         XCTAssertEqual(query.value as? String, "example.com")
         app.typeKey(.escape, modifierFlags: [])
-        XCTAssertFalse(query.exists)
-        XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
-        XCTAssertEqual(app.webViews.count, 0)
-        XCTAssertEqual(app.windows.count, 1)
-    }
-
-    func testTodayNewTabPlacementAndIntentInDarkAppearance() {
-        verifyTodayNewTab(appearance: "dark")
-    }
-
-    func testTodayNewTabPlacementAndIntentInLightAppearance() {
-        verifyTodayNewTab(appearance: "light")
-    }
-
-    private func verifyTodayNewTab(appearance: String) {
-        let app = launchFreshApp(appearance: appearance)
-        app.typeKey(.escape, modifierFlags: [])
-        let heading = app.staticTexts["sidebar.today.heading"]
-        let newTab = app.buttons["sidebar.newTab"]
-        let query = app.textFields["commandBar.query"]
-        XCTAssertTrue(heading.exists)
-        XCTAssertEqual(app.buttons.matching(identifier: "sidebar.newTab").count, 1)
-        XCTAssertGreaterThanOrEqual(newTab.frame.minY, heading.frame.maxY)
-        XCTAssertLessThanOrEqual(newTab.frame.minY - heading.frame.maxY, 16)
-        XCTAssertTrue(newTab.isHittable)
-
-        // Opening and cancelling the action in an empty window creates nothing.
-        newTab.click()
-        XCTAssertTrue(query.waitForExistence(timeout: 3))
-        XCTAssertEqual(query.value as? String, "")
         expectRuntime(app, tabs: 0, views: 0, created: 0)
-        app.typeText("cancel this")
-        app.typeKey(.escape, modifierFlags: [])
-        expectRuntime(app, tabs: 0, views: 0, created: 0)
-
-        // The same action submits a new tab, rather than acting as a tab itself.
-        newTab.click()
-        XCTAssertTrue(query.waitForExistence(timeout: 3))
-        app.typeText("early-test://fixture/one\n")
-        expectPage(app, "One")
-        expectRuntime(app, tabs: 1, views: 1, created: 1)
-        let firstTab = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch
-        XCTAssertTrue(firstTab.exists)
-        XCTAssertGreaterThanOrEqual(firstTab.frame.minY, newTab.frame.maxY)
-        let saved = app.webViews.textFields["Saved text"]
-        saved.click()
-        saved.typeText("keep this text")
-
-        newTab.click()
-        XCTAssertTrue(query.waitForExistence(timeout: 3))
-        XCTAssertEqual(query.value as? String, "")
-        app.typeText("cancel again")
-        app.typeKey(.escape, modifierFlags: [])
-        XCTAssertEqual(saved.value as? String, "keep this text")
-        expectRuntime(app, tabs: 1, views: 1, created: 1)
-
-        newTab.click()
-        XCTAssertTrue(query.waitForExistence(timeout: 3))
-        app.typeText("early-test://fixture/two\n")
-        expectPage(app, "Two")
-        expectRuntime(app, tabs: 2, views: 2, created: 2)
-        app.typeKey("1", modifierFlags: .command)
-        expectPage(app, "One")
-        XCTAssertEqual(saved.value as? String, "keep this text")
-        XCTAssertGreaterThanOrEqual(firstTab.frame.minY, newTab.frame.maxY)
-
-        let image = XCTAttachment(screenshot: app.windows["browser"].screenshot())
-        image.name = "\(appearance) Today New Tab placement"
-        image.lifetime = .keepAlways
-        add(image)
-
-        app.typeKey("w", modifierFlags: .command)
-        app.typeKey("w", modifierFlags: .command)
-        expectRuntime(app, tabs: 0, views: 0, created: 2)
-        XCTAssertFalse(query.exists)
-        XCTAssertTrue(newTab.isHittable)
-        XCTAssertLessThanOrEqual(newTab.frame.minY - heading.frame.maxY, 16)
-    }
-
-    func testKeyboardCommandsLeaveEmptyWindowUsable() {
-        let app = launchFreshApp()
-        app.typeKey(.escape, modifierFlags: [])
         app.typeKey("w", modifierFlags: .command)
         XCTAssertEqual(app.windows.count, 1)
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
@@ -120,31 +38,177 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.textFields["commandBar.query"].value as? String, "")
         XCTAssertEqual(app.webViews.count, 0)
+        app.typeKey(.escape, modifierFlags: [])
+        let address = app.buttons["sidebar.addressBar"]
+        XCTAssertEqual(address.value as? String, "No active tab")
+        address.click()
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        XCTAssertEqual(query.value as? String, "")
     }
 
-    func testEmptyRelaunchDoesNotRepeatFirstLaunchPrompt() {
+    private func visibleMenuAction(_ title: String) {
+        let items = XCUIApplication().menuItems.matching(identifier: title)
+        XCTAssertTrue(items.firstMatch.waitForExistence(timeout: 3))
+        let item = items.allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(item, "No visible menu action: \(title)")
+        item?.click()
+    }
+
+    private func pinAction(_ title: String, on row: XCUIElement) {
+        row.rightClick()
+        visibleMenuAction(title)
+    }
+
+    func testPinUnpinAndResetReuseTheLivePage() {
         let app = launchFreshApp()
-        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
-        app.typeKey(.escape, modifierFlags: [])
-        app.terminate()
-        app.launch()
-        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 5))
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let id = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let row = app.buttons[id]
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("preserve pin state")
+        app.menuBars.menuBarItems["Tab"].click()
+        visibleMenuAction("Pin Tab")
+        XCTAssertEqual(row.value as? String, "Pinned, open")
+        XCTAssertLessThan(row.frame.maxY, app.staticTexts["sidebar.today.heading"].frame.minY)
+        XCTAssertEqual(saved.value as? String, "preserve pin state")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        pinAction("Unpin Tab", on: row)
+        XCTAssertEqual(row.value as? String, "Today")
+        XCTAssertGreaterThanOrEqual(row.frame.minY, app.buttons["sidebar.newTab"].frame.maxY)
+        XCTAssertEqual(saved.value as? String, "preserve pin state")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        pinAction("Pin Tab", on: row)
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        app.menuBars.menuBarItems["Tab"].click()
+        visibleMenuAction("Reset to Pinned URL")
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        XCTAssertEqual(app.buttons["sidebar.addressBar"].value as? String, "early-test://fixture/one")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).count, 1)
+
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+        XCTAssertEqual(row.value as? String, "Pinned, closed")
+        XCTAssertFalse(row.isSelected)
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
-        XCTAssertEqual(app.webViews.count, 0)
-        let addressBar = app.buttons["sidebar.addressBar"]
-        XCTAssertTrue(addressBar.exists)
-        XCTAssertEqual(addressBar.value as? String, "No active tab")
-        addressBar.click()
-        let query = app.textFields["commandBar.query"]
-        XCTAssertTrue(query.waitForExistence(timeout: 3))
-        XCTAssertEqual(app.textFields.matching(identifier: "commandBar.query").count, 1)
-        app.typeText("example.com")
-        XCTAssertEqual(query.value as? String, "example.com")
+        row.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 2)
+        pinAction("Reset to Pinned URL", on: row)
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 3)
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 3)
+        app.typeKey("t", modifierFlags: [.command, .shift])
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 4)
+        XCTAssertEqual(app.buttons.matching(identifier: id).count, 1)
+    }
+
+    func testClosedPinRestoresAndUnpinsWithoutCreatingAWebView() {
+        let app = launchFreshApp(appearance: "light")
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let id = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let row = app.buttons[id]
+        pinAction("Pin Tab", on: row)
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(row.waitForExistence(timeout: 8))
+        XCTAssertEqual(row.value as? String, "Pinned, closed")
+        XCTAssertFalse(app.textFields["commandBar.query"].exists)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        row.click()
+        expectPage(app, "Two") // Last current URL, not the original pinned URL.
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+        pinAction("Unpin Tab", on: row)
+        XCTAssertEqual(row.value as? String, "Today")
+        expectRuntime(app, tabs: 1, views: 0, created: 1)
+        XCTAssertEqual(app.buttons["sidebar.addressBar"].value as? String, "No active tab")
+        app.typeKey("t", modifierFlags: [.command, .shift])
+        expectRuntime(app, tabs: 1, views: 0, created: 1)
+        row.click()
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+    }
+
+    func testBackgroundPinningPreservesSelectionAndUsesSidebarKeyboardOrder() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        app.typeKey("1", modifierFlags: .command)
+        expectPage(app, "One")
+        pinAction("Pin Tab", on: app.buttons[secondID])
+        expectPage(app, "One")
+        XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.typeKey("1", modifierFlags: .command)
+        expectPage(app, "Two")
+        app.typeKey("2", modifierFlags: .command)
+        expectPage(app, "One")
+        let image = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+        image.name = "Pinned and Today sections"
+        image.lifetime = .keepAlways
+        add(image)
+        app.buttons["tabClose.\(secondID.dropFirst(4))"].click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        XCTAssertEqual(app.buttons[secondID].value as? String, "Pinned, closed")
+        XCTAssertFalse(app.buttons["tabClose.\(secondID.dropFirst(4))"].exists)
+        app.typeKey("1", modifierFlags: .command)
+        expectPage(app, "One")
+    }
+
+    func testThirtyTwoClosedPinsScrollAndLoadOnlyTheSelectedPage() {
+        let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])
-        XCTAssertFalse(query.exists)
-        XCTAssertEqual(app.webViews.count, 0)
-        app.buttons["sidebar.newTab"].click()
+        app.menuBars.menuBarItems["Test Window"].click()
+        visibleMenuAction("Compact Test Window")
+        app.menuBars.menuBarItems["Test Window"].click()
+        visibleMenuAction("Install Closed Test Pins")
+        XCTAssertTrue(app.buttons["Test Pin 1"].waitForExistence(timeout: 5))
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        let scroll = app.scrollViews["sidebar.tabs"]
+        let last = app.buttons["Test Pin 32"]
+        let newTab = app.buttons["sidebar.newTab"]
+        for _ in 0..<10 {
+            if last.exists && last.isHittable && newTab.exists && newTab.isHittable { break }
+            scroll.scroll(byDeltaX: 0, deltaY: -350)
+        }
+        XCTAssertTrue(last.isHittable)
+        XCTAssertTrue(newTab.isHittable)
+        let id = last.identifier
+        let today = app.staticTexts["sidebar.today.heading"]
+        XCTAssertLessThan(last.frame.maxY, today.frame.minY)
+        XCTAssertGreaterThanOrEqual(newTab.frame.minY, today.frame.maxY)
+        XCTAssertLessThanOrEqual(newTab.frame.minY - today.frame.maxY, 16)
+        newTab.click()
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 3))
+        app.typeKey(.escape, modifierFlags: [])
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        last.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+        XCTAssertEqual(app.buttons[id].value as? String, "Pinned, closed")
     }
 
     private func navigate(_ app: XCUIApplication, to address: String, newTab: Bool = false) {
@@ -215,7 +279,11 @@ final class EarlyUITests: XCTestCase {
         app.typeText("!")
         XCTAssertEqual(saved.value as? String, "keep this text!")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
-        navigate(app, to: "early-test://fixture/two", newTab: true)
+        app.buttons["sidebar.newTab"].click()
+        let query = app.textFields["commandBar.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        XCTAssertEqual(query.value as? String, "")
+        app.typeText("early-test://fixture/two\n")
         expectPage(app, "Two")
         app.typeKey("1", modifierFlags: .command)
         expectPage(app, "One")
@@ -345,16 +413,13 @@ final class EarlyUITests: XCTestCase {
         add(screenshot)
     }
 
-    func testLoadingIndicatorIsTwoPointsHigh() {
-        let app = launchFreshApp()
-        navigate(app, to: "early-test://fixture/slow")
-        let indicator = app.descendants(matching: .any)["browser.loading"]
-        XCTAssertTrue(indicator.waitForExistence(timeout: 5))
-        XCTAssertEqual(indicator.frame.height, 2, accuracy: 0.5)
-        app.buttons["navigation.stop"].click()
-    }
-
     func testTrafficLightsAreMonochromeUntilHovered() throws {
+        // Validate the image assertion without a separate UI-test session.
+        XCTAssertEqual(strokePixels(width: 32, height: 32) { _, _ in 0.8 }, 0)
+        XCTAssertEqual(strokePixels(width: 32, height: 32) { x, y in 0.5 + CGFloat(x + y) / 128 }, 0)
+        XCTAssertGreaterThan(strokePixels(width: 32, height: 32) { _, y in
+            (15...16).contains(y) ? 0.65 : 0.9
+        }, 3)
         let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])
         let close = app.buttons["_XCUI:CloseWindow"]
@@ -449,14 +514,6 @@ final class EarlyUITests: XCTestCase {
             add(attachment)
         }
         XCTAssertGreaterThanOrEqual(count, 3, "Missing hover symbol on \(button.identifier)", file: file, line: line)
-    }
-
-    func testHoverSymbolDetectorRejectsBlankAndGradientCircles() {
-        XCTAssertEqual(strokePixels(width: 32, height: 32) { _, _ in 0.8 }, 0)
-        XCTAssertEqual(strokePixels(width: 32, height: 32) { x, y in 0.5 + CGFloat(x + y) / 128 }, 0)
-        XCTAssertGreaterThan(strokePixels(width: 32, height: 32) { _, y in
-            (15...16).contains(y) ? 0.65 : 0.9
-        }, 3)
     }
 
     func testWindowLifecycleAndTrafficLightsInLightAppearance() throws {

@@ -48,9 +48,12 @@ final class BrowserWindowModel {
     }
 
     var activePage: BrowserPage? { coordinator.activeTabID.flatMap { webViews.pages[$0] } }
+    var activeTab: BrowserTab? { coordinator.activeTabID.flatMap { coordinator.tabStore.tab(id: $0) } }
     var openTabs: [BrowserTab] {
-        coordinator.tabStore.tabs.filter { $0.isOpen && $0.spaceID == coordinator.activeSpaceID }
+        coordinator.tabStore.openTabs(in: coordinator.activeSpaceID)
     }
+    var pinnedTabs: [BrowserTab] { coordinator.tabStore.pinnedTabs(in: coordinator.activeSpaceID) }
+    var todayTabs: [BrowserTab] { coordinator.tabStore.todayTabs(in: coordinator.activeSpaceID) }
 
     func presentCommandBar(_ intent: CommandBarIntent) {
         submissionMessage = nil
@@ -77,8 +80,22 @@ final class BrowserWindowModel {
     }
 
     func selectTab(_ id: UUID) {
-        coordinator.selectOpenTab(id)
+        guard coordinator.openTab(id) else { return }
         activateSelection()
+        save()
+    }
+
+    func setPinned(_ id: UUID, pinned: Bool) {
+        guard coordinator.setPinned(id, pinned: pinned) else { return }
+        // Metadata-only: do not reload, select, or allocate a web view.
+        save()
+    }
+
+    func resetPinnedTab(_ id: UUID) {
+        guard let url = coordinator.resetPinnedTab(id),
+              let tab = coordinator.tabStore.tab(id: id) else { return }
+        webViews.load(url, in: tab)
+        contentFocusRequest += 1
         save()
     }
 

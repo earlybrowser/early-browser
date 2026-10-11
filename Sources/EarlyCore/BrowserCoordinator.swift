@@ -71,6 +71,36 @@ public final class BrowserCoordinator {
         dismissCommandBar()
     }
 
+    /// Sidebar selection can reopen a persistent pin. Never duplicate its record.
+    @discardableResult
+    public func openTab(_ id: UUID) -> Bool {
+        guard let tab = tabStore.tab(id: id), tab.spaceID == activeSpaceID,
+              tab.isOpen || tab.pinnedURL != nil else { return false }
+        tabStore.reopen(id)
+        recentlyClosed.removeAll { $0.tab.id == id }
+        selectOpenTab(id)
+        return true
+    }
+
+    @discardableResult
+    public func setPinned(_ id: UUID, pinned: Bool) -> Bool {
+        guard tabStore.tab(id: id)?.spaceID == activeSpaceID,
+              tabStore.setPinned(id, pinned: pinned) else { return false }
+        // Do not let a stale closure later restore the pre-unpin state.
+        recentlyClosed.removeAll { $0.tab.id == id }
+        return true
+    }
+
+    /// Reset is an explicit navigation, including when the pin was closed.
+    @discardableResult
+    public func resetPinnedTab(_ id: UUID) -> URL? {
+        guard let tab = tabStore.tab(id: id), tab.spaceID == activeSpaceID,
+              let url = tab.pinnedURL else { return nil }
+        tabStore.update(id, url: url)
+        _ = openTab(id)
+        return url
+    }
+
     /// Returns the runtime identity the owner must release, if anything closed.
     @discardableResult
     public func closeActiveTab() -> UUID? {

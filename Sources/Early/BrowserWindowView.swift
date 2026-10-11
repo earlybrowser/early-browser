@@ -8,6 +8,26 @@ struct BrowserWindowView: View {
     @State private var sidebarHovered = false
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
 
+    private enum SidebarItem: Identifiable {
+        case pinnedHeading, divider, todayHeading, newTab
+        case tab(BrowserTab)
+
+        var id: String {
+            switch self {
+            case .pinnedHeading: "pinned-heading"
+            case .divider: "divider"
+            case .todayHeading: "today-heading"
+            case .newTab: "new-tab"
+            case .tab(let tab): "tab-\(tab.id)"
+            }
+        }
+    }
+
+    private var sidebarItems: [SidebarItem] {
+        [.pinnedHeading] + model.pinnedTabs.map(SidebarItem.tab)
+            + [.divider, .todayHeading, .newTab] + model.todayTabs.map(SidebarItem.tab)
+    }
+
     private static let windowCornerRadius: CGFloat = {
         guard let tf = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
@@ -174,38 +194,34 @@ struct BrowserWindowView: View {
             }
             Label("Personal", systemImage: "square.stack")
                 .font(.headline)
-            VStack(alignment: .leading, spacing: 12) {
-                sectionLabel("Favorites")
-                sectionLabel("Pinned")
-                Divider()
-                sectionLabel("Today")
-                    .accessibilityIdentifier("sidebar.today.heading")
-                newTabButton
-            }
+            sectionLabel("Favorites")
             ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(model.openTabs) { tab in
-                        HStack(spacing: 4) {
-                            Button { model.selectTab(tab.id) } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "globe").accessibilityHidden(true)
-                                    Text(tab.title).lineLimit(1).truncationMode(.tail)
-                                    Spacer(minLength: 0)
-                                }.padding(.vertical, 8).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("tab.\(tab.id)")
-                            .accessibilityAddTraits(model.coordinator.activeTabID == tab.id ? .isSelected : [])
-                            Button { model.closeTab(tab.id) } label: { Image(systemName: "xmark").font(.caption) }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Close \(tab.title)")
+                // Pins and Today share a scroll region: many persistent pins
+                // must not push Today or New Tab outside the reachable sidebar.
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    // One identity domain: moving the same UUID between two
+                    // sibling ForEach collections can retain a stale lazy row.
+                    ForEach(sidebarItems) { item in
+                        switch item {
+                        case .pinnedHeading:
+                            sectionLabel("Pinned")
+                                .padding(.bottom, 8)
+                                .accessibilityIdentifier("sidebar.pinned.heading")
+                        case .divider:
+                            Divider().padding(.vertical, 8)
+                        case .todayHeading:
+                            sectionLabel("Today")
+                                .padding(.bottom, 8)
+                                .accessibilityIdentifier("sidebar.today.heading")
+                        case .newTab:
+                            newTabButton
+                        case .tab(let tab):
+                            tabRow(tab)
                         }
-                        .padding(.horizontal, 8)
-                        .background(model.coordinator.activeTabID == tab.id ? Color.primary.opacity(0.08) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 7))
                     }
                 }
             }
+            .accessibilityIdentifier("sidebar.tabs")
             #if DEBUG
             if model.isTesting {
                 Text("Tabs \(model.openTabs.count) · Views \(model.webViews.liveViewCount) · Created \(model.webViews.creationCount) · \(model.persistence.isSaving ? "Saving" : "Saved")")
@@ -222,6 +238,50 @@ struct BrowserWindowView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
+    }
+
+    private func tabRow(_ tab: BrowserTab) -> some View {
+        HStack(spacing: 4) {
+            Button { model.selectTab(tab.id) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: tab.pinnedURL == nil ? "globe" : "pin")
+                        .accessibilityHidden(true)
+                    Text(tab.title).lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(tab.isOpen ? .primary : .secondary)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tab.\(tab.id)")
+            .accessibilityLabel(tab.title)
+            .accessibilityValue(tab.pinnedURL == nil ? "Today" : (tab.isOpen ? "Pinned, open" : "Pinned, closed"))
+            .accessibilityAddTraits(model.coordinator.activeTabID == tab.id ? .isSelected : [])
+            .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
+                  ?? tab.currentURL.absoluteString)
+            if tab.isOpen {
+                Button { model.closeTab(tab.id) } label: { Image(systemName: "xmark").font(.caption) }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("tabClose.\(tab.id)")
+                    .accessibilityLabel("Close \(tab.title)")
+                    .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
+            }
+        }
+        .padding(.horizontal, 8)
+        .background(model.coordinator.activeTabID == tab.id ? Color.primary.opacity(0.08) : .clear,
+                    in: RoundedRectangle(cornerRadius: 7))
+        .contextMenu {
+            Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
+                model.setPinned(tab.id, pinned: tab.pinnedURL == nil)
+            }
+            if tab.pinnedURL != nil {
+                Button("Reset to Pinned URL") { model.resetPinnedTab(tab.id) }
+            }
+            Divider()
+            Button("Close Tab") { model.closeTab(tab.id) }
+                .disabled(!tab.isOpen)
+        }
     }
 
     private var newTabButton: some View {

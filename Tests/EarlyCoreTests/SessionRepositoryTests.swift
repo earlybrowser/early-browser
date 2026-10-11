@@ -42,6 +42,33 @@ struct SessionRepositoryTests {
         #expect(try await repository.load() == good)
     }
 
+    @Test @MainActor func pinnedStateBothURLsAndOrderingSurviveRelaunch() async throws {
+        let url = location()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let repository = SessionRepository(fileURL: url)
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let original = URL(string: "https://example.com")!
+        let article = URL(string: "https://example.com/article")!
+        let id = try #require(browser.navigate(to: original, target: .newTab(spaceID: browser.activeSpaceID)))
+        #expect(browser.setPinned(id, pinned: true))
+        browser.navigate(to: article, target: .currentTab(id))
+        browser.closeActiveTab()
+        let closed = browser.session
+        try await repository.save(closed, revision: 1)
+        let saved = try #require(try await SessionRepository(fileURL: url).load())
+        #expect(saved == closed)
+        let restored = BrowserCoordinator(startup: .returningSession, activeSpaceID: saved.activeSpaceID,
+            tabStore: TabStore(tabs: saved.tabs), selectionBySpace: saved.selectionBySpace,
+            profileID: saved.profileID, recentlyClosed: saved.recentlyClosed)
+        #expect(restored.content == .empty)
+        #expect(restored.tabStore.tab(id: id)?.pinnedURL == original)
+        #expect(restored.tabStore.tab(id: id)?.currentURL == article)
+        #expect(restored.setPinned(id, pinned: false))
+        try await repository.save(restored.session, revision: 2)
+        #expect(try await repository.load() == restored.session)
+        #expect(restored.tabStore.todayTabs(in: saved.activeSpaceID).map(\.id) == [id])
+    }
+
     @Test func corruptDatabaseIsReportedWithoutReplacement() async throws {
         let url = location()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
