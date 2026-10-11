@@ -243,7 +243,9 @@ struct BrowserWindowView: View {
     private func tabRow(_ tab: BrowserTab) -> some View {
         HStack(spacing: 4) {
             if tab.pinnedURL != nil {
-                PinnedTabResetButton(tab: tab) { model.resetPinnedTab(tab.id) }
+                PinnedTabIcon(tab: tab, isActive: model.coordinator.activeTabID == tab.id,
+                              select: { model.selectTab(tab.id) },
+                              reset: { model.resetPinnedTab(tab.id) })
             }
             Button { model.selectTab(tab.id) } label: {
                 HStack(spacing: 8) {
@@ -274,7 +276,7 @@ struct BrowserWindowView: View {
         }
         .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
         .padding(.trailing, 8)
-        .background(Color.primary.opacity(model.coordinator.activeTabID == tab.id ? 0.08 : (tab.pinnedURL == nil ? 0 : 0.035)))
+        .background(Color.primary.opacity(model.coordinator.activeTabID == tab.id ? 0.08 : 0))
         .clipShape(RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
         .contextMenu {
             Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
@@ -289,26 +291,29 @@ struct BrowserWindowView: View {
         }
     }
 
-    /// Separate hit target: clicking a pin's title selects it without reloading;
-    /// clicking its icon explicitly navigates back to the original pinned page.
-    private struct PinnedTabResetButton: View {
+    /// Only the active pin exposes Reset. An inactive icon selects/reopens its
+    /// tab like the title, without unexpectedly resetting a background page.
+    private struct PinnedTabIcon: View {
         let tab: BrowserTab
+        let isActive: Bool
+        let select: () -> Void
         let reset: () -> Void
         @State private var hovered = false
 
         var body: some View {
-            Button(action: reset) {
-                Image(systemName: hovered ? "arrow.uturn.backward" : "pin")
+            Button(action: isActive ? reset : select) {
+                Image(systemName: isActive && hovered ? "arrow.uturn.backward" : "pin")
                     .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(tab.isOpen ? .primary : .secondary)
                     .frame(width: 34, height: 34)
-                    .background(Color.primary.opacity(hovered ? 0.16 : 0.07))
+                    .background(Color.primary.opacity(isActive ? (hovered ? 0.16 : 0.07) : 0))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .onHover { hovered = $0 }
-            .accessibilityIdentifier("pinReset.\(tab.id)")
-            .accessibilityLabel("Reset \(tab.pinnedTitle ?? tab.title) to pinned URL")
-            .help("Reset pinned tab")
+            .accessibilityIdentifier("\(isActive ? "pinReset" : "pinSelect").\(tab.id)")
+            .accessibilityLabel(isActive ? "Reset \(tab.pinnedTitle ?? tab.title) to pinned URL" : "Open \(tab.title)")
+            .help(isActive ? "Reset pinned tab" : "Open pinned tab")
         }
     }
 
