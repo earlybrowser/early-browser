@@ -59,6 +59,41 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    func testDraggingAcrossSectionsPreservesLivePage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let id = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier.dropFirst(4)
+        let field = app.webViews.textFields["Saved text"]
+        field.click()
+        field.typeText("keep across sections")
+        let sidebar = app.descendants(matching: .any).matching(identifier: "browser.sidebar").firstMatch
+        let pinned = app.staticTexts["sidebar.pinned.heading"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let favorites = app.buttons["favorites.add"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let regular = app.buttons["sidebar.newTab"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        func drag(_ element: XCUIElement, to destination: XCUICoordinate) {
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .click(forDuration: 0.2, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        XCTAssertTrue(sidebar.exists)
+        drag(app.buttons["tab.\(id)"], to: pinned)
+        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Pinned, open")
+        drag(app.buttons["tab.\(id)"], to: favorites)
+        XCTAssertTrue(app.buttons["favorite.\(id)"].waitForExistence(timeout: 3))
+        drag(app.buttons["favorite.\(id)"], to: pinned)
+        XCTAssertTrue(app.buttons["tab.\(id)"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Pinned, open")
+        drag(app.buttons["tab.\(id)"], to: regular)
+        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Today")
+        drag(app.buttons["tab.\(id)"], to: favorites)
+        XCTAssertTrue(app.buttons["favorite.\(id)"].waitForExistence(timeout: 3))
+        drag(app.buttons["favorite.\(id)"], to: regular)
+        XCTAssertTrue(app.buttons["tab.\(id)"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Today")
+        XCTAssertEqual(field.value as? String, "keep across sections")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
     func testNestedFoldersKeepLiveTabAndRestoreHierarchy() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")

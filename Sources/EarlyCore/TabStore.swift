@@ -2,6 +2,7 @@ import Foundation
 
 /// Ordered metadata for one profile, independent of presentation and live views.
 public struct TabStore: Equatable, Sendable {
+    public enum Section: String, Sendable { case regular, pinned, favorites }
     public private(set) var tabs: [BrowserTab]
     public private(set) var folders: [BrowserFolder]
 
@@ -12,6 +13,27 @@ public struct TabStore: Equatable, Sendable {
 
     public func tab(id: UUID) -> BrowserTab? {
         tabs.first { $0.id == id }
+    }
+
+    @discardableResult
+    public mutating func move(_ id: UUID, to section: Section, in spaceID: UUID) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        switch section {
+        case .favorites:
+            return setFavorite(id, favorite: true, in: spaceID)
+        case .regular:
+            return tabs[index].isFavorite ? setFavorite(id, favorite: false, in: spaceID) : setPinned(id, pinned: false)
+        case .pinned:
+            if tabs[index].isFavorite {
+                // Keep the original pin URL/name and closed state, including
+                // when the live page has navigated away from the pinned URL.
+                tabs[index].isFavorite = false
+                tabs[index].spaceID = spaceID
+                tabs[index].folderID = nil
+                return true
+            }
+            return setPinned(id, pinned: true)
+        }
     }
 
     @discardableResult

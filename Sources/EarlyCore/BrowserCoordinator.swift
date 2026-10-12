@@ -153,6 +153,19 @@ public final class BrowserCoordinator {
     public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
 
     @discardableResult
+    public func moveTab(_ id: UUID, to section: TabStore.Section) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab),
+              tabStore.move(id, to: section, in: activeSpaceID) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        if section != .favorites {
+            for space in Array(selectionBySpace.keys) where space != activeSpaceID && selectionBySpace[space] == id {
+                selectionBySpace[space] = nil
+            }
+        }
+        return true
+    }
+
+    @discardableResult
     public func createFolder(name: String, parentID: UUID? = nil) -> UUID? {
         tabStore.createFolder(name: name, parentID: parentID, spaceID: activeSpaceID)
     }

@@ -8,6 +8,7 @@ struct BrowserWindowView: View {
     @State private var sidebarHovered = false
     @State private var tabFrames: [UUID: CGRect] = [:]
     @State private var sectionFrames: [Bool: CGRect] = [:]
+    @State private var dropAreas: [String: CGRect] = [:]
     @GestureState private var draggingTab: UUID?
     @State private var dragLayout: SidebarReorderLayout?
     @State private var dragPoint: CGPoint = .zero
@@ -238,6 +239,8 @@ struct BrowserWindowView: View {
                 addressBar.padding(.horizontal, -4)
             }
             favoritesSection
+                .background(dropArea("favorites"))
+                .background(dropHighlight(.favorites))
             Label("Personal", systemImage: "square.stack")
                 .font(.headline)
             ScrollView {
@@ -252,10 +255,14 @@ struct BrowserWindowView: View {
                             sectionLabel("Pinned")
                                 .accessibilityIdentifier("sidebar.pinned.heading")
                                 .padding(.bottom, 8)
+                                .background(dropArea("pinned"))
+                                .background(dropHighlight(.pinned))
                         case .divider:
                             Divider().padding(.vertical, 8)
                         case .newTab:
                             newTabButton
+                                .background(dropArea("regular"))
+                                .background(dropHighlight(.regular))
                         case .tab(let tab, let depth):
                             tabRow(tab).padding(.leading, CGFloat(min(depth, 8)) * 12)
                         case .folder(let folder, let depth):
@@ -288,8 +295,10 @@ struct BrowserWindowView: View {
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
         .coordinateSpace(name: "sidebarReordering")
+        .overlay(alignment: .topLeading) { crossSectionPreview }
         .onPreferenceChange(TabFrames.self) { tabFrames = $0 }
         .onPreferenceChange(SectionFrames.self) { sectionFrames = $0 }
+        .onPreferenceChange(DropAreas.self) { dropAreas = $0 }
         .onChange(of: draggingTab) { _, id in
             if id == nil { dragLayout = nil; dragTranslation = .zero }
         }
@@ -339,6 +348,7 @@ struct BrowserWindowView: View {
                     in: RoundedRectangle(cornerRadius: 7))
         .shadow(color: .black.opacity(draggingTab == tab.id ? 0.18 : 0), radius: 6, y: 3)
         .offset(previewOffset(tab))
+        .opacity(crossingSections && draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
         .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab))
         .contextMenu { tabActions(tab) }
@@ -435,6 +445,7 @@ struct BrowserWindowView: View {
         .highPriorityGesture(reorderGesture(tab))
         .background(tabFrame(tab.id))
         .offset(previewOffset(tab))
+        .opacity(crossingSections && draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
         .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab))
         .contextMenu { tabActions(tab) }
@@ -573,10 +584,75 @@ struct BrowserWindowView: View {
             }
             .onEnded { value in
                 defer { dragLayout = nil; dragTranslation = .zero }
-                guard model.coordinator.commandBar == nil, model.renamingTabID == nil,
-                      let drop = dragLayout?.drop(at: value.location) else { return }
-                _ = model.reorderTab(tab.id, on: drop.target, after: drop.after)
+                guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
+                if let destination = destinationSection(at: value.location), destination != section(of: tab) {
+                    guard model.coordinator.moveTab(tab.id, to: destination) else { return }
+                    let peers = model.coordinator.tabStore.peers(of: model.coordinator.tabStore.tab(id: tab.id)!)
+                        .filter { $0.id != tab.id }
+                    let next = peers.first { peer in
+                        guard let frame = tabFrames[peer.id] else { return false }
+                        return destination == .favorites
+                            ? (value.location.y < frame.minY || (value.location.y <= frame.maxY && value.location.x < frame.midX))
+                            : value.location.y < frame.midY
+                    }
+                    if let target = next ?? peers.last {
+                        _ = model.coordinator.reorderTab(tab.id, relativeTo: target.id, after: next == nil)
+                    }
+                    model.save()
+                } else if let drop = dragLayout?.drop(at: value.location) {
+                    _ = model.reorderTab(tab.id, on: drop.target, after: drop.after)
+                }
             }
+    }
+
+    private var crossingSections: Bool {
+        guard let draggingTab, let tab = model.coordinator.tabStore.tab(id: draggingTab),
+              let destination = destinationSection(at: dragPoint) else { return false }
+        return destination != section(of: tab)
+    }
+
+    @ViewBuilder
+    private var crossSectionPreview: some View {
+        if crossingSections, let draggingTab, let tab = model.coordinator.tabStore.tab(id: draggingTab),
+           let frame = dragLayout?.slots.first(where: { $0.id == draggingTab })?.frame {
+            Text(tab.isFavorite ? String(tab.displayTitle.prefix(1)).uppercased() : tab.displayTitle)
+                .font(.callout).lineLimit(1)
+                .frame(width: frame.width, height: frame.height)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .shadow(radius: 5, y: 2)
+                .position(x: frame.midX + dragTranslation.width, y: frame.midY + dragTranslation.height)
+                .allowsHitTesting(false).accessibilityHidden(true)
+        }
+    }
+
+    private struct DropAreas: PreferenceKey {
+        static let defaultValue: [String: CGRect] = [:]
+        static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+            value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+        }
+    }
+
+    private func dropArea(_ key: String) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(key: DropAreas.self, value: [key: geometry.frame(in: .named("sidebarReordering"))])
+        }.allowsHitTesting(false)
+    }
+
+    private func section(of tab: BrowserTab) -> TabStore.Section {
+        tab.isFavorite ? .favorites : (tab.pinnedURL == nil ? .regular : .pinned)
+    }
+
+    private func destinationSection(at point: CGPoint) -> TabStore.Section? {
+        if dropAreas["favorites"]?.contains(point) == true { return .favorites }
+        guard let viewport = sectionFrames[false], viewport.contains(point),
+              let regular = dropAreas["regular"] else { return nil }
+        return point.y >= regular.minY ? .regular : .pinned
+    }
+
+    private func dropHighlight(_ section: TabStore.Section) -> some View {
+        RoundedRectangle(cornerRadius: 7)
+            .fill(Color.accentColor.opacity(draggingTab != nil && destinationSection(at: dragPoint) == section ? 0.12 : 0))
+            .allowsHitTesting(false)
     }
 
     private func previewOffset(_ tab: BrowserTab) -> CGSize {
