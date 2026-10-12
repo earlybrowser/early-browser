@@ -105,6 +105,20 @@ final class BrowserWindowModel {
         renamingTabID = id
     }
 
+    func reorderTab(_ id: UUID, on target: UUID, after: Bool) -> Bool {
+        guard coordinator.reorderTab(id, relativeTo: target, after: after) else { return false }
+        save()
+        return true
+    }
+
+    func moveTab(_ id: UUID, direction: Int) {
+        guard let tab = coordinator.tabStore.tab(id: id) else { return }
+        let peers = coordinator.tabStore.peers(of: tab)
+        guard [-1, 1].contains(direction), let index = peers.firstIndex(where: { $0.id == id }),
+              peers.indices.contains(index + direction) else { return }
+        _ = reorderTab(id, on: peers[index + direction].id, after: direction > 0)
+    }
+
     func finishRename(usePageTitle: Bool = false) {
         guard let id = renamingTabID else { return }
         if coordinator.renameTab(id, to: usePageTitle ? "" : renameText) { save() }

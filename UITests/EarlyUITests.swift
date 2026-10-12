@@ -59,6 +59,47 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    func testDragOrderingPreservesLivePagesAndKeyboardOrder() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let firstID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep during move")
+        let source = app.buttons[secondID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let destination = app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        source.click(forDuration: 0.3, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+        XCTAssertEqual(saved.value as? String, "keep during move")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.typeKey("1", modifierFlags: .command)
+        expectPage(app, "Two")
+        pinAction("Move Down", on: app.buttons[secondID])
+        XCTAssertLessThan(app.buttons[firstID].frame.minY, app.buttons[secondID].frame.minY)
+        app.typeKey("1", modifierFlags: .command)
+        expectPage(app, "One")
+        // Normal clicks must still select; a drop outside the rows must not reorder.
+        app.buttons[secondID].click()
+        expectPage(app, "Two")
+        XCTAssertEqual(saved.value as? String, "keep during move")
+        let outside = app.webViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.7))
+        source.click(forDuration: 0.2, thenDragTo: outside)
+        XCTAssertLessThan(app.buttons[firstID].frame.minY, app.buttons[secondID].frame.minY)
+        // A second real drag, then relaunch, checks that the saved order is used.
+        source.click(forDuration: 0.2, thenDragTo: destination)
+        XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(app.buttons[secondID].waitForExistence(timeout: 8))
+        XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+    }
+
     func testCustomNameSurvivesPinCloseAndRelaunch() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")

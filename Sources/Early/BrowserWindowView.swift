@@ -6,6 +6,10 @@ struct BrowserWindowView: View {
     @Bindable var model: BrowserWindowModel
     @State private var sidebarAutoHides = false
     @State private var sidebarHovered = false
+    @State private var tabFrames: [UUID: CGRect] = [:]
+    @GestureState private var draggingTab: UUID?
+    @State private var dropTarget: UUID?
+    @State private var dropAfter = false
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
 
     private enum SidebarItem: Identifiable {
@@ -236,6 +240,8 @@ struct BrowserWindowView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
+        .coordinateSpace(name: "sidebarReordering")
+        .onPreferenceChange(TabFrames.self) { tabFrames = $0 }
     }
 
     private func tabRow(_ tab: BrowserTab) -> some View {
@@ -264,6 +270,7 @@ struct BrowserWindowView: View {
             .accessibilityAddTraits(model.coordinator.activeTabID == tab.id ? .isSelected : [])
             .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
                   ?? tab.currentURL.absoluteString)
+            .highPriorityGesture(reorderGesture(tab))
             if tab.isOpen {
                 Button { model.closeTab(tab.id) } label: { Image(systemName: "xmark").font(.caption) }
                     .buttonStyle(.plain)
@@ -276,12 +283,19 @@ struct BrowserWindowView: View {
         .padding(.trailing, 8)
         .background(Color.primary.opacity(model.coordinator.activeTabID == tab.id ? 0.08 : 0))
         .clipShape(RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
+        .background(tabFrame(tab.id))
+        .overlay(insertionMarker(tab))
+        .opacity(draggingTab == tab.id ? 0.55 : 1)
         .contextMenu { tabActions(tab) }
     }
 
     @ViewBuilder
     private func tabActions(_ tab: BrowserTab) -> some View {
         Button("Rename Tab…") { model.requestRename(tab.id) }
+        Button("Move Up") { model.moveTab(tab.id, direction: -1) }
+            .disabled(model.coordinator.tabStore.peers(of: tab).first?.id == tab.id)
+        Button("Move Down") { model.moveTab(tab.id, direction: 1) }
+            .disabled(model.coordinator.tabStore.peers(of: tab).last?.id == tab.id)
         Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
             model.setFavorite(tab.id, favorite: !tab.isFavorite)
         }
@@ -352,6 +366,10 @@ struct BrowserWindowView: View {
         .accessibilityValue(tab.isOpen ? "Favorite, open" : "Favorite, closed")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
+        .highPriorityGesture(reorderGesture(tab))
+        .background(tabFrame(tab.id))
+        .overlay(insertionMarker(tab))
+        .opacity(draggingTab == tab.id ? 0.55 : 1)
         .contextMenu { tabActions(tab) }
     }
 
@@ -379,6 +397,64 @@ struct BrowserWindowView: View {
             .accessibilityLabel(isActive ? "Reset \(tab.customTitle ?? tab.pinnedTitle ?? tab.title) to pinned URL" : "Open \(tab.displayTitle)")
             .help(isActive ? "Reset pinned tab" : "Open pinned tab")
         }
+    }
+
+    private struct TabFrames: PreferenceKey {
+        static let defaultValue: [UUID: CGRect] = [:]
+        static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+            value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+        }
+    }
+
+    private func tabFrame(_ id: UUID) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(key: TabFrames.self,
+                                   value: [id: geometry.frame(in: .named("sidebarReordering"))])
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func reorderGesture(_ tab: BrowserTab) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named("sidebarReordering"))
+            .updating($draggingTab) { _, state, _ in state = tab.id }
+            .onChanged { value in
+                guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
+                updateDropTarget(tab, at: value.location)
+            }
+            .onEnded { value in
+                defer { dropTarget = nil }
+                guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
+                updateDropTarget(tab, at: value.location)
+                if let dropTarget {
+                    _ = model.reorderTab(tab.id, on: dropTarget, after: dropAfter)
+                }
+            }
+    }
+
+    private func updateDropTarget(_ tab: BrowserTab, at point: CGPoint) {
+        dropTarget = nil
+        for peer in model.coordinator.tabStore.peers(of: tab) where peer.id != tab.id {
+            guard let frame = tabFrames[peer.id], frame.contains(point) else { continue }
+            dropTarget = peer.id
+            dropAfter = tab.isFavorite ? point.x > frame.midX : point.y > frame.midY
+            break
+        }
+    }
+
+    private func insertionMarker(_ tab: BrowserTab) -> some View {
+        GeometryReader { geometry in
+            if draggingTab != nil && dropTarget == tab.id {
+                if tab.isFavorite {
+                    Rectangle().fill(Color.accentColor).frame(width: 2)
+                        .offset(x: dropAfter ? geometry.size.width - 2 : 0)
+                } else {
+                    Rectangle().fill(Color.accentColor).frame(height: 2)
+                        .offset(y: dropAfter ? geometry.size.height - 2 : 0)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private struct RenameTabSheet: View {

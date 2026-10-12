@@ -99,6 +99,14 @@ public final class BrowserCoordinator {
     }
 
     @discardableResult
+    public func reorderTab(_ id: UUID, relativeTo target: UUID, after: Bool) -> Bool {
+        guard let source = tabStore.tab(id: id), let destination = tabStore.tab(id: target),
+              canAccess(source), canAccess(destination),
+              tabStore.reorder(id, relativeTo: target, after: after) else { return false }
+        return true
+    }
+
+    @discardableResult
     public func setFavorite(_ id: UUID, favorite: Bool) -> Bool {
         guard let tab = tabStore.tab(id: id), canAccess(tab),
               tabStore.setFavorite(id, favorite: favorite, in: activeSpaceID) else { return false }

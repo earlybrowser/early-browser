@@ -20,6 +20,24 @@ public struct TabStore: Equatable, Sendable {
         return true
     }
 
+    public func peers(of tab: BrowserTab) -> [BrowserTab] {
+        tabs.filter {
+            $0.profileID == tab.profileID && $0.isFavorite == tab.isFavorite && ($0.pinnedURL != nil) == (tab.pinnedURL != nil)
+                && (tab.isFavorite || $0.spaceID == tab.spaceID)
+        }
+    }
+
+    @discardableResult
+    public mutating func reorder(_ id: UUID, relativeTo targetID: UUID, after: Bool) -> Bool {
+        guard id != targetID, let source = tab(id: id),
+              peers(of: source).contains(where: { $0.id == targetID }),
+              let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        let moved = tabs.remove(at: index)
+        let destination = tabs.firstIndex(where: { $0.id == targetID })!
+        tabs.insert(moved, at: destination + (after ? 1 : 0))
+        return true
+    }
+
     public func openTabs(in spaceID: UUID) -> [BrowserTab] {
         // Keyboard selection and close-neighbour selection follow sidebar order.
         favorites.filter(\.isOpen) + pinnedTabs(in: spaceID).filter(\.isOpen) + todayTabs(in: spaceID)
