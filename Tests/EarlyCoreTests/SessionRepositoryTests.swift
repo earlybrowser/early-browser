@@ -75,6 +75,46 @@ struct SessionRepositoryTests {
         #expect(restored.tabStore.todayTabs(in: saved.activeSpaceID).map(\.id) == [id])
     }
 
+    @Test @MainActor func favoritesPersistOrderNamesAndClosedStateWithoutDuplicates() async throws {
+        let url = location()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let browser = BrowserCoordinator(startup: .returningSession)
+        var ids: [UUID] = []
+        for number in 1...32 {
+            let page = URL(string: "https://example.com/\(number)")!
+            let id = try #require(browser.navigate(to: page, target: .newTab(spaceID: browser.activeSpaceID)))
+            browser.updateMetadata(id, url: nil, title: "Favorite \(number)")
+            browser.setFavorite(id, favorite: true)
+            browser.navigate(to: URL(string: "https://example.com/video")!, target: .currentTab(id))
+            browser.closeTab(id)
+            ids.append(id)
+        }
+        let repository = SessionRepository(fileURL: url)
+        try await repository.save(browser.session, revision: 1)
+        let saved = try #require(try await SessionRepository(fileURL: url).load())
+        #expect(saved == browser.session)
+        let restored = BrowserCoordinator(startup: .returningSession, activeSpaceID: saved.activeSpaceID,
+            tabStore: TabStore(tabs: saved.tabs), selectionBySpace: saved.selectionBySpace,
+            profileID: saved.profileID, recentlyClosed: saved.recentlyClosed)
+        #expect(restored.content == .empty)
+        #expect(restored.tabStore.favorites.map(\.id) == ids)
+        #expect(restored.tabStore.favorites.allSatisfy { !$0.isOpen && $0.currentURL == $0.pinnedURL && $0.title == $0.pinnedTitle })
+        restored.switchSpace(to: UUID())
+        #expect(restored.openTab(ids[0]))
+        #expect(restored.tabStore.tabs.count == 32)
+        #expect(restored.activeTabID == ids[0])
+        #expect(restored.setFavorite(ids[0], favorite: false))
+        try await repository.save(restored.session, revision: 2)
+        #expect(try await repository.load() == restored.session)
+    }
+
+    @Test func favoriteWithoutPinnedURLIsRejected() {
+        let profile = UUID()
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Invalid",
+                             currentURL: URL(string: "https://example.com")!, isFavorite: true)
+        #expect(throws: (any Error).self) { try BrowserSession(profileID: profile, tabs: [tab]).validate() }
+    }
+
     @Test func corruptDatabaseIsReportedWithoutReplacement() async throws {
         let url = location()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

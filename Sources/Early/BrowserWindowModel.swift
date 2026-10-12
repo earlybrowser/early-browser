@@ -53,6 +53,7 @@ final class BrowserWindowModel {
         coordinator.tabStore.openTabs(in: coordinator.activeSpaceID)
     }
     var pinnedTabs: [BrowserTab] { coordinator.tabStore.pinnedTabs(in: coordinator.activeSpaceID) }
+    var favorites: [BrowserTab] { coordinator.tabStore.favorites }
     var todayTabs: [BrowserTab] { coordinator.tabStore.todayTabs(in: coordinator.activeSpaceID) }
 
     func presentCommandBar(_ intent: CommandBarIntent) {
@@ -88,6 +89,11 @@ final class BrowserWindowModel {
     func setPinned(_ id: UUID, pinned: Bool) {
         guard coordinator.setPinned(id, pinned: pinned) else { return }
         // Metadata-only: do not reload, select, or allocate a web view.
+        save()
+    }
+
+    func setFavorite(_ id: UUID, favorite: Bool) {
+        guard coordinator.setFavorite(id, favorite: favorite) else { return }
         save()
     }
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Ordered metadata, independent of both window presentation and live web views.
+/// Ordered metadata for one profile, independent of presentation and live views.
 public struct TabStore: Equatable, Sendable {
     public private(set) var tabs: [BrowserTab]
 
@@ -14,20 +14,23 @@ public struct TabStore: Equatable, Sendable {
 
     public func openTabs(in spaceID: UUID) -> [BrowserTab] {
         // Keyboard selection and close-neighbour selection follow sidebar order.
-        pinnedTabs(in: spaceID).filter(\.isOpen) + todayTabs(in: spaceID)
+        favorites.filter(\.isOpen) + pinnedTabs(in: spaceID).filter(\.isOpen) + todayTabs(in: spaceID)
     }
 
+    public var favorites: [BrowserTab] { tabs.filter(\.isFavorite) }
+
     public func pinnedTabs(in spaceID: UUID) -> [BrowserTab] {
-        tabs.filter { $0.spaceID == spaceID && $0.pinnedURL != nil }
+        tabs.filter { $0.spaceID == spaceID && $0.pinnedURL != nil && !$0.isFavorite }
     }
 
     public func todayTabs(in spaceID: UUID) -> [BrowserTab] {
-        tabs.filter { $0.spaceID == spaceID && $0.pinnedURL == nil && $0.isOpen }
+        tabs.filter { $0.spaceID == spaceID && $0.pinnedURL == nil && !$0.isFavorite && $0.isOpen }
     }
 
     @discardableResult
     public mutating func setPinned(_ id: UUID, pinned: Bool) -> Bool {
         guard let index = tabs.firstIndex(where: { $0.id == id }),
+              !tabs[index].isFavorite,
               (tabs[index].pinnedURL != nil) != pinned else { return false }
         if pinned {
             guard tabs[index].isOpen else { return false }
@@ -38,6 +41,26 @@ public struct TabStore: Equatable, Sendable {
             tabs[index].pinnedTitle = nil
             // A closed pin becomes an unloaded Today tab, not orphaned metadata.
             // The runtime owner still loads only on explicit selection.
+            tabs[index].isOpen = true
+        }
+        return true
+    }
+
+    /// Favorites reuse pin lifecycle and identity, but are visible in every space.
+    /// Removing one places a regular tab in the current space, without loading it.
+    @discardableResult
+    public mutating func setFavorite(_ id: UUID, favorite: Bool, in spaceID: UUID) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }),
+              tabs[index].isFavorite != favorite else { return false }
+        if favorite, tabs[index].pinnedURL == nil {
+            guard setPinned(id, pinned: true) else { return false }
+        }
+        tabs[index].isFavorite = favorite
+        if !favorite {
+            tabs[index].spaceID = spaceID
+            tabs[index].pinnedURL = nil
+            tabs[index].pinnedTitle = nil
+            // A closed favorite becomes an unloaded regular tab, like unpinning.
             tabs[index].isOpen = true
         }
         return true
@@ -87,13 +110,13 @@ public struct TabStore: Equatable, Sendable {
     /// Closing a pin resets its address and unloads it, preserving its identity.
     /// Prefer the next open neighbor, then the previous one, in this space only.
     @discardableResult
-    public mutating func close(id: UUID) -> UUID? {
+    public mutating func close(id: UUID, in spaceID: UUID? = nil) -> UUID? {
         guard let index = tabs.firstIndex(where: { $0.id == id && $0.isOpen }) else {
             return nil
         }
         let tab = tabs[index]
-        let candidates = openTabs(in: tab.spaceID)
-        let openIndex = candidates.firstIndex { $0.id == id }!
+        let candidates = openTabs(in: spaceID ?? tab.spaceID)
+        guard let openIndex = candidates.firstIndex(where: { $0.id == id }) else { return nil }
         let nextID = candidates.dropFirst(openIndex + 1).first?.id
             ?? candidates.prefix(openIndex).last?.id
         if tab.pinnedURL != nil {

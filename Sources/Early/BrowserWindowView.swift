@@ -191,9 +191,9 @@ struct BrowserWindowView: View {
                 navigationControls
                 addressBar.padding(.horizontal, -4)
             }
+            favoritesSection
             Label("Personal", systemImage: "square.stack")
                 .font(.headline)
-            sectionLabel("Favorites")
             ScrollView {
                 // Pins and Today share a scroll region: many persistent pins
                 // must not push Today or New Tab outside the reachable sidebar.
@@ -273,17 +273,82 @@ struct BrowserWindowView: View {
         .padding(.trailing, 8)
         .background(Color.primary.opacity(model.coordinator.activeTabID == tab.id ? 0.08 : 0))
         .clipShape(RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
-        .contextMenu {
+        .contextMenu { tabActions(tab) }
+    }
+
+    @ViewBuilder
+    private func tabActions(_ tab: BrowserTab) -> some View {
+        Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+            model.setFavorite(tab.id, favorite: !tab.isFavorite)
+        }
+        if !tab.isFavorite {
             Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
                 model.setPinned(tab.id, pinned: tab.pinnedURL == nil)
             }
-            if tab.pinnedURL != nil {
-                Button("Reset to Pinned URL") { model.resetPinnedTab(tab.id) }
-            }
-            Divider()
-            Button("Close Tab") { model.closeTab(tab.id) }
-                .disabled(!tab.isOpen)
         }
+        if tab.pinnedURL != nil {
+            Button("Reset to Pinned URL") { model.resetPinnedTab(tab.id) }
+        }
+        Divider()
+        Button("Close Tab") { model.closeTab(tab.id) }
+            .disabled(!tab.isOpen)
+    }
+
+    private var favoritesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionLabel("Favorites")
+                Spacer()
+                Button {
+                    if let tab = model.activeTab { model.setFavorite(tab.id, favorite: true) }
+                } label: {
+                    Image(systemName: "plus").frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .disabled(model.activeTab == nil || model.activeTab?.isFavorite == true)
+                .accessibilityIdentifier("favorites.add")
+                .accessibilityLabel("Add current tab to Favorites")
+                .help("Add current tab to Favorites")
+            }
+            if !model.favorites.isEmpty {
+                ScrollView {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+                        ForEach(model.favorites) { tab in
+                            favoriteTile(tab)
+                        }
+                    }
+                }
+                // A large collection must not consume all room for space tabs.
+                .frame(height: min(CGFloat((model.favorites.count + 3) / 4) * 60 - 6, 174))
+                .accessibilityIdentifier("sidebar.favorites")
+            }
+        }
+    }
+
+    private func favoriteTile(_ tab: BrowserTab) -> some View {
+        let name = tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
+        let selected = model.coordinator.activeTabID == tab.id
+        return Button { model.selectTab(tab.id) } label: {
+            VStack(spacing: 3) {
+                // Site favicons are a separate sidebar checkpoint. A local
+                // monogram avoids external favicon services and network work.
+                Text(String(name.prefix(1)).uppercased())
+                    .font(.system(size: 19, weight: .semibold))
+                Text(name).font(.caption2).lineLimit(1).truncationMode(.tail)
+            }
+            .foregroundStyle(tab.isOpen ? .primary : .secondary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 54)
+            .background(Color.primary.opacity(selected ? 0.12 : 0.04), in: RoundedRectangle(cornerRadius: 9))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("favorite.\(tab.id)")
+        .accessibilityLabel(name)
+        .accessibilityValue(tab.isOpen ? "Favorite, open" : "Favorite, closed")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
+        .contextMenu { tabActions(tab) }
     }
 
     /// Only the active pin exposes Reset. An inactive icon selects/reopens its

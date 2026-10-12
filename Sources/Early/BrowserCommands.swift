@@ -37,10 +37,14 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
         CommandMenu("Tab") {
+            Button(model?.activeTab?.isFavorite == true ? "Remove from Favorites" : "Add to Favorites") {
+                if let tab = model?.activeTab { model?.setFavorite(tab.id, favorite: !tab.isFavorite) }
+            }
+            .disabled(model?.activeTab == nil)
             Button(model?.activeTab?.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
                 if let tab = model?.activeTab { model?.setPinned(tab.id, pinned: tab.pinnedURL == nil) }
             }
-            .disabled(model?.activeTab == nil)
+            .disabled(model?.activeTab == nil || model?.activeTab?.isFavorite == true)
             Button("Reset to Pinned URL") {
                 if let id = model?.activeTab?.id { model?.resetPinnedTab(id) }
             }

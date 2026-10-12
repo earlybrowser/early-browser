@@ -65,7 +65,7 @@ public final class BrowserCoordinator {
 
     public func selectOpenTab(_ id: UUID) {
         guard let tab = tabStore.tab(id: id), tab.isOpen,
-              tab.spaceID == activeSpaceID else { return }
+              canAccess(tab) else { return }
         selectionBySpace[activeSpaceID] = id
         content = .web(tabID: id)
         dismissCommandBar()
@@ -74,7 +74,7 @@ public final class BrowserCoordinator {
     /// Sidebar selection can reopen a persistent pin. Never duplicate its record.
     @discardableResult
     public func openTab(_ id: UUID) -> Bool {
-        guard let tab = tabStore.tab(id: id), tab.spaceID == activeSpaceID,
+        guard let tab = tabStore.tab(id: id), canAccess(tab),
               tab.isOpen || tab.pinnedURL != nil else { return false }
         tabStore.reopen(id)
         recentlyClosed.removeAll { $0.tab.id == id }
@@ -84,17 +84,32 @@ public final class BrowserCoordinator {
 
     @discardableResult
     public func setPinned(_ id: UUID, pinned: Bool) -> Bool {
-        guard tabStore.tab(id: id)?.spaceID == activeSpaceID,
+        guard let tab = tabStore.tab(id: id), canAccess(tab),
               tabStore.setPinned(id, pinned: pinned) else { return false }
         // Do not let a stale closure later restore the pre-unpin state.
         recentlyClosed.removeAll { $0.tab.id == id }
         return true
     }
 
+    @discardableResult
+    public func setFavorite(_ id: UUID, favorite: Bool) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab),
+              tabStore.setFavorite(id, favorite: favorite, in: activeSpaceID) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        if !favorite {
+            // A demoted favorite now belongs only to this space. Other spaces
+            // must not restore stale selections pointing to an inaccessible tab.
+            for space in Array(selectionBySpace.keys) where space != activeSpaceID && selectionBySpace[space] == id {
+                selectionBySpace[space] = nil
+            }
+        }
+        return true
+    }
+
     /// Reset is an explicit navigation, including when the pin was closed.
     @discardableResult
     public func resetPinnedTab(_ id: UUID) -> URL? {
-        guard let tab = tabStore.tab(id: id), tab.spaceID == activeSpaceID,
+        guard let tab = tabStore.tab(id: id), canAccess(tab),
               let url = tab.pinnedURL else { return nil }
         tabStore.resetPinnedLocation(id)
         _ = openTab(id)
@@ -126,7 +141,7 @@ public final class BrowserCoordinator {
         switch target {
         case .currentTab(let existing):
             guard let tab = tabStore.tab(id: existing), tab.isOpen,
-                  tab.spaceID == activeSpaceID else { return nil }
+                  canAccess(tab) else { return nil }
             id = existing
             tabStore.update(id, url: url)
         case .newTab(let space):
@@ -151,12 +166,14 @@ public final class BrowserCoordinator {
     public func closeTab(_ id: UUID) -> UUID? {
         guard let index = tabStore.tabs.firstIndex(where: { $0.id == id && $0.isOpen }) else { return nil }
         let tab = tabStore.tabs[index]
-        let nextID = tabStore.close(id: id)
+        let nextID = tabStore.close(id: id, in: tab.isFavorite ? activeSpaceID : tab.spaceID)
         recentlyClosed.removeAll { $0.tab.id == id }
         // History must use the reset pin too, including persisted reopen paths.
         recentlyClosed.append(ClosedTab(tab: tabStore.tab(id: id) ?? tab, position: index))
         recentlyClosed = Array(recentlyClosed.suffix(20))
-        if selectionBySpace[tab.spaceID] == id { selectionBySpace[tab.spaceID] = nextID }
+        for space in Array(selectionBySpace.keys) where selectionBySpace[space] == id {
+            selectionBySpace[space] = space == (tab.isFavorite ? activeSpaceID : tab.spaceID) ? nextID : nil
+        }
         if activeTabID == id {
             content = nextID.map { .web(tabID: $0) } ?? .empty
             dismissCommandBar()
@@ -173,7 +190,7 @@ public final class BrowserCoordinator {
         } else {
             tabStore.insert(closed.tab, at: closed.position)
         }
-        activeSpaceID = closed.tab.spaceID
+        if !closed.tab.isFavorite { activeSpaceID = closed.tab.spaceID }
         selectOpenTab(closed.tab.id)
         return closed.tab.id
     }
@@ -187,11 +204,15 @@ public final class BrowserCoordinator {
     private func restoreSelection() {
         guard let id = selectionBySpace[activeSpaceID],
               let tab = tabStore.tab(id: id), tab.isOpen,
-              tab.spaceID == activeSpaceID else {
+              canAccess(tab) else {
             selectionBySpace[activeSpaceID] = nil
             content = .empty
             return
         }
         content = .web(tabID: id)
+    }
+
+    private func canAccess(_ tab: BrowserTab) -> Bool {
+        tab.profileID == profileID && tab.isVisible(in: activeSpaceID)
     }
 }

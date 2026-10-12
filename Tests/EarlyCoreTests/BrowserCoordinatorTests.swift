@@ -19,7 +19,7 @@ struct BrowserCoordinatorTests {
         BrowserCoordinator(
             startup: .returningSession, activeSpaceID: space,
             tabStore: TabStore(tabs: tabs),
-            selectionBySpace: selected.map { [space: $0] } ?? [:]
+            selectionBySpace: selected.map { [space: $0] } ?? [:], profileID: profile
         )
     }
 
@@ -197,8 +197,10 @@ struct BrowserCoordinatorTests {
         pin.title = "example.com"
         var payload = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(pin)) as? [String: Any])
         payload.removeValue(forKey: "pinnedTitle")
+        payload.removeValue(forKey: "isFavorite")
         let old = try JSONDecoder().decode(BrowserTab.self, from: JSONSerialization.data(withJSONObject: payload))
         #expect(old.pinnedTitle == nil)
+        #expect(!old.isFavorite)
         let browser = coordinator(tabs: [old], selected: old.id)
         browser.updateMetadata(old.id, url: old.pinnedURL, title: "Example")
         browser.updateMetadata(old.id, url: URL(string: "https://example.com/video")!, title: "Video")
@@ -350,11 +352,124 @@ struct BrowserCoordinatorTests {
         let session = try JSONDecoder().decode(BrowserSession.self, from: JSONEncoder().encode(browser.session))
         let restored = BrowserCoordinator(startup: .returningSession, activeSpaceID: space,
             tabStore: TabStore(tabs: session.tabs), selectionBySpace: session.selectionBySpace,
-            recentlyClosed: session.recentlyClosed)
+            profileID: session.profileID, recentlyClosed: session.recentlyClosed)
         #expect(restored.content == .empty)
         #expect(restored.commandBar == nil)
         #expect(restored.openTab(tabs[0].id))
         #expect(restored.tabStore.tabs.count == 32)
         #expect(restored.tabStore.pinnedTabs(in: space).map(\.id) == tabs.map(\.id))
+    }
+
+    @Test func favoritingMovesIdentityWithoutChangingSelectionAndOrdersBeforePins() {
+        let today = tab()
+        let pin = tab(pinned: true)
+        let favorite = tab()
+        let browser = coordinator(tabs: [today, pin, favorite], selected: today.id)
+        #expect(browser.setFavorite(favorite.id, favorite: true))
+        #expect(!browser.setFavorite(favorite.id, favorite: true))
+        #expect(browser.activeTabID == today.id)
+        #expect(browser.tabStore.tabs.count == 3)
+        #expect(browser.tabStore.favorites.map(\.id) == [favorite.id])
+        #expect(browser.tabStore.todayTabs(in: space).map(\.id) == [today.id])
+        #expect(browser.tabStore.openTabs(in: space).map(\.id) == [favorite.id, pin.id, today.id])
+        #expect(browser.tabStore.tab(id: favorite.id)?.pinnedURL == favorite.currentURL)
+        #expect(browser.tabStore.tab(id: favorite.id)?.pinnedTitle == favorite.title)
+        #expect(!browser.setPinned(favorite.id, pinned: false))
+    }
+
+    @Test func favoritingAPinKeepsOriginalURLAndRemovingFavoriteKeepsItsLiveLocation() {
+        var pin = tab(pinned: true)
+        pin.currentURL = URL(string: "https://example.com/video")!
+        pin.title = "Video"
+        let browser = coordinator(tabs: [pin], selected: pin.id)
+        #expect(browser.setFavorite(pin.id, favorite: true))
+        #expect(browser.tabStore.pinnedTabs(in: space).isEmpty)
+        #expect(browser.tabStore.tab(id: pin.id)?.pinnedURL == pin.pinnedURL)
+        #expect(browser.setFavorite(pin.id, favorite: false))
+        #expect(browser.tabStore.todayTabs(in: space).map(\.id) == [pin.id])
+        #expect(browser.tabStore.pinnedTabs(in: space).isEmpty)
+        #expect(browser.tabStore.tab(id: pin.id)?.currentURL == pin.currentURL)
+        #expect(browser.tabStore.tab(id: pin.id)?.pinnedURL == nil)
+        #expect(browser.tabStore.tab(id: pin.id)?.pinnedTitle == nil)
+        #expect(browser.activeTabID == pin.id)
+        #expect(browser.tabStore.tabs.count == 1)
+    }
+
+    @Test func favoriteIsSharedAcrossSpacesAndClosingClearsOtherSelections() {
+        let first = tab()
+        let otherSpace = UUID()
+        let other = tab(in: otherSpace)
+        let browser = coordinator(tabs: [first, other], selected: first.id)
+        browser.setFavorite(first.id, favorite: true)
+        browser.switchSpace(to: otherSpace)
+        #expect(browser.content == .empty)
+        #expect(browser.commandBar == nil)
+        #expect(browser.openTab(first.id))
+        let article = URL(string: "https://example.com/article")!
+        #expect(browser.navigate(to: article, target: .currentTab(first.id)) == first.id)
+        #expect(browser.resetPinnedTab(first.id) == first.currentURL)
+        browser.closeActiveTab()
+        #expect(browser.activeTabID == other.id)
+        #expect(browser.session.selectionBySpace[space] == nil)
+        #expect(browser.tabStore.favorites.first?.isOpen == false)
+        #expect(browser.tabStore.favorites.first?.currentURL == first.currentURL)
+        #expect(browser.reopenLastTab() == first.id)
+        #expect(browser.activeSpaceID == otherSpace)
+        #expect(browser.tabStore.tabs.count == 2)
+        browser.switchSpace(to: space)
+        #expect(browser.content == .empty)
+    }
+
+    @Test func removingGlobalFavoriteMovesRegularTabToCurrentSpaceAndPrunesStaleSelection() {
+        let pin = tab(pinned: true)
+        let browser = coordinator(tabs: [pin], selected: pin.id)
+        browser.setFavorite(pin.id, favorite: true)
+        let otherSpace = UUID()
+        browser.switchSpace(to: otherSpace)
+        browser.openTab(pin.id)
+        #expect(browser.setFavorite(pin.id, favorite: false))
+        #expect(browser.activeTabID == pin.id)
+        #expect(browser.tabStore.tab(id: pin.id)?.spaceID == otherSpace)
+        #expect(browser.tabStore.todayTabs(in: otherSpace).map(\.id) == [pin.id])
+        #expect(browser.session.selectionBySpace[space] == nil)
+        browser.switchSpace(to: space)
+        #expect(browser.content == .empty)
+        #expect(!browser.openTab(pin.id))
+        browser.switchSpace(to: otherSpace)
+        #expect(browser.activeTabID == pin.id)
+    }
+
+    @Test func closedFavoriteRemovalCreatesUnselectedRegularTabWithoutStaleHistory() {
+        let pin = tab(pinned: true)
+        let browser = coordinator(tabs: [pin], selected: pin.id)
+        browser.closeActiveTab()
+        #expect(browser.setFavorite(pin.id, favorite: true))
+        #expect(browser.content == .empty)
+        #expect(browser.tabStore.favorites.first?.isOpen == false)
+        #expect(browser.reopenLastTab() == nil)
+        browser.openTab(pin.id)
+        browser.closeActiveTab()
+        #expect(browser.setFavorite(pin.id, favorite: false))
+        #expect(browser.content == .empty)
+        #expect(browser.tabStore.tab(id: pin.id)?.isOpen == true)
+        #expect(browser.tabStore.tab(id: pin.id)?.pinnedURL == nil)
+        #expect(browser.reopenLastTab() == nil)
+        #expect(browser.tabStore.todayTabs(in: space).map(\.id) == [pin.id])
+    }
+
+    @Test func favoritesRejectForeignProfileOtherSpaceAndMissingActions() {
+        let other = tab(in: UUID())
+        let foreign = BrowserTab(spaceID: space, profileID: UUID(), title: "Other profile",
+            currentURL: URL(string: "https://example.com")!, pinnedURL: URL(string: "https://example.com")!,
+            isFavorite: true)
+        let browser = coordinator(tabs: [other, foreign], selected: nil)
+        let before = browser.session
+        for id in [UUID(), other.id, foreign.id] {
+            #expect(!browser.setFavorite(id, favorite: true))
+            #expect(!browser.setFavorite(id, favorite: false))
+            #expect(!browser.openTab(id))
+            #expect(browser.resetPinnedTab(id) == nil)
+        }
+        #expect(browser.session == before)
     }
 }

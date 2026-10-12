@@ -59,6 +59,76 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    func testFavoritesReuseLiveTabsAndRestoreClosedTiles() {
+        let app = launchFreshApp()
+        XCTAssertFalse(app.buttons["favorites.add"].isEnabled)
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let firstID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let firstFavorite = app.buttons["favorite.\(firstID.dropFirst(4))"]
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep favorite state")
+        app.buttons["favorites.add"].click()
+        XCTAssertTrue(firstFavorite.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons[firstID].exists)
+        XCTAssertFalse(app.buttons["favorites.add"].isEnabled)
+        firstFavorite.click()
+        XCTAssertEqual(saved.value as? String, "keep favorite state")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        firstFavorite.click()
+        expectPage(app, "Two")
+        XCTAssertEqual(firstFavorite.label, "Page One")
+
+        navigate(app, to: "early-test://fixture/one", newTab: true)
+        expectPage(app, "One")
+        let secondID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        pinAction("Add to Favorites", on: app.buttons[secondID])
+        let secondFavorite = app.buttons["favorite.\(secondID.dropFirst(4))"]
+        XCTAssertTrue(secondFavorite.waitForExistence(timeout: 3))
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.typeKey("1", modifierFlags: .command)
+        expectPage(app, "Two")
+        app.typeKey("2", modifierFlags: .command)
+        expectPage(app, "One")
+        let image = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+        image.name = "Favorite tiles above the space"
+        image.lifetime = .keepAlways
+        add(image)
+        app.typeKey("1", modifierFlags: .command)
+        app.typeKey("w", modifierFlags: .command)
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        XCTAssertEqual(firstFavorite.value as? String, "Favorite, closed")
+        app.menuBars.menuBarItems["Tab"].click()
+        visibleMenuAction("Remove from Favorites")
+        XCTAssertFalse(secondFavorite.exists)
+        XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 2)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(firstFavorite.waitForExistence(timeout: 8))
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        XCTAssertEqual(firstFavorite.value as? String, "Favorite, closed")
+        XCTAssertEqual(firstFavorite.label, "Page One")
+        XCTAssertFalse(app.textFields["commandBar.query"].exists)
+        pinAction("Remove from Favorites", on: firstFavorite)
+        XCTAssertFalse(firstFavorite.exists)
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
+        expectRuntime(app, tabs: 1, views: 0, created: 0)
+        pinAction("Add to Favorites", on: app.buttons[firstID])
+        XCTAssertTrue(firstFavorite.waitForExistence(timeout: 3))
+        firstFavorite.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        XCTAssertEqual(app.buttons.matching(identifier: firstFavorite.identifier).count, 1)
+    }
+
     func testPinUnpinAndResetReuseTheLivePage() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")

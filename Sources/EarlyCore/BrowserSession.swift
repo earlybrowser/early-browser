@@ -27,6 +27,7 @@ public struct BrowserSession: Codable, Equatable, Sendable {
         guard version == 1, Set(tabs.map(\.id)).count == tabs.count,
               recentlyClosed.count <= 20 else { throw SessionError.invalidData }
         for tab in tabs + recentlyClosed.map(\.tab) {
+            guard !tab.isFavorite || tab.pinnedURL != nil else { throw SessionError.invalidData }
             _ = try input.validate(tab.currentURL)
             if let url = tab.pinnedURL { _ = try input.validate(url) }
             guard tab.profileID == profileID else { throw SessionError.invalidData }
