@@ -3,9 +3,11 @@ import Foundation
 /// Ordered metadata for one profile, independent of presentation and live views.
 public struct TabStore: Equatable, Sendable {
     public private(set) var tabs: [BrowserTab]
+    public private(set) var folders: [BrowserFolder]
 
-    public init(tabs: [BrowserTab] = []) {
+    public init(tabs: [BrowserTab] = [], folders: [BrowserFolder] = []) {
         self.tabs = tabs
+        self.folders = folders
     }
 
     public func tab(id: UUID) -> BrowserTab? {
@@ -24,6 +26,7 @@ public struct TabStore: Equatable, Sendable {
         tabs.filter {
             $0.profileID == tab.profileID && $0.isFavorite == tab.isFavorite && ($0.pinnedURL != nil) == (tab.pinnedURL != nil)
                 && (tab.isFavorite || $0.spaceID == tab.spaceID)
+                && $0.folderID == tab.folderID
         }
     }
 
@@ -46,7 +49,14 @@ public struct TabStore: Equatable, Sendable {
     public var favorites: [BrowserTab] { tabs.filter(\.isFavorite) }
 
     public func pinnedTabs(in spaceID: UUID) -> [BrowserTab] {
-        tabs.filter { $0.spaceID == spaceID && $0.pinnedURL != nil && !$0.isFavorite }
+        let pins = tabs.filter { $0.spaceID == spaceID && $0.pinnedURL != nil && !$0.isFavorite }
+        func ordered(parent: UUID?, depth: Int) -> [BrowserTab] {
+            guard depth <= 32 else { return [] }
+            return folders.filter { $0.spaceID == spaceID && $0.parentID == parent }
+                .flatMap { ordered(parent: $0.id, depth: depth + 1) }
+                + pins.filter { $0.folderID == parent }
+        }
+        return ordered(parent: nil, depth: 0)
     }
 
     public func todayTabs(in spaceID: UUID) -> [BrowserTab] {
@@ -63,6 +73,7 @@ public struct TabStore: Equatable, Sendable {
             tabs[index].pinnedURL = tabs[index].currentURL
             tabs[index].pinnedTitle = savedTitle(for: tabs[index])
         } else {
+            tabs[index].folderID = nil
             tabs[index].pinnedURL = nil
             tabs[index].pinnedTitle = nil
             // A closed pin becomes an unloaded Today tab, not orphaned metadata.
@@ -82,6 +93,7 @@ public struct TabStore: Equatable, Sendable {
             guard setPinned(id, pinned: true) else { return false }
         }
         tabs[index].isFavorite = favorite
+        tabs[index].folderID = nil
         if !favorite {
             tabs[index].spaceID = spaceID
             tabs[index].pinnedURL = nil
@@ -95,6 +107,60 @@ public struct TabStore: Equatable, Sendable {
     public mutating func insert(_ tab: BrowserTab, at position: Int? = nil) {
         guard !tabs.contains(where: { $0.id == tab.id }) else { return }
         tabs.insert(tab, at: min(max(position ?? tabs.count, 0), tabs.count))
+    }
+
+    @discardableResult
+    public mutating func createFolder(name: String, parentID: UUID?, spaceID: UUID) -> UUID? {
+        let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128))
+        let folder = BrowserFolder(spaceID: spaceID, parentID: parentID, name: name)
+        let candidate = folders + [folder]
+        guard (try? BrowserFolder.validate(candidate)) != nil else { return nil }
+        folders = candidate
+        return folder.id
+    }
+
+    @discardableResult
+    public mutating func renameFolder(_ id: UUID, to name: String) -> Bool {
+        let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128))
+        guard !name.isEmpty, let index = folders.firstIndex(where: { $0.id == id }) else { return false }
+        folders[index].name = name
+        return true
+    }
+
+    public func canMoveFolder(_ id: UUID, to parentID: UUID?) -> Bool {
+        guard let index = folders.firstIndex(where: { $0.id == id }) else { return false }
+        var candidate = folders
+        candidate[index].parentID = parentID
+        return (try? BrowserFolder.validate(candidate)) != nil
+    }
+
+    @discardableResult
+    public mutating func moveFolder(_ id: UUID, to parentID: UUID?) -> Bool {
+        guard canMoveFolder(id, to: parentID), let index = folders.firstIndex(where: { $0.id == id }) else { return false }
+        folders[index].parentID = parentID
+        return true
+    }
+
+    public mutating func toggleFolder(_ id: UUID) {
+        guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
+        folders[index].isExpanded.toggle()
+    }
+
+    @discardableResult
+    public mutating func moveTab(_ id: UUID, toFolder folderID: UUID?) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }), !tabs[index].isFavorite else { return false }
+        if let folderID {
+            guard let folder = folders.first(where: { $0.id == folderID }), folder.spaceID == tabs[index].spaceID else { return false }
+            if tabs[index].pinnedURL == nil { guard setPinned(id, pinned: true) else { return false } }
+            // Reveal the destination path, without selecting or reloading the page.
+            var parent: UUID? = folderID
+            while let id = parent, let position = folders.firstIndex(where: { $0.id == id }) {
+                folders[position].isExpanded = true
+                parent = folders[position].parentID
+            }
+        }
+        tabs[index].folderID = folderID
+        return true
     }
 
     public mutating func reopen(_ id: UUID) {

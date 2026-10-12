@@ -13,25 +13,42 @@ struct BrowserWindowView: View {
     @State private var dragPoint: CGPoint = .zero
     @State private var dragTranslation: CGSize = .zero
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var folderEditor = false
+    @State private var editingFolder: UUID?
+    @State private var folderParent: UUID?
+    @State private var folderName = ""
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
 
     private enum SidebarItem: Identifiable {
         case pinnedHeading, divider, newTab
-        case tab(BrowserTab)
+        case tab(BrowserTab, Int)
+        case folder(BrowserFolder, Int)
 
         var id: String {
             switch self {
             case .pinnedHeading: "pinned-heading"
             case .divider: "divider"
             case .newTab: "new-tab"
-            case .tab(let tab): "tab-\(tab.id)"
+            case .tab(let tab, _): "tab-\(tab.id)"
+            case .folder(let folder, _): "folder-\(folder.id)"
             }
         }
     }
 
     private var sidebarItems: [SidebarItem] {
-        [.pinnedHeading] + model.pinnedTabs.map(SidebarItem.tab)
-            + [.divider, .newTab] + model.todayTabs.map(SidebarItem.tab)
+        [.pinnedHeading] + folderItems(parent: nil, depth: 0)
+            + [.divider, .newTab] + model.todayTabs.map { .tab($0, 0) }
+    }
+
+    private func folderItems(parent: UUID?, depth: Int) -> [SidebarItem] {
+        guard depth <= 32 else { return [] }
+        var items: [SidebarItem] = []
+        for folder in model.coordinator.folders where folder.parentID == parent {
+            items.append(.folder(folder, depth))
+            if folder.isExpanded { items += folderItems(parent: folder.id, depth: depth + 1) }
+        }
+        items += model.pinnedTabs.filter { $0.folderID == parent }.map { .tab($0, depth) }
+        return items
     }
 
     private static let windowCornerRadius: CGFloat = {
@@ -192,6 +209,25 @@ struct BrowserWindowView: View {
             RenameTabSheet(model: model)
         }
         .onAppear { model.activateSelection() }
+        .sheet(isPresented: $folderEditor) {
+          VStack(alignment: .leading, spacing: 16) {
+            Text(editingFolder == nil ? "New Folder" : "Rename Folder").font(.headline)
+            TextField("Folder name", text: $folderName).accessibilityIdentifier("folder.name")
+            HStack {
+            Button("Cancel") { folderEditor = false }.keyboardShortcut(.cancelAction)
+            Spacer()
+            Button("Save") {
+                let success: Bool
+                if let editingFolder { success = model.coordinator.renameFolder(editingFolder, to: folderName) }
+                else { success = model.coordinator.createFolder(name: folderName, parentID: folderParent) != nil }
+                if success { model.save() } else { model.notice = "Could not save folder. Use a name and a valid parent (maximum 32 levels)." }
+                folderEditor = false
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+          }.padding(24).frame(width: 340)
+        }
         .onDisappear { model.save(); model.webViews.discardAll() }
     }
 
@@ -213,15 +249,22 @@ struct BrowserWindowView: View {
                     ForEach(sidebarItems) { item in
                         switch item {
                         case .pinnedHeading:
-                            sectionLabel("Pinned")
+                            HStack {
+                                sectionLabel("Pinned").accessibilityIdentifier("sidebar.pinned.heading")
+                                Spacer()
+                                Button { editFolder(nil, parent: nil) } label: { Image(systemName: "folder.badge.plus") }
+                                    .buttonStyle(.plain).help("New folder")
+                                    .accessibilityLabel("New folder").accessibilityIdentifier("folder.add")
+                            }
                                 .padding(.bottom, 8)
-                                .accessibilityIdentifier("sidebar.pinned.heading")
                         case .divider:
                             Divider().padding(.vertical, 8)
                         case .newTab:
                             newTabButton
-                        case .tab(let tab):
-                            tabRow(tab)
+                        case .tab(let tab, let depth):
+                            tabRow(tab).padding(.leading, CGFloat(min(depth, 8)) * 12)
+                        case .folder(let folder, let depth):
+                            folderRow(folder).padding(.leading, CGFloat(min(depth, 8)) * 12)
                         }
                     }
                 }
@@ -304,6 +347,16 @@ struct BrowserWindowView: View {
     @ViewBuilder
     private func tabActions(_ tab: BrowserTab) -> some View {
         Button("Rename Tab…") { model.requestRename(tab.id) }
+        if !tab.isFavorite {
+            Menu("Move to Folder") {
+                Button("Top Level") { _ = model.coordinator.moveTab(tab.id, toFolder: nil); model.save() }
+                    .disabled(tab.folderID == nil)
+                ForEach(model.coordinator.folders) { folder in
+                    Button(folderPath(folder)) { _ = model.coordinator.moveTab(tab.id, toFolder: folder.id); model.save() }
+                        .disabled(tab.folderID == folder.id)
+                }
+            }
+        }
         Button("Move Up") { model.moveTab(tab.id, direction: -1) }
             .disabled(model.coordinator.tabStore.peers(of: tab).first?.id == tab.id)
         Button("Move Down") { model.moveTab(tab.id, direction: 1) }
@@ -410,6 +463,53 @@ struct BrowserWindowView: View {
             .accessibilityIdentifier("\(isActive ? "pinReset" : "pinSelect").\(tab.id)")
             .accessibilityLabel(isActive ? "Reset \(tab.customTitle ?? tab.pinnedTitle ?? tab.title) to pinned URL" : "Open \(tab.displayTitle)")
             .help(isActive ? "Reset pinned tab" : "Open pinned tab")
+        }
+    }
+
+    private func editFolder(_ folder: BrowserFolder?, parent: UUID?) {
+        editingFolder = folder?.id
+        folderParent = parent
+        folderName = folder?.name ?? ""
+        folderEditor = true
+    }
+
+    private func folderPath(_ folder: BrowserFolder) -> String {
+        var names = [folder.name]
+        var parent = folder.parentID
+        var seen: Set<UUID> = [folder.id]
+        while let id = parent, seen.insert(id).inserted,
+              let ancestor = model.coordinator.folders.first(where: { $0.id == id }) {
+            names.insert(ancestor.name, at: 0)
+            parent = ancestor.parentID
+        }
+        return names.joined(separator: " / ")
+    }
+
+    private func folderRow(_ folder: BrowserFolder) -> some View {
+        Button { model.coordinator.toggleFolder(folder.id); model.save() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: folder.isExpanded ? "chevron.down" : "chevron.right").font(.caption2)
+                Image(systemName: "folder")
+                Text(folder.name).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 7).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("folder.\(folder.id)")
+        .accessibilityLabel(folder.name)
+        .accessibilityValue(folder.isExpanded ? "Expanded" : "Collapsed")
+        .contextMenu {
+            Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
+            Button("Rename Folder…") { editFolder(folder, parent: folder.parentID) }
+            Menu("Move Folder") {
+                Button("Top Level") { _ = model.coordinator.moveFolder(folder.id, to: nil); model.save() }
+                    .disabled(folder.parentID == nil)
+                ForEach(model.coordinator.folders) { parent in
+                    Button(folderPath(parent)) { _ = model.coordinator.moveFolder(folder.id, to: parent.id); model.save() }
+                        .disabled(!model.coordinator.tabStore.canMoveFolder(folder.id, to: parent.id) || parent.id == folder.parentID)
+                }
+            }
         }
     }
 

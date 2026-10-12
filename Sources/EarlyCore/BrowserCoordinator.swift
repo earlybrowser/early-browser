@@ -147,7 +147,38 @@ public final class BrowserCoordinator {
     public var session: BrowserSession {
         BrowserSession(profileID: profileID, activeSpaceID: activeSpaceID,
                        tabs: tabStore.tabs, selectionBySpace: selectionBySpace,
-                       recentlyClosed: recentlyClosed)
+                       recentlyClosed: recentlyClosed, folders: tabStore.folders)
+    }
+
+    public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
+
+    @discardableResult
+    public func createFolder(name: String, parentID: UUID? = nil) -> UUID? {
+        tabStore.createFolder(name: name, parentID: parentID, spaceID: activeSpaceID)
+    }
+
+    @discardableResult
+    public func renameFolder(_ id: UUID, to name: String) -> Bool {
+        guard folders.contains(where: { $0.id == id }) else { return false }
+        return tabStore.renameFolder(id, to: name)
+    }
+
+    @discardableResult
+    public func moveFolder(_ id: UUID, to parentID: UUID?) -> Bool {
+        guard folders.contains(where: { $0.id == id }) else { return false }
+        return tabStore.moveFolder(id, to: parentID)
+    }
+
+    public func toggleFolder(_ id: UUID) {
+        guard folders.contains(where: { $0.id == id }) else { return }
+        tabStore.toggleFolder(id)
+    }
+
+    @discardableResult
+    public func moveTab(_ id: UUID, toFolder folderID: UUID?) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab), tabStore.moveTab(id, toFolder: folderID) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        return true
     }
 
     @discardableResult

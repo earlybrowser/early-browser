@@ -22,7 +22,7 @@ final class BrowserWindowModel {
         self.input = input
         self.isTesting = isTesting
         coordinator = BrowserCoordinator(startup: startup, activeSpaceID: session.activeSpaceID,
-            tabStore: TabStore(tabs: session.tabs), selectionBySpace: session.selectionBySpace,
+            tabStore: TabStore(tabs: session.tabs, folders: session.folders), selectionBySpace: session.selectionBySpace,
             profileID: session.profileID, recentlyClosed: session.recentlyClosed)
         persistence = SessionAutosaver(repository: repository, disabledReason: restorationError)
         webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input) { configuration in

@@ -59,6 +59,45 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    func testNestedFoldersKeepLiveTabAndRestoreHierarchy() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let tabID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        app.buttons["folder.add"].click()
+        let name = app.textFields["folder.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click()
+        name.typeText("Work")
+        app.buttons["Save"].click()
+        let root = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Work'")).firstMatch
+        XCTAssertTrue(root.waitForExistence(timeout: 3))
+        let rootID = root.identifier
+        pinAction("New Subfolder…", on: root)
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click()
+        name.typeText("Research")
+        app.buttons["Save"].click()
+        let child = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Research'")).firstMatch
+        XCTAssertTrue(child.waitForExistence(timeout: 3))
+        let childID = child.identifier
+        app.buttons[tabID].rightClick()
+        app.menuItems["Move to Folder"].hover()
+        visibleMenuAction("Work / Research")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        XCTAssertTrue((app.buttons[tabID].value as? String ?? "").contains("Pinned"))
+        app.buttons[rootID].click()
+        XCTAssertFalse(app.buttons[childID].exists)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(app.buttons[rootID].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons[childID].exists)
+        app.buttons[rootID].click()
+        XCTAssertTrue(app.buttons[childID].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons[tabID].exists)
+    }
+
     func testDragPreviewAcceptsGapsAndTrailingSpace() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")

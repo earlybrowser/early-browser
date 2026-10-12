@@ -7,6 +7,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public let profileID: UUID
     public var title: String
     public var customTitle: String?
+    public var folderID: UUID?
     public var displayTitle: String { customTitle ?? title }
     public var currentURL: URL
     public var pinnedURL: URL?
@@ -33,7 +34,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, spaceID, profileID, title, customTitle, currentURL, pinnedURL, pinnedTitle, isOpen, isFavorite
+        case id, spaceID, profileID, title, customTitle, folderID, currentURL, pinnedURL, pinnedTitle, isOpen, isFavorite
     }
 
     public init(from decoder: any Decoder) throws {
@@ -43,6 +44,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
         profileID = try values.decode(UUID.self, forKey: .profileID)
         title = try values.decode(String.self, forKey: .title)
         customTitle = try values.decodeIfPresent(String.self, forKey: .customTitle)
+        folderID = try values.decodeIfPresent(UUID.self, forKey: .folderID)
         currentURL = try values.decode(URL.self, forKey: .currentURL)
         pinnedURL = try values.decodeIfPresent(URL.self, forKey: .pinnedURL)
         pinnedTitle = try values.decodeIfPresent(String.self, forKey: .pinnedTitle)
