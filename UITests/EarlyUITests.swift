@@ -64,7 +64,9 @@ final class EarlyUITests: XCTestCase {
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
         let tabID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
-        app.buttons["folder.add"].click()
+        app.descendants(matching: .any).matching(identifier: "sidebar.tabs").firstMatch
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
         let name = app.textFields["folder.name"]
         XCTAssertTrue(name.waitForExistence(timeout: 3))
         name.click()

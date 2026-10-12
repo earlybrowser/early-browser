@@ -249,13 +249,8 @@ struct BrowserWindowView: View {
                     ForEach(sidebarItems) { item in
                         switch item {
                         case .pinnedHeading:
-                            HStack {
-                                sectionLabel("Pinned").accessibilityIdentifier("sidebar.pinned.heading")
-                                Spacer()
-                                Button { editFolder(nil, parent: nil) } label: { Image(systemName: "folder.badge.plus") }
-                                    .buttonStyle(.plain).help("New folder")
-                                    .accessibilityLabel("New folder").accessibilityIdentifier("folder.add")
-                            }
+                            sectionLabel("Pinned")
+                                .accessibilityIdentifier("sidebar.pinned.heading")
                                 .padding(.bottom, 8)
                         case .divider:
                             Divider().padding(.vertical, 8)
@@ -284,6 +279,11 @@ struct BrowserWindowView: View {
         .padding(.bottom, sidebarAutoHides ? 17 : 14)
         .frame(width: sidebarAutoHides ? 263 : 260)
         .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button("New Tab") { model.presentCommandBar(.newTab) }
+            Button("New Folder") { editFolder(nil, parent: nil) }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
