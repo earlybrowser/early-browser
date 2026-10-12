@@ -59,6 +59,54 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    func testDragPreviewAcceptsGapsAndTrailingSpace() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let first = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let second = rows.allElementsBoundByIndex.first { $0.identifier != first }!.identifier
+        navigate(app, to: "early-test://fixture/one", newTab: true)
+        expectPage(app, "One")
+        let third = rows.allElementsBoundByIndex.first { ![first, second].contains($0.identifier) }!.identifier
+        func expectOrder(_ ids: [String], file: StaticString = #filePath, line: UInt = #line) {
+            let settled = NSPredicate { _, _ in
+                let positions = ids.map { app.buttons[$0].frame.minY }
+                return zip(positions, positions.dropFirst()).allSatisfy { $0 < $1 }
+            }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: app)], timeout: 3),
+                           .completed, "Rows should settle into the expected order", file: file, line: line)
+        }
+        let origin = app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+        let windowFrame = app.windows.firstMatch.frame
+        func at(_ point: CGPoint) -> XCUICoordinate {
+            origin.withOffset(CGVector(dx: point.x - windowFrame.minX, dy: point.y - windowFrame.minY))
+        }
+        // Drop in the gap, not on a row or an insertion line. Use absolute
+        // coordinates because rows visibly shift while the pointer is held.
+        let gap = CGPoint(x: app.buttons[first].frame.midX,
+                          y: (app.buttons[first].frame.maxY + app.buttons[second].frame.minY) / 2)
+        app.buttons[third].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.2, thenDragTo: at(gap), withVelocity: .slow, thenHoldForDuration: 0.6)
+        expectOrder([first, third, second])
+        let empty = CGPoint(x: app.buttons[first].frame.midX, y: app.buttons[second].frame.maxY + 70)
+        app.buttons[first].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.2, thenDragTo: at(empty), withVelocity: .slow, thenHoldForDuration: 0.6)
+        expectOrder([third, second, first])
+        let outside = app.webViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
+        app.buttons[third].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.2, thenDragTo: outside)
+        expectOrder([third, second, first])
+        expectRuntime(app, tabs: 3, views: 3, created: 3)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(app.buttons[third].waitForExistence(timeout: 8))
+        expectOrder([third, second, first])
+    }
+
     func testDragOrderingPreservesLivePagesAndKeyboardOrder() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")

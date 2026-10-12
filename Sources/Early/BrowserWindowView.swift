@@ -7,9 +7,12 @@ struct BrowserWindowView: View {
     @State private var sidebarAutoHides = false
     @State private var sidebarHovered = false
     @State private var tabFrames: [UUID: CGRect] = [:]
+    @State private var sectionFrames: [Bool: CGRect] = [:]
     @GestureState private var draggingTab: UUID?
-    @State private var dropTarget: UUID?
-    @State private var dropAfter = false
+    @State private var dragLayout: SidebarReorderLayout?
+    @State private var dragPoint: CGPoint = .zero
+    @State private var dragTranslation: CGSize = .zero
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
 
     private enum SidebarItem: Identifiable {
@@ -224,6 +227,7 @@ struct BrowserWindowView: View {
                 }
             }
             .accessibilityIdentifier("sidebar.tabs")
+            .background(sectionFrame(favorites: false))
             #if DEBUG
             if model.isTesting {
                 Text("Tabs \(model.openTabs.count) · Views \(model.webViews.liveViewCount) · Created \(model.webViews.creationCount) · \(model.persistence.isSaving ? "Saving" : "Saved")")
@@ -242,6 +246,10 @@ struct BrowserWindowView: View {
         .accessibilityIdentifier("browser.sidebar")
         .coordinateSpace(name: "sidebarReordering")
         .onPreferenceChange(TabFrames.self) { tabFrames = $0 }
+        .onPreferenceChange(SectionFrames.self) { sectionFrames = $0 }
+        .onChange(of: draggingTab) { _, id in
+            if id == nil { dragLayout = nil; dragTranslation = .zero }
+        }
     }
 
     private func tabRow(_ tab: BrowserTab) -> some View {
@@ -284,8 +292,12 @@ struct BrowserWindowView: View {
         .background(Color.primary.opacity(model.coordinator.activeTabID == tab.id ? 0.08 : 0))
         .clipShape(RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
         .background(tabFrame(tab.id))
-        .overlay(insertionMarker(tab))
-        .opacity(draggingTab == tab.id ? 0.55 : 1)
+        .background(draggingTab == tab.id ? Color(nsColor: .windowBackgroundColor) : .clear,
+                    in: RoundedRectangle(cornerRadius: 7))
+        .shadow(color: .black.opacity(draggingTab == tab.id ? 0.18 : 0), radius: 6, y: 3)
+        .offset(previewOffset(tab))
+        .zIndex(draggingTab == tab.id ? 1 : 0)
+        .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab))
         .contextMenu { tabActions(tab) }
     }
 
@@ -339,6 +351,7 @@ struct BrowserWindowView: View {
                 // A large collection must not consume all room for space tabs.
                 .frame(height: min(CGFloat((model.favorites.count + 3) / 4) * 60 - 6, 174))
                 .accessibilityIdentifier("sidebar.favorites")
+                .background(sectionFrame(favorites: true))
             }
         }
     }
@@ -368,8 +381,9 @@ struct BrowserWindowView: View {
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
         .highPriorityGesture(reorderGesture(tab))
         .background(tabFrame(tab.id))
-        .overlay(insertionMarker(tab))
-        .opacity(draggingTab == tab.id ? 0.55 : 1)
+        .offset(previewOffset(tab))
+        .zIndex(draggingTab == tab.id ? 1 : 0)
+        .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab))
         .contextMenu { tabActions(tab) }
     }
 
@@ -414,47 +428,61 @@ struct BrowserWindowView: View {
         .allowsHitTesting(false)
     }
 
+    private struct SectionFrames: PreferenceKey {
+        static let defaultValue: [Bool: CGRect] = [:]
+        static func reduce(value: inout [Bool: CGRect], nextValue: () -> [Bool: CGRect]) {
+            value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+        }
+    }
+
+    private func sectionFrame(favorites: Bool) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(key: SectionFrames.self,
+                                   value: [favorites: geometry.frame(in: .named("sidebarReordering"))])
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func beginDrag(_ tab: BrowserTab) {
+        guard let viewport = sectionFrames[tab.isFavorite] else { return }
+        let slots = model.coordinator.tabStore.peers(of: tab).compactMap { peer -> SidebarReorderLayout.Slot? in
+            guard let frame = tabFrames[peer.id], frame.intersects(viewport) else { return nil }
+            return .init(id: peer.id, frame: frame)
+        }
+        guard slots.contains(where: { $0.id == tab.id }) else { return }
+        let rows = slots.reduce(CGRect.null) { $0.union($1.frame) }
+        // The whole visible section accepts drops, including gaps and trailing
+        // empty space. Pinned rows stop before the regular-tab section.
+        let bounds = tab.isFavorite ? viewport : CGRect(
+            x: viewport.minX, y: max(viewport.minY, rows.minY - 12),
+            width: viewport.width,
+            height: max(0, (tab.pinnedURL == nil ? viewport.maxY : min(viewport.maxY, rows.maxY + 12))
+                        - max(viewport.minY, rows.minY - 12)))
+        dragLayout = SidebarReorderLayout(source: tab.id, slots: slots, bounds: bounds, grid: tab.isFavorite)
+    }
+
     private func reorderGesture(_ tab: BrowserTab) -> some Gesture {
         DragGesture(minimumDistance: 4, coordinateSpace: .named("sidebarReordering"))
             .updating($draggingTab) { _, state, _ in state = tab.id }
             .onChanged { value in
                 guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
-                updateDropTarget(tab, at: value.location)
+                if dragLayout?.source != tab.id { beginDrag(tab) }
+                dragPoint = value.location
+                dragTranslation = CGSize(width: tab.isFavorite ? value.translation.width : 0,
+                                         height: value.translation.height)
             }
             .onEnded { value in
-                defer { dropTarget = nil }
-                guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
-                updateDropTarget(tab, at: value.location)
-                if let dropTarget {
-                    _ = model.reorderTab(tab.id, on: dropTarget, after: dropAfter)
-                }
+                defer { dragLayout = nil; dragTranslation = .zero }
+                guard model.coordinator.commandBar == nil, model.renamingTabID == nil,
+                      let drop = dragLayout?.drop(at: value.location) else { return }
+                _ = model.reorderTab(tab.id, on: drop.target, after: drop.after)
             }
     }
 
-    private func updateDropTarget(_ tab: BrowserTab, at point: CGPoint) {
-        dropTarget = nil
-        for peer in model.coordinator.tabStore.peers(of: tab) where peer.id != tab.id {
-            guard let frame = tabFrames[peer.id], frame.contains(point) else { continue }
-            dropTarget = peer.id
-            dropAfter = tab.isFavorite ? point.x > frame.midX : point.y > frame.midY
-            break
-        }
-    }
-
-    private func insertionMarker(_ tab: BrowserTab) -> some View {
-        GeometryReader { geometry in
-            if draggingTab != nil && dropTarget == tab.id {
-                if tab.isFavorite {
-                    Rectangle().fill(Color.accentColor).frame(width: 2)
-                        .offset(x: dropAfter ? geometry.size.width - 2 : 0)
-                } else {
-                    Rectangle().fill(Color.accentColor).frame(height: 2)
-                        .offset(y: dropAfter ? geometry.size.height - 2 : 0)
-                }
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+    private func previewOffset(_ tab: BrowserTab) -> CGSize {
+        guard let draggingTab, let dragLayout else { return .zero }
+        if draggingTab == tab.id { return dragTranslation }
+        return dragLayout.offset(for: tab.id, at: dragPoint)
     }
 
     private struct RenameTabSheet: View {
