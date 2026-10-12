@@ -12,6 +12,14 @@ public struct TabStore: Equatable, Sendable {
         tabs.first { $0.id == id }
     }
 
+    @discardableResult
+    public mutating func rename(_ id: UUID, to name: String) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(512))
+        tabs[index].customTitle = trimmed.isEmpty ? nil : trimmed
+        return true
+    }
+
     public func openTabs(in spaceID: UUID) -> [BrowserTab] {
         // Keyboard selection and close-neighbour selection follow sidebar order.
         favorites.filter(\.isOpen) + pinnedTabs(in: spaceID).filter(\.isOpen) + todayTabs(in: spaceID)

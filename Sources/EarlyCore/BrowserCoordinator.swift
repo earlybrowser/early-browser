@@ -92,6 +92,13 @@ public final class BrowserCoordinator {
     }
 
     @discardableResult
+    public func renameTab(_ id: UUID, to name: String) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab), tabStore.rename(id, to: name) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        return true
+    }
+
+    @discardableResult
     public func setFavorite(_ id: UUID, favorite: Bool) -> Bool {
         guard let tab = tabStore.tab(id: id), canAccess(tab),
               tabStore.setFavorite(id, favorite: favorite, in: activeSpaceID) else { return false }

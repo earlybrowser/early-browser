@@ -6,6 +6,8 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public var spaceID: UUID
     public let profileID: UUID
     public var title: String
+    public var customTitle: String?
+    public var displayTitle: String { customTitle ?? title }
     public var currentURL: URL
     public var pinnedURL: URL?
     /// The original page name, independent of the title of a page visited later.
@@ -16,12 +18,13 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public init(
         id: UUID = UUID(), spaceID: UUID, profileID: UUID,
         title: String, currentURL: URL, pinnedURL: URL? = nil, isOpen: Bool = true,
-        pinnedTitle: String? = nil, isFavorite: Bool = false
+        pinnedTitle: String? = nil, isFavorite: Bool = false, customTitle: String? = nil
     ) {
         self.id = id
         self.spaceID = spaceID
         self.profileID = profileID
         self.title = title
+        self.customTitle = customTitle
         self.currentURL = currentURL
         self.pinnedURL = pinnedURL
         self.pinnedTitle = pinnedURL == nil ? nil : (pinnedTitle ?? (currentURL == pinnedURL ? title : nil))
@@ -30,7 +33,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, spaceID, profileID, title, currentURL, pinnedURL, pinnedTitle, isOpen, isFavorite
+        case id, spaceID, profileID, title, customTitle, currentURL, pinnedURL, pinnedTitle, isOpen, isFavorite
     }
 
     public init(from decoder: any Decoder) throws {
@@ -39,6 +42,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
         spaceID = try values.decode(UUID.self, forKey: .spaceID)
         profileID = try values.decode(UUID.self, forKey: .profileID)
         title = try values.decode(String.self, forKey: .title)
+        customTitle = try values.decodeIfPresent(String.self, forKey: .customTitle)
         currentURL = try values.decode(URL.self, forKey: .currentURL)
         pinnedURL = try values.decodeIfPresent(URL.self, forKey: .pinnedURL)
         pinnedTitle = try values.decodeIfPresent(String.self, forKey: .pinnedTitle)

@@ -37,6 +37,10 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
         CommandMenu("Tab") {
+            Button("Rename Tab…") {
+                if let id = model?.activeTab?.id { model?.requestRename(id) }
+            }
+            .disabled(model?.activeTab == nil)
             Button(model?.activeTab?.isFavorite == true ? "Remove from Favorites" : "Add to Favorites") {
                 if let tab = model?.activeTab { model?.setFavorite(tab.id, favorite: !tab.isFavorite) }
             }

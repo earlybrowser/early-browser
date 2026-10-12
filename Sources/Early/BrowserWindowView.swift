@@ -181,6 +181,9 @@ struct BrowserWindowView: View {
             #endif
         }
         .focusedSceneValue(\.browserWindow, model)
+        .sheet(isPresented: Binding(get: { model.renamingTabID != nil }, set: { if !$0 { model.renamingTabID = nil } })) {
+            RenameTabSheet(model: model)
+        }
         .onAppear { model.activateSelection() }
         .onDisappear { model.save(); model.webViews.discardAll() }
     }
@@ -247,7 +250,7 @@ struct BrowserWindowView: View {
                     if tab.pinnedURL == nil {
                         Image(systemName: "globe").accessibilityHidden(true)
                     }
-                    Text(tab.title).lineLimit(1).truncationMode(.tail)
+                    Text(tab.displayTitle).lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(tab.isOpen ? .primary : .secondary)
@@ -256,7 +259,7 @@ struct BrowserWindowView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("tab.\(tab.id)")
-            .accessibilityLabel(tab.title)
+            .accessibilityLabel(tab.displayTitle)
             .accessibilityValue(tab.pinnedURL == nil ? "Today" : (tab.isOpen ? "Pinned, open" : "Pinned, closed"))
             .accessibilityAddTraits(model.coordinator.activeTabID == tab.id ? .isSelected : [])
             .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
@@ -265,7 +268,7 @@ struct BrowserWindowView: View {
                 Button { model.closeTab(tab.id) } label: { Image(systemName: "xmark").font(.caption) }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("tabClose.\(tab.id)")
-                    .accessibilityLabel("Close \(tab.title)")
+                    .accessibilityLabel("Close \(tab.displayTitle)")
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
             }
         }
@@ -278,6 +281,7 @@ struct BrowserWindowView: View {
 
     @ViewBuilder
     private func tabActions(_ tab: BrowserTab) -> some View {
+        Button("Rename Tab…") { model.requestRename(tab.id) }
         Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
             model.setFavorite(tab.id, favorite: !tab.isFavorite)
         }
@@ -326,7 +330,7 @@ struct BrowserWindowView: View {
     }
 
     private func favoriteTile(_ tab: BrowserTab) -> some View {
-        let name = tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
+        let name = tab.customTitle ?? tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
         let selected = model.coordinator.activeTabID == tab.id
         return Button { model.selectTab(tab.id) } label: {
             VStack(spacing: 3) {
@@ -372,8 +376,29 @@ struct BrowserWindowView: View {
             .buttonStyle(.plain)
             .onHover { hovered = $0 }
             .accessibilityIdentifier("\(isActive ? "pinReset" : "pinSelect").\(tab.id)")
-            .accessibilityLabel(isActive ? "Reset \(tab.pinnedTitle ?? tab.title) to pinned URL" : "Open \(tab.title)")
+            .accessibilityLabel(isActive ? "Reset \(tab.customTitle ?? tab.pinnedTitle ?? tab.title) to pinned URL" : "Open \(tab.displayTitle)")
             .help(isActive ? "Reset pinned tab" : "Open pinned tab")
+        }
+    }
+
+    private struct RenameTabSheet: View {
+        @Bindable var model: BrowserWindowModel
+        @FocusState private var focused: Bool
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Rename Tab").font(.headline)
+                TextField("Name", text: $model.renameText)
+                    .focused($focused).accessibilityIdentifier("rename.name")
+                HStack {
+                    Button("Use Page Title") { model.finishRename(usePageTitle: true) }
+                    Spacer()
+                    Button("Cancel") { model.renamingTabID = nil }.keyboardShortcut(.cancelAction)
+                    Button("Save") { model.finishRename() }.keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(24).frame(width: 380)
+            .onAppear { focused = true }
         }
     }
 

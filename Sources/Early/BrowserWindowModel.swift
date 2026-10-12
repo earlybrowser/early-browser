@@ -13,6 +13,8 @@ final class BrowserWindowModel {
     let isTesting: Bool
     var submissionMessage: String?
     var notice: String?
+    var renamingTabID: UUID?
+    var renameText = ""
     var contentFocusRequest = 0
 
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
@@ -95,6 +97,18 @@ final class BrowserWindowModel {
     func setFavorite(_ id: UUID, favorite: Bool) {
         guard coordinator.setFavorite(id, favorite: favorite) else { return }
         save()
+    }
+
+    func requestRename(_ id: UUID) {
+        guard let tab = coordinator.tabStore.tab(id: id) else { return }
+        renameText = tab.displayTitle
+        renamingTabID = id
+    }
+
+    func finishRename(usePageTitle: Bool = false) {
+        guard let id = renamingTabID else { return }
+        if coordinator.renameTab(id, to: usePageTitle ? "" : renameText) { save() }
+        renamingTabID = nil
     }
 
     func resetPinnedTab(_ id: UUID) {

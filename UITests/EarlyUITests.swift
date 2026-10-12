@@ -59,6 +59,38 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    func testCustomNameSurvivesPinCloseAndRelaunch() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch
+        let id = row.identifier
+        pinAction("Rename Tab…", on: row)
+        let name = app.textFields["rename.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click()
+        app.typeKey("a", modifierFlags: .command)
+        app.typeText("My Videos")
+        app.buttons["Save"].click()
+        XCTAssertEqual(app.buttons[id].label, "My Videos")
+        pinAction("Pin Tab", on: app.buttons[id])
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        XCTAssertEqual(app.buttons[id].label, "My Videos")
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(app.buttons[id].waitForExistence(timeout: 8))
+        XCTAssertEqual(app.buttons[id].label, "My Videos")
+        pinAction("Rename Tab…", on: app.buttons[id])
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        app.buttons["Use Page Title"].click()
+        XCTAssertEqual(app.buttons[id].label, "Page One")
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
     func testFavoritesReuseLiveTabsAndRestoreClosedTiles() {
         let app = launchFreshApp()
         XCTAssertFalse(app.buttons["favorites.add"].isEnabled)

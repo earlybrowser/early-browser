@@ -192,6 +192,25 @@ struct BrowserCoordinatorTests {
         #expect(try JSONDecoder().decode(BrowserTab.self, from: data) == pin)
     }
 
+    @Test func customNamesSurviveNavigationPinResetCloseAndSerialization() throws {
+        let page = tab()
+        let browser = coordinator(tabs: [page], selected: page.id)
+        #expect(browser.renameTab(page.id, to: "  My Videos  "))
+        browser.setPinned(page.id, pinned: true)
+        browser.updateMetadata(page.id, url: URL(string: "https://example.com/video")!, title: "Video")
+        #expect(browser.tabStore.tab(id: page.id)?.displayTitle == "My Videos")
+        browser.resetPinnedTab(page.id)
+        browser.closeTab(page.id)
+        let session = try JSONDecoder().decode(BrowserSession.self, from: JSONEncoder().encode(browser.session))
+        #expect(session.tabs.first?.displayTitle == "My Videos")
+        browser.openTab(page.id)
+        browser.setFavorite(page.id, favorite: true)
+        #expect(browser.tabStore.tab(id: page.id)?.customTitle == "My Videos")
+        #expect(browser.renameTab(page.id, to: ""))
+        #expect(browser.tabStore.tab(id: page.id)?.displayTitle == "Example")
+        #expect(browser.activeTabID == page.id)
+    }
+
     @Test func legacyPinWithoutSavedTitleLoadsAndLearnsOriginalPageName() throws {
         var pin = tab(pinned: true)
         pin.title = "example.com"
