@@ -17,6 +17,11 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public var isFavorite: Bool
     public var isOpen: Bool
 
+    /// Compare the complete address: a different path, query or fragment is a detour.
+    public var hasNavigatedFromPin: Bool {
+        isOpen && pinnedURL.map { $0 != currentURL } == true
+    }
+
     public init(
         id: UUID = UUID(), spaceID: UUID, profileID: UUID,
         title: String, currentURL: URL, pinnedURL: URL? = nil, isOpen: Bool = true,

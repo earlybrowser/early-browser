@@ -64,6 +64,16 @@ public struct SidebarReorderLayout {
                       height: slots[index].frame.midY - original.frame.midY)
     }
 
+    /// Compact the source Favorites grid while its tile is previewed elsewhere.
+    /// Keep the real slots/gesture alive; only the remaining tiles move visually.
+    public func offsetRemovingSource(for id: UUID) -> CGSize {
+        guard grid, !foreign, id != source,
+              let sourceIndex = slots.firstIndex(where: { $0.id == source }),
+              let index = slots.firstIndex(where: { $0.id == id }), index > sourceIndex else { return .zero }
+        return CGSize(width: slots[index - 1].frame.midX - slots[index].frame.midX,
+                      height: slots[index - 1].frame.midY - slots[index].frame.midY)
+    }
+
     public func drop(at point: CGPoint) -> (target: UUID, after: Bool)? {
         let order = order(at: point)
         guard bounds.contains(point), let index = order.firstIndex(of: source) else { return nil }

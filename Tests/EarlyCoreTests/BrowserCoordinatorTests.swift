@@ -7,6 +7,24 @@ struct BrowserCoordinatorTests {
     private let space = UUID()
     private let profile = UUID()
 
+    @Test func pinDetourRequiresAnOpenPinAtADifferentFullURL() {
+        var pin = tab(pinned: true)
+        let original = pin.currentURL
+        #expect(!pin.hasNavigatedFromPin)
+        for address in ["https://example.com/video", "https://example.com?q=video", "https://example.com#video"] {
+            pin.currentURL = URL(string: address)!
+            #expect(pin.hasNavigatedFromPin)
+        }
+        pin.isOpen = false
+        #expect(!pin.hasNavigatedFromPin)
+        pin.isOpen = true
+        pin.currentURL = original
+        #expect(!pin.hasNavigatedFromPin)
+        pin.pinnedURL = nil
+        pin.currentURL = URL(string: "https://example.com/video")!
+        #expect(!pin.hasNavigatedFromPin)
+    }
+
     private func tab(pinned: Bool = false, in spaceID: UUID? = nil) -> BrowserTab {
         let url = URL(string: "https://example.com")!
         return BrowserTab(

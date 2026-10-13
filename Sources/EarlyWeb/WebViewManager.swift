@@ -16,6 +16,7 @@ public final class BrowserPage {
     fileprivate var observations: [NSKeyValueObservation] = []
     fileprivate var reportedURL: URL?
     fileprivate var reportedTitle: String?
+    fileprivate var navigationGeneration = UUID()
     fileprivate init(view: WKWebView, url: URL) { self.view = view; requestedURL = url }
 }
 
@@ -23,6 +24,7 @@ public final class BrowserPage {
 public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate {
     public private(set) var pages: [UUID: BrowserPage] = [:]
     public private(set) var creationCount = 0
+    public let favicons: FaviconStore
     public var onMetadata: ((UUID, URL?, String?) -> Void)?
     public var onNewWindow: ((URL, WKWebViewConfiguration) -> WKWebView?)?
     public var onClose: ((UUID) -> Void)?
@@ -37,8 +39,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public init(profileID: UUID, ephemeral: Bool = false,
                 input: NavigationInput = NavigationInput(),
+                faviconStore: FaviconStore? = nil,
                 configure: @escaping (WKWebViewConfiguration) -> Void = { _ in }) {
         self.profileID = profileID
+        self.favicons = faviconStore ?? FaviconStore(profileID: profileID, ephemeral: ephemeral)
         self.ephemeral = ephemeral
         self.input = input
         self.configure = configure
@@ -174,10 +178,26 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
         pages[id]?.failure = nil
+        pages[id]?.navigationGeneration = UUID()
         refresh(id)
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if let id = identities[ObjectIdentifier(webView)] { refresh(id) }
+        guard let id = identities[ObjectIdentifier(webView)], let page = pages[id],
+              let url = webView.url else { return }
+        refresh(id)
+        let generation = page.navigationGeneration
+        // Read only the loaded document, in an isolated JS world. No injected
+        // observers, external discovery service, or off-screen page loads.
+        webView.evaluateJavaScript("""
+            Array.from(document.querySelectorAll('link[rel]'))
+                .filter(link => link.rel.toLowerCase().split(/\\s+/).includes('icon'))
+                .slice(0, 8).map(link => link.href)
+            """, in: nil, in: .defaultClient) { [weak self, weak page] result in
+                guard let self, let page, self.pages[id] === page,
+                      page.navigationGeneration == generation, page.view.url == url else { return }
+                let links = (try? result.get()) as? [String] ?? []
+                self.favicons.request(url, discovered: links)
+            }
     }
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         failed(webView, error)

@@ -50,5 +50,16 @@ struct SidebarReorderLayoutTests {
         let point = CGPoint(x: 2, y: 20)
         #expect(layout.order(at: point) == [ids[4], ids[0], ids[1], ids[2], ids[3]])
         #expect(layout.offset(for: ids[3], at: point) == CGSize(width: -180, height: 60))
+        // Dragging out closes the source gap immediately, including row wraps.
+        let leaving = SidebarReorderLayout(source: ids[1], slots: slots, bounds: layout.bounds, grid: true)
+        #expect(leaving.offsetRemovingSource(for: ids[0]) == .zero)
+        #expect(leaving.offsetRemovingSource(for: ids[1]) == .zero)
+        #expect(leaving.offsetRemovingSource(for: ids[2]) == CGSize(width: -60, height: 0))
+        #expect(leaving.offsetRemovingSource(for: ids[4]) == CGSize(width: 180, height: -60))
+        #expect(layout.offsetRemovingSource(for: ids[3]) == .zero) // Last tile leaves no interior gap.
+        // Re-entry at the original slot restores the ordinary, unshifted preview.
+        #expect(leaving.offset(for: ids[2], at: CGPoint(x: 85, y: 20)) == .zero)
+        let incoming = SidebarReorderLayout(source: ids[1], slots: slots, bounds: layout.bounds, grid: true, foreign: true)
+        #expect(incoming.offsetRemovingSource(for: ids[2]) == .zero)
     }
 }

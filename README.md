@@ -14,6 +14,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 
 - **Arc & Zen Inspired Design**: Collapsible vertical sidebar with auto-hide and edge-hover reveal.
 - **Command Bar**: Quick navigation and tab creation via `⌘T` and `⌘L`.
+- **Tab Organization**: Persistent pins, icon-only Favorites, nested folders, custom names, and drag-and-drop ordering with website favicons.
 - **Native macOS Performance**: Native AppKit and SwiftUI architecture with Swift 6 concurrency and low overhead.
 - **SQLite Session Restoration**: Preserves tabs and active sessions across restarts.
 

@@ -443,9 +443,13 @@ final class EarlyUITests: XCTestCase {
         let id = row.identifier
         pinAction("Pin Tab", on: app.buttons[id])
         let reset = app.buttons["pinReset.\(id.dropFirst(4))"]
-        XCTAssertTrue(reset.waitForExistence(timeout: 3))
+        let select = app.buttons["pinSelect.\(id.dropFirst(4))"]
+        XCTAssertTrue(select.waitForExistence(timeout: 3))
+        select.hover()
+        XCTAssertFalse(reset.exists)
         navigate(app, to: "early-test://fixture/two")
         expectPage(app, "Two")
+        XCTAssertTrue(reset.waitForExistence(timeout: 3))
         let saved = app.webViews.textFields["Saved text"]
         saved.click()
         saved.typeText("keep video state")
@@ -455,7 +459,6 @@ final class EarlyUITests: XCTestCase {
         navigate(app, to: "early-test://fixture/one", newTab: true)
         expectPage(app, "One")
         XCTAssertFalse(reset.exists)
-        let select = app.buttons["pinSelect.\(id.dropFirst(4))"]
         XCTAssertTrue(select.exists)
         select.hover()
         XCTAssertFalse(reset.exists)
@@ -470,6 +473,9 @@ final class EarlyUITests: XCTestCase {
         add(image)
         reset.click()
         expectPage(app, "One")
+        XCTAssertTrue(select.waitForExistence(timeout: 3))
+        select.hover()
+        XCTAssertFalse(reset.exists)
         expectRuntime(app, tabs: 2, views: 2, created: 2)
         XCTAssertEqual(app.buttons[id].label, "Page One")
         app.typeKey("w", modifierFlags: .command)
@@ -560,6 +566,11 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Test Pin 1"].waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 0, views: 0, created: 0)
         let scroll = app.scrollViews["sidebar.tabs"]
+        let footer = app.descendants(matching: .any).matching(identifier: "sidebar.footer").firstMatch
+        XCTAssertTrue(footer.exists)
+        XCTAssertEqual(footer.label, "Current space: Personal")
+        XCTAssertGreaterThanOrEqual(footer.frame.minY, scroll.frame.maxY)
+        let footerY = footer.frame.minY
         let last = app.buttons["Test Pin 32"]
         let newTab = app.buttons["sidebar.newTab"]
         for _ in 0..<10 {
@@ -568,6 +579,7 @@ final class EarlyUITests: XCTestCase {
         }
         XCTAssertTrue(last.isHittable)
         XCTAssertTrue(newTab.isHittable)
+        XCTAssertEqual(footer.frame.minY, footerY, accuracy: 1)
         let id = last.identifier
         XCTAssertLessThan(last.frame.maxY, newTab.frame.minY)
         XCTAssertFalse(app.staticTexts["sidebar.today.heading"].exists)
@@ -604,6 +616,15 @@ final class EarlyUITests: XCTestCase {
     private func expectPage(_ app: XCUIApplication, _ name: String,
                             file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(app.webViews.staticTexts["Page \(name)"].firstMatch.waitForExistence(timeout: 10), file: file, line: line)
+        // DOM content can appear before WebKit finishes loading. Sidebar
+        // assertions should observe the completed state, not that brief gap.
+        XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5), file: file, line: line)
+    }
+
+    private func expectSidebarStatus(_ element: XCUIElement, _ value: String,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        let check = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [check], timeout: 5), .completed, file: file, line: line)
     }
 
     func testInvalidSubmissionDoesNotCreateTabOrView() {
@@ -730,13 +751,36 @@ final class EarlyUITests: XCTestCase {
         retry.click()
         XCTAssertTrue(retry.waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 1, views: 1, created: 1)
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch
+        let id = String(row.identifier.dropFirst(4))
+        expectSidebarStatus(row, "Today, load failed")
+        navigate(app, to: "early-test://fixture/slow")
+        XCTAssertTrue(app.buttons["navigation.stop"].waitForExistence(timeout: 5))
+        expectSidebarStatus(row, "Today, loading")
+        pinAction("Pin Tab", on: row)
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Pinned, open, loading")
+        pinAction("Add to Favorites", on: app.buttons["tab.\(id)"])
+        let favorite = app.buttons["favorite.\(id)"]
+        expectSidebarStatus(favorite, "Favorite, open, loading")
+        // Loading belongs to the tab, not whichever page is currently selected.
+        navigate(app, to: "early-test://fixture/one", newTab: true)
+        expectPage(app, "One")
+        expectSidebarStatus(favorite, "Favorite, open, loading")
+        pinAction("Stop Loading", on: favorite)
+        expectSidebarStatus(favorite, "Favorite, open")
+        favorite.click()
         navigate(app, to: "early-test://fixture/slow")
         XCTAssertTrue(app.buttons["navigation.stop"].waitForExistence(timeout: 5))
         app.buttons["navigation.stop"].click()
         XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5))
+        expectSidebarStatus(favorite, "Favorite, open")
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
-        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        expectSidebarStatus(favorite, "Favorite, open")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.typeKey("w", modifierFlags: .command)
+        expectSidebarStatus(favorite, "Favorite, closed")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
     }
 
     func testRealHTTPSWebsiteLoads() {

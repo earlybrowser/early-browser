@@ -1,5 +1,6 @@
 import AppKit
 import EarlyCore
+import EarlyWeb
 import SwiftUI
 
 struct BrowserWindowView: View {
@@ -24,7 +25,14 @@ struct BrowserWindowView: View {
     @State private var editingFolder: UUID?
     @State private var folderParent: UUID?
     @State private var folderName = ""
+    @State private var hoveredTab: UUID?
+    @State private var hoveredFolder: UUID?
+    @FocusState private var focusedSidebarControl: SidebarControl?
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
+
+    private enum SidebarControl: Hashable {
+        case tab(UUID), close(UUID), favorite(UUID), folder(UUID)
+    }
 
     private enum SidebarItem: Identifiable {
         case pinnedHeading, divider, newTab
@@ -250,8 +258,6 @@ struct BrowserWindowView: View {
             favoritesSection
                 .background(dropArea("favorites"))
                 .background(dropHighlight(.favorites))
-            Label("Personal", systemImage: "square.stack")
-                .font(.headline)
             ScrollView {
                 // Pins and Today share a scroll region: many persistent pins
                 // must not push Today or New Tab outside the reachable sidebar.
@@ -282,6 +288,7 @@ struct BrowserWindowView: View {
                     }
                 }
             }
+            .frame(maxHeight: .infinity)
             .accessibilityIdentifier("sidebar.tabs")
             .background(sectionFrame(favorites: false))
             #if DEBUG
@@ -291,6 +298,7 @@ struct BrowserWindowView: View {
                     .accessibilityIdentifier("test.runtime")
             }
             #endif
+            sidebarFooter
         }
         .padding(.horizontal, sidebarAutoHides ? 9 : 6)
         .padding(.top, sidebarAutoHides ? 7 : 4)
@@ -324,17 +332,42 @@ struct BrowserWindowView: View {
         }
     }
 
+    /// Fixed outside both scroll regions. Space switching arrives in Phase 3;
+    /// do not present a button or chevron that cannot perform an action yet.
+    private var sidebarFooter: some View {
+        HStack {
+            Label("Personal", systemImage: "square.stack")
+                .font(.callout.weight(.medium))
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.top, 12)
+        .padding(.bottom, 2)
+        .overlay(alignment: .top) { Divider() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Current space: Personal")
+        .accessibilityIdentifier("sidebar.footer")
+        .help("Current space: Personal")
+    }
+
     private func tabRow(_ tab: BrowserTab) -> some View {
-        HStack(spacing: 4) {
+        let selected = model.coordinator.activeTabID == tab.id
+        let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
+        return HStack(spacing: 4) {
             if tab.pinnedURL != nil {
-                PinnedTabIcon(tab: tab, isActive: model.coordinator.activeTabID == tab.id,
+                PinnedTabIcon(tab: tab, isActive: selected,
+                              favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
                               select: { model.selectTab(tab.id) },
                               reset: { model.resetPinnedTab(tab.id) })
             }
             Button { model.selectTab(tab.id) } label: {
                 HStack(spacing: 8) {
                     if tab.pinnedURL == nil {
-                        Image(systemName: "globe").accessibilityHidden(true)
+                        TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id], size: 16)
+                    }
+                    if tab.hasNavigatedFromPin {
+                        Text("/").foregroundStyle(.tertiary).accessibilityHidden(true)
                     }
                     Text(tab.displayTitle).lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 0)
@@ -344,16 +377,22 @@ struct BrowserWindowView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .focused($focusedSidebarControl, equals: .tab(tab.id))
             .accessibilityIdentifier("tab.\(tab.id)")
             .accessibilityLabel(tab.displayTitle)
-            .accessibilityValue(tab.pinnedURL == nil ? "Today" : (tab.isOpen ? "Pinned, open" : "Pinned, closed"))
-            .accessibilityAddTraits(model.coordinator.activeTabID == tab.id ? .isSelected : [])
+            .accessibilityValue(tabAccessibilityValue(tab))
+            .accessibilityHint(tab.isOpen ? "Select tab. More actions in the context menu." : "Reopen saved tab.")
+            .accessibilityAddTraits(selected ? .isSelected : [])
             .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
                   ?? tab.currentURL.absoluteString)
             .highPriorityGesture(reorderGesture(tab))
             if tab.isOpen {
-                Button { model.closeTab(tab.id) } label: { Image(systemName: "xmark").font(.caption) }
+                Button { model.closeTab(tab.id) } label: {
+                    Image(systemName: "xmark").font(.caption)
+                        .frame(width: 24, height: 24).contentShape(Rectangle())
+                }
                     .buttonStyle(.plain)
+                    .focused($focusedSidebarControl, equals: .close(tab.id))
                     .accessibilityIdentifier("tabClose.\(tab.id)")
                     .accessibilityLabel("Close \(tab.displayTitle)")
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
@@ -361,8 +400,14 @@ struct BrowserWindowView: View {
         }
         .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
         .padding(.trailing, 8)
-        .background(Color.primary.opacity(model.coordinator.activeTabID == tab.id ? 0.08 : 0))
+        .background(Color.primary.opacity(selected ? 0.08 : (hoveredTab == tab.id ? 0.04 : 0)))
         .clipShape(RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10)
+                .strokeBorder(focused ? Color.accentColor : .clear, lineWidth: 2)
+                .allowsHitTesting(false)
+        }
+        .onHover { updateTabHover(tab.id, hovering: $0) }
         .background(draggingTab == tab.id ? Color(nsColor: .windowBackgroundColor) : .clear,
                     in: RoundedRectangle(cornerRadius: 7))
         .shadow(color: .black.opacity(draggingTab == tab.id ? 0.18 : 0), radius: 6, y: 3)
@@ -372,6 +417,20 @@ struct BrowserWindowView: View {
         .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab.id))
         .background(tabFrame(tab.id))
         .contextMenu { tabActions(tab) }
+    }
+
+    private func updateTabHover(_ id: UUID, hovering: Bool) {
+        if hovering { hoveredTab = id }
+        else if hoveredTab == id { hoveredTab = nil }
+    }
+
+    private func tabAccessibilityValue(_ tab: BrowserTab) -> String {
+        let section = tab.isFavorite ? "Favorite" : "Pinned"
+        let base = tab.pinnedURL == nil ? "Today" : "\(section), \(tab.isOpen ? "open" : "closed")"
+        guard let page = model.webViews.pages[tab.id] else { return base }
+        if page.isLoading { return base + ", loading" }
+        if page.failure != nil { return base + ", load failed" }
+        return base
     }
 
     @ViewBuilder
@@ -401,6 +460,9 @@ struct BrowserWindowView: View {
         }
         if tab.pinnedURL != nil {
             Button("Reset to Pinned URL") { model.resetPinnedTab(tab.id) }
+        }
+        if model.webViews.pages[tab.id]?.isLoading == true {
+            Button("Stop Loading") { model.webViews.stop(tab.id) }
         }
         Divider()
         Button("Close Tab") { model.closeTab(tab.id) }
@@ -444,23 +506,27 @@ struct BrowserWindowView: View {
         let name = tab.customTitle ?? tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
         let selected = model.coordinator.activeTabID == tab.id
         return Button { model.selectTab(tab.id) } label: {
-            VStack(spacing: 3) {
-                // Site favicons are a separate sidebar checkpoint. A local
-                // monogram avoids external favicon services and network work.
-                Text(String(name.prefix(1)).uppercased())
-                    .font(.system(size: 19, weight: .semibold))
-                Text(name).font(.caption2).lineLimit(1).truncationMode(.tail)
-            }
+            SiteIcon(url: tab.pinnedURL ?? tab.currentURL, store: model.webViews.favicons,
+                     size: 22, monogram: String(name.prefix(1)).uppercased())
             .foregroundStyle(tab.isOpen ? .primary : .secondary)
             .frame(maxWidth: .infinity)
             .frame(height: 54)
-            .background(Color.primary.opacity(selected ? 0.12 : 0.04), in: RoundedRectangle(cornerRadius: 9))
+            .background(Color.primary.opacity(selected ? 0.12 : (hoveredTab == tab.id ? 0.08 : 0.04)),
+                        in: RoundedRectangle(cornerRadius: 9))
             .contentShape(RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain)
+        .focused($focusedSidebarControl, equals: .favorite(tab.id))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(focusedSidebarControl == .favorite(tab.id) ? Color.accentColor : .clear, lineWidth: 2)
+                .allowsHitTesting(false)
+        }
+        .onHover { updateTabHover(tab.id, hovering: $0) }
         .accessibilityIdentifier("favorite.\(tab.id)")
         .accessibilityLabel(name)
-        .accessibilityValue(tab.isOpen ? "Favorite, open" : "Favorite, closed")
+        .accessibilityValue(tabAccessibilityValue(tab))
+        .accessibilityHint(tab.isOpen ? "Select favorite. More actions in the context menu." : "Reopen saved favorite.")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
         .highPriorityGesture(reorderGesture(tab))
@@ -472,29 +538,102 @@ struct BrowserWindowView: View {
         .contextMenu { tabActions(tab) }
     }
 
-    /// Only the active pin exposes Reset. An inactive icon selects/reopens its
-    /// tab like the title, without unexpectedly resetting a background page.
+    /// Only an active pin away from its saved URL exposes Reset. Otherwise the
+    /// icon selects/reopens its tab, without reloading an already selected page.
     private struct PinnedTabIcon: View {
         let tab: BrowserTab
         let isActive: Bool
+        let favicons: FaviconStore
+        let page: BrowserPage?
         let select: () -> Void
         let reset: () -> Void
         @State private var hovered = false
+        @FocusState private var focused: Bool
+
+        private var canReset: Bool { isActive && tab.hasNavigatedFromPin }
 
         var body: some View {
-            Button(action: isActive ? reset : select) {
-                Image(systemName: isActive && hovered ? "arrow.uturn.backward" : "pin")
+            Button(action: canReset ? reset : select) {
+                Group {
+                    if canReset && (hovered || focused) {
+                        Image(systemName: "arrow.uturn.backward")
+                    } else {
+                        TabArtwork(tab: tab, store: favicons, page: page, size: 16, fallback: "pin")
+                    }
+                }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(tab.isOpen ? .primary : .secondary)
                     .frame(width: 34, height: 34)
-                    .background(Color.primary.opacity(isActive ? (hovered ? 0.16 : 0.07) : 0))
+                    .background(Color.primary.opacity(canReset && (hovered || focused) ? 0.16 : 0),
+                                in: RoundedRectangle(cornerRadius: 7))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .focused($focused)
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(focused ? Color.accentColor : .clear, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
             .onHover { hovered = $0 }
-            .accessibilityIdentifier("\(isActive ? "pinReset" : "pinSelect").\(tab.id)")
-            .accessibilityLabel(isActive ? "Reset \(tab.customTitle ?? tab.pinnedTitle ?? tab.title) to pinned URL" : "Open \(tab.displayTitle)")
-            .help(isActive ? "Reset pinned tab" : "Open pinned tab")
+            .accessibilityIdentifier("\(canReset ? "pinReset" : "pinSelect").\(tab.id)")
+            .accessibilityLabel(canReset ? "Reset \(tab.customTitle ?? tab.pinnedTitle ?? tab.title) to pinned URL" : "Open \(tab.displayTitle)")
+            .help(canReset ? "Reset pinned tab" : "Open pinned tab")
+        }
+    }
+
+    /// Only an existing page can be loading. Rendering an unloaded pin must
+    /// never allocate a web view or start navigation just to display status.
+    private struct TabArtwork: View {
+        let tab: BrowserTab
+        let store: FaviconStore
+        let page: BrowserPage?
+        let size: CGFloat
+        var fallback = "globe"
+        var monogram: String?
+        var showsLoading = true
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        var body: some View {
+            Group {
+                if showsLoading && page?.isLoading == true {
+                    if reduceMotion {
+                        Image(systemName: "hourglass")
+                    } else {
+                        ProgressView().controlSize(.mini)
+                    }
+                } else {
+                    SiteIcon(url: tab.pinnedURL ?? tab.currentURL, store: store, size: size,
+                             fallback: fallback, monogram: monogram)
+                }
+            }
+            .frame(width: size, height: size)
+            // The parent button announces loading; avoid duplicate/unnamed
+            // progress elements between keyboard and VoiceOver targets.
+            .accessibilityHidden(true)
+        }
+    }
+
+    private struct SiteIcon: View {
+        let url: URL
+        let store: FaviconStore
+        let size: CGFloat
+        var fallback = "globe"
+        var monogram: String?
+
+        var body: some View {
+            Group {
+                if let image = store.image(for: url) {
+                    Image(nsImage: image).resizable().scaledToFit()
+                } else if let monogram {
+                    Text(monogram).font(.system(size: size - 3, weight: .semibold))
+                } else {
+                    Image(systemName: fallback)
+                }
+            }
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+            .task(id: url) { store.request(url) }
         }
     }
 
@@ -528,10 +667,23 @@ struct BrowserWindowView: View {
             .padding(.vertical, 7).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focused($focusedSidebarControl, equals: .folder(folder.id))
         .accessibilityIdentifier("folder.\(folder.id)")
         .accessibilityLabel(folder.name)
         .accessibilityValue(folder.isExpanded || hoverExpanded.contains(folder.id) ? "Expanded" : "Collapsed")
+        .accessibilityHint("Expand or collapse folder. More actions in the context menu.")
+        .help(folderPath(folder))
+        .background(Color.primary.opacity(hoveredFolder == folder.id ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 7))
         .background(Color.accentColor.opacity(dropFolder == folder.id ? 0.12 : 0), in: RoundedRectangle(cornerRadius: 7))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(focusedSidebarControl == .folder(folder.id) ? Color.accentColor : .clear, lineWidth: 2)
+                .allowsHitTesting(false)
+        }
+        .onHover { hovering in
+            if hovering { hoveredFolder = folder.id }
+            else if hoveredFolder == folder.id { hoveredFolder = nil }
+        }
         .offset(previewOffset(folder.id))
         .animation(draggingTab == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
         .background(tabFrame(folder.id))
@@ -785,12 +937,37 @@ struct BrowserWindowView: View {
     @ViewBuilder
     private var crossSectionPreview: some View {
         if let draggingTab, let tab = model.coordinator.tabStore.tab(id: draggingTab) {
-            Text(tab.isFavorite ? String(tab.displayTitle.prefix(1)).uppercased() : tab.displayTitle)
+            // Preview the destination, not the source tab's persisted section.
+            // Membership still changes only after a successful drop.
+            let destination = destinationSection(at: dragPoint)
+            let overFavorites = destination == .favorites
+            let rowBounds = sectionFrames[false] ?? dropAreas["favorites"] ?? dragSourceFrame
+            let favoriteWidth = sectionFrames[true]?.width ?? rowBounds.width
+            let tileSide = min(54, max(1, (favoriteWidth - 18) / 4))
+            let rowHeight: CGFloat = destination == .pinned ? 34 : 32
+            let name = tab.customTitle ?? tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
+            HStack(spacing: 8) {
+                TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
+                           size: overFavorites ? 22 : 16,
+                           monogram: overFavorites ? String(name.prefix(1)).uppercased() : nil,
+                           showsLoading: !overFavorites)
+                if !overFavorites {
+                    Text(tab.displayTitle).truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+            }
                 .font(.callout).lineLimit(1)
-                .frame(width: dragSourceFrame.width, height: dragSourceFrame.height)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 8)
+                .frame(width: overFavorites ? tileSide : rowBounds.width,
+                       height: overFavorites ? tileSide : rowHeight)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: overFavorites ? 9 : 7))
                 .shadow(radius: 5, y: 2)
-                .position(x: dragSourceFrame.midX + dragTranslation.width, y: dragSourceFrame.midY + dragTranslation.height)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: overFavorites)
+                // Keep the square under the pointer in the grid, and align
+                // the expanded row with the list. Pointer movement never lags
+                // behind a shape-transition animation.
+                .position(x: overFavorites ? dragPoint.x : rowBounds.midX,
+                          y: dragSourceFrame.midY + dragTranslation.height)
                 .allowsHitTesting(false).accessibilityHidden(true)
         }
     }
@@ -826,8 +1003,20 @@ struct BrowserWindowView: View {
     }
 
     private func previewOffset(_ id: UUID) -> CGSize {
-        guard let draggingTab, let dragLayout else { return .zero }
+        guard let draggingTab else { return .zero }
         if draggingTab == id { return .zero }
+        if model.coordinator.tabStore.tab(id: draggingTab)?.isFavorite == true,
+           destinationSection(at: dragPoint) != .favorites,
+           model.coordinator.tabStore.tab(id: id)?.isFavorite == true {
+            // The destination layout previews insertion into tabs/pins; the
+            // source grid must independently close its gap before release.
+            // Keep its geometry stable so re-entry and cancellation are reversible.
+            let sourceLayout = SidebarReorderLayout(source: draggingTab,
+                slots: destinationSlots(in: .favorites, folderID: nil),
+                bounds: sectionFrames[true] ?? .zero, grid: true)
+            return sourceLayout.offsetRemovingSource(for: id)
+        }
+        guard let dragLayout else { return .zero }
         if dragLayout.slots.contains(where: { $0.id == id }) {
             return dragLayout.offset(for: id, at: dragPoint)
         }
