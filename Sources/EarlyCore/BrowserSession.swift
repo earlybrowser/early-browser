@@ -42,6 +42,7 @@ public struct BrowserSession: Codable, Equatable, Sendable {
 
     public func validate(using input: NavigationInput = NavigationInput()) throws {
         try BrowserFolder.validate(folders)
+        guard Set(tabs.map(\.id) + folders.map(\.id)).count == tabs.count + folders.count else { throw SessionError.invalidData }
         guard version == 1, Set(tabs.map(\.id)).count == tabs.count,
               recentlyClosed.count <= 20 else { throw SessionError.invalidData }
         for tab in tabs + recentlyClosed.map(\.tab) {

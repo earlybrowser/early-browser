@@ -111,12 +111,18 @@ final class BrowserWindowModel {
         return true
     }
 
+    func placeTab(_ id: UUID, in section: TabStore.Section, folderID: UUID? = nil, before: UUID? = nil) -> Bool {
+        guard coordinator.placeTab(id, in: section, folderID: folderID, before: before) else { return false }
+        save()
+        return true
+    }
+
     func moveTab(_ id: UUID, direction: Int) {
         guard let tab = coordinator.tabStore.tab(id: id) else { return }
-        let peers = coordinator.tabStore.peers(of: tab)
-        guard [-1, 1].contains(direction), let index = peers.firstIndex(where: { $0.id == id }),
+        let peers = coordinator.tabStore.siblingIDs(of: tab)
+        guard [-1, 1].contains(direction), let index = peers.firstIndex(of: id),
               peers.indices.contains(index + direction) else { return }
-        _ = reorderTab(id, on: peers[index + direction].id, after: direction > 0)
+        _ = reorderTab(id, on: peers[index + direction], after: direction > 0)
     }
 
     func finishRename(usePageTitle: Bool = false) {

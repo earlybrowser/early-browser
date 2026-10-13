@@ -59,6 +59,64 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    func testMixedPinOrderHoverFolderAndFavoriteInsertion() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let first = rows.firstMatch.identifier
+        pinAction("Pin Tab", on: app.buttons[first])
+        app.descendants(matching: .any).matching(identifier: "sidebar.tabs").firstMatch
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let name = app.textFields["folder.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click(); name.typeText("Work")
+        app.buttons["Save"].click()
+        let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Work'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        let folderID = folder.identifier
+        folder.click() // Start collapsed so the drag must spring it open.
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let second = rows.allElementsBoundByIndex.first { $0.identifier != first }!.identifier
+        func drag(_ id: String, to target: XCUIElement, y: CGFloat = 0.5, x: CGFloat = 0.5) {
+            app.buttons[id].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .click(forDuration: 0.2, thenDragTo: target.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y)),
+                       withVelocity: .slow, thenHoldForDuration: 0.8)
+        }
+        drag(second, to: folder, y: 0.05)
+        XCTAssertLessThan(app.buttons[second].frame.minY, folder.frame.minY)
+        drag(first, to: folder)
+        XCTAssertEqual(folder.value as? String, "Expanded")
+        XCTAssertGreaterThan(app.buttons[first].frame.minY, folder.frame.minY)
+        folder.click()
+        XCTAssertFalse(app.buttons[first].exists)
+        folder.click()
+        navigate(app, to: "early-test://fixture/one", newTab: true)
+        expectPage(app, "One")
+        let third = rows.allElementsBoundByIndex.first { ![first, second].contains($0.identifier) }!.identifier
+        drag(third, to: app.buttons[first], y: 0.2)
+        XCTAssertLessThan(app.buttons[third].frame.minY, app.buttons[first].frame.minY)
+        folder.click()
+        XCTAssertFalse(app.buttons[third].exists)
+        folder.click()
+        drag(second, to: app.buttons["favorites.add"])
+        let favorite = "favorite.\(second.dropFirst(4))"
+        XCTAssertTrue(app.buttons[favorite].waitForExistence(timeout: 3))
+        drag(third, to: app.buttons[favorite], x: 0.15)
+        let inserted = "favorite.\(third.dropFirst(4))"
+        XCTAssertTrue(app.buttons[inserted].waitForExistence(timeout: 3))
+        XCTAssertLessThan(app.buttons[inserted].frame.minX, app.buttons[favorite].frame.minX)
+        expectRuntime(app, tabs: 3, views: 3, created: 3)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(app.buttons[folderID].waitForExistence(timeout: 8))
+        XCTAssertLessThan(app.buttons[inserted].frame.minX, app.buttons[favorite].frame.minX)
+        XCTAssertGreaterThan(app.buttons[first].frame.minY, app.buttons[folderID].frame.minY)
+    }
+
     func testDraggingAcrossSectionsPreservesLivePage() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")

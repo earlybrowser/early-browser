@@ -4,6 +4,22 @@ import Testing
 @testable import EarlyCore
 
 struct SidebarReorderLayoutTests {
+    @Test func expandedFolderAndForeignInsertionUseBlockHeights() {
+        let folder = UUID(), tab = UUID(), source = UUID()
+        let layout = SidebarReorderLayout(source: source, slots: [
+            .init(id: folder, frame: CGRect(x: 0, y: 0, width: 200, height: 104),
+                  hitFrame: CGRect(x: 0, y: 0, width: 200, height: 32)),
+            .init(id: tab, frame: CGRect(x: 0, y: 108, width: 200, height: 32)),
+            .init(id: source, frame: CGRect(x: 0, y: 144, width: 200, height: 32))
+        ], bounds: CGRect(x: 0, y: 0, width: 200, height: 200), grid: false, foreign: true)
+        let top = CGPoint(x: 20, y: 2)
+        #expect(layout.insertion(at: top)?.before == folder)
+        #expect(layout.offset(for: folder, at: top).height == 36)
+        #expect(layout.offset(for: tab, at: top).height == 36)
+        #expect(layout.insertion(at: CGPoint(x: 20, y: 106))?.before == tab)
+        #expect(layout.insertion(at: CGPoint(x: 20, y: 195))?.before == nil)
+    }
+
     @Test func previewShiftsBothDirectionsAndAcceptsGapsAndEmptySpace() {
         let ids = (0..<3).map { _ in UUID() }
         let slots = ids.enumerated().map { SidebarReorderLayout.Slot(id: $0.element,

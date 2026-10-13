@@ -4,6 +4,30 @@ import Testing
 
 @Suite @MainActor
 struct FolderTests {
+    @Test func mixedPlacementPersistsAndInvalidDropIsAtomic() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let a = try #require(browser.createFolder(name: "A"))
+        let b = try #require(browser.createFolder(name: "B"))
+        let id = try #require(browser.navigate(to: URL(string: "https://example.com")!, target: .newTab(spaceID: browser.activeSpaceID)))
+        #expect(browser.placeTab(id, in: .pinned, before: b))
+        #expect(browser.tabStore.pinnedItems(in: browser.activeSpaceID, parentID: nil).map(\.id) == [a, id, b])
+        #expect(browser.placeTab(id, in: .pinned, before: a))
+        #expect(browser.tabStore.pinnedItems(in: browser.activeSpaceID, parentID: nil).map(\.id) == [id, a, b])
+        #expect(browser.placeTab(id, in: .pinned, folderID: b))
+        #expect(browser.tabStore.tab(id: id)?.folderID == b)
+        let before = browser.session
+        #expect(!browser.placeTab(id, in: .favorites, before: UUID()))
+        #expect(browser.session == before)
+        #expect(!browser.placeTab(id, in: .pinned, folderID: UUID()))
+        #expect(browser.session == before)
+        #expect(browser.placeTab(id, in: .pinned, before: b))
+        let decoded = try JSONDecoder().decode(BrowserSession.self, from: JSONEncoder().encode(browser.session))
+        try decoded.validate()
+        let store = TabStore(tabs: decoded.tabs, folders: decoded.folders)
+        #expect(store.pinnedItems(in: browser.activeSpaceID, parentID: nil).map(\.id) == [a, id, b])
+        #expect(browser.activeTabID == id)
+    }
+
     @Test func folderMovesPreserveIdentityAndRoundTrip() throws {
         let browser = BrowserCoordinator(startup: .returningSession)
         let id = try #require(browser.navigate(to: URL(string: "https://example.com")!, target: .newTab(spaceID: browser.activeSpaceID)))

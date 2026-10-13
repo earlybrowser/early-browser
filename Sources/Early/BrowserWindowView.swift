@@ -13,6 +13,12 @@ struct BrowserWindowView: View {
     @State private var dragLayout: SidebarReorderLayout?
     @State private var dragPoint: CGPoint = .zero
     @State private var dragTranslation: CGSize = .zero
+    @State private var dragSourceFrame: CGRect = .zero
+    @State private var frozenFrames: [UUID: CGRect] = [:]
+    @State private var dropFolder: UUID?
+    @State private var pendingFolder: UUID?
+    @State private var folderHoverTask: Task<Void, Never>?
+    @State private var hoverExpanded: Set<UUID> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var folderEditor = false
     @State private var editingFolder: UUID?
@@ -43,13 +49,16 @@ struct BrowserWindowView: View {
 
     private func folderItems(parent: UUID?, depth: Int) -> [SidebarItem] {
         guard depth <= 32 else { return [] }
-        var items: [SidebarItem] = []
-        for folder in model.coordinator.folders where folder.parentID == parent {
-            items.append(.folder(folder, depth))
-            if folder.isExpanded { items += folderItems(parent: folder.id, depth: depth + 1) }
+        return model.coordinator.tabStore.pinnedItems(in: model.coordinator.activeSpaceID, parentID: parent).flatMap { item -> [SidebarItem] in
+            switch item {
+            case .tab(let tab):
+                return [.tab(tab, depth)]
+            case .folder(let folder):
+                var items: [SidebarItem] = [.folder(folder, depth)]
+                if folder.isExpanded || hoverExpanded.contains(folder.id) { items += folderItems(parent: folder.id, depth: depth + 1) }
+                return items
+            }
         }
-        items += model.pinnedTabs.filter { $0.folderID == parent }.map { .tab($0, depth) }
-        return items
     }
 
     private static let windowCornerRadius: CGFloat = {
@@ -229,7 +238,7 @@ struct BrowserWindowView: View {
             }
           }.padding(24).frame(width: 340)
         }
-        .onDisappear { model.save(); model.webViews.discardAll() }
+        .onDisappear { endDrag(); model.save(); model.webViews.discardAll() }
     }
 
     private var sidebar: some View {
@@ -259,8 +268,10 @@ struct BrowserWindowView: View {
                                 .background(dropHighlight(.pinned))
                         case .divider:
                             Divider().padding(.vertical, 8)
+                                .offset(y: insertionOverflow(at: dropAreas["regular"]?.minY ?? 0))
                         case .newTab:
                             newTabButton
+                                .offset(y: insertionOverflow(at: dropAreas["regular"]?.minY ?? 0))
                                 .background(dropArea("regular"))
                                 .background(dropHighlight(.regular))
                         case .tab(let tab, let depth):
@@ -296,11 +307,20 @@ struct BrowserWindowView: View {
         .accessibilityIdentifier("browser.sidebar")
         .coordinateSpace(name: "sidebarReordering")
         .overlay(alignment: .topLeading) { crossSectionPreview }
-        .onPreferenceChange(TabFrames.self) { tabFrames = $0 }
+        .onPreferenceChange(TabFrames.self) { frames in
+            tabFrames = frames
+            guard draggingTab != nil else { return }
+            // Measurements are outside the preview offsets, so expansion can
+            // refresh every baseline without feeding animated positions back in.
+            frozenFrames = frames
+            if let tab = draggingTab.flatMap({ model.coordinator.tabStore.tab(id: $0) }) {
+                refreshDragLayout(for: tab, at: dragPoint)
+            }
+        }
         .onPreferenceChange(SectionFrames.self) { sectionFrames = $0 }
         .onPreferenceChange(DropAreas.self) { dropAreas = $0 }
         .onChange(of: draggingTab) { _, id in
-            if id == nil { dragLayout = nil; dragTranslation = .zero }
+            if id == nil { endDrag() }
         }
     }
 
@@ -343,14 +363,14 @@ struct BrowserWindowView: View {
         .padding(.trailing, 8)
         .background(Color.primary.opacity(model.coordinator.activeTabID == tab.id ? 0.08 : 0))
         .clipShape(RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
-        .background(tabFrame(tab.id))
         .background(draggingTab == tab.id ? Color(nsColor: .windowBackgroundColor) : .clear,
                     in: RoundedRectangle(cornerRadius: 7))
         .shadow(color: .black.opacity(draggingTab == tab.id ? 0.18 : 0), radius: 6, y: 3)
-        .offset(previewOffset(tab))
-        .opacity(crossingSections && draggingTab == tab.id ? 0 : 1)
+        .offset(previewOffset(tab.id))
+        .opacity(draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
-        .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab))
+        .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab.id))
+        .background(tabFrame(tab.id))
         .contextMenu { tabActions(tab) }
     }
 
@@ -368,9 +388,9 @@ struct BrowserWindowView: View {
             }
         }
         Button("Move Up") { model.moveTab(tab.id, direction: -1) }
-            .disabled(model.coordinator.tabStore.peers(of: tab).first?.id == tab.id)
+            .disabled(model.coordinator.tabStore.siblingIDs(of: tab).first == tab.id)
         Button("Move Down") { model.moveTab(tab.id, direction: 1) }
-            .disabled(model.coordinator.tabStore.peers(of: tab).last?.id == tab.id)
+            .disabled(model.coordinator.tabStore.siblingIDs(of: tab).last == tab.id)
         Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
             model.setFavorite(tab.id, favorite: !tab.isFavorite)
         }
@@ -403,16 +423,17 @@ struct BrowserWindowView: View {
                 .accessibilityLabel("Add current tab to Favorites")
                 .help("Add current tab to Favorites")
             }
-            if !model.favorites.isEmpty {
+            if !model.favorites.isEmpty || receivingFavorite {
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
                         ForEach(model.favorites) { tab in
                             favoriteTile(tab)
                         }
+                        if receivingFavorite { Color.clear.frame(height: 54).accessibilityHidden(true) }
                     }
                 }
                 // A large collection must not consume all room for space tabs.
-                .frame(height: min(CGFloat((model.favorites.count + 3) / 4) * 60 - 6, 174))
+                .frame(height: min(CGFloat((model.favorites.count + (receivingFavorite ? 1 : 0) + 3) / 4) * 60 - 6, 174))
                 .accessibilityIdentifier("sidebar.favorites")
                 .background(sectionFrame(favorites: true))
             }
@@ -443,11 +464,11 @@ struct BrowserWindowView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
         .highPriorityGesture(reorderGesture(tab))
-        .background(tabFrame(tab.id))
-        .offset(previewOffset(tab))
-        .opacity(crossingSections && draggingTab == tab.id ? 0 : 1)
+        .offset(previewOffset(tab.id))
+        .opacity(draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
-        .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab))
+        .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(tab.id))
+        .background(tabFrame(tab.id))
         .contextMenu { tabActions(tab) }
     }
 
@@ -499,7 +520,7 @@ struct BrowserWindowView: View {
     private func folderRow(_ folder: BrowserFolder) -> some View {
         Button { model.coordinator.toggleFolder(folder.id); model.save() } label: {
             HStack(spacing: 6) {
-                Image(systemName: folder.isExpanded ? "chevron.down" : "chevron.right").font(.caption2)
+                Image(systemName: folder.isExpanded || hoverExpanded.contains(folder.id) ? "chevron.down" : "chevron.right").font(.caption2)
                 Image(systemName: "folder")
                 Text(folder.name).lineLimit(1)
                 Spacer(minLength: 0)
@@ -509,7 +530,11 @@ struct BrowserWindowView: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("folder.\(folder.id)")
         .accessibilityLabel(folder.name)
-        .accessibilityValue(folder.isExpanded ? "Expanded" : "Collapsed")
+        .accessibilityValue(folder.isExpanded || hoverExpanded.contains(folder.id) ? "Expanded" : "Collapsed")
+        .background(Color.accentColor.opacity(dropFolder == folder.id ? 0.12 : 0), in: RoundedRectangle(cornerRadius: 7))
+        .offset(previewOffset(folder.id))
+        .animation(draggingTab == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
+        .background(tabFrame(folder.id))
         .contextMenu {
             Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
             Button("Rename Folder…") { editFolder(folder, parent: folder.parentID) }
@@ -554,22 +579,175 @@ struct BrowserWindowView: View {
         .allowsHitTesting(false)
     }
 
+    private func itemFrame(_ id: UUID) -> CGRect? {
+        frozenFrames[id] ?? tabFrames[id]
+    }
+
     private func beginDrag(_ tab: BrowserTab) {
-        guard let viewport = sectionFrames[tab.isFavorite] else { return }
-        let slots = model.coordinator.tabStore.peers(of: tab).compactMap { peer -> SidebarReorderLayout.Slot? in
-            guard let frame = tabFrames[peer.id], frame.intersects(viewport) else { return nil }
-            return .init(id: peer.id, frame: frame)
+        guard let frame = tabFrames[tab.id] else { return }
+        frozenFrames = tabFrames
+        dragSourceFrame = frame
+        refreshDragLayout(for: tab, at: dragPoint)
+    }
+
+    private func endDrag() {
+        folderHoverTask?.cancel()
+        folderHoverTask = nil
+        pendingFolder = nil
+        dropFolder = nil
+        hoverExpanded = []
+        dragLayout = nil
+        dragTranslation = .zero
+        frozenFrames = [:]
+    }
+
+    private func refreshDragLayout(for tab: BrowserTab, at point: CGPoint) {
+        let destination = destinationSection(at: point) ?? section(of: tab)
+        let folderID = destination == .pinned ? containerFolder(at: point) : nil
+        var slots = destinationSlots(in: destination, folderID: folderID)
+        let bounds = destinationBounds(in: destination, folderID: folderID, slots: slots)
+        let foreign = !slots.contains(where: { $0.id == tab.id })
+        if foreign {
+            let size = CGSize(width: destination == .favorites ? max(1, (bounds.width - 18) / 4) : bounds.width,
+                              height: destination == .favorites ? 54 : (destination == .pinned ? 34 : 32))
+            let preceding = slots.last?.frame ?? (destination == .pinned
+                ? (folderID.flatMap { itemFrame($0) } ?? dropAreas["pinned"]) : nil)
+            slots.append(.init(id: tab.id, frame: SidebarReorderLayout.placeholderFrame(
+                after: preceding, bounds: bounds, grid: destination == .favorites, size: size)))
         }
-        guard slots.contains(where: { $0.id == tab.id }) else { return }
-        let rows = slots.reduce(CGRect.null) { $0.union($1.frame) }
-        // The whole visible section accepts drops, including gaps and trailing
-        // empty space. Pinned rows stop before the regular-tab section.
-        let bounds = tab.isFavorite ? viewport : CGRect(
-            x: viewport.minX, y: max(viewport.minY, rows.minY - 12),
-            width: viewport.width,
-            height: max(0, (tab.pinnedURL == nil ? viewport.maxY : min(viewport.maxY, rows.maxY + 12))
-                        - max(viewport.minY, rows.minY - 12)))
-        dragLayout = SidebarReorderLayout(source: tab.id, slots: slots, bounds: bounds, grid: tab.isFavorite)
+        guard bounds.width > 0, bounds.height > 0, slots.contains(where: { $0.id == tab.id }) else { dragLayout = nil; return }
+        dragLayout = SidebarReorderLayout(source: tab.id, slots: slots, bounds: bounds,
+                                          grid: destination == .favorites, foreign: foreign)
+    }
+
+    private func destinationSlots(in destination: TabStore.Section, folderID: UUID?) -> [SidebarReorderLayout.Slot] {
+        let ids: [UUID]
+        switch destination {
+        case .favorites:
+            ids = model.favorites.map(\.id)
+        case .regular:
+            ids = model.todayTabs.map(\.id)
+        case .pinned:
+            ids = model.coordinator.tabStore.pinnedItems(in: model.coordinator.activeSpaceID, parentID: folderID).map(\.id)
+        }
+        return ids.compactMap { id in
+            guard let header = itemFrame(id) else { return nil }
+            var block = header
+            if destination == .pinned, let index = pinnedOutline.firstIndex(where: { $0.id == id && $0.isFolder }) {
+                for child in pinnedOutline.dropFirst(index + 1) {
+                    if child.depth <= pinnedOutline[index].depth { break }
+                    if let frame = itemFrame(child.id) { block = block.union(frame) }
+                }
+            }
+            return SidebarReorderLayout.Slot(id: id, frame: block, hitFrame: header)
+        }
+    }
+
+    private func destinationBounds(in destination: TabStore.Section, folderID: UUID?, slots: [SidebarReorderLayout.Slot]) -> CGRect {
+        switch destination {
+        case .favorites:
+            return sectionFrames[true] ?? dropAreas["favorites"] ?? .null
+        case .regular:
+            guard let viewport = sectionFrames[false], let regular = dropAreas["regular"] else { return .null }
+            return CGRect(x: viewport.minX, y: regular.minY, width: viewport.width,
+                          height: max(0, viewport.maxY - regular.minY))
+        case .pinned:
+            guard let viewport = sectionFrames[false], let regular = dropAreas["regular"] else { return .null }
+            let bottom = min(regular.minY, viewport.maxY)
+            if let folderID, let header = itemFrame(folderID) {
+                let next = nextPinnedSiblingFrame(of: folderID)
+                let maxY = next?.minY ?? bottom
+                return CGRect(x: viewport.minX, y: header.minY, width: viewport.width, height: max(0, maxY - header.minY))
+            }
+            let top = slots.map(\.frame.minY).min().map { min($0, viewport.minY + 12) } ?? viewport.minY
+            return CGRect(x: viewport.minX, y: viewport.minY, width: viewport.width, height: max(0, bottom - min(top, viewport.minY)))
+        }
+    }
+
+    private func nextPinnedSiblingFrame(of folderID: UUID) -> CGRect? {
+        let items = pinnedOutline
+        guard let index = items.firstIndex(where: { $0.id == folderID }) else { return nil }
+        return items.dropFirst(index + 1).first { $0.depth <= items[index].depth }.flatMap { itemFrame($0.id) }
+    }
+
+    private var pinnedOutline: [(id: UUID, depth: Int, isFolder: Bool)] {
+        sidebarItems.compactMap { item in
+            switch item {
+            case .tab(let tab, let depth) where tab.pinnedURL != nil && !tab.isFavorite:
+                return (tab.id, depth, false)
+            case .folder(let folder, let depth):
+                return (folder.id, depth, true)
+            default:
+                return nil
+            }
+        }
+    }
+
+    private func containerFolder(at point: CGPoint) -> UUID? {
+        if let dropFolder {
+            if itemFrame(dropFolder)?.contains(point) == true { return dropFolder }
+        }
+        let expanded = model.coordinator.folders.filter { $0.isExpanded || hoverExpanded.contains($0.id) }
+        let enclosing = expanded.filter { folder in
+            guard let header = itemFrame(folder.id) else { return false }
+            let next = nextPinnedSiblingFrame(of: folder.id)?.minY
+                ?? dropAreas["regular"]?.minY
+                ?? sectionFrames[false]?.maxY
+            guard let next else { return false }
+            // The left gutter remains a way to insert at the parent level.
+            return point.x >= header.minX + 12 && point.y >= header.maxY && point.y < next
+        }
+        return enclosing.max(by: { depth(of: $0) < depth(of: $1) })?.id
+    }
+
+    private func depth(of folder: BrowserFolder) -> Int {
+        var depth = 0, parent = folder.parentID, seen: Set<UUID> = [folder.id]
+        while let id = parent, seen.insert(id).inserted,
+              let ancestor = model.coordinator.folders.first(where: { $0.id == id }) {
+            depth += 1
+            parent = ancestor.parentID
+        }
+        return depth
+    }
+
+    private func nestTarget(at point: CGPoint) -> UUID? {
+        let folders = model.coordinator.folders.compactMap { folder -> (UUID, CGRect)? in
+            guard let frame = itemFrame(folder.id), frame.contains(point) else { return nil }
+            return (folder.id, frame)
+        }
+        guard let match = folders.min(by: { $0.1.height < $1.1.height }) else { return nil }
+        // Top/bottom edges stay sibling insertion; the middle dwells to nest.
+        if point.y < match.1.minY + 8 || point.y > match.1.maxY - 8 { return nil }
+        return match.0
+    }
+
+    private func updateFolderHover(at point: CGPoint) {
+        guard destinationSection(at: point) == .pinned else {
+            pendingFolder = nil
+            dropFolder = nil
+            folderHoverTask?.cancel()
+            return
+        }
+        if let dropFolder {
+            let bounds = destinationBounds(in: .pinned, folderID: dropFolder,
+                                           slots: destinationSlots(in: .pinned, folderID: dropFolder))
+            if !bounds.contains(point), itemFrame(dropFolder)?.contains(point) != true {
+                self.dropFolder = nil
+            }
+        }
+        let target = nestTarget(at: point)
+        guard target != pendingFolder else { return }
+        pendingFolder = target
+        folderHoverTask?.cancel()
+        guard let target else { return }
+        folderHoverTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard !Task.isCancelled, pendingFolder == target, let draggingTab,
+                  let tab = model.coordinator.tabStore.tab(id: draggingTab) else { return }
+            dropFolder = target
+            hoverExpanded.insert(target)
+            refreshDragLayout(for: tab, at: dragPoint)
+        }
     }
 
     private func reorderGesture(_ tab: BrowserTab) -> some Gesture {
@@ -577,50 +755,42 @@ struct BrowserWindowView: View {
             .updating($draggingTab) { _, state, _ in state = tab.id }
             .onChanged { value in
                 guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
-                if dragLayout?.source != tab.id { beginDrag(tab) }
                 dragPoint = value.location
+                if frozenFrames.isEmpty { beginDrag(tab) }
                 dragTranslation = CGSize(width: tab.isFavorite ? value.translation.width : 0,
                                          height: value.translation.height)
+                updateFolderHover(at: value.location)
+                refreshDragLayout(for: tab, at: value.location)
             }
             .onEnded { value in
-                defer { dragLayout = nil; dragTranslation = .zero }
+                defer { endDrag() }
                 guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
-                if let destination = destinationSection(at: value.location), destination != section(of: tab) {
-                    guard model.coordinator.moveTab(tab.id, to: destination) else { return }
-                    let peers = model.coordinator.tabStore.peers(of: model.coordinator.tabStore.tab(id: tab.id)!)
-                        .filter { $0.id != tab.id }
-                    let next = peers.first { peer in
-                        guard let frame = tabFrames[peer.id] else { return false }
-                        return destination == .favorites
-                            ? (value.location.y < frame.minY || (value.location.y <= frame.maxY && value.location.x < frame.midX))
-                            : value.location.y < frame.midY
-                    }
-                    if let target = next ?? peers.last {
-                        _ = model.coordinator.reorderTab(tab.id, relativeTo: target.id, after: next == nil)
-                    }
-                    model.save()
-                } else if let drop = dragLayout?.drop(at: value.location) {
-                    _ = model.reorderTab(tab.id, on: drop.target, after: drop.after)
+                guard let destination = destinationSection(at: value.location) else { return }
+                refreshDragLayout(for: tab, at: value.location)
+                let folderID = destination == .pinned ? containerFolder(at: value.location) : nil
+                if let drop = dragLayout?.insertion(at: value.location) {
+                    _ = model.placeTab(tab.id, in: destination, folderID: folderID, before: drop.before)
+                } else if destination != section(of: tab) || folderID != tab.folderID {
+                    _ = model.placeTab(tab.id, in: destination, folderID: folderID, before: nil)
                 }
             }
     }
 
-    private var crossingSections: Bool {
+    private var receivingFavorite: Bool {
         guard let draggingTab, let tab = model.coordinator.tabStore.tab(id: draggingTab),
               let destination = destinationSection(at: dragPoint) else { return false }
-        return destination != section(of: tab)
+        return destination == .favorites && !tab.isFavorite
     }
 
     @ViewBuilder
     private var crossSectionPreview: some View {
-        if crossingSections, let draggingTab, let tab = model.coordinator.tabStore.tab(id: draggingTab),
-           let frame = dragLayout?.slots.first(where: { $0.id == draggingTab })?.frame {
+        if let draggingTab, let tab = model.coordinator.tabStore.tab(id: draggingTab) {
             Text(tab.isFavorite ? String(tab.displayTitle.prefix(1)).uppercased() : tab.displayTitle)
                 .font(.callout).lineLimit(1)
-                .frame(width: frame.width, height: frame.height)
+                .frame(width: dragSourceFrame.width, height: dragSourceFrame.height)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 .shadow(radius: 5, y: 2)
-                .position(x: frame.midX + dragTranslation.width, y: frame.midY + dragTranslation.height)
+                .position(x: dragSourceFrame.midX + dragTranslation.width, y: dragSourceFrame.midY + dragTranslation.height)
                 .allowsHitTesting(false).accessibilityHidden(true)
         }
     }
@@ -655,10 +825,32 @@ struct BrowserWindowView: View {
             .allowsHitTesting(false)
     }
 
-    private func previewOffset(_ tab: BrowserTab) -> CGSize {
+    private func previewOffset(_ id: UUID) -> CGSize {
         guard let draggingTab, let dragLayout else { return .zero }
-        if draggingTab == tab.id { return dragTranslation }
-        return dragLayout.offset(for: tab.id, at: dragPoint)
+        if draggingTab == id { return .zero }
+        if dragLayout.slots.contains(where: { $0.id == id }) {
+            return dragLayout.offset(for: id, at: dragPoint)
+        }
+        // Descendants travel with a folder's block when a tab crosses it.
+        var parent = model.coordinator.tabStore.tab(id: id)?.folderID
+            ?? model.coordinator.folders.first(where: { $0.id == id })?.parentID
+        var seen: Set<UUID> = []
+        while let folder = parent, seen.insert(folder).inserted {
+            if dragLayout.slots.contains(where: { $0.id == folder }) {
+                return dragLayout.offset(for: folder, at: dragPoint)
+            }
+            parent = model.coordinator.folders.first(where: { $0.id == folder })?.parentID
+        }
+        return CGSize(width: 0, height: insertionOverflow(at: itemFrame(id)?.minY ?? 0))
+    }
+
+    private func insertionOverflow(at y: CGFloat) -> CGFloat {
+        guard draggingTab != nil, let dragLayout, dragLayout.foreign, !dragLayout.grid,
+              dragLayout.bounds.contains(dragPoint),
+              let placeholder = dragLayout.slots.first(where: { $0.id == dragLayout.source }) else { return 0 }
+        let bottom = dragLayout.slots.filter { $0.id != dragLayout.source }.last?.frame.maxY
+            ?? placeholder.frame.minY - 4
+        return y > bottom ? placeholder.frame.height + 4 : 0
     }
 
     private struct RenameTabSheet: View {

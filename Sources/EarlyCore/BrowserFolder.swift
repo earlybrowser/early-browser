@@ -6,6 +6,7 @@ public struct BrowserFolder: Identifiable, Codable, Equatable, Sendable {
     public var parentID: UUID?
     public var name: String
     public var isExpanded: Bool
+    public var sidebarPosition: Int?
 
     public init(id: UUID = UUID(), spaceID: UUID, parentID: UUID? = nil, name: String, isExpanded: Bool = true) {
         self.id = id

@@ -100,10 +100,13 @@ public final class BrowserCoordinator {
 
     @discardableResult
     public func reorderTab(_ id: UUID, relativeTo target: UUID, after: Bool) -> Bool {
-        guard let source = tabStore.tab(id: id), let destination = tabStore.tab(id: target),
-              canAccess(source), canAccess(destination),
-              tabStore.reorder(id, relativeTo: target, after: after) else { return false }
-        return true
+        guard let source = tabStore.tab(id: id), canAccess(source) else { return false }
+        if let destination = tabStore.tab(id: target) {
+            guard canAccess(destination) else { return false }
+        } else {
+            guard folders.contains(where: { $0.id == target }) else { return false }
+        }
+        return tabStore.reorder(id, relativeTo: target, after: after)
     }
 
     @discardableResult
@@ -166,6 +169,19 @@ public final class BrowserCoordinator {
     }
 
     @discardableResult
+    public func placeTab(_ id: UUID, in section: TabStore.Section, folderID: UUID? = nil, before: UUID? = nil) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab),
+              tabStore.place(id, in: section, folderID: folderID, before: before, spaceID: activeSpaceID) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        if section != .favorites {
+            for space in Array(selectionBySpace.keys) where space != activeSpaceID && selectionBySpace[space] == id {
+                selectionBySpace[space] = nil
+            }
+        }
+        return true
+    }
+
+    @discardableResult
     public func createFolder(name: String, parentID: UUID? = nil) -> UUID? {
         tabStore.createFolder(name: name, parentID: parentID, spaceID: activeSpaceID)
     }
@@ -185,6 +201,11 @@ public final class BrowserCoordinator {
     public func toggleFolder(_ id: UUID) {
         guard folders.contains(where: { $0.id == id }) else { return }
         tabStore.toggleFolder(id)
+    }
+
+    public func setFolderExpanded(_ id: UUID, expanded: Bool) {
+        guard folders.contains(where: { $0.id == id }) else { return }
+        tabStore.setFolderExpanded(id, expanded: expanded)
     }
 
     @discardableResult
