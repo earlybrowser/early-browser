@@ -99,6 +99,17 @@ public final class BrowserCoordinator {
     }
 
     @discardableResult
+    public func reorderTab(_ id: UUID, relativeTo target: UUID, after: Bool) -> Bool {
+        guard let source = tabStore.tab(id: id), canAccess(source) else { return false }
+        if let destination = tabStore.tab(id: target) {
+            guard canAccess(destination) else { return false }
+        } else {
+            guard folders.contains(where: { $0.id == target }) else { return false }
+        }
+        return tabStore.reorder(id, relativeTo: target, after: after)
+    }
+
+    @discardableResult
     public func setFavorite(_ id: UUID, favorite: Bool) -> Bool {
         guard let tab = tabStore.tab(id: id), canAccess(tab),
               tabStore.setFavorite(id, favorite: favorite, in: activeSpaceID) else { return false }
@@ -139,7 +150,69 @@ public final class BrowserCoordinator {
     public var session: BrowserSession {
         BrowserSession(profileID: profileID, activeSpaceID: activeSpaceID,
                        tabs: tabStore.tabs, selectionBySpace: selectionBySpace,
-                       recentlyClosed: recentlyClosed)
+                       recentlyClosed: recentlyClosed, folders: tabStore.folders)
+    }
+
+    public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
+
+    @discardableResult
+    public func moveTab(_ id: UUID, to section: TabStore.Section) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab),
+              tabStore.move(id, to: section, in: activeSpaceID) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        if section != .favorites {
+            for space in Array(selectionBySpace.keys) where space != activeSpaceID && selectionBySpace[space] == id {
+                selectionBySpace[space] = nil
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    public func placeTab(_ id: UUID, in section: TabStore.Section, folderID: UUID? = nil, before: UUID? = nil) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab),
+              tabStore.place(id, in: section, folderID: folderID, before: before, spaceID: activeSpaceID) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        if section != .favorites {
+            for space in Array(selectionBySpace.keys) where space != activeSpaceID && selectionBySpace[space] == id {
+                selectionBySpace[space] = nil
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    public func createFolder(name: String, parentID: UUID? = nil) -> UUID? {
+        tabStore.createFolder(name: name, parentID: parentID, spaceID: activeSpaceID)
+    }
+
+    @discardableResult
+    public func renameFolder(_ id: UUID, to name: String) -> Bool {
+        guard folders.contains(where: { $0.id == id }) else { return false }
+        return tabStore.renameFolder(id, to: name)
+    }
+
+    @discardableResult
+    public func moveFolder(_ id: UUID, to parentID: UUID?) -> Bool {
+        guard folders.contains(where: { $0.id == id }) else { return false }
+        return tabStore.moveFolder(id, to: parentID)
+    }
+
+    public func toggleFolder(_ id: UUID) {
+        guard folders.contains(where: { $0.id == id }) else { return }
+        tabStore.toggleFolder(id)
+    }
+
+    public func setFolderExpanded(_ id: UUID, expanded: Bool) {
+        guard folders.contains(where: { $0.id == id }) else { return }
+        tabStore.setFolderExpanded(id, expanded: expanded)
+    }
+
+    @discardableResult
+    public func moveTab(_ id: UUID, toFolder folderID: UUID?) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab), tabStore.moveTab(id, toFolder: folderID) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        return true
     }
 
     @discardableResult

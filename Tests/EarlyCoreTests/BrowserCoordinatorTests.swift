@@ -7,6 +7,24 @@ struct BrowserCoordinatorTests {
     private let space = UUID()
     private let profile = UUID()
 
+    @Test func pinDetourRequiresAnOpenPinAtADifferentFullURL() {
+        var pin = tab(pinned: true)
+        let original = pin.currentURL
+        #expect(!pin.hasNavigatedFromPin)
+        for address in ["https://example.com/video", "https://example.com?q=video", "https://example.com#video"] {
+            pin.currentURL = URL(string: address)!
+            #expect(pin.hasNavigatedFromPin)
+        }
+        pin.isOpen = false
+        #expect(!pin.hasNavigatedFromPin)
+        pin.isOpen = true
+        pin.currentURL = original
+        #expect(!pin.hasNavigatedFromPin)
+        pin.pinnedURL = nil
+        pin.currentURL = URL(string: "https://example.com/video")!
+        #expect(!pin.hasNavigatedFromPin)
+    }
+
     private func tab(pinned: Bool = false, in spaceID: UUID? = nil) -> BrowserTab {
         let url = URL(string: "https://example.com")!
         return BrowserTab(
@@ -209,6 +227,37 @@ struct BrowserCoordinatorTests {
         #expect(browser.renameTab(page.id, to: ""))
         #expect(browser.tabStore.tab(id: page.id)?.displayTitle == "Example")
         #expect(browser.activeTabID == page.id)
+    }
+
+    @Test func reorderPreservesIdentitySelectionAndPersistsOrder() throws {
+        let first = tab(), second = tab(), pin = tab(pinned: true)
+        let browser = coordinator(tabs: [first, second, pin], selected: first.id)
+        #expect(browser.reorderTab(second.id, relativeTo: first.id, after: false))
+        #expect(browser.tabStore.todayTabs(in: space).map(\.id) == [second.id, first.id])
+        #expect(browser.activeTabID == first.id)
+        #expect(!browser.reorderTab(first.id, relativeTo: pin.id, after: false))
+        #expect(!browser.reorderTab(first.id, relativeTo: first.id, after: false))
+        let decoded = try JSONDecoder().decode(BrowserSession.self, from: JSONEncoder().encode(browser.session))
+        #expect(decoded.tabs.map(\.id) == browser.tabStore.tabs.map(\.id))
+        browser.setFavorite(first.id, favorite: true)
+        browser.setFavorite(second.id, favorite: true)
+        #expect(browser.reorderTab(first.id, relativeTo: second.id, after: false))
+        #expect(browser.tabStore.favorites.map(\.id) == [first.id, second.id])
+        #expect(browser.tabStore.tabs.count == 3)
+        let otherSpace = BrowserTab(spaceID: UUID(), profileID: profile, title: "Other space", currentURL: first.currentURL)
+        let otherProfile = BrowserTab(spaceID: space, profileID: UUID(), title: "Other profile", currentURL: first.currentURL,
+                                      pinnedURL: first.currentURL, isFavorite: true)
+        var store = TabStore(tabs: [first, second, otherSpace, otherProfile])
+        let movedAcrossSpaces = store.reorder(first.id, relativeTo: otherSpace.id, after: false)
+        let movedToMissingTab = store.reorder(first.id, relativeTo: UUID(), after: false)
+        #expect(!movedAcrossSpaces)
+        #expect(!movedToMissingTab)
+        var favorite = first
+        favorite.isFavorite = true
+        favorite.pinnedURL = first.currentURL
+        store = TabStore(tabs: [favorite, otherProfile])
+        let movedAcrossProfiles = store.reorder(favorite.id, relativeTo: otherProfile.id, after: false)
+        #expect(!movedAcrossProfiles)
     }
 
     @Test func legacyPinWithoutSavedTitleLoadsAndLearnsOriginalPageName() throws {

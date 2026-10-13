@@ -7,6 +7,8 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public let profileID: UUID
     public var title: String
     public var customTitle: String?
+    public var folderID: UUID?
+    public var sidebarPosition: Int?
     public var displayTitle: String { customTitle ?? title }
     public var currentURL: URL
     public var pinnedURL: URL?
@@ -14,6 +16,11 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public var pinnedTitle: String?
     public var isFavorite: Bool
     public var isOpen: Bool
+
+    /// Compare the complete address: a different path, query or fragment is a detour.
+    public var hasNavigatedFromPin: Bool {
+        isOpen && pinnedURL.map { $0 != currentURL } == true
+    }
 
     public init(
         id: UUID = UUID(), spaceID: UUID, profileID: UUID,
@@ -33,7 +40,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, spaceID, profileID, title, customTitle, currentURL, pinnedURL, pinnedTitle, isOpen, isFavorite
+        case id, spaceID, profileID, title, customTitle, folderID, sidebarPosition, currentURL, pinnedURL, pinnedTitle, isOpen, isFavorite
     }
 
     public init(from decoder: any Decoder) throws {
@@ -43,6 +50,8 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
         profileID = try values.decode(UUID.self, forKey: .profileID)
         title = try values.decode(String.self, forKey: .title)
         customTitle = try values.decodeIfPresent(String.self, forKey: .customTitle)
+        folderID = try values.decodeIfPresent(UUID.self, forKey: .folderID)
+        sidebarPosition = try values.decodeIfPresent(Int.self, forKey: .sidebarPosition)
         currentURL = try values.decode(URL.self, forKey: .currentURL)
         pinnedURL = try values.decodeIfPresent(URL.self, forKey: .pinnedURL)
         pinnedTitle = try values.decodeIfPresent(String.self, forKey: .pinnedTitle)

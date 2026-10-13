@@ -22,7 +22,7 @@ final class BrowserWindowModel {
         self.input = input
         self.isTesting = isTesting
         coordinator = BrowserCoordinator(startup: startup, activeSpaceID: session.activeSpaceID,
-            tabStore: TabStore(tabs: session.tabs), selectionBySpace: session.selectionBySpace,
+            tabStore: TabStore(tabs: session.tabs, folders: session.folders), selectionBySpace: session.selectionBySpace,
             profileID: session.profileID, recentlyClosed: session.recentlyClosed)
         persistence = SessionAutosaver(repository: repository, disabledReason: restorationError)
         webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input) { configuration in
@@ -103,6 +103,26 @@ final class BrowserWindowModel {
         guard let tab = coordinator.tabStore.tab(id: id) else { return }
         renameText = tab.displayTitle
         renamingTabID = id
+    }
+
+    func reorderTab(_ id: UUID, on target: UUID, after: Bool) -> Bool {
+        guard coordinator.reorderTab(id, relativeTo: target, after: after) else { return false }
+        save()
+        return true
+    }
+
+    func placeTab(_ id: UUID, in section: TabStore.Section, folderID: UUID? = nil, before: UUID? = nil) -> Bool {
+        guard coordinator.placeTab(id, in: section, folderID: folderID, before: before) else { return false }
+        save()
+        return true
+    }
+
+    func moveTab(_ id: UUID, direction: Int) {
+        guard let tab = coordinator.tabStore.tab(id: id) else { return }
+        let peers = coordinator.tabStore.siblingIDs(of: tab)
+        guard [-1, 1].contains(direction), let index = peers.firstIndex(of: id),
+              peers.indices.contains(index + direction) else { return }
+        _ = reorderTab(id, on: peers[index + direction], after: direction > 0)
     }
 
     func finishRename(usePageTitle: Bool = false) {
