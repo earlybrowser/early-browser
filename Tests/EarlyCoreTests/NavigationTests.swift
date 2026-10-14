@@ -3,6 +3,24 @@ import Testing
 @testable import EarlyCore
 
 struct NavigationTests {
+    @Test @MainActor func backgroundTabPreservesSelectionAndCommandBar() throws {
+        let coordinator = BrowserCoordinator(startup: .firstLaunch)
+        let originalURL = URL(string: "https://example.com/current")!
+        let original = coordinator.navigate(to: originalURL, target: .newTab(spaceID: coordinator.activeSpaceID))
+        coordinator.presentCommandBar(.navigateCurrentTab)
+        coordinator.updateQuery("unfinished edit")
+        let presentation = coordinator.commandBar
+        let backgroundURL = URL(string: "https://example.com/background")!
+        let id = coordinator.openBackgroundTab(to: backgroundURL)
+        let tab = try #require(coordinator.tabStore.tab(id: id))
+        #expect(tab.currentURL == backgroundURL)
+        #expect(tab.spaceID == coordinator.activeSpaceID)
+        #expect(tab.isOpen)
+        #expect(coordinator.activeTabID == original)
+        #expect(coordinator.commandBar == presentation)
+        #expect(coordinator.tabStore.tabs.count == 2)
+    }
+
     @Test(arguments: [
         (" example.com/path ", "https://example.com/path"),
         ("localhost:8080/test", "http://localhost:8080/test"),
@@ -18,7 +36,8 @@ struct NavigationTests {
     @Test func searchIsCorrectlyEscaped() throws {
         let url = try NavigationInput().resolve("swift & native #browser")
         let parts = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        #expect(parts.host == "duckduckgo.com")
+        #expect(parts.host == "www.google.com")
+        #expect(parts.path == "/search")
         #expect(parts.queryItems == [URLQueryItem(name: "q", value: "swift & native #browser")])
     }
 
