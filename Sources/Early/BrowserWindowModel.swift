@@ -43,9 +43,19 @@ final class BrowserWindowModel {
             // WebKit performs this load after the delegate returns the new view.
             return view
         }
+        webViews.onOpenBackgroundLink = { [weak self] url in
+            guard let self else { return }
+            let id = self.coordinator.openBackgroundTab(to: url)
+            guard let tab = self.coordinator.tabStore.tab(id: id) else { return }
+            self.webViews.load(url, in: tab)
+            self.save()
+            // The explicit context-menu action loads only the background view;
+            // selection and the visible page's first responder stay unchanged.
+        }
         webViews.onClose = { [weak self] in self?.closeTab($0) }
         webViews.onNotice = { [weak self] in self?.notice = $0 }
         activateSelection()
+        if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
         save()
     }
 
@@ -162,6 +172,15 @@ final class BrowserWindowModel {
         guard coordinator.closeTab(id) != nil else { return }
         webViews.discard(tabID: id)
         activateSelection()
+        save()
+    }
+
+    func deleteFolder(_ id: UUID) {
+        let previousActive = coordinator.activeTabID
+        guard let removed = coordinator.deleteFolder(id) else { return }
+        for tabID in removed { webViews.discard(tabID: tabID) }
+        if let renamingTabID, removed.contains(renamingTabID) { self.renamingTabID = nil }
+        if previousActive != coordinator.activeTabID { activateSelection() }
         save()
     }
 

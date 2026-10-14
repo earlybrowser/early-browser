@@ -1,11 +1,37 @@
 import AppKit
 import EarlyCore
-import EarlyWeb
+@testable import EarlyWeb
 import Testing
 import WebKit
 
 @Suite @MainActor
 struct WebViewManagerTests {
+    @Test func mediaActivityAggregatesFramesAndResetsOnNavigationAndProcessExit() {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Media",
+                             currentURL: URL(string: "https://example.com")!)
+        let page = manager.prepare(tab)
+        #expect(!page.isPlayingMedia)
+        manager.updateMediaActivity(in: page.view, token: "main", playing: true)
+        manager.updateMediaActivity(in: page.view, token: "frame", playing: true)
+        manager.updateMediaActivity(in: page.view, token: "main", playing: false)
+        #expect(page.isPlayingMedia)
+        manager.updateMediaActivity(in: page.view, token: "frame", playing: false)
+        #expect(!page.isPlayingMedia)
+        manager.updateMediaActivity(in: page.view, token: "main", playing: true)
+        manager.webView(page.view, didCommit: nil)
+        #expect(!page.isPlayingMedia)
+        manager.updateMediaActivity(in: page.view, token: "new-document", playing: true)
+        manager.webViewWebContentProcessDidTerminate(page.view)
+        #expect(!page.isPlayingMedia)
+        manager.discardAll()
+        manager.updateMediaActivity(in: page.view, token: "late-message", playing: true)
+        #expect(!page.isPlayingMedia)
+        #expect(manager.liveViewCount == 0)
+    }
+
     @Test func viewsAreLazyReusedAndExplicitlyReleased() {
         _ = NSApplication.shared
         let profile = UUID()

@@ -6,23 +6,40 @@
 
 <p align="center">A fast, lightweight native macOS browser built with Swift 6, SwiftUI, AppKit, and WebKit.</p>
 
-Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Early focuses on a clean, distraction-free browsing experience with a collapsible sidebar, an instant command bar, and  macOS integration.
+Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Early focuses on a clean, distraction-free browsing experience with a collapsible sidebar, an instant command bar, and macOS integration.
 
 > **Note**: This project is currently in active development.
 
 ## Features
 
-- **Arc & Zen Inspired Design**: Collapsible vertical sidebar with auto-hide and edge-hover reveal.
-- **Command Bar**: Quick navigation and tab creation via `⌘T` and `⌘L`.
-- **Tab Organization**: Persistent pins, icon-only Favorites, nested folders, custom names, and drag-and-drop ordering with website favicons.
-- **Native macOS Performance**: Native AppKit and SwiftUI architecture with Swift 6 concurrency and low overhead.
-- **SQLite Session Restoration**: Preserves tabs and active sessions across restarts.
+| Feature | Description | Status |
+| --- | --- | --- |
+| Native macOS interface | Light and dark appearances, native window controls, and WebKit browsing in a compact SwiftUI/AppKit window. | Implemented. |
+| Vertical tabs | Organize pages in a sidebar with an address bar, auto-hide, and edge-hover reveal. | Implemented. |
+| Command-bar navigation | Open URLs or Google searches with `⌘T`; edit the current address with `⌘L`. A tab is created when you submit. | Implemented. |
+| Favorites and pins | Keep frequently visited sites as compact Favorites or named pins. Return a pin to its saved address and reopen closed pins on demand. | Implemented. |
+| Nested folders | Group and reorder tabs with up to two nesting levels. Folder drop previews reserve a single row without opening hidden contents. New subfolders appear inside their parent; deleting a folder removes its contents. | Implemented. |
+| Session restoration | Restore tabs, saved pages, ordering, and selection after quitting. Folders start collapsed, and an empty session opens the command bar. | Implemented. |
+| Background link tabs | Open links in a new tab from the context menu while continuing on the current page. | Implemented. |
+| Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. | Implemented. |
+| Media indicators | Identify tabs playing unmuted HTML audio or video with a speaker icon. | Implemented. |
+| Spaces and profiles | Separate workspaces with colored space dots and isolated browsing profiles. | Planned. |
+| Universal search and commands | Find tabs, history, and bookmarks, and run browser actions from the command bar. | Planned. |
+| Split views and tab previews | Side-by-side pages with shared controls following the focused pane; thumbnail tab switcher. | Planned. |
+| Page lifecycle | Create pages on demand and release them when closed. Automatic suspension and recovery are planned. | Partial. |
+| Downloads and page tools | Manage downloads, upload files, print, view PDFs, find text, adjust zoom, and use native sharing. | Planned. |
+| History, bookmarks, and privacy | Search browsing history and bookmarks, use private sessions, manage permissions, and clear site data. | Planned. |
+| GitHub live folders | Automatically collect pull requests and review requests in a folder linked to your GitHub account. | Planned. |
+| Picture in Picture | Watch compatible videos in a floating window, with an on/off preference. | Planned. |
+| Settings and customization | Choose search and startup preferences, themes, keyboard shortcuts, and privacy settings. | Planned. |
+| macOS distribution | Install packaged releases or use Homebrew, with optional signing and notarization. | Planned. |
 
 ## Commands
 
 Run all commands from the repository root directory (`early-browser`):
 
 ### Build and open the app
+
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -project Early.xcodeproj \
@@ -34,21 +51,25 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
 ```
 
 ### Open an already-built app
+
 ```sh
 open build/DerivedData/Build/Products/Debug/Early.app
 ```
 
 ### Work in Xcode
+
 ```sh
 open Early.xcodeproj
 ```
 
 ### Run core and WebKit ownership tests
+
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
 ### Run native UI tests
+
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -project Early.xcodeproj \

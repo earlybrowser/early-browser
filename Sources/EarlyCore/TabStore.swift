@@ -235,12 +235,27 @@ public struct TabStore: Equatable, Sendable {
 
     @discardableResult
     public mutating func createFolder(name: String, parentID: UUID?, spaceID: UUID) -> UUID? {
+        guard canCreateFolder(in: parentID, spaceID: spaceID) else { return nil }
         let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128))
         let folder = BrowserFolder(spaceID: spaceID, parentID: parentID, name: name)
         let candidate = folders + [folder]
         guard (try? BrowserFolder.validate(candidate)) != nil else { return nil }
         folders = candidate
+        // Reveal the new child through every ancestor, while keeping the child
+        // itself collapsed. Validation guarantees a finite, same-space path.
+        var parent = parentID
+        while let id = parent, let index = folders.firstIndex(where: { $0.id == id }) {
+            folders[index].isExpanded = true
+            parent = folders[index].parentID
+        }
         return folder.id
+    }
+
+    public func canCreateFolder(in parentID: UUID?, spaceID: UUID) -> Bool {
+        guard let parentID else { return true }
+        guard folders.contains(where: { $0.id == parentID && $0.spaceID == spaceID }),
+              let depth = BrowserFolder.nestingDepth(of: parentID, in: folders) else { return false }
+        return depth < BrowserFolder.maximumNestingDepth
     }
 
     @discardableResult
@@ -251,11 +266,40 @@ public struct TabStore: Equatable, Sendable {
         return true
     }
 
+    /// Delete a whole subtree, including closed pins. Unlike closing a tab,
+    /// this removes its saved record rather than leaving a persistent pin.
+    @discardableResult
+    public mutating func deleteFolder(_ id: UUID) -> (folderIDs: Set<UUID>, tabIDs: Set<UUID>)? {
+        guard folders.contains(where: { $0.id == id }) else { return nil }
+        let children = Dictionary(grouping: folders, by: \.parentID)
+        var folderIDs: Set<UUID> = []
+        var pending = [id]
+        while let next = pending.popLast(), folderIDs.insert(next).inserted {
+            pending.append(contentsOf: (children[next] ?? []).map(\.id))
+        }
+        let tabIDs = Set(tabs.filter { tab in
+            tab.folderID.map { folderIDs.contains($0) } ?? false
+        }.map(\.id))
+        tabs.removeAll { tabIDs.contains($0.id) }
+        folders.removeAll { folderIDs.contains($0.id) }
+        return (folderIDs, tabIDs)
+    }
+
     public func canMoveFolder(_ id: UUID, to parentID: UUID?) -> Bool {
         guard let index = folders.firstIndex(where: { $0.id == id }) else { return false }
         var candidate = folders
         candidate[index].parentID = parentID
-        return (try? BrowserFolder.validate(candidate)) != nil
+        guard (try? BrowserFolder.validate(candidate)) != nil else { return false }
+        // A subtree move must fit every descendant, not just its root. Unrelated
+        // legacy branches do not prevent users reorganizing shallower folders.
+        guard let rootDepth = BrowserFolder.nestingDepth(of: id, in: candidate) else { return false }
+        let children = Dictionary(grouping: folders, by: \.parentID)
+        var pending = [(id, rootDepth)]
+        while let (next, depth) = pending.popLast() {
+            guard depth <= BrowserFolder.maximumNestingDepth else { return false }
+            pending.append(contentsOf: (children[next] ?? []).map { ($0.id, depth + 1) })
+        }
+        return true
     }
 
     @discardableResult
@@ -268,7 +312,26 @@ public struct TabStore: Equatable, Sendable {
 
     public mutating func toggleFolder(_ id: UUID) {
         guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
-        folders[index].isExpanded.toggle()
+        setFolderExpanded(id, expanded: !folders[index].isExpanded)
+    }
+
+    /// Commit folder nesting and mixed tab/folder ordering as one atomic move.
+    @discardableResult
+    public mutating func placeFolder(_ id: UUID, in parentID: UUID?, before: UUID?) -> Bool {
+        guard let folder = folders.first(where: { $0.id == id }), canMoveFolder(id, to: parentID) else { return false }
+        var ids = pinnedItems(in: folder.spaceID, parentID: parentID).map(\.id).filter { $0 != id }
+        if let before {
+            guard let index = ids.firstIndex(of: before) else { return false }
+            ids.insert(id, at: index)
+        } else { ids.append(id) }
+        guard moveFolder(id, to: parentID) else { return false }
+        assignPositions(ids)
+        var parent = parentID
+        while let id = parent, let folder = folders.first(where: { $0.id == id }) {
+            setFolderExpanded(id, expanded: true)
+            parent = folder.parentID
+        }
+        return true
     }
 
     public mutating func setFolderExpanded(_ id: UUID, expanded: Bool) {

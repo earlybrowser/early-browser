@@ -59,6 +59,132 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    func testEmptyFolderIconTogglesWithoutAddingBlankContent() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let name = app.textFields["folder.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click()
+        name.typeText("Empty folder")
+        app.buttons["Save"].click()
+        let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Empty folder'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        XCTAssertEqual(folder.value as? String, "Collapsed")
+        let height = folder.frame.height
+        let newTabY = app.buttons["sidebar.newTab"].frame.minY
+        folder.click()
+        XCTAssertEqual(folder.value as? String, "Expanded")
+        XCTAssertEqual(folder.frame.height, height, accuracy: 1)
+        XCTAssertEqual(app.buttons["sidebar.newTab"].frame.minY, newTabY, accuracy: 1)
+        folder.click()
+        XCTAssertEqual(folder.value as? String, "Collapsed")
+        XCTAssertEqual(app.buttons["sidebar.newTab"].frame.minY, newTabY, accuracy: 1)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
+    /// Empty saved-section targets appear after the drag starts. Aim within
+    /// their revealed bounds using the persistent address control as the anchor.
+    private func savedSectionTarget(_ app: XCUIApplication, favorites: Bool) -> XCUICoordinate {
+        app.buttons["sidebar.addressBar"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
+            .withOffset(CGVector(dx: 0, dy: favorites ? 24 : 100))
+    }
+
+    /// Native drag destinations are resolved before mouse-down. Account for
+    /// the empty saved-section targets that appear once dragging begins.
+    private func savedSectionRevealOffset(_ app: XCUIApplication) -> CGFloat {
+        let favoritesVisible = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.favorites").firstMatch.exists
+        let foldersVisible = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.'")).count > 0
+        let pinsVisible = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+            .allElementsBoundByIndex.contains { ($0.value as? String)?.hasPrefix("Pinned") == true }
+        // Favorite row (43.2) + section spacing (16); empty Pins target
+        // (34), end marker (4), and two inter-item spaces (4 each).
+        return (favoritesVisible ? 0 : 59.2) + (foldersVisible || pinsVisible ? 0 : 46)
+    }
+
+    func testAdaptiveFavoritesAndNestedFolderDropRegions() {
+        verifyAdaptiveFavoritesAndNestedFolderDropRegions(appearance: "dark")
+    }
+
+    func testAdaptiveFavoritesAndNestedFolderDropRegionsInLightAppearance() {
+        verifyAdaptiveFavoritesAndNestedFolderDropRegions(appearance: "light")
+    }
+
+    private func verifyAdaptiveFavoritesAndNestedFolderDropRegions(appearance: String) {
+        let app = launchFreshApp(appearance: appearance)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "sidebar.favorites").firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["sidebar.pinned.heading"].exists)
+        XCTAssertFalse(app.staticTexts["Pins"].exists)
+        XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        func drag(_ element: XCUIElement, to target: XCUICoordinate) {
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .click(forDuration: 0.2, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.8)
+        }
+        drag(app.buttons[firstID], to: savedSectionTarget(app, favorites: false))
+        expectSidebarStatus(app.buttons[firstID], "Pinned, open")
+        drag(app.buttons[firstID], to: savedSectionTarget(app, favorites: true))
+        let first = app.buttons["favorite.\(firstID.dropFirst(4))"]
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        let width = first.frame.width
+        XCTAssertGreaterThan(width, 200)
+
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.firstMatch.identifier
+        pinAction("Add to Favorites", on: app.buttons[secondID])
+        let second = app.buttons["favorite.\(secondID.dropFirst(4))"]
+        XCTAssertTrue(second.waitForExistence(timeout: 3))
+        XCTAssertEqual(first.frame.width, second.frame.width, accuracy: 1)
+        XCTAssertEqual(first.frame.width + second.frame.width + 6, width, accuracy: 1)
+
+        navigate(app, to: "early-test://fixture/one", newTab: true)
+        expectPage(app, "One")
+        let thirdID = rows.firstMatch.identifier
+        pinAction("Add to Favorites", on: app.buttons[thirdID])
+        let third = app.buttons["favorite.\(thirdID.dropFirst(4))"]
+        XCTAssertTrue(third.waitForExistence(timeout: 3))
+        XCTAssertEqual(first.frame.width, third.frame.width, accuracy: 1)
+        XCTAssertEqual(first.frame.width + second.frame.width + third.frame.width + 12, width, accuracy: 1)
+
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let name = app.textFields["folder.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click(); name.typeText("Work")
+        app.buttons["Save"].click()
+        let root = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Work'")).firstMatch
+        XCTAssertTrue(root.waitForExistence(timeout: 3))
+        XCTAssertEqual(root.value as? String, "Collapsed")
+        pinAction("New Subfolder…", on: root)
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click(); name.typeText("Mails")
+        app.buttons["Save"].click()
+        let child = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Mails'")).firstMatch
+        XCTAssertTrue(child.waitForExistence(timeout: 3))
+        XCTAssertEqual(root.value as? String, "Expanded")
+        XCTAssertEqual(child.value as? String, "Collapsed")
+        drag(third, to: child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+        XCTAssertTrue(app.buttons[thirdID].waitForExistence(timeout: 3))
+        XCTAssertEqual(child.value as? String, "Expanded")
+        XCTAssertGreaterThan(app.buttons[thirdID].frame.minY, child.frame.minY)
+        XCTAssertEqual(first.frame.width + second.frame.width + 6, width, accuracy: 1)
+        expectRuntime(app, tabs: 3, views: 3, created: 3)
+        let screenshot = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+        screenshot.name = "\(appearance) adaptive Favorites and expanded nested folders"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        root.click()
+        XCTAssertFalse(app.buttons[thirdID].exists)
+        XCTAssertFalse(child.exists)
+    }
+
     func testMixedPinOrderHoverFolderAndFavoriteInsertion() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")
@@ -76,44 +202,73 @@ final class EarlyUITests: XCTestCase {
         let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Work'")).firstMatch
         XCTAssertTrue(folder.waitForExistence(timeout: 3))
         let folderID = folder.identifier
-        folder.click() // Start collapsed so the drag must spring it open.
+        XCTAssertEqual(folder.value as? String, "Collapsed") // Hover reserves a slot; only a drop reveals the contents.
         navigate(app, to: "early-test://fixture/two", newTab: true)
         expectPage(app, "Two")
         let second = rows.allElementsBoundByIndex.first { $0.identifier != first }!.identifier
         func drag(_ id: String, to target: XCUIElement, y: CGFloat = 0.5, x: CGFloat = 0.5) {
+            let shift = savedSectionRevealOffset(app)
             app.buttons[id].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .click(forDuration: 0.2, thenDragTo: target.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y)),
+                .click(forDuration: 0.2, thenDragTo: target.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
+                    .withOffset(CGVector(dx: 0, dy: shift)),
                        withVelocity: .slow, thenHoldForDuration: 0.8)
         }
+        func expectBefore(_ item: XCUIElement, _ next: XCUIElement, horizontally: Bool = false,
+                          file: StaticString = #filePath, line: UInt = #line) {
+            // Cross-section drops remove temporary targets and animate the
+            // incoming row. Compare settled ordering, not an in-flight AX frame.
+            let settled = NSPredicate { _, _ in
+                guard item.exists, next.exists else { return false }
+                return horizontally ? item.frame.minX < next.frame.minX : item.frame.minY < next.frame.minY
+            }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: app)], timeout: 3),
+                           .completed, "Items should settle into the expected order", file: file, line: line)
+        }
         drag(second, to: folder, y: 0.05)
-        XCTAssertLessThan(app.buttons[second].frame.minY, folder.frame.minY)
+        expectSidebarStatus(app.buttons[second], "Pinned, open")
+        expectBefore(app.buttons[second], folder)
+        XCTAssertEqual(folder.value as? String, "Collapsed")
+        // Reorder the root pin above the folder before entering its header.
+        // From below, revealing Favorites and the sibling preview move the
+        // folder past the pre-resolved center. Keep root insertion and actual
+        // header entry as separate gestures with separate assertions.
+        drag(first, to: folder, y: 0.05)
+        expectBefore(app.buttons[first], folder)
+        XCTAssertEqual(folder.value as? String, "Collapsed")
         drag(first, to: folder)
-        XCTAssertEqual(folder.value as? String, "Expanded")
+        let expanded = NSPredicate(format: "value == %@", "Expanded")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expanded, object: folder)], timeout: 3), .completed)
         XCTAssertGreaterThan(app.buttons[first].frame.minY, folder.frame.minY)
         folder.click()
         XCTAssertFalse(app.buttons[first].exists)
+        XCTAssertTrue(app.buttons[second].exists) // Upper-edge drop stayed at the root, outside this folder.
         folder.click()
         navigate(app, to: "early-test://fixture/one", newTab: true)
         expectPage(app, "One")
         let third = rows.allElementsBoundByIndex.first { ![first, second].contains($0.identifier) }!.identifier
         drag(third, to: app.buttons[first], y: 0.2)
-        XCTAssertLessThan(app.buttons[third].frame.minY, app.buttons[first].frame.minY)
+        expectSidebarStatus(app.buttons[third], "Pinned, open")
+        expectBefore(app.buttons[third], app.buttons[first])
         folder.click()
         XCTAssertFalse(app.buttons[third].exists)
         folder.click()
-        drag(second, to: app.buttons["favorites.add"])
+        app.buttons[second].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.2, thenDragTo: savedSectionTarget(app, favorites: true),
+                   withVelocity: .slow, thenHoldForDuration: 0.8)
         let favorite = "favorite.\(second.dropFirst(4))"
         XCTAssertTrue(app.buttons[favorite].waitForExistence(timeout: 3))
         drag(third, to: app.buttons[favorite], x: 0.15)
         let inserted = "favorite.\(third.dropFirst(4))"
         XCTAssertTrue(app.buttons[inserted].waitForExistence(timeout: 3))
-        XCTAssertLessThan(app.buttons[inserted].frame.minX, app.buttons[favorite].frame.minX)
+        expectBefore(app.buttons[inserted], app.buttons[favorite], horizontally: true)
         expectRuntime(app, tabs: 3, views: 3, created: 3)
         app.typeKey("q", modifierFlags: .command)
         XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
         app.launch()
         XCTAssertTrue(app.buttons[folderID].waitForExistence(timeout: 8))
         XCTAssertLessThan(app.buttons[inserted].frame.minX, app.buttons[favorite].frame.minX)
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Collapsed")
+        app.buttons[folderID].click()
         XCTAssertGreaterThan(app.buttons[first].frame.minY, app.buttons[folderID].frame.minY)
     }
 
@@ -126,9 +281,9 @@ final class EarlyUITests: XCTestCase {
         field.click()
         field.typeText("keep across sections")
         let sidebar = app.descendants(matching: .any).matching(identifier: "browser.sidebar").firstMatch
-        let pinned = app.staticTexts["sidebar.pinned.heading"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        let favorites = app.buttons["favorites.add"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        let regular = app.buttons["sidebar.newTab"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let pinned = savedSectionTarget(app, favorites: false)
+        let favorites = savedSectionTarget(app, favorites: true)
+        let regular = app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
         func drag(_ element: XCUIElement, to destination: XCUICoordinate) {
             element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
                 .click(forDuration: 0.2, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.2)
@@ -168,6 +323,7 @@ final class EarlyUITests: XCTestCase {
         let root = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Work'")).firstMatch
         XCTAssertTrue(root.waitForExistence(timeout: 3))
         let rootID = root.identifier
+        root.click()
         pinAction("New Subfolder…", on: root)
         XCTAssertTrue(name.waitForExistence(timeout: 3))
         name.click()
@@ -190,6 +346,8 @@ final class EarlyUITests: XCTestCase {
         XCTAssertFalse(app.buttons[childID].exists)
         app.buttons[rootID].click()
         XCTAssertTrue(app.buttons[childID].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons[childID].value as? String, "Collapsed")
+        app.buttons[childID].click()
         XCTAssertTrue(app.buttons[tabID].exists)
     }
 
@@ -223,11 +381,12 @@ final class EarlyUITests: XCTestCase {
         let gap = CGPoint(x: app.buttons[first].frame.midX,
                           y: (app.buttons[first].frame.maxY + app.buttons[second].frame.minY) / 2)
         app.buttons[third].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .click(forDuration: 0.2, thenDragTo: at(gap), withVelocity: .slow, thenHoldForDuration: 0.6)
+            .click(forDuration: 0.2, thenDragTo: at(gap).withOffset(CGVector(dx: 0, dy: savedSectionRevealOffset(app))), withVelocity: .slow, thenHoldForDuration: 0.6)
         expectOrder([first, third, second])
+        for id in [first, second, third] { XCTAssertEqual(app.buttons[id].value as? String, "Today") }
         let empty = CGPoint(x: app.buttons[first].frame.midX, y: app.buttons[second].frame.maxY + 70)
         app.buttons[first].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .click(forDuration: 0.2, thenDragTo: at(empty), withVelocity: .slow, thenHoldForDuration: 0.6)
+            .click(forDuration: 0.2, thenDragTo: at(empty).withOffset(CGVector(dx: 0, dy: savedSectionRevealOffset(app))), withVelocity: .slow, thenHoldForDuration: 0.6)
         expectOrder([third, second, first])
         let outside = app.webViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
         app.buttons[third].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -255,8 +414,11 @@ final class EarlyUITests: XCTestCase {
         saved.typeText("keep during move")
         let source = app.buttons[secondID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let destination = app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+            .withOffset(CGVector(dx: 0, dy: savedSectionRevealOffset(app)))
         source.click(forDuration: 0.3, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
+        XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
         XCTAssertEqual(saved.value as? String, "keep during move")
         expectRuntime(app, tabs: 2, views: 2, created: 2)
         app.typeKey("1", modifierFlags: .command)
@@ -307,6 +469,8 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons[id].waitForExistence(timeout: 8))
         XCTAssertEqual(app.buttons[id].label, "My Videos")
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
         pinAction("Rename Tab…", on: app.buttons[id])
         XCTAssertTrue(name.waitForExistence(timeout: 3))
         app.buttons["Use Page Title"].click()
@@ -316,7 +480,7 @@ final class EarlyUITests: XCTestCase {
 
     func testFavoritesReuseLiveTabsAndRestoreClosedTiles() {
         let app = launchFreshApp()
-        XCTAssertFalse(app.buttons["favorites.add"].isEnabled)
+        XCTAssertFalse(app.buttons["favorites.add"].exists)
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
         let firstID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
@@ -324,10 +488,10 @@ final class EarlyUITests: XCTestCase {
         let saved = app.webViews.textFields["Saved text"]
         saved.click()
         saved.typeText("keep favorite state")
-        app.buttons["favorites.add"].click()
+        pinAction("Add to Favorites", on: app.buttons[firstID])
         XCTAssertTrue(firstFavorite.waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons[firstID].exists)
-        XCTAssertFalse(app.buttons["favorites.add"].isEnabled)
+        XCTAssertFalse(app.buttons["favorites.add"].exists)
         firstFavorite.click()
         XCTAssertEqual(saved.value as? String, "keep favorite state")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
@@ -371,7 +535,8 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 0, views: 0, created: 0)
         XCTAssertEqual(firstFavorite.value as? String, "Favorite, closed")
         XCTAssertEqual(firstFavorite.label, "Page One")
-        XCTAssertFalse(app.textFields["commandBar.query"].exists)
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
         pinAction("Remove from Favorites", on: firstFavorite)
         XCTAssertFalse(firstFavorite.exists)
         XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
@@ -445,6 +610,7 @@ final class EarlyUITests: XCTestCase {
         let reset = app.buttons["pinReset.\(id.dropFirst(4))"]
         let select = app.buttons["pinSelect.\(id.dropFirst(4))"]
         XCTAssertTrue(select.waitForExistence(timeout: 3))
+        XCTAssertFalse(select.isEnabled)
         select.hover()
         XCTAssertFalse(reset.exists)
         navigate(app, to: "early-test://fixture/two")
@@ -458,11 +624,9 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(saved.value as? String, "keep video state")
         navigate(app, to: "early-test://fixture/one", newTab: true)
         expectPage(app, "One")
-        XCTAssertFalse(reset.exists)
-        XCTAssertTrue(select.exists)
-        select.hover()
-        XCTAssertFalse(reset.exists)
-        select.click()
+        XCTAssertTrue(reset.exists)
+        XCTAssertTrue(reset.isEnabled)
+        app.buttons[id].click()
         expectPage(app, "Two")
         XCTAssertEqual(saved.value as? String, "keep video state")
         XCTAssertTrue(reset.exists)
@@ -474,6 +638,7 @@ final class EarlyUITests: XCTestCase {
         reset.click()
         expectPage(app, "One")
         XCTAssertTrue(select.waitForExistence(timeout: 3))
+        XCTAssertFalse(select.isEnabled)
         select.hover()
         XCTAssertFalse(reset.exists)
         expectRuntime(app, tabs: 2, views: 2, created: 2)
@@ -481,7 +646,8 @@ final class EarlyUITests: XCTestCase {
         app.typeKey("w", modifierFlags: .command)
         expectRuntime(app, tabs: 1, views: 1, created: 2)
         XCTAssertFalse(reset.exists)
-        select.click()
+        XCTAssertFalse(select.isEnabled)
+        app.buttons[id].click()
         expectPage(app, "One")
         expectRuntime(app, tabs: 2, views: 2, created: 3)
         XCTAssertEqual(app.buttons.matching(identifier: id).count, 1)
@@ -505,7 +671,8 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(row.waitForExistence(timeout: 8))
         XCTAssertEqual(row.value as? String, "Pinned, closed")
-        XCTAssertFalse(app.textFields["commandBar.query"].exists)
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
         expectRuntime(app, tabs: 0, views: 0, created: 0)
         XCTAssertEqual(row.label, "Page One")
         row.click()
@@ -522,6 +689,57 @@ final class EarlyUITests: XCTestCase {
         row.click()
         expectPage(app, "One")
         expectRuntime(app, tabs: 1, views: 1, created: 2)
+    }
+
+    func testCloseControlsOnlyAppearWhenHoveringOpenTabs() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        let firstClose = app.buttons["tabClose.\(firstID.dropFirst(4))"]
+        app.webViews.firstMatch.hover()
+        XCTAssertFalse(firstClose.exists) // Active Today tab also waits for hover.
+        app.buttons[firstID].hover()
+        XCTAssertTrue(firstClose.waitForExistence(timeout: 3))
+        XCTAssertTrue(firstClose.isHittable)
+        app.webViews.firstMatch.hover()
+        XCTAssertFalse(firstClose.exists)
+        pinAction("Pin Tab", on: app.buttons[firstID])
+
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        let secondClose = app.buttons["tabClose.\(secondID.dropFirst(4))"]
+        app.webViews.firstMatch.hover()
+        XCTAssertFalse(secondClose.exists)
+        app.buttons[secondID].hover()
+        XCTAssertTrue(secondClose.waitForExistence(timeout: 3))
+        XCTAssertFalse(firstClose.exists) // Inactive open pin waits for its own hover.
+        app.buttons[firstID].hover()
+        XCTAssertTrue(firstClose.waitForExistence(timeout: 3))
+        XCTAssertFalse(secondClose.exists) // Active tab hides its close when another row is hovered.
+        firstClose.click()
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        expectSidebarStatus(app.buttons[firstID], "Pinned, closed")
+        app.buttons[firstID].hover()
+        XCTAssertFalse(firstClose.exists) // A closed pin has no close action, even on hover.
+
+        app.buttons[firstID].click()
+        expectPage(app, "One")
+        app.webViews.firstMatch.hover()
+        XCTAssertFalse(firstClose.exists) // Reopened active pin is hover-only too.
+        app.buttons[firstID].hover()
+        XCTAssertTrue(firstClose.waitForExistence(timeout: 3))
+        XCTAssertTrue(firstClose.isHittable)
+        XCTAssertFalse(secondClose.exists)
+        app.buttons[secondID].hover()
+        XCTAssertTrue(secondClose.waitForExistence(timeout: 3))
+        app.webViews.firstMatch.hover()
+        XCTAssertFalse(secondClose.exists) // Inactive Today tab hides again on exit.
+        XCTAssertFalse(firstClose.exists)
+        expectRuntime(app, tabs: 2, views: 2, created: 3)
     }
 
     func testBackgroundPinningPreservesSelectionAndUsesSidebarKeyboardOrder() {
@@ -547,7 +765,10 @@ final class EarlyUITests: XCTestCase {
         image.name = "Pinned and Today sections"
         image.lifetime = .keepAlways
         add(image)
-        app.buttons["tabClose.\(secondID.dropFirst(4))"].click()
+        app.buttons[secondID].hover()
+        let close = app.buttons["tabClose.\(secondID.dropFirst(4))"]
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
+        close.click()
         expectPage(app, "One")
         expectRuntime(app, tabs: 1, views: 1, created: 2)
         XCTAssertEqual(app.buttons[secondID].value as? String, "Pinned, closed")
@@ -715,7 +936,33 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 0, views: 0, created: 0)
-        XCTAssertFalse(app.textFields["commandBar.query"].exists)
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
+    }
+
+    func testLinkContextMenuOpensBackgroundTabWithoutChangingCurrentPage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let source = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        app.webViews.links["Open new tab"].rightClick()
+        XCTAssertTrue(app.menuItems["Open Link in New Tab"].waitForExistence(timeout: 3))
+        // Scope to the link menu: the application menu also owns Services.
+        let linkMenu = app.menus.containing(.menuItem, identifier: "Open Link in New Tab").firstMatch
+        XCTAssertTrue(linkMenu.waitForExistence(timeout: 3))
+        XCTAssertTrue(linkMenu.menuItems["Open Link"].exists)
+        XCTAssertTrue(linkMenu.menuItems["Copy Link"].exists)
+        for title in ["Open Link in New Window", "Download Linked File", "Services", "Share…"] {
+            XCTAssertFalse(linkMenu.menuItems[title].exists,
+                           "Unsupported action is visible in the link menu: \(title)")
+        }
+        linkMenu.menuItems["Open Link in New Tab"].click()
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        expectPage(app, "One")
+        XCTAssertTrue(app.buttons[source].isSelected)
+        let other = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", source)).firstMatch
+        XCTAssertTrue(other.waitForExistence(timeout: 5))
+        other.click()
+        expectPage(app, "Two")
     }
 
     func testNativeJavaScriptDialogsAndTargetBlank() {
@@ -745,9 +992,11 @@ final class EarlyUITests: XCTestCase {
 
     func testFailedNavigationCanRetryAndSlowNavigationCanStop() {
         let app = launchFreshApp()
+        let loading = app.descendants(matching: .any).matching(identifier: "browser.loading").firstMatch
         navigate(app, to: "early-test://fixture/failure")
         let retry = app.buttons["browser.retry"]
         XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertFalse(loading.exists)
         retry.click()
         XCTAssertTrue(retry.waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 1, views: 1, created: 1)
@@ -756,23 +1005,28 @@ final class EarlyUITests: XCTestCase {
         expectSidebarStatus(row, "Today, load failed")
         navigate(app, to: "early-test://fixture/slow")
         XCTAssertTrue(app.buttons["navigation.stop"].waitForExistence(timeout: 5))
+        XCTAssertTrue(loading.waitForExistence(timeout: 5))
         expectSidebarStatus(row, "Today, loading")
         pinAction("Pin Tab", on: row)
         expectSidebarStatus(app.buttons["tab.\(id)"], "Pinned, open, loading")
         pinAction("Add to Favorites", on: app.buttons["tab.\(id)"])
         let favorite = app.buttons["favorite.\(id)"]
         expectSidebarStatus(favorite, "Favorite, open, loading")
+        XCTAssertTrue(loading.exists)
         // Loading belongs to the tab, not whichever page is currently selected.
         navigate(app, to: "early-test://fixture/one", newTab: true)
         expectPage(app, "One")
+        XCTAssertFalse(loading.exists) // A background load does not draw over the visible page.
         expectSidebarStatus(favorite, "Favorite, open, loading")
         pinAction("Stop Loading", on: favorite)
         expectSidebarStatus(favorite, "Favorite, open")
         favorite.click()
         navigate(app, to: "early-test://fixture/slow")
         XCTAssertTrue(app.buttons["navigation.stop"].waitForExistence(timeout: 5))
+        XCTAssertTrue(loading.waitForExistence(timeout: 5))
         app.buttons["navigation.stop"].click()
         XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5))
+        XCTAssertFalse(loading.exists)
         expectSidebarStatus(favorite, "Favorite, open")
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")

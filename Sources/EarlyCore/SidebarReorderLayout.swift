@@ -20,31 +20,49 @@ public struct SidebarReorderLayout {
     /// True when the source is not a real member of this list (cross-section or
     /// into a folder). A trailing placeholder slot still lets neighbors shift.
     public let foreign: Bool
+    /// The last settled insertion index in this same container. Small movements
+    /// across a row midpoint should not repeatedly shuffle its neighbors.
+    public let retainedIndex: Int?
+    public static let insertionTolerance: CGFloat = 6
 
-    public init(source: UUID, slots: [Slot], bounds: CGRect, grid: Bool, foreign: Bool = false) {
+    public init(source: UUID, slots: [Slot], bounds: CGRect, grid: Bool, foreign: Bool = false,
+                retainedIndex: Int? = nil) {
         self.source = source
         self.slots = slots
         self.bounds = bounds
         self.grid = grid
         self.foreign = foreign
+        self.retainedIndex = retainedIndex
     }
 
     public func order(at point: CGPoint) -> [UUID] {
         let original = slots.map(\.id)
         guard bounds.contains(point), original.contains(source) else { return original }
         let others = slots.filter { $0.id != source }
-        let index = others.filter { slot in
-            if grid {
-                // Include the spacing between tile rows in the nearest row's band.
-                if point.y > slot.frame.maxY + 3 { return true }
-                if point.y < slot.frame.minY - 3 { return false }
-                return point.x > slot.frame.midX
+        var index = others.filter { isAfter($0, at: point) }.count
+        if let retainedIndex, (0...others.count).contains(retainedIndex) {
+            index = retainedIndex
+            while index < others.count, isAfter(others[index], at: point, tolerance: Self.insertionTolerance) {
+                index += 1
             }
-            return point.y > slot.hitFrame.midY
-        }.count
+            while index > 0, !isAfter(others[index - 1], at: point, tolerance: -Self.insertionTolerance) {
+                index -= 1
+            }
+        }
         var result = others.map(\.id)
         result.insert(source, at: index)
         return result
+    }
+
+    private func isAfter(_ slot: Slot, at point: CGPoint, tolerance: CGFloat = 0) -> Bool {
+        if grid {
+            // Include tile-row gaps, with the same directional tolerance used
+            // at column midpoints so Favorites do not twitch between slots.
+            if point.y > slot.frame.maxY + 3 + tolerance { return true }
+            if point.y < slot.frame.minY - 3 + tolerance { return false }
+            return point.x > slot.frame.midX + tolerance
+        }
+        return point.y > slot.hitFrame.midY + tolerance
     }
 
     public func offset(for id: UUID, at point: CGPoint) -> CGSize {
@@ -93,6 +111,30 @@ public struct SidebarReorderLayout {
 
     public struct Insertion: Equatable, Sendable {
         public var before: UUID?
+    }
+
+    /// A row is retained only when it supplies this same container's insertion
+    /// slot. A nil folder is the Pins root, not an absence of a source container.
+    public static func vacatesSourceRow(sourceSection: TabStore.Section, sourceFolder: UUID?,
+                                        destinationSection: TabStore.Section?, destinationFolder: UUID?) -> Bool {
+        destinationSection != sourceSection
+            || (destinationSection == .pinned && destinationFolder != sourceFolder)
+    }
+
+    public static let favoriteHeight: CGFloat = 43.2
+    public static let favoriteRowStride: CGFloat = favoriteHeight + 6
+
+    /// One to four favorites share the width. Larger grids keep four columns,
+    /// including a partially filled last row.
+    public static func favoriteFrames(count: Int, in bounds: CGRect) -> [CGRect] {
+        guard count > 0, bounds.width > 0 else { return [] }
+        return (0..<count).map { index in
+            let row = index / 4
+            let columns = min(4, count)
+            let width = max(1, (bounds.width - CGFloat(columns - 1) * 6) / CGFloat(columns))
+            return CGRect(x: bounds.minX + CGFloat(index % 4) * (width + 6),
+                          y: bounds.minY + CGFloat(row) * favoriteRowStride, width: width, height: favoriteHeight)
+        }
     }
 
     public static func placeholderFrame(after last: CGRect?, bounds: CGRect, grid: Bool, size: CGSize) -> CGRect {

@@ -7,6 +7,8 @@ import WebKit
 public final class BrowserPage {
     public let view: WKWebView
     public var isLoading = false
+    public var isPlayingMedia = false
+    fileprivate var playingFrames: Set<String> = []
     public var progress = 0.0
     public var canGoBack = false
     public var canGoForward = false
@@ -27,6 +29,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public let favicons: FaviconStore
     public var onMetadata: ((UUID, URL?, String?) -> Void)?
     public var onNewWindow: ((URL, WKWebViewConfiguration) -> WKWebView?)?
+    public var onOpenBackgroundLink: ((URL) -> Void)?
     public var onClose: ((UUID) -> Void)?
     public var onNotice: ((String) -> Void)?
     private let profileID: UUID
@@ -70,7 +73,32 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
             configure(configuration)
         }
-        let view = WKWebView(frame: .zero, configuration: configuration)
+        let controller = configuration.userContentController
+        let mediaObserver = MediaActivityObserver()
+        mediaObserver.owner = self
+        controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
+        controller.add(mediaObserver, contentWorld: .defaultClient, name: MediaActivityObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == MediaActivityObserver.script }) {
+            controller.addUserScript(WKUserScript(source: MediaActivityObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
+        }
+        let linkObserver = LinkContextMenuObserver()
+        linkObserver.owner = self
+        controller.removeScriptMessageHandler(forName: LinkContextMenuObserver.name, contentWorld: LinkContextMenuObserver.world)
+        controller.add(linkObserver, contentWorld: LinkContextMenuObserver.world, name: LinkContextMenuObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == LinkContextMenuObserver.script }) {
+            controller.addUserScript(WKUserScript(source: LinkContextMenuObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: LinkContextMenuObserver.world))
+        }
+        let view = BrowserWebView(frame: .zero, configuration: configuration)
+        view.onOpenLink = { [weak self, weak view] url in
+            guard let self, let view else { return }
+            _ = self.openContextLink(url, in: view, background: false)
+        }
+        view.onOpenBackgroundLink = { [weak self, weak view] url in
+            guard let self, let view else { return }
+            _ = self.openContextLink(url, in: view, background: true)
+        }
         view.allowsBackForwardNavigationGestures = true
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -121,6 +149,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func discard(tabID: UUID) {
         guard let page = pages.removeValue(forKey: tabID) else { return }
+        if let view = page.view as? BrowserWebView {
+            view.cancelLinkMenu()
+            view.onOpenLink = nil
+            view.onOpenBackgroundLink = nil
+        }
         identities.removeValue(forKey: ObjectIdentifier(page.view))
         cancelDialog(tabID)
         page.observations.forEach { $0.invalidate() }
@@ -132,6 +165,40 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     public func discardAll() { for id in Array(pages.keys) { discard(tabID: id) } }
+
+    func contextLinkURL(href: String, in view: WKWebView) -> URL? {
+        guard identities[ObjectIdentifier(view)] != nil, href.utf8.count <= 16384,
+              let url = URL(string: href), (try? input.validate(url)) != nil else { return nil }
+        return url
+    }
+
+    func showLinkContextMenu(href: String, in view: BrowserWebView) {
+        guard let url = contextLinkURL(href: href, in: view), view.window != nil else { return }
+        view.showLinkMenu(for: url)
+    }
+
+    @discardableResult
+    func openContextLink(_ url: URL, in view: WKWebView, background: Bool) -> Bool {
+        guard let id = identities[ObjectIdentifier(view)], let page = pages[id],
+              (try? input.validate(url)) != nil else { return false }
+        if background {
+            guard let onOpenBackgroundLink else { return false }
+            onOpenBackgroundLink(url)
+        } else {
+            page.requestedURL = url
+            page.failure = nil
+            view.load(URLRequest(url: url))
+        }
+        return true
+    }
+
+    func updateMediaActivity(in view: WKWebView, token: String, playing: Bool) {
+        guard let id = identities[ObjectIdentifier(view)], let page = pages[id] else { return }
+        if playing {
+            if page.playingFrames.count < 128 { page.playingFrames.insert(token) }
+        } else { page.playingFrames.remove(token) }
+        page.isPlayingMedia = !page.playingFrames.isEmpty
+    }
 
     private func refresh(_ id: UUID) {
         guard let page = pages[id] else { return }
@@ -181,6 +248,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.navigationGeneration = UUID()
         refresh(id)
     }
+    public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard let id = identities[ObjectIdentifier(webView)] else { return }
+        pages[id]?.playingFrames.removeAll()
+        pages[id]?.isPlayingMedia = false
+    }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)], let page = pages[id],
               let url = webView.url else { return }
@@ -215,6 +287,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         guard let id = identities[ObjectIdentifier(webView)] else { return }
         pages[id]?.failure = "The web content process stopped. Reload to reopen this page."
         pages[id]?.isLoading = false
+        pages[id]?.isPlayingMedia = false
+        pages[id]?.playingFrames.removeAll()
     }
 
     public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,

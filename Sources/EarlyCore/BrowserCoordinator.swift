@@ -26,6 +26,9 @@ public final class BrowserCoordinator {
         self.selectionBySpace = selectionBySpace
         self.profileID = profileID
         self.recentlyClosed = Array(recentlyClosed.suffix(20))
+        for folder in tabStore.folders {
+            self.tabStore.setFolderExpanded(folder.id, expanded: false)
+        }
         restoreSelection()
         if case .firstLaunch = startup, tabStore.tabs.isEmpty {
             presentCommandBar(.newTab)
@@ -193,9 +196,43 @@ public final class BrowserCoordinator {
     }
 
     @discardableResult
+    public func deleteFolder(_ id: UUID) -> Set<UUID>? {
+        guard folders.contains(where: { $0.id == id }) else { return nil }
+        let previousActive = activeTabID
+        let previousOrder = tabStore.openTabs(in: activeSpaceID).map(\.id)
+        guard let removed = tabStore.deleteFolder(id) else { return nil }
+        // Reopen Closed Tab must not resurrect deleted folder records or keep
+        // dangling references that make the next saved session invalid.
+        recentlyClosed.removeAll {
+            removed.tabIDs.contains($0.tab.id)
+                || ($0.tab.folderID.map { removed.folderIDs.contains($0) } ?? false)
+        }
+        for space in Array(selectionBySpace.keys) {
+            if let selected = selectionBySpace[space], removed.tabIDs.contains(selected) {
+                selectionBySpace[space] = nil
+            }
+        }
+        if let previousActive, removed.tabIDs.contains(previousActive) {
+            let index = previousOrder.firstIndex(of: previousActive) ?? 0
+            let next = previousOrder.dropFirst(index + 1).first { !removed.tabIDs.contains($0) }
+                ?? previousOrder.prefix(index).last { !removed.tabIDs.contains($0) }
+            selectionBySpace[activeSpaceID] = next
+            content = next.map { .web(tabID: $0) } ?? .empty
+            dismissCommandBar()
+        }
+        return removed.tabIDs
+    }
+
+    @discardableResult
     public func moveFolder(_ id: UUID, to parentID: UUID?) -> Bool {
         guard folders.contains(where: { $0.id == id }) else { return false }
         return tabStore.moveFolder(id, to: parentID)
+    }
+
+    @discardableResult
+    public func placeFolder(_ id: UUID, in parentID: UUID?, before: UUID?) -> Bool {
+        guard folders.contains(where: { $0.id == id }) else { return false }
+        return tabStore.placeFolder(id, in: parentID, before: before)
     }
 
     public func toggleFolder(_ id: UUID) {
@@ -213,6 +250,15 @@ public final class BrowserCoordinator {
         guard let tab = tabStore.tab(id: id), canAccess(tab), tabStore.moveTab(id, toFolder: folderID) else { return false }
         recentlyClosed.removeAll { $0.tab.id == id }
         return true
+    }
+
+    @discardableResult
+    public func openBackgroundTab(to url: URL) -> UUID {
+        let tab = BrowserTab(spaceID: activeSpaceID, profileID: profileID,
+                             title: url.host ?? url.absoluteString, currentURL: url)
+        tabStore.insert(tab)
+        // Do not alter selection, command-bar state, or keyboard focus.
+        return tab.id
     }
 
     @discardableResult
