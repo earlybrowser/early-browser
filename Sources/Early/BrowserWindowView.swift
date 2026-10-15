@@ -3,6 +3,97 @@ import EarlyCore
 import EarlyWeb
 import SwiftUI
 
+/// A passive observer: never consumes or delays mouse events. One shared
+/// monitor serves all mounted rows; only the pressed row is tracked on drags.
+private struct SidebarDoubleClick: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ view: AnchorView, context: Context) { view.action = action }
+
+    static func dismantleNSView(_ view: AnchorView, coordinator: ()) {
+        Observer.shared.remove(view)
+    }
+
+    final class AnchorView: NSView {
+        var action: (() -> Void)?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { Observer.shared.add(self) }
+            else { Observer.shared.remove(self) }
+        }
+
+        func contains(_ event: NSEvent) -> Bool {
+            guard let window, event.window === window, window.attachedSheet == nil,
+                  !isHiddenOrHasHiddenAncestor else { return false }
+            return visibleRect.contains(convert(event.locationInWindow, from: nil))
+        }
+    }
+
+    @MainActor private final class Observer {
+        static let shared = Observer()
+        private struct WeakAnchor { weak var view: AnchorView? }
+        private var anchors: [ObjectIdentifier: WeakAnchor] = [:]
+        private var monitor: Any?
+        private weak var pressed: AnchorView?
+        private var clicks = SidebarDoubleClickTracker<ObjectIdentifier>()
+
+        func add(_ view: AnchorView) {
+            anchors[ObjectIdentifier(view)] = WeakAnchor(view: view)
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+                self?.observe(event)
+                return event
+            }
+        }
+
+        func remove(_ view: AnchorView) {
+            anchors.removeValue(forKey: ObjectIdentifier(view))
+            anchors = anchors.filter { $0.value.view != nil }
+            if pressed === view {
+                pressed = nil
+                clicks = SidebarDoubleClickTracker()
+            }
+            if anchors.isEmpty, let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+                clicks = SidebarDoubleClickTracker()
+            }
+        }
+
+        private func observe(_ event: NSEvent) {
+            switch event.type {
+            case .leftMouseDown:
+                pressed = anchors.values.lazy.compactMap(\.view).first { $0.contains(event) }
+                clicks.mouseDown(on: pressed.map(ObjectIdentifier.init), at: event.locationInWindow,
+                                 clickCount: event.clickCount)
+            case .leftMouseDragged:
+                clicks.mouseDragged(to: event.locationInWindow)
+            case .leftMouseUp:
+                let view = pressed
+                let target = view.flatMap { $0.contains(event) ? ObjectIdentifier($0) : nil }
+                let rename = clicks.mouseUp(on: target, at: event.locationInWindow)
+                pressed = nil
+                if rename != nil {
+                    // Let the normal Button release/focus action finish first.
+                    DispatchQueue.main.async { [weak self, weak view] in
+                        guard let view, let window = view.window, window.attachedSheet == nil,
+                              self?.anchors[ObjectIdentifier(view)]?.view === view else { return }
+                        view.action?()
+                    }
+                }
+            default: break
+            }
+        }
+    }
+}
+
 struct BrowserWindowView: View {
     @Bindable var model: BrowserWindowModel
     @State private var sidebarAutoHides = false
@@ -536,9 +627,8 @@ struct BrowserWindowView: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
             .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
                   ?? tab.currentURL.absoluteString)
-            .highPriorityGesture(reorderGesture(tab).exclusively(before:
-                TapGesture(count: 2).onEnded { model.requestRename(tab.id) }
-            ))
+            .highPriorityGesture(reorderGesture(tab))
+            .background(SidebarDoubleClick { model.requestRename(tab.id) })
             if tab.isOpen && hoveredTab == tab.id {
                 Button { model.closeTab(tab.id) } label: {
                     Image(systemName: "xmark").font(.caption)
@@ -742,9 +832,8 @@ struct BrowserWindowView: View {
         .accessibilityHint(tab.isOpen ? "Select favorite. Double-click to rename. More actions in the context menu." : "Reopen saved favorite. Double-click to rename.")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
-        .highPriorityGesture(reorderGesture(tab).exclusively(before:
-            TapGesture(count: 2).onEnded { model.requestRename(tab.id) }
-        ))
+        .highPriorityGesture(reorderGesture(tab))
+        .background(SidebarDoubleClick { model.requestRename(tab.id) })
         .opacity(draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
         .contextMenu { tabActions(tab) }
@@ -863,7 +952,7 @@ struct BrowserWindowView: View {
     }
 
     private func folderRow(_ folder: BrowserFolder) -> some View {
-        Button { model.coordinator.toggleFolder(folder.id); model.save() } label: {
+        let header = Button { model.coordinator.toggleFolder(folder.id); model.save() } label: {
             HStack(spacing: 6) {
                 FolderIcon(isOpen: isFolderOpen(folder))
                 .frame(width: 19, height: 20)
@@ -881,6 +970,7 @@ struct BrowserWindowView: View {
         .accessibilityLabel(folder.name)
         .accessibilityValue(isFolderOpen(folder) ? "Expanded" : "Collapsed")
         .accessibilityHint(folderHasChildren(folder.id) ? "Expand or collapse folder. Double-click to rename. More actions in the context menu." : "Empty folder. Double-click to rename; drag a tab here to add content.")
+        return header
         .help(folderPath(folder))
         .background(Color.primary.opacity(hoveredFolder == folder.id ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 7))
         .background(Color.primary.opacity(showsFolderDragTargets && dropFolder == folder.id ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 7))
@@ -901,11 +991,9 @@ struct BrowserWindowView: View {
         .opacity(draggingTab == folder.id ? 0 : 1)
         .animation(draggingTab == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
         .background(tabFrame(folder.id))
-        // A completed double click renames; crossing the drag threshold wins
-        // instead, including when the second press is held for a drag.
-        .highPriorityGesture(folderReorderGesture(folder).exclusively(before:
-            TapGesture(count: 2).onEnded { editFolder(folder, parent: folder.parentID) }
-        ))
+        // Observe double clicks without making single-click expansion wait.
+        .highPriorityGesture(folderReorderGesture(folder))
+        .background(SidebarDoubleClick { editFolder(folder, parent: folder.parentID) })
         .contextMenu {
             Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
                 .disabled(!model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID))

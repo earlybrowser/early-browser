@@ -25,13 +25,17 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Quick renaming | Double-click a tab, Favorite, or folder to rename it; dragging still reorders items. | Implemented. |
 | Trackpad zoom | Native pinch-to-zoom and two-finger double-tap Smart Zoom. | Implemented. |
 | Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. | Implemented. |
-| Media indicators | Identify tabs playing unmuted HTML audio or video with a speaker icon. | Implemented. |
+| Media controls | Identify playing HTML audio or video. Speaker-click tab muting and per-site muting are planned. | Partial. |
 | Website fullscreen | Let compatible website players enter and exit fullscreen. | Implemented. |
 | Spaces and profiles | Separate workspaces with colored space dots and isolated browsing profiles. | Planned. |
 | Universal search and commands | Find tabs, history, and bookmarks, and run browser actions from the command bar. | Planned. |
 | Split views and tab previews | Side-by-side pages with shared controls following the focused pane; thumbnail tab switcher. | Planned. |
 | Page lifecycle | Create pages on demand and release them when closed. Automatic suspension and recovery are planned. | Partial. |
 | Downloads and page tools | Manage downloads, upload files, print, view PDFs, find text, and adjust zoom. | Planned. |
+| Reading tools | Reader Mode for supported articles and page translation. | Planned. |
+| Credentials and autofill | Integrate supported password managers, autofill, and passkeys through public platform facilities. | Planned. |
+| Default browser | Choose Early as the default browser and handle externally opened links. | Planned. |
+| State portability | Export/import supported settings, windows, tabs, folders, pins, Favorites, and workspace metadata; exclude credentials and private sessions. | Planned. |
 | Developer tools | Inspect pages through supported WebKit developer facilities. | Planned. |
 | History, bookmarks, and privacy | Search browsing history and bookmarks, use private sessions, manage permissions, and clear site data. | Planned. |
 | GitHub live folders | Automatically collect pull requests and review requests in a folder linked to your GitHub account. | Planned. |
