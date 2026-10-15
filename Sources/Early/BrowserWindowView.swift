@@ -7,6 +7,7 @@ struct BrowserWindowView: View {
     @Bindable var model: BrowserWindowModel
     @State private var sidebarAutoHides = false
     @State private var sidebarHovered = false
+    @State private var resizeStartWidth: Double?
     @State private var tabFrames: [UUID: CGRect] = [:]
     @State private var folderHitFrames: [UUID: CGRect] = [:]
     @State private var sectionFrames: [Bool: CGRect] = [:]
@@ -33,6 +34,8 @@ struct BrowserWindowView: View {
     @State private var folderName = ""
     @State private var hoveredTab: UUID?
     @State private var hoveredFolder: UUID?
+    @State private var hoveredFolderGroups: Set<UUID> = []
+    @State private var sidebarPointer = SidebarPointer()
     @FocusState private var focusedSidebarControl: SidebarControl?
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
     private var showsFolderDragTargets: Bool {
@@ -42,6 +45,47 @@ struct BrowserWindowView: View {
     }
     private var folderDragAnimation: Animation? {
         reduceMotion ? nil : .easeInOut(duration: 0.18)
+    }
+    private var sidebarMotion: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: 0.20)
+    }
+
+    private var sidebarResizeHandle: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(resizeStartWidth == nil ? 0.001 : 0.12))
+            .frame(width: 6)
+            .contentShape(Rectangle())
+            .offset(x: 3)
+            .onHover { inside in
+                (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
+            }
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    if resizeStartWidth == nil { resizeStartWidth = model.sidebarWidth }
+                    model.sidebarWidth = SidebarWidth.clamped((resizeStartWidth ?? model.sidebarWidth) + value.translation.width)
+                }
+                .onEnded { _ in
+                    resizeStartWidth = nil
+                    model.finishSidebarResize()
+                    NSCursor.arrow.set()
+                })
+            .accessibilityLabel("Sidebar width")
+            .accessibilityValue("\(Int(model.sidebarWidth)) points")
+            .accessibilityIdentifier("sidebar.resize")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: model.sidebarWidth = SidebarWidth.clamped(model.sidebarWidth + 16)
+                case .decrement: model.sidebarWidth = SidebarWidth.clamped(model.sidebarWidth - 16)
+                @unknown default: return
+                }
+                model.finishSidebarResize()
+            }
+    }
+
+    // Pointer samples are not observable: redraw only when group membership
+    // changes. Retain the last sample to recompute hover after scrolling/layout.
+    private final class SidebarPointer {
+        var location: CGPoint?
     }
 
     private enum SidebarControl: Hashable {
@@ -149,12 +193,6 @@ struct BrowserWindowView: View {
                                canFocus: model.coordinator.commandBar == nil,
                                hasDialog: model.activePage?.hasDialog == true)
                     .accessibilityIdentifier("browser.content")
-                if model.coordinator.activeTabID == nil {
-                    Text("Open a new tab with ⌘T")
-                        .foregroundStyle(.tertiary)
-                        .accessibilityIdentifier("browser.emptyContent")
-                        .allowsHitTesting(false)
-                }
                 if let error = model.activePage?.failure {
                     VStack(spacing: 12) {
                         Label("Unable to open this page", systemImage: "exclamationmark.triangle")
@@ -193,7 +231,7 @@ struct BrowserWindowView: View {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
-            .padding(.leading, sidebarAutoHides ? 0 : 266)
+            .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
 
             sidebar
                 .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: sidebarCornerRadius))
@@ -207,19 +245,15 @@ struct BrowserWindowView: View {
                     }
                 }
                 .shadow(color: .black.opacity(sidebarAutoHides && sidebarVisible ? 0.15 : 0), radius: 8, x: 3)
-                .offset(x: sidebarVisible ? 0 : -280)
+                .overlay(alignment: .trailing) { sidebarResizeHandle }
+                .offset(x: sidebarVisible ? 0 : -(model.sidebarWidth + 20))
                 .padding(.leading, sidebarAutoHides ? -3 : 0)
                 .padding(.vertical, sidebarAutoHides ? -3 : 0)
                 .allowsHitTesting(sidebarVisible)
                 .accessibilityHidden(!sidebarVisible)
-                .onHover { inside in
-                    // Only the window-edge target may reveal a hidden sidebar.
-                    // Ignore enter events from the offset sidebar's tracking area.
-                    if !inside { sidebarHovered = false }
-                }
 
             if model.coordinator.commandBar != nil {
-                ZStack {
+                ZStack(alignment: .top) {
                     Color.black.opacity(0.001)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .contentShape(Rectangle())
@@ -227,13 +261,19 @@ struct BrowserWindowView: View {
                             model.dismissCommandBar()
                         }
                         .accessibilityHidden(true)
-                    CommandBarView(model: model)
-                        .padding(32)
-                        .padding(.leading, sidebarAutoHides ? 0 : 266)
+                    GeometryReader { geometry in
+                        CommandBarView(model: model, suggestionListHeight: max(64, min(220, geometry.size.height * 0.60 - 96)))
+                            .frame(maxWidth: .infinity, alignment: .top)
+                            .padding(.horizontal, 32)
+                            .padding(.top, max(32, geometry.size.height * 0.40 - 32))
+                            .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .animation(sidebarMotion, value: sidebarAutoHides)
+        .animation(sidebarMotion, value: sidebarVisible)
         .padding(6)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .leading) {
@@ -241,11 +281,25 @@ struct BrowserWindowView: View {
                 Color.clear
                     .frame(width: 2)
                     .contentShape(Rectangle())
-                    .onHover { inside in if inside { sidebarHovered = true } }
                     .onTapGesture { sidebarHovered = true }
                     .accessibilityLabel("Reveal sidebar")
                     .accessibilityAddTraits(.isButton)
                     .accessibilityIdentifier("sidebar.reveal")
+            }
+        }
+        // Track the stationary window surface, not the animated sidebar or the
+        // disappearing edge target. Their exit events can otherwise cancel a
+        // reveal and repeatedly restart it beneath a stationary pointer.
+        .onContinuousHover { phase in
+            guard sidebarAutoHides else { return }
+            switch phase {
+            case .active(let point):
+                // Retain across the edge-to-panel gutter as well as the panel.
+                // Entering its old footprint alone must never reveal it.
+                let inside = resizeStartWidth != nil || (point.x >= 0 && point.x < (sidebarHovered ? model.sidebarWidth + 6 : 2))
+                if sidebarHovered != inside { sidebarHovered = inside }
+            case .ended:
+                sidebarHovered = false
             }
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -259,6 +313,12 @@ struct BrowserWindowView: View {
             RenameTabSheet(model: model)
         }
         .onAppear { model.activateSelection() }
+        .onChange(of: sidebarVisible) { _, visible in
+            if !visible {
+                sidebarPointer.location = nil
+                hoveredFolderGroups = []
+            }
+        }
         .sheet(isPresented: $folderEditor) {
           VStack(alignment: .leading, spacing: 16) {
             Text(editingFolder == nil ? "New Folder" : "Rename Folder").font(.headline)
@@ -365,7 +425,7 @@ struct BrowserWindowView: View {
         .padding(.horizontal, sidebarAutoHides ? 5 : 2)
         .padding(.top, sidebarAutoHides ? 7 : 4)
         .padding(.bottom, sidebarAutoHides ? 17 : 14)
-        .frame(width: sidebarAutoHides ? 263 : 260)
+        .frame(width: model.sidebarWidth + (sidebarAutoHides ? 3 : 0))
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
         .contextMenu {
@@ -376,6 +436,13 @@ struct BrowserWindowView: View {
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
         .coordinateSpace(name: "sidebarReordering")
+        .onContinuousHover(coordinateSpace: .named("sidebarReordering")) { phase in
+            switch phase {
+            case .active(let point): sidebarPointer.location = point
+            case .ended: sidebarPointer.location = nil
+            }
+            refreshFolderPanelHover()
+        }
         .overlay(alignment: .topLeading) {
             crossSectionPreview
         }
@@ -396,6 +463,7 @@ struct BrowserWindowView: View {
             folderHitFrames = headers
             sectionFrames = sections
             dropAreas = areas
+            refreshFolderPanelHover()
             guard draggingTab != nil else { return }
             // Rebuild hit testing only after ALL measurements from this layout
             // pass agree; cross-folder moves change headers and ends together.
@@ -405,7 +473,11 @@ struct BrowserWindowView: View {
         .onChange(of: draggingTab) { _, id in
             if id == nil { endDrag() }
         }
-        .onDisappear { endDrag() }
+        .onDisappear {
+            sidebarPointer.location = nil
+            hoveredFolderGroups = []
+            endDrag()
+        }
     }
 
     /// Fixed outside both scroll regions. Space switching arrives in Phase 3;
@@ -517,6 +589,7 @@ struct BrowserWindowView: View {
 
     @ViewBuilder
     private func tabActions(_ tab: BrowserTab) -> some View {
+        Button("Open Tab in New Window") { model.openTabInNewWindow(tab.id) }
         Button("Rename Tab…") { model.requestRename(tab.id) }
         if !tab.isFavorite {
             Menu("Move to Folder") {
@@ -625,7 +698,7 @@ struct BrowserWindowView: View {
         if let page = model.activePage, page.isLoading {
             let progress = min(max(page.progress, 0), 1)
             GeometryReader { geometry in
-                Rectangle().fill(Color.accentColor)
+                Rectangle().fill(Color(nsColor: .secondaryLabelColor))
                     .frame(width: geometry.size.width * progress)
             }
             .frame(height: 2)
@@ -788,24 +861,9 @@ struct BrowserWindowView: View {
     private func folderRow(_ folder: BrowserFolder) -> some View {
         Button { model.coordinator.toggleFolder(folder.id); model.save() } label: {
             HStack(spacing: 6) {
-                ZStack {
-                    FolderOutline(isOpen: false)
-                        .fill(Color.primary.opacity(0.045))
-                        .overlay {
-                            FolderOutline(isOpen: false)
-                                .stroke(style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
-                        }
-                        .opacity(isFolderOpen(folder) ? 0 : 1)
-                    FolderOutline(isOpen: true)
-                        .fill(Color.primary.opacity(0.07))
-                        .overlay {
-                            FolderOutline(isOpen: true)
-                                .stroke(style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
-                        }
-                        .opacity(isFolderOpen(folder) ? 1 : 0)
-                }
-                .frame(width: 19, height: 16)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isFolderOpen(folder))
+                FolderIcon(isOpen: isFolderOpen(folder))
+                .frame(width: 19, height: 20)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isFolderOpen(folder))
                 .accessibilityHidden(true)
                 Text(folder.name).lineLimit(1)
                 Spacer(minLength: 0)
@@ -1304,9 +1362,8 @@ struct BrowserWindowView: View {
         } else if let draggingTab, let folder = model.coordinator.folders.first(where: { $0.id == draggingTab }) {
             let bounds = dragRowBounds(at: dragPoint)
             HStack(spacing: 6) {
-                FolderOutline(isOpen: false)
-                    .stroke(style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
-                    .frame(width: 19, height: 16)
+                FolderIcon(isOpen: false)
+                    .frame(width: 19, height: 20)
                 Text(folder.name).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
             }
@@ -1363,16 +1420,30 @@ struct BrowserWindowView: View {
         return point.y >= regular.minY ? .regular : .pinned
     }
 
-    private func groupPanel(active: Bool, dashed: Bool = false) -> some View {
+    private func groupPanel(active: Bool, dashed: Bool = false, subtle: Bool = false) -> some View {
         RoundedRectangle(cornerRadius: 12)
             .fill(Color.primary.opacity(active ? 0.10 : 0.045))
             .overlay {
                 RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.primary.opacity(active ? 0.35 : 0.14),
-                                  style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: dashed ? [3, 2] : []))
+                    .strokeBorder(Color.primary.opacity(active ? 0.28 : (subtle ? 0.06 : 0.14)),
+                                  style: StrokeStyle(lineWidth: subtle && !active ? 0.5 : 1,
+                                                     lineCap: .round, dash: dashed ? [3, 2] : []))
             }
             .animation(folderDragAnimation, value: active)
             .allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    private func refreshFolderPanelHover() {
+        var groups: Set<UUID> = []
+        if sidebarVisible, let point = sidebarPointer.location,
+           sectionFrames[false]?.contains(point) == true {
+            for folder in model.coordinator.folders where folderPreview(folder).showsPanel {
+                if folderGroupFrame(folder.id)?.contains(point) == true {
+                    groups.insert(folder.id)
+                }
+            }
+        }
+        if groups != hoveredFolderGroups { hoveredFolderGroups = groups }
     }
 
     private func folderGroupFrame(_ id: UUID) -> CGRect? {
@@ -1429,9 +1500,12 @@ struct BrowserWindowView: View {
                         let header = geometry[anchor]
                         let end = folderPreview(folder).showsPanel ? anchors[.end(folder.id)].map { geometry[$0] } : nil
                         let bottom = max(header.maxY, end?.maxY ?? header.maxY)
-                        groupPanel(active: showsFolderDragTargets && isDropAncestor(folder.id))
+                        let highlighted = showsFolderDragTargets || hoveredFolderGroups.contains(folder.id)
+                        groupPanel(active: showsFolderDragTargets && isDropAncestor(folder.id), subtle: true)
                             .frame(width: header.width, height: bottom - header.minY)
                             .offset(x: header.minX, y: header.minY)
+                            .opacity(highlighted ? 1 : 0)
+                            .animation(folderDragAnimation, value: highlighted)
                     }
                 }
             }
@@ -1528,7 +1602,7 @@ struct BrowserWindowView: View {
                 sidebarAutoHides.toggle()
                 sidebarHovered = false
             } label: {
-                Image(systemName: "sidebar.left").frame(width: 26, height: 32)
+                Image(systemName: "sidebar.left").frame(width: 32, height: 32)
             }
             .accessibilityLabel(sidebarAutoHides ? "Keep sidebar visible" : "Auto-hide sidebar")
             .accessibilityValue(sidebarAutoHides ? "Auto-hide enabled" : "Always visible")
@@ -1536,20 +1610,19 @@ struct BrowserWindowView: View {
             .accessibilityIdentifier("sidebar.toggle")
             .help("Toggle sidebar auto-hide (Command-Shift-S). Reveal at the left edge.")
             Spacer(minLength: 0)
-            Button { model.back() } label: { Image(systemName: "arrow.left").frame(width: 26, height: 32) }
+            NavigationButton(kind: .back) { model.back() }
                 .disabled(model.activePage?.canGoBack != true)
                 .accessibilityLabel("Back").accessibilityIdentifier("navigation.back")
-            Button { model.forward() } label: { Image(systemName: "arrow.right").frame(width: 26, height: 32) }
+            NavigationButton(kind: .forward) { model.forward() }
                 .disabled(model.activePage?.canGoForward != true)
                 .accessibilityLabel("Forward").accessibilityIdentifier("navigation.forward")
-            if model.activePage?.isLoading == true {
-                Button { model.stop() } label: { Image(systemName: "xmark").frame(width: 26, height: 32) }
-                    .accessibilityLabel("Stop Loading").accessibilityIdentifier("navigation.stop")
-            } else {
-                Button { model.reload() } label: { Image(systemName: "arrow.clockwise").frame(width: 26, height: 32) }
-                    .disabled(model.activePage == nil)
-                    .accessibilityLabel("Reload").accessibilityIdentifier("navigation.reload")
+            NavigationButton(kind: model.activePage?.isLoading == true ? .stop : .reload) {
+                if model.activePage?.isLoading == true { model.stop() }
+                else { model.reload() }
             }
+            .disabled(model.activePage == nil)
+            .accessibilityLabel(model.activePage?.isLoading == true ? "Stop Loading" : "Reload")
+            .accessibilityIdentifier(model.activePage?.isLoading == true ? "navigation.stop" : "navigation.reload")
         }
         .font(.system(size: 16, weight: .regular))
         .foregroundStyle(.secondary)
@@ -1609,16 +1682,157 @@ struct BrowserWindowView: View {
 
 }
 
-/// Matching rounded folder glyphs: a closed body and an open, angled front flap.
-private struct FolderOutline: Shape {
-    var isOpen: Bool
+/// Activation feedback never delays the action or the actual Reload/Stop state.
+private struct NavigationButton: View {
+    let kind: NavigationControlStyle.Kind
+    let action: () -> Void
+    @State private var activation = 0
+    @State private var clickFeedback = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button {
+            clickFeedback = !reduceMotion
+            activation += 1
+            action()
+        } label: {
+            ZStack {
+                Image(systemName: "arrow.clockwise")
+                    .opacity(kind == .stop ? 0 : 1)
+                    .scaleEffect(kind == .stop && !reduceMotion ? 0.55 : 1)
+                    .rotationEffect(.degrees(kind == .stop && !reduceMotion ? 180 : 0))
+                Image(systemName: "xmark")
+                    .opacity(kind == .stop ? 1 : 0)
+                    .scaleEffect(kind != .stop && !reduceMotion ? 0.55 : 1)
+                    .rotationEffect(.degrees(kind != .stop && !reduceMotion ? -90 : 0))
+            }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: kind)
+        }
+        .buttonStyle(NavigationControlStyle(kind: kind, clickFeedback: clickFeedback))
+        .task(id: activation) {
+            guard activation > 0 else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+                clickFeedback = false
+            } catch { /* A newer activation or disappearing view cancels feedback. */ }
+        }
+    }
+}
+
+/// Native button activation/focus semantics with a fixed hit area. Only the
+/// artwork moves; hovering never shifts adjacent controls or triggers navigation.
+private struct NavigationControlStyle: ButtonStyle {
+    enum Kind { case back, forward, reload, stop }
+    let kind: Kind
+    var clickFeedback = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        Appearance(configuration: configuration, kind: kind, clickFeedback: clickFeedback)
+    }
+
+    private struct Appearance: View {
+        let configuration: ButtonStyleConfiguration
+        let kind: Kind
+        let clickFeedback: Bool
+        @State private var hovered = false
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        private var highlighted: Bool { isEnabled && hovered }
+        private var pressed: Bool { isEnabled && configuration.isPressed }
+
+        var body: some View {
+            ZStack {
+                if kind == .back || kind == .forward {
+                    NavigationChevron(openness: highlighted && !reduceMotion ? 1 : 0,
+                                      pointsRight: kind == .forward)
+                        .stroke(style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                        .frame(width: 14, height: 18)
+                        .offset(x: !reduceMotion && (pressed || clickFeedback)
+                                ? (kind == .back ? -1 : 1) * (clickFeedback ? 3 : 1.5) : 0)
+                } else {
+                    configuration.label
+                        .rotationEffect(.degrees(kind == .reload && !reduceMotion
+                                                 ? (clickFeedback ? 65 : (pressed ? -30 : (highlighted ? -20 : 0))) : 0))
+                }
+            }
+            .scaleEffect(pressed && !reduceMotion ? 0.88 : 1)
+            .frame(width: 32, height: 32)
+            .background(Color.primary.opacity(pressed ? 0.13 : (highlighted ? 0.075 : 0)),
+                        in: RoundedRectangle(cornerRadius: 8))
+            .opacity(isEnabled ? 1 : 0.35)
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .onHover { hovered = $0 }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: highlighted)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: pressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: clickFeedback)
+        }
+    }
+}
+
+private struct NavigationChevron: Shape {
+    var openness: CGFloat
+    let pointsRight: Bool
+    var animatableData: CGFloat {
+        get { openness }
+        set { openness = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        // Bring the tip toward the ends to open the chevron's interior angle.
+        let tip = 0.24 + 0.05 * openness
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + rect.width * (pointsRight ? 1 - x : x),
+                    y: rect.minY + rect.height * y)
+        }
+        return Path { path in
+            path.move(to: point(0.72, 0.16))
+            path.addLine(to: point(tip, 0.5))
+            path.addLine(to: point(0.72, 0.84))
+        }
+    }
+}
+
+/// Layered folder artwork shared by sidebar rows and their drag previews.
+private struct FolderIcon: View {
+    let isOpen: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var outline: Color {
+        colorScheme == .dark
+            ? Color(white: 0.83)
+            : Color(white: 0.38)
+    }
+
+    var body: some View {
+        ZStack {
+            FolderBack()
+                .fill(colorScheme == .dark
+                      ? Color(white: 0.47)
+                      : Color(white: 0.72))
+                .overlay {
+                    FolderBack().stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+                }
+            FolderCover(openness: isOpen ? 1 : 0)
+                .fill(colorScheme == .dark
+                      ? Color(white: 0.13)
+                      : Color(white: 0.95))
+                .overlay {
+                    FolderCover(openness: isOpen ? 1 : 0)
+                        .stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+                }
+        }
+    }
+}
+
+private struct FolderBack: Shape {
 
     func path(in rect: CGRect) -> Path {
         var path = Path()
         func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
             CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
         }
-        let right: CGFloat = isOpen ? 0.84 : 0.94
+        let right: CGFloat = 0.88
         path.move(to: point(0.18, 0.88))
         path.addQuadCurve(to: point(0.06, 0.76), control: point(0.06, 0.88))
         path.addLine(to: point(0.06, 0.23))
@@ -1632,17 +1846,36 @@ private struct FolderOutline: Shape {
         path.addLine(to: point(right, 0.76))
         path.addQuadCurve(to: point(right - 0.12, 0.88), control: point(right, 0.88))
         path.closeSubpath()
-        if isOpen {
-            path.move(to: point(0.18, 0.88))
-            path.addQuadCurve(to: point(0.12, 0.80), control: point(0.10, 0.88))
-            path.addLine(to: point(0.24, 0.47))
-            path.addQuadCurve(to: point(0.34, 0.41), control: point(0.27, 0.41))
-            path.addLine(to: point(0.89, 0.41))
-            path.addQuadCurve(to: point(0.96, 0.50), control: point(1.00, 0.41))
-            path.addLine(to: point(0.84, 0.81))
-            path.addQuadCurve(to: point(0.74, 0.88), control: point(0.81, 0.88))
-            path.closeSubpath()
+        return path
+    }
+}
+
+private struct FolderCover: Shape {
+    var openness: CGFloat
+    var animatableData: CGFloat {
+        get { openness }
+        set { openness = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
         }
+        func blended(_ x: CGFloat, _ y: CGFloat, _ openX: CGFloat, _ openY: CGFloat) -> CGPoint {
+            point(x + (openX - x) * openness, y + (openY - y) * openness)
+        }
+        var path = Path()
+        // Matching control points let the cover smoothly unfold, without
+        // crossfading two overlapping outlines halfway through the animation.
+        path.move(to: point(0.18, 0.88))
+        path.addQuadCurve(to: blended(0.06, 0.76, 0.12, 0.80), control: blended(0.06, 0.88, 0.10, 0.88))
+        path.addLine(to: blended(0.06, 0.46, 0.27, 0.43))
+        path.addQuadCurve(to: blended(0.18, 0.34, 0.37, 0.37), control: blended(0.06, 0.34, 0.30, 0.37))
+        path.addLine(to: blended(0.82, 0.34, 0.89, 0.37))
+        path.addQuadCurve(to: blended(0.94, 0.46, 0.96, 0.46), control: blended(0.94, 0.34, 1.00, 0.37))
+        path.addLine(to: blended(0.94, 0.76, 0.84, 0.81))
+        path.addQuadCurve(to: blended(0.82, 0.88, 0.74, 0.88), control: blended(0.94, 0.88, 0.81, 0.88))
+        path.closeSubpath()
         return path
     }
 }

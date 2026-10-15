@@ -16,16 +16,56 @@ final class BrowserWindowModel {
     var renamingTabID: UUID?
     var renameText = ""
     var contentFocusRequest = 0
+    let suggestions: SearchSuggestions
+    private let defaults: UserDefaults
+    private let repository: SessionRepository
+    private let restorationError: String?
+    let restoredWindows: [BrowserSession]
+    var onSave: ((BrowserWindowModel) -> Void)?
+    var onOpenWindow: ((URL, String?) -> Void)?
+    var presentWindow: ((UUID) -> Void)?
+    var sidebarWidth: Double
+
+    func finishSidebarResize() {
+        sidebarWidth = SidebarWidth.clamped(sidebarWidth)
+        defaults.set(sidebarWidth, forKey: "sidebarWidth")
+    }
+    var onlineSuggestionsEnabled: Bool {
+        didSet {
+            defaults.set(onlineSuggestionsEnabled, forKey: "onlineSearchSuggestions")
+            refreshSuggestions()
+        }
+    }
 
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
-         input: NavigationInput, isTesting: Bool, restorationError: String?) {
+         input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
+         sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil) {
         self.input = input
         self.isTesting = isTesting
+        self.defaults = defaults
+        self.repository = repository
+        self.restorationError = restorationError
+        restoredWindows = session.additionalWindows
+        sidebarWidth = SidebarWidth.clamped(defaults.object(forKey: "sidebarWidth") as? Double ?? SidebarWidth.defaultValue)
+        defaults.register(defaults: ["onlineSearchSuggestions": true])
+        onlineSuggestionsEnabled = defaults.bool(forKey: "onlineSearchSuggestions")
+        let service = GoogleSearchSuggestions()
+        suggestions = SearchSuggestions { query in
+            #if DEBUG
+            // Isolated UI tests never send typed text to an external provider.
+            if isTesting {
+                try await Task.sleep(for: .milliseconds(50))
+                return ["\(query) guide", "\(query) examples", "\(query) tips"]
+            }
+            #endif
+            return try await service.fetch(query)
+        }
         coordinator = BrowserCoordinator(startup: startup, activeSpaceID: session.activeSpaceID,
             tabStore: TabStore(tabs: session.tabs, folders: session.folders), selectionBySpace: session.selectionBySpace,
             profileID: session.profileID, recentlyClosed: session.recentlyClosed)
-        persistence = SessionAutosaver(repository: repository, disabledReason: restorationError)
-        webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input) { configuration in
+        persistence = sharedPersistence ?? SessionAutosaver(repository: repository, disabledReason: restorationError)
+        webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
+                                 websiteDataStore: websiteDataStore) { configuration in
             #if DEBUG
             if isTesting { configuration.setURLSchemeHandler(TestPages(), forURLScheme: "early-test") }
             #endif
@@ -53,10 +93,11 @@ final class BrowserWindowModel {
             // selection and the visible page's first responder stay unchanged.
         }
         webViews.onClose = { [weak self] in self?.closeTab($0) }
+        webViews.onOpenWindowLink = { [weak self] url in self?.onOpenWindow?(url, nil) }
         webViews.onNotice = { [weak self] in self?.notice = $0 }
         activateSelection()
         if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
-        save()
+        // The app installs the shared writer before publishing the first snapshot.
     }
 
     var activePage: BrowserPage? { coordinator.activeTabID.flatMap { webViews.pages[$0] } }
@@ -69,19 +110,36 @@ final class BrowserWindowModel {
     var todayTabs: [BrowserTab] { coordinator.tabStore.todayTabs(in: coordinator.activeSpaceID) }
 
     func presentCommandBar(_ intent: CommandBarIntent) {
+        suggestions.cancel()
         submissionMessage = nil
         coordinator.presentCommandBar(intent)
     }
 
     func dismissCommandBar() {
+        suggestions.cancel()
         coordinator.dismissCommandBar()
         contentFocusRequest += 1
     }
 
-    func submit() {
+    func refreshSuggestions() {
+        guard (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else {
+            suggestions.cancel()
+            return
+        }
+        suggestions.update(query: coordinator.commandBar?.query ?? "", enabled: onlineSuggestionsEnabled)
+    }
+
+    func updateQuery(_ query: String) {
+        coordinator.updateQuery(query)
+        submissionMessage = nil
+        refreshSuggestions()
+    }
+
+    func submit(searchSuggestion: String? = nil) {
         guard let request = coordinator.navigationRequest() else { return }
+        suggestions.cancel()
         do {
-            let url = try input.resolve(request.query)
+            let url = try searchSuggestion.map { try input.searchURL(for: $0) } ?? input.resolve(request.query)
             guard let id = coordinator.navigate(to: url, target: request.target),
                   let tab = coordinator.tabStore.tab(id: id) else { return }
             submissionMessage = nil
@@ -201,7 +259,27 @@ final class BrowserWindowModel {
     func stop() { if let id = coordinator.activeTabID { webViews.stop(id) } }
     func back() { if let id = coordinator.activeTabID { webViews.back(id) } }
     func forward() { if let id = coordinator.activeTabID { webViews.forward(id) } }
-    func save() { persistence.enqueue(coordinator.session) }
+    func save() { onSave?(self) }
+
+    func openTabInNewWindow(_ id: UUID) {
+        guard let tab = coordinator.tabStore.tab(id: id), (try? input.validate(tab.currentURL)) != nil else { return }
+        onOpenWindow?(tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL), tab.displayTitle)
+    }
+
+    func siblingWindow(session: BrowserSession) -> BrowserWindowModel {
+        BrowserWindowModel(startup: .returningSession, session: session, repository: repository,
+                           input: input, isTesting: isTesting, restorationError: restorationError,
+                           defaults: defaults, sharedPersistence: persistence,
+                           websiteDataStore: webViews.websiteDataStore)
+    }
+
+    func synchronizeSavedItems(from session: BrowserSession) {
+        let previous = coordinator.activeTabID
+        coordinator.synchronizeSavedItems(from: session)
+        let remaining = Set(coordinator.tabStore.tabs.map(\.id))
+        for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }
+        if previous != coordinator.activeTabID { activateSelection() }
+    }
 }
 
 /// One writer, with only the latest pending snapshot retained during a burst.

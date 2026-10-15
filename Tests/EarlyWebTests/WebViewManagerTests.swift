@@ -6,6 +6,26 @@ import WebKit
 
 @Suite @MainActor
 struct WebViewManagerTests {
+    @Test func fullscreenAndProfileStoreAreSharedWithoutAlteringSuppliedConfiguration() {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let first = WebViewManager(profileID: profile, ephemeral: true)
+        let second = WebViewManager(profileID: profile, ephemeral: true, websiteDataStore: first.websiteDataStore)
+        func tab() -> BrowserTab {
+            BrowserTab(spaceID: UUID(), profileID: profile, title: "Page", currentURL: URL(string: "https://example.com")!)
+        }
+        let one = first.prepare(tab()).view
+        let two = second.prepare(tab()).view
+        #expect(one.configuration.preferences.isElementFullscreenEnabled)
+        #expect(two.configuration.preferences.isElementFullscreenEnabled)
+        #expect(one.configuration.websiteDataStore === two.configuration.websiteDataStore)
+        let supplied = WKWebViewConfiguration()
+        supplied.preferences.isElementFullscreenEnabled = false
+        let popup = second.prepare(tab(), configuration: supplied).view
+        #expect(!popup.configuration.preferences.isElementFullscreenEnabled)
+        first.discardAll()
+        second.discardAll()
+    }
     @Test func mediaActivityAggregatesFramesAndResetsOnNavigationAndProcessExit() {
         _ = NSApplication.shared
         let profile = UUID()
@@ -41,6 +61,9 @@ struct WebViewManagerTests {
         let page = manager.prepare(tab)
         #expect(manager.prepare(tab) === page)
         #expect(manager.creationCount == 1)
+        // WebKit may expose an unset override as nil or an empty string.
+        #expect(page.view.customUserAgent?.isEmpty != false)
+        #expect(page.view.configuration.applicationNameForUserAgent == BrowserUserAgent.applicationName)
         #expect(page.view.url == nil)
         manager.discard(tabID: tab.id)
         #expect(manager.liveViewCount == 0)
@@ -59,12 +82,17 @@ struct WebViewManagerTests {
         let second = manager.prepare(tab())
         #expect(first.view.configuration.websiteDataStore === second.view.configuration.websiteDataStore)
         #expect(!first.view.configuration.websiteDataStore.isPersistent)
+        #expect(first.view.customUserAgent?.isEmpty != false)
+        #expect(second.view.customUserAgent?.isEmpty != false)
+        #expect(first.view.configuration.applicationNameForUserAgent == BrowserUserAgent.applicationName)
+        #expect(second.view.configuration.applicationNameForUserAgent == BrowserUserAgent.applicationName)
         let supplied = WKWebViewConfiguration()
         supplied.websiteDataStore = .nonPersistent()
         supplied.applicationNameForUserAgent = "EarlyPopupTest"
         let popup = manager.prepare(tab(), configuration: supplied)
         #expect(popup.view.configuration.websiteDataStore === supplied.websiteDataStore)
         #expect(popup.view.configuration.applicationNameForUserAgent == "EarlyPopupTest")
+        #expect(popup.view.customUserAgent?.isEmpty != false)
         #expect(popup.view.url == nil) // Caller must not duplicate WebKit's new-window load.
         manager.discardAll()
         #expect(manager.liveViewCount == 0)

@@ -560,28 +560,50 @@ struct WebContentView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> HostView { HostView() }
     func updateNSView(_ host: HostView, context: Context) {
-        if host.hosted !== view {
-            host.hosted?.removeFromSuperview()
-            host.hosted = view
-            if let view {
-                view.removeFromSuperview()
-                view.frame = host.bounds
-                view.autoresizingMask = [.width, .height]
-                host.addSubview(view)
-            }
-        }
+        host.display(view)
         host.canFocus = canFocus
         host.suppressAccessibilityChildren = hasDialog
         guard host.focusRequest != focusRequest else { return }
         host.focusRequest = focusRequest
         DispatchQueue.main.async { [weak host] in
             guard let host, host.canFocus, host.focusRequest == focusRequest else { return }
+            // WebKit temporarily owns/reparents an element-fullscreen view.
+            // Do not steal its focus back into the browser window.
+            if let view = host.hosted, view.fullscreenState != .notInFullscreen { return }
             host.window?.makeFirstResponder(host.hosted ?? host)
         }
     }
 
     final class HostView: NSView {
         weak var hosted: WKWebView?
+        private weak var desired: WKWebView?
+        private var leavingFullscreen = false
+
+        func display(_ view: WKWebView?) {
+            desired = view
+            guard !leavingFullscreen, hosted !== view else { return }
+            if let previous = hosted, previous.fullscreenState != .notInFullscreen {
+                leavingFullscreen = true
+                previous.closeAllMediaPresentations { [weak self] in
+                    guard let self else { return }
+                    self.leavingFullscreen = false
+                    self.install(self.desired)
+                }
+                return
+            }
+            install(view)
+        }
+
+        private func install(_ view: WKWebView?) {
+            hosted?.removeFromSuperview()
+            hosted = view
+            if let view {
+                view.removeFromSuperview()
+                view.frame = bounds
+                view.autoresizingMask = [.width, .height]
+                addSubview(view)
+            }
+        }
         var focusRequest = -1
         var canFocus = false
         var suppressAccessibilityChildren = false

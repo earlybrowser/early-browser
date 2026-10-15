@@ -37,6 +37,10 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
         CommandMenu("Tab") {
+            Button("Open Tab in New Window") {
+                if let tab = model?.activeTab { model?.openTabInNewWindow(tab.id) }
+            }
+            .disabled(model?.activeTab == nil)
             Button("Rename Tab…") {
                 if let id = model?.activeTab?.id { model?.requestRename(id) }
             }
