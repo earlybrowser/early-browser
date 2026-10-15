@@ -457,6 +457,8 @@ final class EarlyUITests: XCTestCase {
         let destination = app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
             .withOffset(CGVector(dx: 0, dy: savedSectionRevealOffset(app)))
         source.click(forDuration: 0.3, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertFalse(app.textFields["rename.name"].exists, "Dragging must not open the rename editor")
+        XCTAssertFalse(app.textFields["folder.name"].exists)
         XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
         XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
         XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
@@ -483,6 +485,70 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons[secondID].waitForExistence(timeout: 8))
         XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+    }
+
+    func testDoubleClickRenamesTabsAndFoldersWithoutReplacingLivePage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let id = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep my page")
+        let name = app.textFields["rename.name"]
+        func rename(_ row: XCUIElement, from old: String, to new: String) {
+            row.doubleClick()
+            XCTAssertTrue(name.waitForExistence(timeout: 3))
+            XCTAssertEqual(name.value as? String, old)
+            name.click()
+            app.typeKey("a", modifierFlags: .command)
+            name.typeText(new)
+            app.buttons["Save"].click()
+            XCTAssertEqual(row.label, new)
+        }
+        rename(app.buttons[id], from: "Page One", to: "My page")
+        XCTAssertEqual(saved.value as? String, "keep my page")
+        pinAction("Pin Tab", on: app.buttons[id])
+        rename(app.buttons[id], from: "My page", to: "My pin")
+        pinAction("Add to Favorites", on: app.buttons[id])
+        let favorite = app.buttons["favorite.\(id.dropFirst(4))"]
+        XCTAssertTrue(favorite.waitForExistence(timeout: 3))
+        rename(favorite, from: "My pin", to: "My favorite")
+        favorite.doubleClick()
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(favorite.label, "My favorite")
+        XCTAssertEqual(saved.value as? String, "keep my page")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let folderName = app.textFields["folder.name"]
+        XCTAssertTrue(folderName.waitForExistence(timeout: 3))
+        folderName.click()
+        folderName.typeText("Work")
+        app.buttons["Save"].click()
+        let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Work'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        let folderID = folder.identifier
+        folder.doubleClick()
+        XCTAssertTrue(folderName.waitForExistence(timeout: 3))
+        XCTAssertEqual(folderName.value as? String, "Work")
+        folderName.click()
+        app.typeKey("a", modifierFlags: .command)
+        folderName.typeText("Research")
+        app.buttons["Save"].click()
+        let renamed = app.buttons[folderID]
+        XCTAssertEqual(renamed.label, "Research")
+        let beforeClick = renamed.value as? String
+        renamed.click()
+        XCTAssertEqual(renamed.value as? String, beforeClick == "Expanded" ? "Collapsed" : "Expanded")
+        XCTAssertFalse(folderName.exists)
+        renamed.doubleClick()
+        XCTAssertTrue(folderName.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(renamed.label, "Research")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
     func testCustomNameSurvivesPinCloseAndRelaunch() {
@@ -978,6 +1044,38 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 0, views: 0, created: 0)
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
+    }
+
+    func testCommandClickOpensRegularAndTargetBlankLinksInBackgroundTabs() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let source = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep source state")
+        for (index, title) in ["Go to Two", "Open new tab"].enumerated() {
+            XCUIElement.perform(withKeyModifiers: .command) {
+                app.webViews.links[title].click()
+            }
+            expectRuntime(app, tabs: index + 2, views: index + 2, created: index + 2)
+            expectPage(app, "One")
+            XCTAssertTrue(app.buttons[source].isSelected)
+            XCTAssertEqual(saved.value as? String, "keep source state")
+            XCTAssertEqual(app.windows.count, 1)
+        }
+        let others = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", source))
+        XCTAssertEqual(others.count, 2)
+        for row in others.allElementsBoundByIndex {
+            row.click()
+            expectPage(app, "Two")
+        }
+        app.buttons[source].click()
+        XCTAssertEqual(saved.value as? String, "keep source state")
+        // An unmodified link still navigates the existing view, not a new tab.
+        app.webViews.links["Go to Two"].click()
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 3, views: 3, created: 3)
     }
 
     func testLinkContextMenuOpensBackgroundTabWithoutChangingCurrentPage() {

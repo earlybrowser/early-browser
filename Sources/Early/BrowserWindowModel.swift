@@ -89,7 +89,7 @@ final class BrowserWindowModel {
             guard let tab = self.coordinator.tabStore.tab(id: id) else { return }
             self.webViews.load(url, in: tab)
             self.save()
-            // The explicit context-menu action loads only the background view;
+            // Context-menu and Command-click actions load only the background view;
             // selection and the visible page's first responder stay unchanged.
         }
         webViews.onClose = { [weak self] in self?.closeTab($0) }

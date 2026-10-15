@@ -6,6 +6,32 @@ import WebKit
 
 @Suite @MainActor
 struct WebViewManagerTests {
+    @Test func nativeMagnificationIsEnabledForNormalAndPopupViewsAndSurvivesReuse() {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        defer { manager.discardAll() }
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Page",
+                             currentURL: URL(string: "https://example.com")!)
+        let view = manager.prepare(tab).view
+        #expect(view.allowsMagnification)
+        #expect(view.magnification == 1)
+        view.magnification = 1.5
+        #expect(manager.prepare(tab).view === view)
+        #expect(view.magnification == 1.5)
+        let supplied = WKWebViewConfiguration()
+        supplied.websiteDataStore = .nonPersistent()
+        supplied.applicationNameForUserAgent = "SuppliedPopup"
+        let popupTab = BrowserTab(spaceID: tab.spaceID, profileID: profile, title: "Popup",
+                                  currentURL: tab.currentURL)
+        let popup = manager.prepare(popupTab, configuration: supplied).view
+        #expect(popup.allowsMagnification)
+        #expect(popup.magnification == 1)
+        #expect(popup.configuration.websiteDataStore === supplied.websiteDataStore)
+        #expect(popup.configuration.applicationNameForUserAgent == "SuppliedPopup")
+        #expect(manager.creationCount == 2)
+    }
+
     @Test func fullscreenAndProfileStoreAreSharedWithoutAlteringSuppliedConfiguration() {
         _ = NSApplication.shared
         let profile = UUID()

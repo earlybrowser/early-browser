@@ -532,11 +532,13 @@ struct BrowserWindowView: View {
             .accessibilityIdentifier("tab.\(tab.id)")
             .accessibilityLabel(tab.displayTitle)
             .accessibilityValue(tabAccessibilityValue(tab))
-            .accessibilityHint(tab.isOpen ? "Select tab. More actions in the context menu." : "Reopen saved tab.")
+            .accessibilityHint(tab.isOpen ? "Select tab. Double-click to rename. More actions in the context menu." : "Reopen saved tab. Double-click to rename.")
             .accessibilityAddTraits(selected ? .isSelected : [])
             .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
                   ?? tab.currentURL.absoluteString)
-            .highPriorityGesture(reorderGesture(tab))
+            .highPriorityGesture(reorderGesture(tab).exclusively(before:
+                TapGesture(count: 2).onEnded { model.requestRename(tab.id) }
+            ))
             if tab.isOpen && hoveredTab == tab.id {
                 Button { model.closeTab(tab.id) } label: {
                     Image(systemName: "xmark").font(.caption)
@@ -698,7 +700,7 @@ struct BrowserWindowView: View {
         if let page = model.activePage, page.isLoading {
             let progress = min(max(page.progress, 0), 1)
             GeometryReader { geometry in
-                Rectangle().fill(Color(nsColor: .secondaryLabelColor))
+                Rectangle().fill(Color.accentColor)
                     .frame(width: geometry.size.width * progress)
             }
             .frame(height: 2)
@@ -737,10 +739,12 @@ struct BrowserWindowView: View {
         .accessibilityIdentifier("favorite.\(tab.id)")
         .accessibilityLabel(name)
         .accessibilityValue(tabAccessibilityValue(tab))
-        .accessibilityHint(tab.isOpen ? "Select favorite. More actions in the context menu." : "Reopen saved favorite.")
+        .accessibilityHint(tab.isOpen ? "Select favorite. Double-click to rename. More actions in the context menu." : "Reopen saved favorite. Double-click to rename.")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
-        .highPriorityGesture(reorderGesture(tab))
+        .highPriorityGesture(reorderGesture(tab).exclusively(before:
+            TapGesture(count: 2).onEnded { model.requestRename(tab.id) }
+        ))
         .opacity(draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
         .contextMenu { tabActions(tab) }
@@ -876,7 +880,7 @@ struct BrowserWindowView: View {
         .accessibilityIdentifier("folder.\(folder.id)")
         .accessibilityLabel(folder.name)
         .accessibilityValue(isFolderOpen(folder) ? "Expanded" : "Collapsed")
-        .accessibilityHint(folderHasChildren(folder.id) ? "Expand or collapse folder. More actions in the context menu." : "Empty folder. Toggle open or closed; drag a tab here to add content.")
+        .accessibilityHint(folderHasChildren(folder.id) ? "Expand or collapse folder. Double-click to rename. More actions in the context menu." : "Empty folder. Double-click to rename; drag a tab here to add content.")
         .help(folderPath(folder))
         .background(Color.primary.opacity(hoveredFolder == folder.id ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 7))
         .background(Color.primary.opacity(showsFolderDragTargets && dropFolder == folder.id ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 7))
@@ -897,7 +901,11 @@ struct BrowserWindowView: View {
         .opacity(draggingTab == folder.id ? 0 : 1)
         .animation(draggingTab == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
         .background(tabFrame(folder.id))
-        .highPriorityGesture(folderReorderGesture(folder))
+        // A completed double click renames; crossing the drag threshold wins
+        // instead, including when the second press is held for a drag.
+        .highPriorityGesture(folderReorderGesture(folder).exclusively(before:
+            TapGesture(count: 2).onEnded { editFolder(folder, parent: folder.parentID) }
+        ))
         .contextMenu {
             Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
                 .disabled(!model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID))

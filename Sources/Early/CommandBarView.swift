@@ -67,7 +67,7 @@ struct CommandBarView: View {
         }
         .padding(20)
         .frame(maxWidth: 560)
-        .background(CommandBarCardAnchor(model: model))
+        .background(CommandBarCardAnchor(model: model, queryIsFocused: queryIsFocused))
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay {
             RoundedRectangle(cornerRadius: 16)
@@ -132,6 +132,7 @@ struct CommandBarView: View {
 
 private struct CommandBarCardAnchor: NSViewRepresentable {
     let model: BrowserWindowModel
+    let queryIsFocused: Bool
 
     func makeNSView(context: Context) -> AnchorView {
         let view = AnchorView()
@@ -141,6 +142,11 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
 
     func updateNSView(_ view: AnchorView, context: Context) {
         view.model = model
+        if queryIsFocused {
+            // The field editor is attached after SwiftUI's focus transaction.
+            // Color the idle caret too, before the first edit notification.
+            DispatchQueue.main.async { [weak view] in view?.updateFocusedCaret() }
+        }
     }
 
     static func dismantleNSView(_ view: AnchorView, coordinator: ()) {
@@ -150,6 +156,9 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
     final class AnchorView: NSView {
         var model: BrowserWindowModel?
         private var monitor: Any?
+        private weak var editingField: NSTextField?
+        private weak var fieldEditor: NSTextView?
+        private var originalCaretColor: NSColor?
 
         override func hitTest(_ point: NSPoint) -> NSView? {
             nil
@@ -166,6 +175,10 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
 
         func startMonitoring() {
             stopMonitoring()
+            NotificationCenter.default.addObserver(self, selector: #selector(editingBegan(_:)),
+                name: NSControl.textDidBeginEditingNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(editingEnded(_:)),
+                name: NSControl.textDidEndEditingNotification, object: nil)
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
                 guard let self else { return event }
                 guard let model = self.model, model.coordinator.commandBar != nil else {
@@ -188,10 +201,55 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
         }
 
         func stopMonitoring() {
+            NotificationCenter.default.removeObserver(self, name: NSControl.textDidBeginEditingNotification, object: nil)
+            NotificationCenter.default.removeObserver(self, name: NSControl.textDidEndEditingNotification, object: nil)
+            restoreCaret()
             if let monitor {
                 NSEvent.removeMonitor(monitor)
                 self.monitor = nil
             }
+        }
+
+        @objc private func editingBegan(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            styleCaret(in: field)
+        }
+
+        func updateFocusedCaret() {
+            guard let editor = window?.firstResponder as? NSTextView,
+                  let field = editor.delegate as? NSTextField else { return }
+            styleCaret(in: field)
+        }
+
+        private func styleCaret(in field: NSTextField) {
+            guard monitor != nil, let window, field.window === window,
+                  bounds.intersects(field.convert(field.bounds, to: self)),
+                  let editor = field.currentEditor() as? NSTextView else { return }
+            guard editingField !== field || fieldEditor !== editor else { return }
+            restoreCaret()
+            editingField = field
+            fieldEditor = editor
+            originalCaretColor = editor.insertionPointColor
+            editor.insertionPointColor = .secondaryLabelColor
+        }
+
+        @objc private func editingEnded(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField, field === editingField else { return }
+            restoreCaret()
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            fieldEditor?.insertionPointColor = .secondaryLabelColor
+        }
+
+        private func restoreCaret() {
+            // AppKit shares a field editor across controls in this window.
+            // Do not leak the command bar's caret color into other editors.
+            if let originalCaretColor { fieldEditor?.insertionPointColor = originalCaretColor }
+            originalCaretColor = nil
+            fieldEditor = nil
+            editingField = nil
         }
     }
 }

@@ -108,6 +108,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             _ = self.openContextLink(url, in: view, background: true)
         }
         view.allowsBackForwardNavigationGestures = true
+        // Enables WebKit's native pinch and two-finger smart magnification.
+        view.allowsMagnification = true
         view.navigationDelegate = self
         view.uiDelegate = self
         let page = BrowserPage(view: view, url: tab.currentURL)
@@ -242,6 +244,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let mainFrame = action.targetFrame?.isMainFrame ?? true
         guard let url = action.request.url else { decisionHandler(.cancel); return }
         if (try? input.validate(url)) != nil {
+            if openCommandClickedLink(action, in: webView) {
+                decisionHandler(.cancel)
+                return
+            }
             if mainFrame, action.targetFrame != nil,
                let id = identities[ObjectIdentifier(webView)] { pages[id]?.requestedURL = url }
             decisionHandler(.allow)
@@ -322,7 +328,16 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
                         for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard identities[ObjectIdentifier(webView)] != nil,
               let url = action.request.url, (try? input.validate(url)) != nil else { return nil }
+        // Target-blank links may arrive through the new-window delegate first.
+        // Returning nil consumes the gesture without creating a second tab.
+        if openCommandClickedLink(action, in: webView) { return nil }
         return onNewWindow?(url, configuration)
+    }
+
+    private func openCommandClickedLink(_ action: WKNavigationAction, in view: WKWebView) -> Bool {
+        guard action.navigationType == .linkActivated, action.buttonNumber == 0,
+              action.modifierFlags.contains(.command), let url = action.request.url else { return false }
+        return openContextLink(url, in: view, background: true)
     }
 
     public func webViewDidClose(_ webView: WKWebView) {

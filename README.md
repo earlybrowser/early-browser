@@ -21,7 +21,9 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Favorites and pins | Keep frequently visited sites as compact Favorites or named pins. Return a pin to its saved address and reopen closed pins on demand. | Implemented. |
 | Nested folders | Group and reorder tabs with up to two nesting levels. Folder drop previews reserve a single row without opening hidden contents. New subfolders appear inside their parent; deleting a folder removes its contents. | Implemented. |
 | Session restoration | Restore tabs, saved pages, ordering, and selection after quitting. Folders start collapsed, and an empty session opens the command bar. | Implemented. |
-| Links and windows | Open links in background tabs, copy or share them, and open links or tab copies in separate windows. Windows share saved items, not Today tabs. | Implemented. |
+| Links and windows | Command-click links to open background tabs; copy or share links, and open links or tab copies in separate windows. Windows share saved items, not Today tabs. | Implemented. |
+| Quick renaming | Double-click a tab, Favorite, or folder to rename it; dragging still reorders items. | Implemented. |
+| Trackpad zoom | Native pinch-to-zoom and two-finger double-tap Smart Zoom. | Implemented. |
 | Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. | Implemented. |
 | Media indicators | Identify tabs playing unmuted HTML audio or video with a speaker icon. | Implemented. |
 | Website fullscreen | Let compatible website players enter and exit fullscreen. | Implemented. |
