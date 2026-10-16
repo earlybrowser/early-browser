@@ -243,7 +243,12 @@ private struct BrowserWindowRoot: View {
 private struct WindowRegistration: NSViewRepresentable {
     let identifier: String
     let onClose: () -> Void
-    func makeNSView(context: Context) -> RegistrationView { RegistrationView() }
+    func makeNSView(context: Context) -> RegistrationView {
+        let view = RegistrationView()
+        view.identifierValue = identifier
+        view.onClose = onClose
+        return view
+    }
     func updateNSView(_ view: RegistrationView, context: Context) {
         view.identifierValue = identifier
         view.onClose = onClose
