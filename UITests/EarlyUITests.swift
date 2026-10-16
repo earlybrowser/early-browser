@@ -23,6 +23,8 @@ final class EarlyUITests: XCTestCase {
     func testKeyboardCommandsLeaveEmptyWindowUsable() {
         let app = launchFreshApp()
         let query = app.textFields["commandBar.query"]
+        let windowFrame = app.windows["browser"].frame
+        XCTAssertEqual((query.frame.midY - windowFrame.minY) / windowFrame.height, 0.40, accuracy: 0.04)
         app.typeText("example.com")
         XCTAssertEqual(query.value as? String, "example.com")
         app.typeKey(.escape, modifierFlags: [])
@@ -30,6 +32,7 @@ final class EarlyUITests: XCTestCase {
         app.typeKey("w", modifierFlags: .command)
         XCTAssertEqual(app.windows.count, 1)
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
+        XCTAssertFalse(app.staticTexts["Open a new tab with ⌘T"].exists)
         app.typeKey("t", modifierFlags: .command)
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 3))
         app.typeText("cancel me")
@@ -44,6 +47,73 @@ final class EarlyUITests: XCTestCase {
         address.click()
         XCTAssertTrue(query.waitForExistence(timeout: 3))
         XCTAssertEqual(query.value as? String, "")
+    }
+
+    func testTranslucentChromePreservesNavigationInBothAppearances() {
+        for appearance in ["dark", "light"] {
+            let app = launchFreshApp(appearance: appearance)
+            func capture(_ state: String) {
+                let attachment = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+                attachment.name = "\(appearance) translucent chrome — \(state)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+            capture("command bar")
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertFalse(app.textFields["commandBar.query"].exists)
+            expectRuntime(app, tabs: 0, views: 0, created: 0)
+            capture("empty canvas")
+            navigate(app, to: "early-test://fixture/one")
+            expectPage(app, "One")
+            let saved = app.webViews.textFields["Saved text"]
+            saved.click()
+            saved.typeText("preserve page through chrome changes")
+            app.typeKey("l", modifierFlags: .command)
+            XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 3))
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertEqual(saved.value as? String, "preserve page through chrome changes")
+            expectRuntime(app, tabs: 1, views: 1, created: 1)
+            capture("loaded website")
+            app.terminate()
+        }
+    }
+
+    func testDefaultSearchSuggestionsKeyboardDismissalAndRelaunch() {
+        let app = launchFreshApp()
+        let toggle = app.checkBoxes["commandBar.onlineSuggestions"]
+        let query = app.textFields["commandBar.query"]
+        let first = app.buttons["commandBar.suggestion.0"]
+        XCTAssertFalse(toggle.exists)
+        XCTAssertFalse(app.staticTexts["When enabled, typed searches are sent to Google."].exists)
+        query.typeText("swift")
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        XCTAssertEqual(first.label, "Search Google for swift guide")
+        query.click()
+        app.typeKey(.downArrow, modifierFlags: [])
+        XCTAssertTrue(first.isSelected)
+        app.typeKey(.upArrow, modifierFlags: [])
+        XCTAssertFalse(first.isSelected)
+        app.typeKey("a", modifierFlags: .command)
+        app.typeText("https://example.com/private")
+        XCTAssertFalse(first.exists)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(query.exists)
+        app.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        XCTAssertFalse(toggle.exists)
+        XCTAssertFalse(first.exists)
+        query.typeText("browser")
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        XCTAssertEqual(first.label, "Search Google for browser guide")
+        XCTAssertLessThan(app.buttons["commandBar.suggestion.2"].frame.maxY, app.windows["browser"].frame.maxY)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(query.waitForExistence(timeout: 10))
+        XCTAssertFalse(toggle.exists)
+        XCTAssertFalse(first.exists)
+        query.typeText("swift")
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        XCTAssertEqual(first.label, "Search Google for swift guide")
     }
 
     private func visibleMenuAction(_ title: String) {
@@ -416,6 +486,8 @@ final class EarlyUITests: XCTestCase {
         let destination = app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
             .withOffset(CGVector(dx: 0, dy: savedSectionRevealOffset(app)))
         source.click(forDuration: 0.3, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertFalse(app.textFields["rename.name"].exists, "Dragging must not open the rename editor")
+        XCTAssertFalse(app.textFields["folder.name"].exists)
         XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
         XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
         XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
@@ -442,6 +514,175 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons[secondID].waitForExistence(timeout: 8))
         XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+    }
+
+    private func optionClick(_ element: XCUIElement) {
+        XCUIElement.perform(withKeyModifiers: .option) { element.click() }
+    }
+
+    func testOptionClickRenamesTabsAndFoldersWithoutReplacingLivePage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let id = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep my page")
+        let name = app.textFields["rename.name"]
+        func rename(_ row: XCUIElement, from old: String, to new: String) {
+            optionClick(row)
+            XCTAssertTrue(name.waitForExistence(timeout: 3))
+            XCTAssertEqual(name.value as? String, old)
+            name.click()
+            app.typeKey("a", modifierFlags: .command)
+            name.typeText(new)
+            app.buttons["Save"].click()
+            XCTAssertEqual(row.label, new)
+        }
+        rename(app.buttons[id], from: "Page One", to: "My page")
+        XCTAssertEqual(saved.value as? String, "keep my page")
+        pinAction("Pin Tab", on: app.buttons[id])
+        rename(app.buttons[id], from: "My page", to: "My pin")
+        pinAction("Add to Favorites", on: app.buttons[id])
+        let favorite = app.buttons["favorite.\(id.dropFirst(4))"]
+        XCTAssertTrue(favorite.waitForExistence(timeout: 3))
+        rename(favorite, from: "My pin", to: "My favorite")
+        optionClick(favorite)
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(favorite.label, "My favorite")
+        XCTAssertEqual(saved.value as? String, "keep my page")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let folderName = app.textFields["folder.name"]
+        XCTAssertTrue(folderName.waitForExistence(timeout: 3))
+        folderName.click()
+        folderName.typeText("Work")
+        app.buttons["Save"].click()
+        let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Work'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        let folderID = folder.identifier
+        optionClick(folder)
+        XCTAssertTrue(folderName.waitForExistence(timeout: 3))
+        XCTAssertEqual(folderName.value as? String, "Work")
+        folderName.click()
+        app.typeKey("a", modifierFlags: .command)
+        folderName.typeText("Research")
+        app.buttons["Save"].click()
+        let renamed = app.buttons[folderID]
+        XCTAssertEqual(renamed.label, "Research")
+        let beforeClick = renamed.value as? String
+        renamed.click()
+        XCTAssertEqual(renamed.value as? String, beforeClick == "Expanded" ? "Collapsed" : "Expanded")
+        XCTAssertFalse(folderName.exists)
+        optionClick(renamed)
+        XCTAssertTrue(folderName.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(renamed.label, "Research")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testOptionClickRenameDoesNotSelectInactiveTabOrOpenClosedSavedPages() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("stay on this tab")
+        let editor = app.textFields["rename.name"]
+        optionClick(app.buttons[firstID])
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(app.buttons[secondID].isSelected, "Rename must not select the inactive tab")
+        expectPage(app, "Two")
+        XCTAssertEqual(saved.value as? String, "stay on this tab")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+
+        pinAction("Pin Tab", on: app.buttons[firstID])
+        pinAction("Close Tab", on: app.buttons[firstID])
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Pinned, closed")
+        optionClick(app.buttons[firstID])
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.click()
+        app.typeKey("a", modifierFlags: .command)
+        editor.typeText("Closed pin")
+        app.buttons["Save"].click()
+        XCTAssertEqual(app.buttons[firstID].label, "Closed pin")
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Pinned, closed")
+        XCTAssertTrue(app.buttons[secondID].isSelected)
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+
+        pinAction("Add to Favorites", on: app.buttons[firstID])
+        let favorite = app.buttons["favorite.\(firstID.dropFirst(4))"]
+        XCTAssertTrue(favorite.waitForExistence(timeout: 3))
+        optionClick(favorite)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(favorite.value as? String, "Favorite, closed")
+        XCTAssertTrue(app.buttons[secondID].isSelected)
+        XCTAssertEqual(saved.value as? String, "stay on this tab")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        // An ordinary click must still reopen exactly this saved tab.
+        favorite.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 2, views: 2, created: 3)
+    }
+
+    func testOptionClickFolderRenamePreservesExpansionAndDisclosureTogglesOnce() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let editor = app.textFields["folder.name"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.click()
+        editor.typeText("Work")
+        app.buttons["Save"].click()
+        let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        let folderID = folder.identifier
+        let toggle = app.buttons["folderToggle.\(folderID.dropFirst(7))"]
+        let count = app.staticTexts["test.folderToggles"]
+        XCTAssertEqual(folder.frame.minY, toggle.frame.minY, accuracy: 0.5)
+        XCTAssertEqual(folder.frame.height, toggle.frame.height, accuracy: 0.5)
+        XCTAssertEqual(count.value as? String, "0")
+        optionClick(folder)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(folder.value as? String, "Collapsed")
+        XCTAssertEqual(count.value as? String, "0", "Rename must not toggle twice and return to the original state")
+        toggle.click()
+        XCTAssertEqual(folder.value as? String, "Expanded")
+        XCTAssertEqual(count.value as? String, "1")
+        optionClick(folder)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.click()
+        app.typeKey("a", modifierFlags: .command)
+        editor.typeText("Research")
+        app.buttons["Save"].click()
+        XCTAssertEqual(app.buttons[folderID].label, "Research")
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Expanded")
+        XCTAssertEqual(count.value as? String, "1")
+        app.buttons[folderID].click()
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Collapsed")
+        XCTAssertEqual(count.value as? String, "2", "Single-clicking the title should toggle exactly once")
+        toggle.click()
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Expanded")
+        XCTAssertEqual(count.value as? String, "3")
+        XCTAssertFalse(editor.exists)
+        optionClick(toggle)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Expanded")
+        XCTAssertEqual(count.value as? String, "3", "Option-clicking the icon must rename without toggling")
     }
 
     func testCustomNameSurvivesPinCloseAndRelaunch() {
@@ -939,6 +1180,38 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
     }
 
+    func testCommandClickOpensRegularAndTargetBlankLinksInBackgroundTabs() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let source = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep source state")
+        for (index, title) in ["Go to Two", "Open new tab"].enumerated() {
+            XCUIElement.perform(withKeyModifiers: .command) {
+                app.webViews.links[title].click()
+            }
+            expectRuntime(app, tabs: index + 2, views: index + 2, created: index + 2)
+            expectPage(app, "One")
+            XCTAssertTrue(app.buttons[source].isSelected)
+            XCTAssertEqual(saved.value as? String, "keep source state")
+            XCTAssertEqual(app.windows.count, 1)
+        }
+        let others = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", source))
+        XCTAssertEqual(others.count, 2)
+        for row in others.allElementsBoundByIndex {
+            row.click()
+            expectPage(app, "Two")
+        }
+        app.buttons[source].click()
+        XCTAssertEqual(saved.value as? String, "keep source state")
+        // An unmodified link still navigates the existing view, not a new tab.
+        app.webViews.links["Go to Two"].click()
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 3, views: 3, created: 3)
+    }
+
     func testLinkContextMenuOpensBackgroundTabWithoutChangingCurrentPage() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")
@@ -949,9 +1222,11 @@ final class EarlyUITests: XCTestCase {
         // Scope to the link menu: the application menu also owns Services.
         let linkMenu = app.menus.containing(.menuItem, identifier: "Open Link in New Tab").firstMatch
         XCTAssertTrue(linkMenu.waitForExistence(timeout: 3))
-        XCTAssertTrue(linkMenu.menuItems["Open Link"].exists)
+        XCTAssertFalse(linkMenu.menuItems["Open Link"].exists)
+        XCTAssertTrue(linkMenu.menuItems["Open Link in New Window"].exists)
+        XCTAssertTrue(linkMenu.menuItems["Share"].exists)
         XCTAssertTrue(linkMenu.menuItems["Copy Link"].exists)
-        for title in ["Open Link in New Window", "Download Linked File", "Services", "Share…"] {
+        for title in ["Download Linked File", "Services", "Share…"] {
             XCTAssertFalse(linkMenu.menuItems[title].exists,
                            "Unsupported action is visible in the link menu: \(title)")
         }
@@ -963,6 +1238,170 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(other.waitForExistence(timeout: 5))
         other.click()
         expectPage(app, "Two")
+    }
+
+    func testBrowserIdentityMatchesAcrossBackgroundAndPopupTabs() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/identity")
+        func identity(file: StaticString = #filePath, line: UInt = #line) -> String {
+            var result: String?
+            let ready = NSPredicate { _, _ in
+                // WebKit exposes some static-text values as numbers on older
+                // macOS releases. A string predicate over every value throws
+                // before it reaches the actual user-agent paragraph.
+                result = app.webViews.staticTexts.allElementsBoundByIndex.lazy.compactMap { text in
+                    [text.value as? String, text.label].compactMap { $0 }
+                        .first { $0.hasPrefix("Mozilla/5.0") }
+                }.first
+                return result != nil
+            }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: app)], timeout: 5),
+                           .completed, file: file, line: line)
+            return result ?? ""
+        }
+        let original = identity()
+        XCTAssertTrue(original.contains(" Version/"))
+        XCTAssertTrue(original.contains(" Safari/605.1.15 Early/"))
+        XCTAssertFalse(original.contains(" Chrome/"))
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let source = rows.firstMatch.identifier
+
+        // The owned link action creates a background view through normal setup.
+        app.webViews.links["Open identity tab"].rightClick()
+        visibleMenuAction("Open Link in New Tab")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        XCTAssertTrue(app.buttons[source].isSelected)
+        XCTAssertEqual(identity(), original)
+        let background = rows.matching(NSPredicate(format: "identifier != %@", source)).firstMatch
+        background.click()
+        XCTAssertEqual(identity(), original)
+
+        // A target=_blank click supplies WebKit's own configuration. It must
+        // receive the same identity without changing its store or duplicating loads.
+        app.webViews.links["Open identity tab"].click()
+        expectRuntime(app, tabs: 3, views: 3, created: 3)
+        XCTAssertEqual(identity(), original)
+    }
+
+    func testLinkShareShowsNativePickerAndCanCancel() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        app.webViews.links["Go to Two"].rightClick()
+        visibleMenuAction("Share")
+        XCTAssertTrue(app.popovers.firstMatch.waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testNewWindowsHaveIsolatedTodayTabsAndRestoreTogether() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let main = app.windows["browser"]
+        let pinID = main.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        main.buttons[pinID].rightClick()
+        visibleMenuAction("Pin Tab")
+        app.typeKey("t", modifierFlags: .command)
+        app.typeText("early-test://fixture/two\n")
+        expectPage(app, "Two")
+        main.webViews.links["Go to Two"].rightClick()
+        visibleMenuAction("Open Link in New Window")
+        let newWindow = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser.'")).firstMatch
+        XCTAssertTrue(newWindow.waitForExistence(timeout: 15))
+        let childID = newWindow.identifier
+        // A firstMatch query is live and changes when the next window comes to
+        // the front. Bind the original window by ID before opening another.
+        let child = app.windows[childID]
+        XCTAssertTrue(child.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+        let childRuntime = child.staticTexts["test.runtime"]
+        expectation(for: NSPredicate(format: "value == %@ OR label == %@", "Tabs 1 · Views 1 · Created 1 · Saved", "Tabs 1 · Views 1 · Created 1 · Saved"), evaluatedWith: childRuntime)
+        waitForExpectations(timeout: 5)
+        XCTAssertTrue(child.buttons[pinID].exists)
+        XCTAssertEqual(child.buttons[pinID].value as? String, "Pinned, closed")
+        let copied = child.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).firstMatch
+        XCTAssertTrue(copied.exists)
+        child.webViews.textFields["Saved text"].click()
+        child.webViews.textFields["Saved text"].typeText("keep original window state")
+        XCTAssertEqual(child.webViews.textFields["Saved text"].value as? String, "keep original window state")
+        copied.rightClick()
+        visibleMenuAction("Open Tab in New Window")
+        let third = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser.' AND identifier != %@", childID)).firstMatch
+        XCTAssertTrue(third.waitForExistence(timeout: 15))
+        XCTAssertTrue(third.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+        XCTAssertEqual(child.webViews.textFields["Saved text"].value as? String, "keep original window state")
+        XCTAssertEqual(third.webViews.textFields["Saved text"].value as? String, "")
+        XCTAssertEqual(third.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).count, 1)
+        XCTAssertEqual(main.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).count, 1)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
+        app.launch()
+        expectation(for: NSPredicate { _, _ in app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser'")).count == 3 }, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+        for window in app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser.'")).allElementsBoundByIndex {
+            XCTAssertTrue(window.buttons[pinID].exists)
+            XCTAssertEqual(window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).count, 1)
+        }
+        // Closing a secondary window removes only its own session.
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        expectation(for: NSPredicate { _, _ in app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser'")).count == 2 }, evaluatedWith: app)
+        waitForExpectations(timeout: 5)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
+        app.launch()
+        expectation(for: NSPredicate { _, _ in app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser'")).count == 2 }, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+        let primary = app.windows["browser"]
+        if !primary.buttons["_XCUI:CloseWindow"].isHittable {
+            app.typeKey("`", modifierFlags: .command)
+        }
+        primary.buttons["_XCUI:CloseWindow"].click()
+        expectation(for: NSPredicate { _, _ in app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser'")).count == 1 }, evaluatedWith: app)
+        waitForExpectations(timeout: 5)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
+        app.launch()
+        XCTAssertTrue(app.windows["browser"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.windows["browser"].webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser'")).count, 1)
+        XCTAssertEqual(app.windows["browser"].buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).count, 1)
+    }
+
+    func testSidebarResizeClampsPersistsAndKeepsSameWebView() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let sidebar = app.descendants(matching: .any)["browser.sidebar"]
+        let handle = app.descendants(matching: .any)["sidebar.resize"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        XCTAssertEqual(sidebar.frame.width, 240, accuracy: 2)
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.click(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 500, dy: 0)))
+        XCTAssertEqual(sidebar.frame.width, 360, accuracy: 2)
+        let wide = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        wide.click(forDuration: 0.1, thenDragTo: wide.withOffset(CGVector(dx: -250, dy: 0)))
+        XCTAssertEqual(sidebar.frame.width, 220, accuracy: 2)
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
+        app.launch()
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 8))
+        XCTAssertEqual(sidebar.frame.width, 220, accuracy: 2)
+    }
+
+    func testWebsiteVideoContainerCanEnterAndExitFullscreen() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/fullscreen")
+        let enter = app.buttons["Enter video fullscreen"]
+        XCTAssertTrue(enter.waitForExistence(timeout: 10))
+        enter.click()
+        XCTAssertTrue(app.staticTexts["Fullscreen active"].waitForExistence(timeout: 8))
+        app.buttons["Exit video fullscreen"].click()
+        XCTAssertTrue(app.staticTexts["Fullscreen closed"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
+        app.typeKey("l", modifierFlags: .command)
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 3))
     }
 
     func testNativeJavaScriptDialogsAndTargetBlank() {
@@ -1053,6 +1492,11 @@ final class EarlyUITests: XCTestCase {
         let back = app.buttons["navigation.back"]
         let address = app.buttons["sidebar.addressBar"]
         XCTAssertTrue(close.exists)
+        for identifier in ["navigation.back", "navigation.forward", "navigation.reload"] {
+            let frame = app.buttons[identifier].frame
+            XCTAssertEqual(frame.width, 32, accuracy: 0.5)
+            XCTAssertEqual(frame.height, 32, accuracy: 0.5)
+        }
         XCTAssertEqual(close.frame.midY, back.frame.midY, accuracy: 3)
         XCTAssertGreaterThan(address.frame.minY, back.frame.maxY)
         app.buttons["sidebar.toggle"].click()
@@ -1072,6 +1516,24 @@ final class EarlyUITests: XCTestCase {
         app.descendants(matching: .any)["sidebar.reveal"].hover()
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.buttons["sidebar.toggle"].value as? String, "Auto-hide enabled")
+        // Keep the pointer at the reveal edge through several animation lengths.
+        // A moving-sidebar exit event used to cancel and restart the reveal here.
+        let unexpectedlyHidden = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: app.buttons["sidebar.newTab"])
+        unexpectedlyHidden.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [unexpectedlyHidden], timeout: 1.5), .completed)
+        // Cross the gutter into the panel, then leave it. Only the actual edge
+        // can reveal it again; the old sidebar footprint must remain inactive.
+        for x in [5.0, 120.0, 250.0] {
+            origin.withOffset(CGVector(dx: x, dy: window.frame.height / 2)).hover()
+            XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
+        }
+        origin.withOffset(CGVector(dx: 280, dy: window.frame.height / 2)).hover()
+        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForNonExistence(timeout: 3))
+        origin.withOffset(CGVector(dx: 120, dy: window.frame.height / 2)).hover()
+        XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
+        origin.withOffset(CGVector(dx: 1, dy: window.frame.height / 2)).hover()
+        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))
         app.webViews.firstMatch.hover()
         app.typeKey("s", modifierFlags: [.command, .shift])
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))
@@ -1084,13 +1546,28 @@ final class EarlyUITests: XCTestCase {
     }
 
     func testTrafficLightsAreMonochromeUntilHovered() throws {
+        try verifyTrafficLightRollover(appearance: "dark")
+    }
+
+    func testTrafficLightsAreMonochromeUntilHoveredInLightAppearance() throws {
+        try verifyTrafficLightRollover(appearance: "light")
+    }
+
+    private func verifyTrafficLightRollover(appearance: String) throws {
         // Validate the image assertion without a separate UI-test session.
         XCTAssertEqual(strokePixels(width: 32, height: 32) { _, _ in 0.8 }, 0)
         XCTAssertEqual(strokePixels(width: 32, height: 32) { x, y in 0.5 + CGFloat(x + y) / 128 }, 0)
         XCTAssertGreaterThan(strokePixels(width: 32, height: 32) { _, y in
             (15...16).contains(y) ? 0.65 : 0.9
         }, 3)
-        let app = launchFreshApp()
+        // At 1x a glyph stroke can span several whole pixels. Sampling only
+        // the immediately adjacent pixel misses that stroke entirely.
+        XCTAssertGreaterThanOrEqual(strokePixels(width: 16, height: 16) { x, y in
+            abs(x - y) <= 1 || abs(x + y - 15) <= 1 ? 0.3 : 0.9
+        }, 3)
+        XCTAssertEqual(strokePixels(width: 16, height: 16) { _, _ in 0.8 }, 0)
+        XCTAssertEqual(strokePixels(width: 16, height: 16) { x, y in 0.5 + CGFloat(x + y) / 64 }, 0)
+        let app = launchFreshApp(appearance: appearance)
         app.typeKey(.escape, modifierFlags: [])
         let close = app.buttons["_XCUI:CloseWindow"]
         XCTAssertTrue(close.waitForExistence(timeout: 5))
@@ -1115,7 +1592,7 @@ final class EarlyUITests: XCTestCase {
         away.hover()
         for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
         let idle = XCTAttachment(screenshot: window.screenshot())
-        idle.name = "Muted native traffic lights"
+        idle.name = "\(appearance) muted native traffic lights"
         idle.lifetime = .keepAlways
         add(idle)
         close.hover()
@@ -1124,13 +1601,25 @@ final class EarlyUITests: XCTestCase {
             try assertHoverSymbol(light)
         }
         let hovered = XCTAttachment(screenshot: window.screenshot())
-        hovered.name = "Hovered native traffic lights"
+        hovered.name = "\(appearance) hovered native traffic lights"
         hovered.lifetime = .keepAlways
         add(hovered)
         away.hover()
         for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
         XCTAssertTrue(close.isEnabled)
         XCTAssertTrue(close.isHittable)
+
+        // Each native widget invalidates its own drawing during rollover. The
+        // idle mask must survive those redraws, not just the first hover cycle.
+        for light in lights {
+            light.hover()
+            XCTAssertGreaterThan(try colorSpread(light), 0.25)
+            away.hover()
+            for idleLight in lights {
+                XCTAssertLessThan(try colorSpread(idleLight), 0.12)
+                XCTAssertTrue(idleLight.isHittable)
+            }
+        }
 
         // Relaunch while the cursor is parked over content. Assert the first
         // appearance without any hover event to initialize the control state.
@@ -1147,14 +1636,16 @@ final class EarlyUITests: XCTestCase {
     // Native glass glyphs are tinted, not black. Detect a local dark stroke
     // against its two neighbours, rejecting a solid circle or smooth gradient.
     private func strokePixels(width: Int, height: Int, brightness: (Int, Int) -> CGFloat) -> Int {
-        let step = max(1, width / 10)
+        let steps = Set([max(1, width / 10), max(1, width / 5)])
         var count = 0
         for y in (height / 3)..<(height * 2 / 3) {
             for x in (width / 3)..<(width * 2 / 3) {
                 let center = brightness(x, y)
-                let horizontal = min(brightness(x - step, y), brightness(x + step, y)) - center
-                let vertical = min(brightness(x, y - step), brightness(x, y + step)) - center
-                if max(horizontal, vertical) > 0.08 { count += 1 }
+                if steps.contains(where: { step in
+                    let horizontal = min(brightness(x - step, y), brightness(x + step, y)) - center
+                    let vertical = min(brightness(x, y - step), brightness(x, y + step)) - center
+                    return max(horizontal, vertical) > 0.08
+                }) { count += 1 }
             }
         }
         return count
@@ -1244,8 +1735,10 @@ final class EarlyUITests: XCTestCase {
         app.menuItems["Enter Full Screen"].click()
         expectState("fullscreen")
         try verifyControls("fullscreen")
-        app.menuBars.menuBarItems["View"].click()
-        app.menuItems["Exit Full Screen"].click()
+        // Bound by the test-only menu to NSWindow.toggleFullScreen, rather
+        // than assuming the host OS assigns this shortcut to its native item.
+        XCTAssertTrue(app.menuBars.menuBarItems["Test Window"].exists)
+        app.typeKey("f", modifierFlags: [.control, .command])
         expectState("windowed")
         try verifyControls("after fullscreen")
 

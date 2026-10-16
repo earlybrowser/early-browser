@@ -1,0 +1,68 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  package:
+    name: Core and WebKit tests
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test Swift package
+        run: |
+          set -o pipefail
+          mkdir -p build/TestResults
+          swift test 2>&1 | tee build/TestResults/package.log
+      - name: Upload package log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-results
+          path: build/TestResults/package.log
+          retention-days: 7
+
+  ui:
+    name: Native UI tests
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test macOS app
+        run: |
+          set -o pipefail
+          mkdir -p build/TestResults
+          xcodebuild \
+            -project Early.xcodeproj \
+            -scheme Early \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -parallel-testing-enabled NO \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/TestResults/UI.xcresult \
+            test 2>&1 | tee build/TestResults/ui.log
+      - name: Upload UI results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-results
+          path: build/TestResults/
+          retention-days: 7

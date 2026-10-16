@@ -22,8 +22,8 @@ struct EarlyApp: App {
     }
 
     var body: some Scene {
-        Window("Early", id: "browser") {
-            BrowserWindowRoot(launchStore: launchStore, appDelegate: appDelegate)
+        WindowGroup("Early", id: "browser", for: UUID.self) { $windowID in
+            BrowserWindowRoot(launchStore: launchStore, appDelegate: appDelegate, windowID: windowID)
         }
         .defaultSize(width: 1120, height: 760)
         .windowStyle(.hiddenTitleBar)
@@ -35,7 +35,77 @@ struct EarlyApp: App {
 @MainActor
 final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     var model: BrowserWindowModel?
+    private var windows: [(id: UUID, model: BrowserWindowModel)] = []
     private var isTerminating = false
+    private var primaryWindowIsOpen = true
+
+    func showPrimaryWindow() { primaryWindowIsOpen = true }
+
+    func windowModel(_ id: UUID) -> BrowserWindowModel? { windows.first { $0.id == id }?.model }
+
+    func install(_ primary: BrowserWindowModel) -> [UUID] {
+        model = primary
+        attach(primary)
+        var restored: [UUID] = []
+        for session in primary.restoredWindows {
+            let id = UUID()
+            let child = primary.siblingWindow(session: session)
+            windows.append((id, child))
+            attach(child)
+            restored.append(id)
+        }
+        save(primary)
+        return restored
+    }
+
+    private func attach(_ owner: BrowserWindowModel) {
+        owner.onSave = { [weak self] source in self?.save(source) }
+        owner.onOpenWindow = { [weak self, weak owner] url, title in
+            guard let self, let owner, (try? owner.input.validate(url)) != nil else { return }
+            let child = owner.siblingWindow(session: owner.coordinator.session.openingWindow(at: url, title: title))
+            let id = UUID()
+            self.windows.append((id, child))
+            self.attach(child)
+            self.save(owner)
+            owner.presentWindow?(id)
+        }
+    }
+
+    private func save(_ source: BrowserWindowModel) {
+        guard let model else { return }
+        let snapshot = source.coordinator.session
+        for target in [model] + windows.map(\.model) where target !== source {
+            target.synchronizeSavedItems(from: snapshot)
+        }
+        let visible = (primaryWindowIsOpen ? [model] : []) + windows.map(\.model)
+        var root = (visible.first ?? model).coordinator.session
+        root.additionalWindows = visible.dropFirst().map { $0.coordinator.session }
+        model.persistence.enqueue(root)
+    }
+
+    func closeWindow(_ id: UUID?) {
+        guard !isTerminating else { return }
+        guard let id else {
+            primaryWindowIsOpen = false
+            guard let model else { return }
+            model.suggestions.cancel()
+            // Closing a window closes its live tabs, not another window's copies.
+            for tab in model.coordinator.tabStore.tabs where tab.isOpen {
+                _ = model.coordinator.closeTab(tab.id)
+            }
+            model.webViews.discardAll()
+            save(model)
+            return
+        }
+        guard let index = windows.firstIndex(where: { $0.id == id }) else { return }
+        let closed = windows.remove(at: index).model
+        closed.onSave = nil
+        closed.onOpenWindow = nil
+        closed.presentWindow = nil
+        closed.suggestions.cancel()
+        closed.webViews.discardAll()
+        if let model { save(model) }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
@@ -68,8 +138,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 alert.addButton(withTitle: "Quit Anyway")
                 canQuit = alert.runModal() == .alertSecondButtonReturn
             }
-            if canQuit { model.webViews.discardAll() }
-            self.isTerminating = false
+            if canQuit {
+                model.webViews.discardAll()
+                self.windows.forEach { $0.model.webViews.discardAll() }
+            }
+            // Quit emits window-close notifications too; those must not delete
+            // the window snapshots we just flushed for next launch.
+            if !canQuit { self.isTerminating = false }
             sender.reply(toApplicationShouldTerminate: canQuit)
         }
         return .terminateLater
@@ -79,12 +154,15 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 private struct BrowserWindowRoot: View {
     let launchStore: FirstLaunchStore
     let appDelegate: EarlyAppDelegate
+    let windowID: UUID?
+    @Environment(\.openWindow) private var openWindow
     @State private var model: BrowserWindowModel?
 
-    init(launchStore: FirstLaunchStore, appDelegate: EarlyAppDelegate) {
+    init(launchStore: FirstLaunchStore, appDelegate: EarlyAppDelegate, windowID: UUID?) {
         self.launchStore = launchStore
         self.appDelegate = appDelegate
-        _model = State(initialValue: appDelegate.model)
+        self.windowID = windowID
+        _model = State(initialValue: windowID.flatMap { appDelegate.windowModel($0) } ?? (windowID == nil ? appDelegate.model : nil))
     }
 
     var body: some View {
@@ -106,12 +184,24 @@ private struct BrowserWindowRoot: View {
             }
         }
         .frame(minWidth: 640, minHeight: 420)
+        .background(WindowRegistration(identifier: windowID.map { "browser.\($0)" } ?? "browser") {
+            appDelegate.closeWindow(windowID)
+        })
         .task {
-            guard model == nil else { return }
-            if let existing = appDelegate.model { model = existing; return }
-            guard let loaded = await Self.loadModel(launchStore: launchStore) else { return }
-            appDelegate.model = loaded
-            model = loaded
+            if windowID == nil { appDelegate.showPrimaryWindow() }
+            if model == nil {
+                if let windowID, let existing = appDelegate.windowModel(windowID) {
+                    model = existing
+                } else if let existing = appDelegate.model {
+                    model = existing
+                } else {
+                    guard let loaded = await Self.loadModel(launchStore: launchStore) else { return }
+                    let restored = appDelegate.install(loaded)
+                    model = loaded
+                    for id in restored { openWindow(id: "browser", value: id) }
+                }
+            }
+            model?.presentWindow = { id in openWindow(id: "browser", value: id) }
         }
     }
 
@@ -143,6 +233,45 @@ private struct BrowserWindowRoot: View {
         let startup = launchStore.claimStartupContext()
         return BrowserWindowModel(startup: restorationError == nil ? startup : .returningSession,
             session: session, repository: repository, input: input, isTesting: testSuite != nil,
-            restorationError: restorationError)
+            restorationError: restorationError,
+            defaults: testSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard)
+    }
+}
+
+/// WindowGroup handles native focus/commands. Session restoration is owned by
+/// Early's single snapshot writer, not a second AppKit restoration mechanism.
+private struct WindowRegistration: NSViewRepresentable {
+    let identifier: String
+    let onClose: () -> Void
+    func makeNSView(context: Context) -> RegistrationView {
+        let view = RegistrationView()
+        view.identifierValue = identifier
+        view.onClose = onClose
+        return view
+    }
+    func updateNSView(_ view: RegistrationView, context: Context) {
+        view.identifierValue = identifier
+        view.onClose = onClose
+        view.register()
+    }
+
+    final class RegistrationView: NSView {
+        var identifierValue = "browser"
+        var onClose: (() -> Void)?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); register() }
+        func register() {
+            guard let window else { return }
+            window.identifier = NSUserInterfaceItemIdentifier(identifierValue)
+            window.setAccessibilityIdentifier(identifierValue)
+            window.isRestorable = false
+            // The chrome's native material composites the wallpaper behind this
+            // window. Content/error surfaces still supply their own backgrounds.
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowClosing(_:)),
+                                                   name: NSWindow.willCloseNotification, object: window)
+        }
+        @objc private func windowClosing(_ notification: Notification) { onClose?() }
     }
 }

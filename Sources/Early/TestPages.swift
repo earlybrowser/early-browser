@@ -21,6 +21,31 @@ final class TestPages: NSObject, WKURLSchemeHandler {
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         guard let url = task.request.url else { return }
+        if url.path == "/fullscreen" {
+            respond(to: task, url: url, html: """
+            <!doctype html><meta charset="utf-8"><title>Fullscreen fixture</title>
+            <style>body{font:18px -apple-system}#player{background:#222;color:white;padding:24px}video{width:320px;height:180px}</style>
+            <button onclick="document.getElementById('player').requestFullscreen().catch(e=>document.getElementById('state').textContent=e.message)">Enter video fullscreen</button>
+            <div id="player"><video controls aria-label="Test video"></video>
+            <button onclick="document.exitFullscreen()">Exit video fullscreen</button>
+            <p id="state">Fullscreen closed</p></div>
+            <script>document.addEventListener('fullscreenchange',()=>{
+              document.getElementById('state').textContent=document.fullscreenElement?'Fullscreen active':'Fullscreen closed';
+            });</script>
+            """)
+            return
+        }
+        if url.path == "/identity" {
+            respond(to: task, url: url, html: """
+            <!doctype html><html><head><title>Browser identity</title></head>
+            <body style="font:18px -apple-system;padding:32px">
+            <h1>Browser identity</h1><p id="identity"></p>
+            <a href="early-test://fixture/identity" target="_blank">Open identity tab</a>
+            <script>document.getElementById('identity').textContent = navigator.userAgent;</script>
+            </body></html>
+            """)
+            return
+        }
         if url.path == "/slow" { return } // Stop/close cancels this deliberate pending load.
         if url.path == "/failure" {
             task.didFailWithError(URLError(.notConnectedToInternet))
@@ -38,6 +63,10 @@ final class TestPages: NSObject, WKURLSchemeHandler {
         <button onclick="document.getElementById('result').textContent=prompt('Test prompt','default')??'Cancelled'">Prompt</button>
         <p id="result" aria-live="polite"></p></body></html>
         """
+        respond(to: task, url: url, html: html)
+    }
+
+    private func respond(to task: any WKURLSchemeTask, url: URL, html: String) {
         let data = Data(html.utf8)
         task.didReceive(URLResponse(url: url, mimeType: "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
         task.didReceive(data)

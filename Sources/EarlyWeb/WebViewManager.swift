@@ -30,6 +30,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onMetadata: ((UUID, URL?, String?) -> Void)?
     public var onNewWindow: ((URL, WKWebViewConfiguration) -> WKWebView?)?
     public var onOpenBackgroundLink: ((URL) -> Void)?
+    public var onOpenWindowLink: ((URL) -> Void)?
     public var onClose: ((UUID) -> Void)?
     public var onNotice: ((String) -> Void)?
     private let profileID: UUID
@@ -43,16 +44,22 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public init(profileID: UUID, ephemeral: Bool = false,
                 input: NavigationInput = NavigationInput(),
                 faviconStore: FaviconStore? = nil,
+                websiteDataStore: WKWebsiteDataStore? = nil,
                 configure: @escaping (WKWebViewConfiguration) -> Void = { _ in }) {
         self.profileID = profileID
         self.favicons = faviconStore ?? FaviconStore(profileID: profileID, ephemeral: ephemeral)
         self.ephemeral = ephemeral
         self.input = input
         self.configure = configure
+        self.store = websiteDataStore
         super.init()
     }
 
     public var liveViewCount: Int { pages.count }
+    public var websiteDataStore: WKWebsiteDataStore {
+        if store == nil { store = ephemeral ? .nonPersistent() : WKWebsiteDataStore(forIdentifier: profileID) }
+        return store!
+    }
     public func existingView(for id: UUID) -> WKWebView? { pages[id]?.view }
 
     /// Called by accepted navigation/selection, never by SwiftUI rendering.
@@ -66,12 +73,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             configuration = supplied
         } else {
             configuration = WKWebViewConfiguration()
-            if store == nil {
-                store = ephemeral ? .nonPersistent() : WKWebsiteDataStore(forIdentifier: profileID)
-            }
-            configuration.websiteDataStore = store!
+            configuration.websiteDataStore = websiteDataStore
             configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+            configuration.preferences.isElementFullscreenEnabled = true
             configure(configuration)
+            configuration.applicationNameForUserAgent = BrowserUserAgent.applicationName
         }
         let controller = configuration.userContentController
         let mediaObserver = MediaActivityObserver()
@@ -91,15 +97,19 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
                 injectionTime: .atDocumentStart, forMainFrameOnly: false, in: LinkContextMenuObserver.world))
         }
         let view = BrowserWebView(frame: .zero, configuration: configuration)
-        view.onOpenLink = { [weak self, weak view] url in
+        // WebKit generates the base identity and inherits the opener's suffix
+        // in popup configurations. Do not overwrite a supplied configuration.
+        view.onOpenWindowLink = { [weak self, weak view] url in
             guard let self, let view else { return }
-            _ = self.openContextLink(url, in: view, background: false)
+            _ = self.openContextLinkInWindow(url, in: view)
         }
         view.onOpenBackgroundLink = { [weak self, weak view] url in
             guard let self, let view else { return }
             _ = self.openContextLink(url, in: view, background: true)
         }
         view.allowsBackForwardNavigationGestures = true
+        // Enables WebKit's native pinch and two-finger smart magnification.
+        view.allowsMagnification = true
         view.navigationDelegate = self
         view.uiDelegate = self
         let page = BrowserPage(view: view, url: tab.currentURL)
@@ -151,7 +161,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         guard let page = pages.removeValue(forKey: tabID) else { return }
         if let view = page.view as? BrowserWebView {
             view.cancelLinkMenu()
-            view.onOpenLink = nil
+            view.onOpenWindowLink = nil
             view.onOpenBackgroundLink = nil
         }
         identities.removeValue(forKey: ObjectIdentifier(page.view))
@@ -161,7 +171,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.view.stopLoading()
         page.view.navigationDelegate = nil
         page.view.uiDelegate = nil
-        page.view.removeFromSuperview()
+        if page.view.fullscreenState != .notInFullscreen {
+            let view = page.view
+            view.closeAllMediaPresentations { view.removeFromSuperview() }
+        } else {
+            page.view.removeFromSuperview()
+        }
     }
 
     public func discardAll() { for id in Array(pages.keys) { discard(tabID: id) } }
@@ -175,6 +190,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     func showLinkContextMenu(href: String, in view: BrowserWebView) {
         guard let url = contextLinkURL(href: href, in: view), view.window != nil else { return }
         view.showLinkMenu(for: url)
+    }
+
+    @discardableResult
+    func openContextLinkInWindow(_ url: URL, in view: WKWebView) -> Bool {
+        guard contextLinkURL(href: url.absoluteString, in: view) != nil,
+              let onOpenWindowLink else { return false }
+        onOpenWindowLink(url)
+        return true
     }
 
     @discardableResult
@@ -221,6 +244,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let mainFrame = action.targetFrame?.isMainFrame ?? true
         guard let url = action.request.url else { decisionHandler(.cancel); return }
         if (try? input.validate(url)) != nil {
+            if openCommandClickedLink(action, in: webView) {
+                decisionHandler(.cancel)
+                return
+            }
             if mainFrame, action.targetFrame != nil,
                let id = identities[ObjectIdentifier(webView)] { pages[id]?.requestedURL = url }
             decisionHandler(.allow)
@@ -301,7 +328,24 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
                         for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard identities[ObjectIdentifier(webView)] != nil,
               let url = action.request.url, (try? input.validate(url)) != nil else { return nil }
+        // Target-blank links may arrive through the new-window delegate first.
+        // Returning nil consumes the gesture without creating a second tab.
+        if openCommandClickedLink(action, in: webView) { return nil }
         return onNewWindow?(url, configuration)
+    }
+
+    private func openCommandClickedLink(_ action: WKNavigationAction, in view: WKWebView) -> Bool {
+        guard Self.isCommandClick(navigationType: action.navigationType, buttonNumber: action.buttonNumber,
+                                  modifiers: action.modifierFlags),
+              let url = action.request.url else { return false }
+        return openContextLink(url, in: view, background: true)
+    }
+
+    static func isCommandClick(navigationType: WKNavigationType, buttonNumber: Int,
+                               modifiers: NSEvent.ModifierFlags) -> Bool {
+        // WKNavigationAction uses WebKit's button mask: left = 1, none = 0.
+        // It is not NSEvent's zero-based buttonNumber (or DOM MouseEvent.button).
+        navigationType == .linkActivated && buttonNumber == 1 && modifiers.contains(.command)
     }
 
     public func webViewDidClose(_ webView: WKWebView) {

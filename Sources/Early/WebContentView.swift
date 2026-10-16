@@ -2,6 +2,46 @@ import AppKit
 import SwiftUI
 import WebKit
 
+/// Wallpaper-aware chrome only. Loaded websites retain their normal opaque
+/// background and are never tinted or rendered through a transparency layer.
+struct BrowserChromeBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        ZStack {
+            if reduceTransparency || contrast == .increased {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                ChromeMaterial()
+                LinearGradient(colors: colorScheme == .dark
+                    ? [Color.black.opacity(0.42), .black.opacity(0.55)]
+                    : [Color.white.opacity(0.24), Color(red: 0.54, green: 0.63, blue: 0.68).opacity(0.10)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private struct ChromeMaterial: NSViewRepresentable {
+        func makeNSView(context: Context) -> MaterialView {
+            let view = MaterialView()
+            view.material = .sidebar
+            view.blendingMode = .behindWindow
+            view.state = .followsWindowActiveState
+            return view
+        }
+        func updateNSView(_ view: MaterialView, context: Context) {}
+
+        final class MaterialView: NSVisualEffectView {
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+            override func isAccessibilityElement() -> Bool { false }
+        }
+    }
+}
+
 #if DEBUG
 /// Read-only test seam: fullscreen state must not be inferred from window width
 /// (a maximized window can have the same width). Not installed in normal runs.
@@ -39,6 +79,22 @@ struct WindowControls: NSViewRepresentable {
     static func dismantleNSView(_ view: ControlsHost, coordinator: ()) { view.detach() }
 
     private final class ControlsContainer: NSView {
+        private let idleDrawingMask = CALayer()
+
+        func updateDrawingMask() {
+            guard let layer else { return }
+            // Native window widgets can draw outside the ordinary NSButtonCell
+            // transparency path. Mask their composited drawing instead. Do not
+            // hide the NSViews or change alphaValue: keep native hit testing,
+            // accessibility, enabled state, and window actions intact.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            idleDrawingMask.frame = layer.bounds
+            idleDrawingMask.backgroundColor = NSColor.clear.cgColor
+            layer.mask = mouseInside ? nil : idleDrawingMask
+            CATransaction.commit()
+        }
+
         var mouseInside = false {
             didSet {
                 guard oldValue != mouseInside else { return }
@@ -178,14 +234,10 @@ struct WindowControls: NSViewRepresentable {
                 let isFullScreen = window?.styleMask.contains(.fullScreen) == true
                 let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
                 for (kind, frame) in buttonFrames {
-                    // Cover the native button and its outer shadow to ensure
-                    // no color bleed, without drawing any rectangular background.
-                    let backing = NSBezierPath(ovalIn: frame.insetBy(dx: -1.5, dy: -1.5))
-                    NSColor.windowBackgroundColor.setFill()
-                    backing.fill()
-
+                    // Native button drawing is masked while idle. Blend a
+                    // neutral circle directly into the chrome,
+                    // with no opaque backing, outline, or shadow-covering rim.
                     let circle = NSBezierPath(ovalIn: frame)
-                    circle.fill()
                     let alpha: CGFloat = (kind == .miniaturizeButton && isFullScreen)
                         ? (highContrast ? 0.12 : 0.06)
                         : (highContrast ? 0.25 : 0.12)
@@ -253,6 +305,7 @@ struct WindowControls: NSViewRepresentable {
         private func setHovered(_ hovered: Bool) {
             nativeContainer.mouseInside = hovered
             appearanceOverlay.hovered = hovered
+            nativeContainer.updateDrawingMask()
         }
 
         private func findNativeTitlebarView() -> NSView? {
@@ -392,7 +445,9 @@ struct WindowControls: NSViewRepresentable {
             for old in nativeControls where !currentButtons.contains(where: { $0.button === old.button }) {
                 NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: old.button)
                 old.button.postsFrameChangedNotifications = old.postedFrameChanges
-                if old.button.superview === nativeContainer { old.button.removeFromSuperview() }
+                if old.button.superview === nativeContainer {
+                    old.button.removeFromSuperview()
+                }
             }
             nativeControls = currentButtons
 
@@ -560,28 +615,50 @@ struct WebContentView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> HostView { HostView() }
     func updateNSView(_ host: HostView, context: Context) {
-        if host.hosted !== view {
-            host.hosted?.removeFromSuperview()
-            host.hosted = view
-            if let view {
-                view.removeFromSuperview()
-                view.frame = host.bounds
-                view.autoresizingMask = [.width, .height]
-                host.addSubview(view)
-            }
-        }
+        host.display(view)
         host.canFocus = canFocus
         host.suppressAccessibilityChildren = hasDialog
         guard host.focusRequest != focusRequest else { return }
         host.focusRequest = focusRequest
         DispatchQueue.main.async { [weak host] in
             guard let host, host.canFocus, host.focusRequest == focusRequest else { return }
+            // WebKit temporarily owns/reparents an element-fullscreen view.
+            // Do not steal its focus back into the browser window.
+            if let view = host.hosted, view.fullscreenState != .notInFullscreen { return }
             host.window?.makeFirstResponder(host.hosted ?? host)
         }
     }
 
     final class HostView: NSView {
         weak var hosted: WKWebView?
+        private weak var desired: WKWebView?
+        private var leavingFullscreen = false
+
+        func display(_ view: WKWebView?) {
+            desired = view
+            guard !leavingFullscreen, hosted !== view else { return }
+            if let previous = hosted, previous.fullscreenState != .notInFullscreen {
+                leavingFullscreen = true
+                previous.closeAllMediaPresentations { [weak self] in
+                    guard let self else { return }
+                    self.leavingFullscreen = false
+                    self.install(self.desired)
+                }
+                return
+            }
+            install(view)
+        }
+
+        private func install(_ view: WKWebView?) {
+            hosted?.removeFromSuperview()
+            hosted = view
+            if let view {
+                view.removeFromSuperview()
+                view.frame = bounds
+                view.autoresizingMask = [.width, .height]
+                addSubview(view)
+            }
+        }
         var focusRequest = -1
         var canFocus = false
         var suppressAccessibilityChildren = false

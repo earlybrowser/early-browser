@@ -158,6 +158,53 @@ public final class BrowserCoordinator {
 
     public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
 
+    /// Share saved organization, never another window's Today tabs, selection,
+    /// open/closed state, or live page URL. Call only for the same profile.
+    public func synchronizeSavedItems(from source: BrowserSession) {
+        guard source.profileID == profileID else { return }
+        let saved = source.tabs.filter { $0.pinnedURL != nil }
+        let savedIDs = Set(saved.map(\.id))
+        let localByID = Dictionary(uniqueKeysWithValues: tabStore.tabs.map { ($0.id, $0) })
+        var regular = tabStore.tabs.filter { $0.pinnedURL == nil && !savedIDs.contains($0.id) }
+        // Unpinning is shared, but a live copy in this window must survive.
+        let unpinnedIDs = Set(source.tabs.filter { $0.pinnedURL == nil }.map(\.id))
+        for var tab in tabStore.tabs where tab.pinnedURL != nil && !savedIDs.contains(tab.id) && unpinnedIDs.contains(tab.id) && tab.isOpen {
+            tab.pinnedURL = nil
+            tab.pinnedTitle = nil
+            tab.isFavorite = false
+            tab.folderID = nil
+            tab.sidebarPosition = nil
+            regular.append(tab)
+        }
+        let shared = saved.map { record in
+            var tab = record
+            if let local = localByID[record.id] {
+                tab.currentURL = local.currentURL
+                tab.title = local.title
+                tab.isOpen = local.isOpen
+            } else {
+                tab.currentURL = record.pinnedURL!
+                tab.title = record.pinnedTitle ?? record.title
+                tab.isOpen = false
+            }
+            return tab
+        }
+        let expanded = Dictionary(uniqueKeysWithValues: tabStore.folders.map { ($0.id, $0.isExpanded) })
+        let folders = source.folders.map { record in
+            var folder = record
+            folder.isExpanded = expanded[folder.id] ?? false
+            return folder
+        }
+        tabStore = TabStore(tabs: shared + regular, folders: folders)
+        let folderIDs = Set(folders.map(\.id))
+        // Do not resurrect deleted saved items or references to deleted folders.
+        recentlyClosed.removeAll { closed in
+            (closed.tab.pinnedURL != nil && !savedIDs.contains(closed.tab.id)) ||
+            closed.tab.folderID.map { !folderIDs.contains($0) } == true
+        }
+        restoreSelection()
+    }
+
     @discardableResult
     public func moveTab(_ id: UUID, to section: TabStore.Section) -> Bool {
         guard let tab = tabStore.tab(id: id), canAccess(tab),

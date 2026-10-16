@@ -34,6 +34,13 @@ public struct NavigationInput: Sendable {
             }
             return try validate(url)
         }
+        return try searchURL(for: text)
+    }
+
+    /// A provider suggestion is always a search, never permission to visit a URL.
+    public func searchURL(for query: String) throws -> URL {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw NavigationInputError.empty }
         var search = URLComponents(string: "https://www.google.com/search")!
         search.queryItems = [URLQueryItem(name: "q", value: text)]
         return search.url!
