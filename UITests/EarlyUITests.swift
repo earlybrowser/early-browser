@@ -1352,7 +1352,11 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         expectation(for: NSPredicate { _, _ in app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser'")).count == 2 }, evaluatedWith: app)
         waitForExpectations(timeout: 10)
-        app.windows["browser"].buttons["_XCUI:CloseWindow"].click()
+        let primary = app.windows["browser"]
+        if !primary.buttons["_XCUI:CloseWindow"].isHittable {
+            app.typeKey("`", modifierFlags: .command)
+        }
+        primary.buttons["_XCUI:CloseWindow"].click()
         expectation(for: NSPredicate { _, _ in app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser'")).count == 1 }, evaluatedWith: app)
         waitForExpectations(timeout: 5)
         app.typeKey("q", modifierFlags: .command)
@@ -1726,8 +1730,7 @@ final class EarlyUITests: XCTestCase {
         app.menuItems["Enter Full Screen"].click()
         expectState("fullscreen")
         try verifyControls("fullscreen")
-        app.menuBars.menuBarItems["View"].click()
-        app.menuItems["Exit Full Screen"].click()
+        app.typeKey("f", modifierFlags: [.control, .command])
         expectState("windowed")
         try verifyControls("after fullscreen")
 
