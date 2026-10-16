@@ -90,6 +90,11 @@ struct BrowserCommands: Commands {
             CommandMenu("Test Window") {
                 Button("Compact Test Window") { NSApp.keyWindow?.setContentSize(NSSize(width: 800, height: 600)) }
                 Button("Wide Test Window") { NSApp.keyWindow?.setContentSize(NSSize(width: 1120, height: 760)) }
+                // Drive the real AppKit transition with a known binding. The
+                // system's fullscreen shortcut varies with macOS/preferences,
+                // and its menu bar is hidden while the test is fullscreen.
+                Button("Toggle Test Full Screen") { NSApp.keyWindow?.toggleFullScreen(nil) }
+                    .keyboardShortcut("f", modifiers: [.control, .command])
                 Button("Install Closed Test Pins") {
                     if let model { TestPages.installClosedPins(in: model) }
                 }

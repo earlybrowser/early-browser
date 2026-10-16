@@ -1560,6 +1560,13 @@ final class EarlyUITests: XCTestCase {
         XCTAssertGreaterThan(strokePixels(width: 32, height: 32) { _, y in
             (15...16).contains(y) ? 0.65 : 0.9
         }, 3)
+        // At 1x a glyph stroke can span several whole pixels. Sampling only
+        // the immediately adjacent pixel misses that stroke entirely.
+        XCTAssertGreaterThanOrEqual(strokePixels(width: 16, height: 16) { x, y in
+            abs(x - y) <= 1 || abs(x + y - 15) <= 1 ? 0.3 : 0.9
+        }, 3)
+        XCTAssertEqual(strokePixels(width: 16, height: 16) { _, _ in 0.8 }, 0)
+        XCTAssertEqual(strokePixels(width: 16, height: 16) { x, y in 0.5 + CGFloat(x + y) / 64 }, 0)
         let app = launchFreshApp(appearance: appearance)
         app.typeKey(.escape, modifierFlags: [])
         let close = app.buttons["_XCUI:CloseWindow"]
@@ -1629,15 +1636,16 @@ final class EarlyUITests: XCTestCase {
     // Native glass glyphs are tinted, not black. Detect a local dark stroke
     // against its two neighbours, rejecting a solid circle or smooth gradient.
     private func strokePixels(width: Int, height: Int, brightness: (Int, Int) -> CGFloat) -> Int {
-        let step = max(1, width / 10)
-        let threshold: CGFloat = width <= 16 ? 0.04 : 0.08
+        let steps = Set([max(1, width / 10), max(1, width / 5)])
         var count = 0
         for y in (height / 3)..<(height * 2 / 3) {
             for x in (width / 3)..<(width * 2 / 3) {
                 let center = brightness(x, y)
-                let horizontal = min(brightness(x - step, y), brightness(x + step, y)) - center
-                let vertical = min(brightness(x, y - step), brightness(x, y + step)) - center
-                if max(horizontal, vertical) > threshold { count += 1 }
+                if steps.contains(where: { step in
+                    let horizontal = min(brightness(x - step, y), brightness(x + step, y)) - center
+                    let vertical = min(brightness(x, y - step), brightness(x, y + step)) - center
+                    return max(horizontal, vertical) > 0.08
+                }) { count += 1 }
             }
         }
         return count
@@ -1647,11 +1655,9 @@ final class EarlyUITests: XCTestCase {
                                   file: StaticString = #filePath, line: UInt = #line) throws {
         var shot = button.screenshot()
         var count = 0
-        var width = 0
         let deadline = Date().addingTimeInterval(1)
         while true {
             let bitmap = try XCTUnwrap(NSBitmapImageRep(data: shot.pngRepresentation))
-            width = bitmap.pixelsWide
             count = strokePixels(width: bitmap.pixelsWide, height: bitmap.pixelsHigh) { x, y in
                 guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return 1 }
                 return max(c.redComponent, c.greenComponent, c.blueComponent)
@@ -1668,8 +1674,7 @@ final class EarlyUITests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
         }
-        let minRequired = width <= 16 ? 0 : 3
-        XCTAssertGreaterThanOrEqual(count, minRequired, "Missing hover symbol on \(button.identifier)", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(count, 3, "Missing hover symbol on \(button.identifier)", file: file, line: line)
     }
 
     func testWindowLifecycleAndTrafficLightsInLightAppearance() throws {
@@ -1730,6 +1735,9 @@ final class EarlyUITests: XCTestCase {
         app.menuItems["Enter Full Screen"].click()
         expectState("fullscreen")
         try verifyControls("fullscreen")
+        // Bound by the test-only menu to NSWindow.toggleFullScreen, rather
+        // than assuming the host OS assigns this shortcut to its native item.
+        XCTAssertTrue(app.menuBars.menuBarItems["Test Window"].exists)
         app.typeKey("f", modifierFlags: [.control, .command])
         expectState("windowed")
         try verifyControls("after fullscreen")
