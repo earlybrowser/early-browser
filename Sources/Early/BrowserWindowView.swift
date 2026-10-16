@@ -745,16 +745,26 @@ struct BrowserWindowView: View {
     private func favoriteTile(_ tab: BrowserTab) -> some View {
         let name = tab.customTitle ?? tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
         let selected = model.coordinator.activeTabID == tab.id
+        let tint = favoriteTint(tab)
+        let border = (selected ? tint : nil)?.opacity(contrast == .increased ? 0.80 : 0.55)
+            ?? Color.primary.opacity(contrast == .increased ? 0.30 : 0.07)
         return Button { model.selectTab(tab.id) } label: {
             SiteIcon(url: tab.pinnedURL ?? tab.currentURL, store: model.webViews.favicons,
                      size: 18, monogram: String(name.prefix(1)).uppercased())
             .foregroundStyle(tab.isOpen ? .primary : .secondary)
             .frame(maxWidth: .infinity)
             .frame(height: SidebarReorderLayout.favoriteHeight)
-            .background(Color.primary.opacity(selected ? 0.12 : (hoveredTab == tab.id ? 0.08 : 0.04)),
-                        in: RoundedRectangle(cornerRadius: 9))
+            .background {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color.primary.opacity(selected ? 0.12 : (hoveredTab == tab.id ? 0.08 : 0.04)))
+                if selected, let tint {
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(tint.opacity(colorScheme == .dark ? 0.26 : 0.20))
+                }
+            }
             .overlay {
-                RoundedRectangle(cornerRadius: 9).strokeBorder(Color.primary.opacity(contrast == .increased ? 0.30 : 0.07), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(border, lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: 9))
         }
@@ -776,6 +786,15 @@ struct BrowserWindowView: View {
         .opacity(draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
         .contextMenu { tabActions(tab) }
+    }
+
+    private func favoriteTint(_ tab: BrowserTab) -> Color? {
+        guard let color = model.webViews.favicons.color(for: tab.pinnedURL ?? tab.currentURL) else { return nil }
+        let iconColor = NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1)
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        iconColor.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        return Color(hue: hue, saturation: min(saturation * 0.55, 0.50),
+                     brightness: colorScheme == .dark ? 0.72 : 0.64)
     }
 
     /// The title selects/reopens a pin. Its icon is interactive only for reset
@@ -1420,7 +1439,19 @@ struct BrowserWindowView: View {
                 .padding(.horizontal, 8)
                 .frame(width: overFavorites ? tileWidth : rowBounds.width,
                        height: overFavorites ? SidebarReorderLayout.favoriteHeight : rowHeight)
+                .background {
+                    if overFavorites, model.coordinator.activeTabID == tab.id, let tint = favoriteTint(tab) {
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(tint.opacity(colorScheme == .dark ? 0.26 : 0.20))
+                    }
+                }
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: overFavorites ? 9 : 7))
+                .overlay {
+                    if overFavorites, model.coordinator.activeTabID == tab.id, let tint = favoriteTint(tab) {
+                        RoundedRectangle(cornerRadius: 9)
+                            .strokeBorder(tint.opacity(contrast == .increased ? 0.80 : 0.55), lineWidth: 1)
+                    }
+                }
                 .shadow(radius: 5, y: 2)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: overFavorites)
                 .animation(folderDragAnimation, value: overFavorites ? tileWidth : rowBounds.width)

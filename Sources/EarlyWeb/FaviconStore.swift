@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 @MainActor @Observable
 public final class FaviconStore {
     public private(set) var images: [String: NSImage] = [:]
+    public private(set) var colors: [String: FaviconColor] = [:]
     @ObservationIgnored private var requests: [String: Request] = [:]
     @ObservationIgnored private var order: [String] = []
     @ObservationIgnored private var pending: [String] = []
@@ -34,6 +35,10 @@ public final class FaviconStore {
         Self.origin(url).flatMap { images[$0] }
     }
 
+    public func color(for url: URL) -> FaviconColor? {
+        Self.origin(url).flatMap { colors[$0] }
+    }
+
     /// Called by visible rows and once after a live page finishes navigating.
     /// Restored/closed pins only read the cache or request the site's icon file.
     public func request(_ pageURL: URL, discovered: [String] = []) {
@@ -49,6 +54,7 @@ public final class FaviconStore {
                 order.removeAll { $0 == oldest }
                 requests.removeValue(forKey: oldest)
                 images.removeValue(forKey: oldest)
+                colors.removeValue(forKey: oldest)
             }
             guard order.count < 256 else { return }
             order.append(origin)
@@ -66,10 +72,14 @@ public final class FaviconStore {
             let load = load
             Task { [weak self] in
                 let data = await load(origin, request.candidates, !request.discovered)
+                let color = await Task.detached(priority: .utility) {
+                    data.flatMap { FaviconColor.extract(from: $0) }
+                }.value
                 guard let self else { return }
                 if self.requests[origin]?.token == request.token,
                    let data, let image = NSImage(data: data) {
                     self.images[origin] = image
+                    self.colors[origin] = color
                 }
                 self.running.remove(origin)
                 self.drain()
