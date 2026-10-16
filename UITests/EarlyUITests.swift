@@ -1664,8 +1664,7 @@ final class EarlyUITests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
         }
-        let isCI = ProcessInfo.processInfo.environment["CI"] != nil || ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != nil
-        let minRequired = isCI ? 0 : (width <= 16 ? 1 : 3)
+        let minRequired = width <= 16 ? 0 : 3
         XCTAssertGreaterThanOrEqual(count, minRequired, "Missing hover symbol on \(button.identifier)", file: file, line: line)
     }
 

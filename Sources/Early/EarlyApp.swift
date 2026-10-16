@@ -262,6 +262,7 @@ private struct WindowRegistration: NSViewRepresentable {
         func register() {
             guard let window else { return }
             window.identifier = NSUserInterfaceItemIdentifier(identifierValue)
+            window.setAccessibilityIdentifier(identifierValue)
             window.isRestorable = false
             // The chrome's native material composites the wallpaper behind this
             // window. Content/error surfaces still supply their own backgrounds.
