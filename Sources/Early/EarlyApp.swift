@@ -258,6 +258,10 @@ private struct WindowRegistration: NSViewRepresentable {
             guard let window else { return }
             window.identifier = NSUserInterfaceItemIdentifier(identifierValue)
             window.isRestorable = false
+            // The chrome's native material composites the wallpaper behind this
+            // window. Content/error surfaces still supply their own backgrounds.
+            window.isOpaque = false
+            window.backgroundColor = .clear
             NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(windowClosing(_:)),
                                                    name: NSWindow.willCloseNotification, object: window)

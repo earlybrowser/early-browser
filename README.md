@@ -14,7 +14,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 
 | Feature | Description | Status |
 | --- | --- | --- |
-| Native macOS interface | Light and dark appearances, native window controls, and WebKit browsing in a compact SwiftUI/AppKit window. | Implemented. |
+| Native macOS interface | Light/dark translucent chrome, native window controls, and opaque website content. Solid surfaces respect Reduce Transparency and increased contrast. | Implemented. |
 | Vertical tabs | Organize pages in a resizable sidebar with an address bar, auto-hide, and edge-hover reveal. | Implemented. |
 | Command-bar navigation | Open URLs or Google searches with `⌘T`; edit the current address with `⌘L`. A tab is created when you submit. | Implemented. |
 | Search suggestions | Google suggestions while typing, with keyboard and mouse selection. Enabled by default; typed search phrases are sent to Google. A Settings control is planned. | Implemented. |
@@ -22,7 +22,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Nested folders | Group and reorder tabs with up to two nesting levels. Folder drop previews reserve a single row without opening hidden contents. New subfolders appear inside their parent; deleting a folder removes its contents. | Implemented. |
 | Session restoration | Restore tabs, saved pages, ordering, and selection after quitting. Folders start collapsed, and an empty session opens the command bar. | Implemented. |
 | Links and windows | Command-click links to open background tabs; copy or share links, and open links or tab copies in separate windows. Windows share saved items, not Today tabs. | Implemented. |
-| Quick renaming | Double-click a tab, Favorite, or folder to rename it; dragging still reorders items. | Implemented. |
+| Quick renaming | Option-click a tab, Favorite, or folder to rename without opening it. Ordinary clicks open/toggle immediately; dragging still reorders items. | Implemented. |
 | Trackpad zoom | Native pinch-to-zoom and two-finger double-tap Smart Zoom. | Implemented. |
 | Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. | Implemented. |
 | Media controls | Identify playing HTML audio or video. Speaker-click tab muting and per-site muting are planned. | Partial. |
@@ -90,6 +90,15 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -derivedDataPath build/DerivedData \
   test
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and review workflow.
+AI-assisted contributions are welcome; contributors must understand their changes
+and explain them when maintainers ask questions in comments.
+
+Package and native UI tests run in GitHub Actions on pull requests and pushes to
+`main`. Test logs and UI result bundles are available as workflow artifacts.
 
 ## License
 

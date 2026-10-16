@@ -6,6 +6,17 @@ import WebKit
 
 @Suite @MainActor
 struct WebViewManagerTests {
+    @Test func commandClickUsesWebKitButtonMaskRatherThanNSEventButtonIndex() {
+        #expect(WebViewManager.isCommandClick(navigationType: .linkActivated, buttonNumber: 1, modifiers: .command))
+        #expect(!WebViewManager.isCommandClick(navigationType: .linkActivated, buttonNumber: 1, modifiers: []))
+        for button in [0, 2, 4] {
+            #expect(!WebViewManager.isCommandClick(navigationType: .linkActivated, buttonNumber: button, modifiers: .command))
+        }
+        for kind in [WKNavigationType.other, .formSubmitted, .reload, .backForward] {
+            #expect(!WebViewManager.isCommandClick(navigationType: kind, buttonNumber: 1, modifiers: .command))
+        }
+    }
+
     @Test func nativeMagnificationIsEnabledForNormalAndPopupViewsAndSurvivesReuse() {
         _ = NSApplication.shared
         let profile = UUID()

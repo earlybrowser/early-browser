@@ -8,6 +8,8 @@ struct CommandBarView: View {
     @FocusState private var queryIsFocused: Bool
     @State private var hoveredSuggestion: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -68,10 +70,16 @@ struct CommandBarView: View {
         .padding(20)
         .frame(maxWidth: 560)
         .background(CommandBarCardAnchor(model: model, queryIsFocused: queryIsFocused))
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background {
+            if reduceTransparency || contrast == .increased {
+                RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .controlBackgroundColor))
+            } else {
+                RoundedRectangle(cornerRadius: 16).fill(.regularMaterial)
+            }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
+                .strokeBorder(.primary.opacity(contrast == .increased ? 0.35 : 0.10), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.12), radius: 24, y: 8)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.results.count)

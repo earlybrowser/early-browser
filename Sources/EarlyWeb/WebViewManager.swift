@@ -335,9 +335,17 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     private func openCommandClickedLink(_ action: WKNavigationAction, in view: WKWebView) -> Bool {
-        guard action.navigationType == .linkActivated, action.buttonNumber == 0,
-              action.modifierFlags.contains(.command), let url = action.request.url else { return false }
+        guard Self.isCommandClick(navigationType: action.navigationType, buttonNumber: action.buttonNumber,
+                                  modifiers: action.modifierFlags),
+              let url = action.request.url else { return false }
         return openContextLink(url, in: view, background: true)
+    }
+
+    static func isCommandClick(navigationType: WKNavigationType, buttonNumber: Int,
+                               modifiers: NSEvent.ModifierFlags) -> Bool {
+        // WKNavigationAction uses WebKit's button mask: left = 1, none = 0.
+        // It is not NSEvent's zero-based buttonNumber (or DOM MouseEvent.button).
+        navigationType == .linkActivated && buttonNumber == 1 && modifiers.contains(.command)
     }
 
     public func webViewDidClose(_ webView: WKWebView) {

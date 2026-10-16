@@ -49,6 +49,35 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(query.value as? String, "")
     }
 
+    func testTranslucentChromePreservesNavigationInBothAppearances() {
+        for appearance in ["dark", "light"] {
+            let app = launchFreshApp(appearance: appearance)
+            func capture(_ state: String) {
+                let attachment = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+                attachment.name = "\(appearance) translucent chrome — \(state)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+            capture("command bar")
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertFalse(app.textFields["commandBar.query"].exists)
+            expectRuntime(app, tabs: 0, views: 0, created: 0)
+            capture("empty canvas")
+            navigate(app, to: "early-test://fixture/one")
+            expectPage(app, "One")
+            let saved = app.webViews.textFields["Saved text"]
+            saved.click()
+            saved.typeText("preserve page through chrome changes")
+            app.typeKey("l", modifierFlags: .command)
+            XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 3))
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertEqual(saved.value as? String, "preserve page through chrome changes")
+            expectRuntime(app, tabs: 1, views: 1, created: 1)
+            capture("loaded website")
+            app.terminate()
+        }
+    }
+
     func testDefaultSearchSuggestionsKeyboardDismissalAndRelaunch() {
         let app = launchFreshApp()
         let toggle = app.checkBoxes["commandBar.onlineSuggestions"]
@@ -487,7 +516,11 @@ final class EarlyUITests: XCTestCase {
         XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
     }
 
-    func testDoubleClickRenamesTabsAndFoldersWithoutReplacingLivePage() {
+    private func optionClick(_ element: XCUIElement) {
+        XCUIElement.perform(withKeyModifiers: .option) { element.click() }
+    }
+
+    func testOptionClickRenamesTabsAndFoldersWithoutReplacingLivePage() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
@@ -497,7 +530,7 @@ final class EarlyUITests: XCTestCase {
         saved.typeText("keep my page")
         let name = app.textFields["rename.name"]
         func rename(_ row: XCUIElement, from old: String, to new: String) {
-            row.doubleClick()
+            optionClick(row)
             XCTAssertTrue(name.waitForExistence(timeout: 3))
             XCTAssertEqual(name.value as? String, old)
             name.click()
@@ -514,7 +547,7 @@ final class EarlyUITests: XCTestCase {
         let favorite = app.buttons["favorite.\(id.dropFirst(4))"]
         XCTAssertTrue(favorite.waitForExistence(timeout: 3))
         rename(favorite, from: "My pin", to: "My favorite")
-        favorite.doubleClick()
+        optionClick(favorite)
         XCTAssertTrue(name.waitForExistence(timeout: 3))
         app.buttons["Cancel"].click()
         XCTAssertEqual(favorite.label, "My favorite")
@@ -531,7 +564,7 @@ final class EarlyUITests: XCTestCase {
         let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Work'")).firstMatch
         XCTAssertTrue(folder.waitForExistence(timeout: 3))
         let folderID = folder.identifier
-        folder.doubleClick()
+        optionClick(folder)
         XCTAssertTrue(folderName.waitForExistence(timeout: 3))
         XCTAssertEqual(folderName.value as? String, "Work")
         folderName.click()
@@ -544,11 +577,112 @@ final class EarlyUITests: XCTestCase {
         renamed.click()
         XCTAssertEqual(renamed.value as? String, beforeClick == "Expanded" ? "Collapsed" : "Expanded")
         XCTAssertFalse(folderName.exists)
-        renamed.doubleClick()
+        optionClick(renamed)
         XCTAssertTrue(folderName.waitForExistence(timeout: 3))
         app.buttons["Cancel"].click()
         XCTAssertEqual(renamed.label, "Research")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testOptionClickRenameDoesNotSelectInactiveTabOrOpenClosedSavedPages() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("stay on this tab")
+        let editor = app.textFields["rename.name"]
+        optionClick(app.buttons[firstID])
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(app.buttons[secondID].isSelected, "Rename must not select the inactive tab")
+        expectPage(app, "Two")
+        XCTAssertEqual(saved.value as? String, "stay on this tab")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+
+        pinAction("Pin Tab", on: app.buttons[firstID])
+        pinAction("Close Tab", on: app.buttons[firstID])
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Pinned, closed")
+        optionClick(app.buttons[firstID])
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.click()
+        app.typeKey("a", modifierFlags: .command)
+        editor.typeText("Closed pin")
+        app.buttons["Save"].click()
+        XCTAssertEqual(app.buttons[firstID].label, "Closed pin")
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Pinned, closed")
+        XCTAssertTrue(app.buttons[secondID].isSelected)
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+
+        pinAction("Add to Favorites", on: app.buttons[firstID])
+        let favorite = app.buttons["favorite.\(firstID.dropFirst(4))"]
+        XCTAssertTrue(favorite.waitForExistence(timeout: 3))
+        optionClick(favorite)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(favorite.value as? String, "Favorite, closed")
+        XCTAssertTrue(app.buttons[secondID].isSelected)
+        XCTAssertEqual(saved.value as? String, "stay on this tab")
+        expectRuntime(app, tabs: 1, views: 1, created: 2)
+        // An ordinary click must still reopen exactly this saved tab.
+        favorite.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 2, views: 2, created: 3)
+    }
+
+    func testOptionClickFolderRenamePreservesExpansionAndDisclosureTogglesOnce() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let editor = app.textFields["folder.name"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.click()
+        editor.typeText("Work")
+        app.buttons["Save"].click()
+        let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        let folderID = folder.identifier
+        let toggle = app.buttons["folderToggle.\(folderID.dropFirst(7))"]
+        let count = app.staticTexts["test.folderToggles"]
+        XCTAssertEqual(folder.frame.minY, toggle.frame.minY, accuracy: 0.5)
+        XCTAssertEqual(folder.frame.height, toggle.frame.height, accuracy: 0.5)
+        XCTAssertEqual(count.value as? String, "0")
+        optionClick(folder)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(folder.value as? String, "Collapsed")
+        XCTAssertEqual(count.value as? String, "0", "Rename must not toggle twice and return to the original state")
+        toggle.click()
+        XCTAssertEqual(folder.value as? String, "Expanded")
+        XCTAssertEqual(count.value as? String, "1")
+        optionClick(folder)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.click()
+        app.typeKey("a", modifierFlags: .command)
+        editor.typeText("Research")
+        app.buttons["Save"].click()
+        XCTAssertEqual(app.buttons[folderID].label, "Research")
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Expanded")
+        XCTAssertEqual(count.value as? String, "1")
+        app.buttons[folderID].click()
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Collapsed")
+        XCTAssertEqual(count.value as? String, "2", "Single-clicking the title should toggle exactly once")
+        toggle.click()
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Expanded")
+        XCTAssertEqual(count.value as? String, "3")
+        XCTAssertFalse(editor.exists)
+        optionClick(toggle)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(app.buttons[folderID].value as? String, "Expanded")
+        XCTAssertEqual(count.value as? String, "3", "Option-clicking the icon must rename without toggling")
     }
 
     func testCustomNameSurvivesPinCloseAndRelaunch() {
@@ -1398,13 +1532,21 @@ final class EarlyUITests: XCTestCase {
     }
 
     func testTrafficLightsAreMonochromeUntilHovered() throws {
+        try verifyTrafficLightRollover(appearance: "dark")
+    }
+
+    func testTrafficLightsAreMonochromeUntilHoveredInLightAppearance() throws {
+        try verifyTrafficLightRollover(appearance: "light")
+    }
+
+    private func verifyTrafficLightRollover(appearance: String) throws {
         // Validate the image assertion without a separate UI-test session.
         XCTAssertEqual(strokePixels(width: 32, height: 32) { _, _ in 0.8 }, 0)
         XCTAssertEqual(strokePixels(width: 32, height: 32) { x, y in 0.5 + CGFloat(x + y) / 128 }, 0)
         XCTAssertGreaterThan(strokePixels(width: 32, height: 32) { _, y in
             (15...16).contains(y) ? 0.65 : 0.9
         }, 3)
-        let app = launchFreshApp()
+        let app = launchFreshApp(appearance: appearance)
         app.typeKey(.escape, modifierFlags: [])
         let close = app.buttons["_XCUI:CloseWindow"]
         XCTAssertTrue(close.waitForExistence(timeout: 5))
@@ -1429,7 +1571,7 @@ final class EarlyUITests: XCTestCase {
         away.hover()
         for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
         let idle = XCTAttachment(screenshot: window.screenshot())
-        idle.name = "Muted native traffic lights"
+        idle.name = "\(appearance) muted native traffic lights"
         idle.lifetime = .keepAlways
         add(idle)
         close.hover()
@@ -1438,13 +1580,25 @@ final class EarlyUITests: XCTestCase {
             try assertHoverSymbol(light)
         }
         let hovered = XCTAttachment(screenshot: window.screenshot())
-        hovered.name = "Hovered native traffic lights"
+        hovered.name = "\(appearance) hovered native traffic lights"
         hovered.lifetime = .keepAlways
         add(hovered)
         away.hover()
         for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
         XCTAssertTrue(close.isEnabled)
         XCTAssertTrue(close.isHittable)
+
+        // Each native widget invalidates its own drawing during rollover. The
+        // idle mask must survive those redraws, not just the first hover cycle.
+        for light in lights {
+            light.hover()
+            XCTAssertGreaterThan(try colorSpread(light), 0.25)
+            away.hover()
+            for idleLight in lights {
+                XCTAssertLessThan(try colorSpread(idleLight), 0.12)
+                XCTAssertTrue(idleLight.isHittable)
+            }
+        }
 
         // Relaunch while the cursor is parked over content. Assert the first
         // appearance without any hover event to initialize the control state.
