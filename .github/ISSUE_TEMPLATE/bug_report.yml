@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible problem with Early
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Check existing issues before reporting. Redact private URLs, credentials,
+        and personal data from your report and attachments.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the problem in a few sentences. Mention when it started if known.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Start from a clear state. Say whether it happens every time or only
+        sometimes. Include a public URL or small example if it depends on a website.
+      placeholder: |
+        1. Open Early and ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen after those steps?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happens instead? Include the exact error message, if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include your macOS version, Early version or commit, and installation method.
+      placeholder: |
+        - macOS version:
+        - Early version or commit:
+        - Installation method:
+        - Xcode version (if built from source):
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots, recordings, or logs
+      description: >-
+        Optional. Attach evidence that helps explain the issue. For test failures,
+        include failing test names and assertion messages. For crashes, include
+        the relevant crash report.

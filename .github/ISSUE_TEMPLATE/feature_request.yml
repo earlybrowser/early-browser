@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a feature or improvement to Early
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Check existing requests and the README's planned features first.
+        Explain the user need; you don't need to propose a technical implementation.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: >-
+        What are you trying to accomplish? Describe what is difficult or missing
+        in the current experience and when you encounter it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: >-
+        Describe what Early should do and how a user would interact with it.
+        A short example workflow is useful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: >-
+        Optional. What do you do today, or what other approaches could help?
+        Explain why they don't fully address the need.
+  - type: textarea
+    id: references
+    attributes:
+      label: Examples or references
+      description: >-
+        Optional. Add sketches, screenshots, or links that clarify the request.
+        Explain which part of each example matters. Redact private information.
