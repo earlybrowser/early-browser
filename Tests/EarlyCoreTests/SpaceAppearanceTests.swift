@@ -95,8 +95,8 @@ struct SpaceAppearanceTests {
                 for rgb in [color.chromeTop(isDark: dark), color.chromeBottom(isDark: dark)] {
                     let channels = [rgb.red, rgb.green, rgb.blue]
                     #expect(channels.allSatisfy { $0.isFinite && (0...1).contains($0) })
-                    #expect(dark ? channels.allSatisfy { $0 < 0.09 } : channels.allSatisfy { $0 > 0.65 })
-                    #expect(channels.max()! - channels.min()! < (dark ? 0.06 : 0.30))
+                    #expect(dark ? channels.allSatisfy { $0 < 0.15 } : channels.allSatisfy { $0 > 0.65 })
+                    #expect(channels.max()! - channels.min()! < (dark ? 0.10 : 0.30))
                     #expect(rgb != swatch)
                 }
                 #expect(color.swatch == swatch)
@@ -111,5 +111,9 @@ struct SpaceAppearanceTests {
         #expect(butter.red - butter.blue > 0.20)
         let blue = BrowserSpace.Color.blue.chromeTop(isDark: false)
         #expect(blue.blue - blue.red > 0.15)
+        let darkBlue = BrowserSpace.Color.blue.chromeTop(isDark: true)
+        #expect(darkBlue.blue - darkBlue.red > 0.085)
+        let darkBlueBottom = BrowserSpace.Color.blue.chromeBottom(isDark: true)
+        #expect(darkBlueBottom.blue - darkBlueBottom.red > 0.05)
     }
 }

@@ -67,12 +67,12 @@ public extension BrowserSpace.Color {
     func chromeTop(isDark: Bool) -> SpaceThemeRGB {
         let neutral = isDark ? SpaceThemeRGB(red: 0.018, green: 0.018, blue: 0.018)
             : SpaceThemeRGB(red: 0.99, green: 0.965, blue: 0.91)
-        return swatch.blended(with: neutral, amount: isDark ? 0.065 : 0.34)
+        return swatch.blended(with: neutral, amount: isDark ? 0.14 : 0.34)
     }
 
     func chromeBottom(isDark: Bool) -> SpaceThemeRGB {
         let neutral = isDark ? SpaceThemeRGB(red: 0.010, green: 0.010, blue: 0.010)
             : SpaceThemeRGB(red: 0.975, green: 0.947, blue: 0.88)
-        return swatch.blended(with: neutral, amount: isDark ? 0.04 : 0.25)
+        return swatch.blended(with: neutral, amount: isDark ? 0.09 : 0.25)
     }
 }
