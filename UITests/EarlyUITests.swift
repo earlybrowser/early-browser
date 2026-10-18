@@ -191,7 +191,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(spaceDot(app, named: "Personal Copy").waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 0, views: 1, created: 1)
         app.menuBarItems["Space"].click()
-        visibleMenuAction("Rename Space…")
+        visibleMenuAction("Edit Space…")
         let field = app.textFields["space.name"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.click()
@@ -299,30 +299,83 @@ final class EarlyUITests: XCTestCase {
         app.buttons["Save"].click()
         XCTAssertTrue(spaceDot(app, named: "Green Space").waitForExistence(timeout: 5))
         app.menuBarItems["Space"].click()
-        visibleMenuAction("Rename Space…")
+        visibleMenuAction("Edit Space…")
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["space.color.green"].isSelected)
         app.buttons["Cancel"].click()
     }
 
-    func testSpaceFooterOverflowStaysCenteredAndExposesAllSpaces() {
+    func testSpaceFooterSlidesToKeepSelectionVisibleWithoutOverflowMenu() {
         let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])
         for number in 1...6 { createSpace(app, named: "Space \(number)") }
         let overflow = app.descendants(matching: .any).matching(identifier: "space.overflow").firstMatch
-        XCTAssertTrue(overflow.waitForExistence(timeout: 5))
-        let footer = app.descendants(matching: .any).matching(identifier: "sidebar.footer").firstMatch
-        let dots = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier != %@ AND identifier != %@", "space.", "space.new", "space.overflow")).allElementsBoundByIndex
-        XCTAssertLessThanOrEqual(dots.count, 4)
-        let cluster = dots.map(\.frame).reduce(overflow.frame) { $0.union($1) }
-        XCTAssertEqual(cluster.midX, footer.frame.midX, accuracy: 2)
-        overflow.click()
+        XCTAssertFalse(overflow.exists)
+        let strip = app.descendants(matching: .any).matching(identifier: "space.strip").firstMatch
+        XCTAssertTrue(strip.exists)
+        let newSpace = app.buttons["space.new"]
+        let newSpaceFrame = newSpace.frame
+        let last = spaceDot(app, named: "Space 6")
+        XCTAssertTrue(last.isHittable)
+        XCTAssertGreaterThanOrEqual(last.frame.minX, strip.frame.minX)
+        XCTAssertLessThanOrEqual(last.frame.maxX, strip.frame.maxX)
+        // The ordinary Space menu remains available for direct navigation to
+        // a hidden item; the footer itself never inserts another control.
+        app.menuBarItems["Space"].click()
         visibleMenuAction("Personal")
         XCTAssertTrue(spaceDot(app, named: "Personal").waitForExistence(timeout: 5))
         XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        XCTAssertTrue(spaceDot(app, named: "Personal").isHittable)
         expectRuntime(app, tabs: 0, views: 0, created: 0)
         app.typeKey("9", modifierFlags: [.command, .option])
         XCTAssertTrue(spaceDot(app, named: "Space 6").isSelected)
+        XCTAssertTrue(spaceDot(app, named: "Space 6").isHittable)
+        XCTAssertEqual(newSpace.frame, newSpaceFrame)
+        XCTAssertFalse(overflow.exists)
+    }
+
+    func testSpaceIconPickerPersistsAndCancelKeepsOriginalAppearance() {
+        let app = launchFreshApp()
+        app.buttons["space.new"].click()
+        let name = app.textFields["space.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.typeText("Star Space")
+        let picker = app.buttons["space.iconPicker"]
+        picker.click()
+        let star = app.buttons["space.symbol.star.fill"]
+        XCTAssertTrue(star.waitForExistence(timeout: 3))
+        star.click()
+        XCTAssertEqual(picker.value as? String, "Star")
+        app.buttons["space.color.purple"].click()
+        app.buttons["Save"].click()
+        let space = spaceDot(app, named: "Star Space")
+        XCTAssertTrue(space.waitForExistence(timeout: 5))
+        XCTAssertEqual(space.value as? String, "Current Space · Star")
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Edit Space…")
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        picker.click()
+        let moon = app.buttons["space.symbol.moon.fill"]
+        XCTAssertTrue(moon.waitForExistence(timeout: 3))
+        moon.click()
+        app.buttons["space.color.red"].click()
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(space.value as? String, "Current Space · Star")
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 10))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(space.value as? String, "Current Space · Star")
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Edit Space…")
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["space.color.purple"].isSelected)
+        picker.click()
+        let reset = app.buttons["space.icon.none"]
+        XCTAssertTrue(reset.waitForExistence(timeout: 3))
+        reset.click()
+        app.buttons["Save"].click()
+        XCTAssertEqual(space.value as? String, "Current Space · Default dot")
     }
 
     private func pinAction(_ title: String, on row: XCUIElement) {
@@ -1848,6 +1901,24 @@ final class EarlyUITests: XCTestCase {
         }, 3)
         XCTAssertEqual(strokePixels(width: 16, height: 16) { _, _ in 0.8 }, 0)
         XCTAssertEqual(strokePixels(width: 16, height: 16) { x, y in 0.5 + CGFloat(x + y) / 64 }, 0)
+        // A neutral translucent circle inherits the chrome hue. It must not
+        // fail merely because the theme or the wallpaper is colorful. Still
+        // detect all three native hover colors over each representative tint.
+        let backdrops: [SIMD3<Double>] = [
+            SIMD3(0.1, 0.1, 0.1), SIMD3(0.04, 0.08, 0.14), SIMD3(0.9, 0.9, 0.9),
+            SIMD3(0.76, 0.82, 0.90), SIMD3(0.92, 0.84, 0.74), SIMD3(0.90, 0.76, 0.84)
+        ]
+        for backdrop in backdrops {
+            for alpha in [0.0, 0.12, 0.25, 1.0] {
+                for neutral in [SIMD3<Double>(repeating: 0), SIMD3<Double>(repeating: 1)] {
+                    let pixel = backdrop * (1 - alpha) + neutral * alpha
+                    XCTAssertLessThan(neutralOverlayColorExcess(pixel, over: backdrop), 0.000_001)
+                }
+            }
+            for colored in [SIMD3(0.98, 0.36, 0.30), SIMD3(0.99, 0.76, 0.18), SIMD3(0.24, 0.80, 0.16)] {
+                XCTAssertGreaterThan(neutralOverlayColorExcess(colored, over: backdrop), 0.25)
+            }
+        }
         let app = launchFreshApp(appearance: appearance)
         app.typeKey(.escape, modifierFlags: [])
         let close = app.buttons["_XCUI:CloseWindow"]
@@ -1856,29 +1927,43 @@ final class EarlyUITests: XCTestCase {
         let window = app.windows["browser"]
         let away = window.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6))
 
-        func colorSpread(_ button: XCUIElement) throws -> CGFloat {
+        func colorBeyondBackdrop(_ button: XCUIElement) throws -> CGFloat {
             let shot = button.screenshot()
             let bitmap = try XCTUnwrap(NSBitmapImageRep(data: shot.pngRepresentation))
-            var largest: CGFloat = 0
+            func rgb(_ x: Int, _ y: Int) throws -> SIMD3<Double> {
+                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                return SIMD3(Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
+            }
+            let lastX = bitmap.pixelsWide - 1, lastY = bitmap.pixelsHigh - 1
+            // The crop corners lie outside the circular widget. Interpolate
+            // them so a smooth theme/backdrop gradient is not measured as a
+            // colored button. Sampling the whole crop's raw RGB spread used to
+            // count the blue light-theme background as an idle colored widget.
+            let topLeft = try rgb(0, 0), topRight = try rgb(lastX, 0)
+            let bottomLeft = try rgb(0, lastY), bottomRight = try rgb(lastX, lastY)
+            var largest = 0.0
             for y in 0..<bitmap.pixelsHigh {
+                let ty = Double(y) / Double(max(1, lastY))
                 for x in 0..<bitmap.pixelsWide {
-                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                    let channels = [color.redComponent, color.greenComponent, color.blueComponent]
-                    largest = max(largest, channels.max()! - channels.min()!)
+                    let tx = Double(x) / Double(max(1, lastX))
+                    let top = topLeft * (1 - tx) + topRight * tx
+                    let bottom = bottomLeft * (1 - tx) + bottomRight * tx
+                    let backdrop = top * (1 - ty) + bottom * ty
+                    largest = max(largest, neutralOverlayColorExcess(try rgb(x, y), over: backdrop))
                 }
             }
-            return largest
+            return CGFloat(largest)
         }
 
         away.hover()
-        for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
         let idle = XCTAttachment(screenshot: window.screenshot())
         idle.name = "\(appearance) muted native traffic lights"
         idle.lifetime = .keepAlways
         add(idle)
         close.hover()
         for light in lights {
-            XCTAssertGreaterThan(try colorSpread(light), 0.25)
+            XCTAssertGreaterThan(try colorBeyondBackdrop(light), 0.25)
             try assertHoverSymbol(light)
         }
         let hovered = XCTAttachment(screenshot: window.screenshot())
@@ -1886,7 +1971,7 @@ final class EarlyUITests: XCTestCase {
         hovered.lifetime = .keepAlways
         add(hovered)
         away.hover()
-        for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
         XCTAssertTrue(close.isEnabled)
         XCTAssertTrue(close.isHittable)
 
@@ -1894,10 +1979,10 @@ final class EarlyUITests: XCTestCase {
         // idle mask must survive those redraws, not just the first hover cycle.
         for light in lights {
             light.hover()
-            XCTAssertGreaterThan(try colorSpread(light), 0.25)
+            XCTAssertGreaterThan(try colorBeyondBackdrop(light), 0.25)
             away.hover()
             for idleLight in lights {
-                XCTAssertLessThan(try colorSpread(idleLight), 0.12)
+                XCTAssertLessThan(try colorBeyondBackdrop(idleLight), 0.12)
                 XCTAssertTrue(idleLight.isHittable)
             }
         }
@@ -1908,10 +1993,23 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 10))
         XCTAssertTrue(close.waitForExistence(timeout: 5))
-        for light in lights { XCTAssertLessThan(try colorSpread(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
         app.typeKey(.escape, modifierFlags: [])
         close.click()
         XCTAssertTrue(window.waitForNonExistence(timeout: 5))
+    }
+
+    /// A black/white translucent overlay can only scale the backdrop's chroma
+    /// toward zero. Measure color outside that segment: this rejects colored
+    /// widgets even when they share a theme hue, without requiring gray chrome.
+    private func neutralOverlayColorExcess(_ pixel: SIMD3<Double>, over backdrop: SIMD3<Double>) -> Double {
+        let color = pixel - SIMD3(repeating: (pixel.x + pixel.y + pixel.z) / 3)
+        let base = backdrop - SIMD3(repeating: (backdrop.x + backdrop.y + backdrop.z) / 3)
+        let length = base.x * base.x + base.y * base.y + base.z * base.z
+        let projection = color.x * base.x + color.y * base.y + color.z * base.z
+        let scale = length > 0.000_000_001 ? min(1, max(0, projection / length)) : 0
+        let excess = color - base * scale
+        return max(excess.x, max(excess.y, excess.z)) - min(excess.x, min(excess.y, excess.z))
     }
 
     // Native glass glyphs are tinted, not black. Detect a local dark stroke

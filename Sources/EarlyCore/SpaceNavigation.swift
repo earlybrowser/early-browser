@@ -41,7 +41,7 @@ public enum SpaceNavigation {
         Double(index) - Double(current) + progress
     }
 
-    /// Filled at the center, outlined one page away. This continuously follows
+    /// Emphasized at the center, muted one page away. This continuously follows
     /// the swipe and has the same value immediately before/after selection.
     public static func indicatorFill(index: Int, current: Int, count: Int, progress: Double) -> Double {
         guard (0..<max(0, count)).contains(index), (0..<max(0, count)).contains(current) else { return 0 }
@@ -49,16 +49,28 @@ public enum SpaceNavigation {
         return max(0, 1 - abs(Double(index) - position))
     }
 
-    /// Reserve both side controls and, when needed, one overflow control. Keep
-    /// the active dot in a bounded centered cluster even with many Spaces.
-    public static func footerRange(count: Int, activeIndex: Int, width: Double) -> Range<Int> {
-        guard count > 0 else { return 0..<0 }
-        let safeWidth = width.isFinite ? min(max(width, 0), 1000) : 240
-        let capacity = min(5, max(2, Int((safeWidth - 80) / 26)))
-        let visible = min(count, count > capacity ? capacity - 1 : capacity)
-        let active = min(max(activeIndex, 0), count - 1)
-        let start = min(max(0, active - visible / 2), count - visible)
-        return start..<(start + visible)
+    public struct FooterLayout: Equatable, Sendable {
+        public let width: Double
+        public let offset: Double
+        public let visibleRange: Range<Int>
+    }
+
+    public static let footerItemWidth = 30.0
+
+    /// All Space buttons keep their identities. Translate one clipped strip
+    /// instead of removing edge buttons or inserting an overflow menu. Using
+    /// the swipe's fractional selection keeps commit/reset visually continuous.
+    public static func footerLayout(count: Int, current: Int, progress: Double, width: Double) -> FooterLayout {
+        guard count > 0 else { return FooterLayout(width: 0, offset: 0, visibleRange: 0..<0) }
+        let contentWidth = Double(count) * footerItemWidth
+        let viewport = min(contentWidth, width.isFinite ? max(0, min(width, 1000)) : 150)
+        guard viewport > 0 else { return FooterLayout(width: 0, offset: 0, visibleRange: 0..<0) }
+        let active = Double(min(max(current, 0), count - 1))
+        let position = min(Double(count - 1), max(0, active - (progress.isFinite ? progress : 0)))
+        let offset = min(contentWidth - viewport, max(0, (position + 0.5) * footerItemWidth - viewport / 2))
+        let first = max(0, Int((offset / footerItemWidth).rounded(.down)))
+        let end = min(count, Int(((offset + viewport) / footerItemWidth).rounded(.up)))
+        return FooterLayout(width: viewport, offset: offset, visibleRange: first..<end)
     }
 }
 

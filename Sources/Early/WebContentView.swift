@@ -1,37 +1,45 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import EarlyCore
 import SwiftUI
 import WebKit
 
 /// Wallpaper-aware chrome only. Loaded websites retain their normal opaque
 /// background and are never tinted or rendered through a transparency layer.
 struct BrowserChromeBackground: View {
+    var spaceColor: BrowserSpace.Color = .gray
+    var floating = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
-            if reduceTransparency || contrast == .increased {
+            if contrast == .increased {
                 Color(nsColor: .windowBackgroundColor)
             } else {
-                ChromeMaterial()
-                LinearGradient(colors: colorScheme == .dark
-                    ? [Color.black.opacity(0.42), .black.opacity(0.55)]
-                    : [Color.white.opacity(0.24), Color(red: 0.54, green: 0.63, blue: 0.68).opacity(0.10)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing)
+                if !reduceTransparency { ChromeMaterial(floating: floating) }
+                if colorScheme == .dark, !reduceTransparency { Color.black.opacity(0.30) }
+                LinearGradient(colors: [spaceColor.chromeTop(isDark: colorScheme == .dark).color,
+                                        spaceColor.chromeBottom(isDark: colorScheme == .dark).color],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                    .opacity(reduceTransparency ? 1 : (colorScheme == .dark ? 0.64 : 0.68))
             }
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: spaceColor)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: colorScheme)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
     private struct ChromeMaterial: NSViewRepresentable {
+        let floating: Bool
         func makeNSView(context: Context) -> MaterialView {
             let view = MaterialView()
-            view.material = .sidebar
-            view.blendingMode = .behindWindow
+            view.material = floating ? .popover : .sidebar
+            view.blendingMode = floating ? .withinWindow : .behindWindow
             view.state = .followsWindowActiveState
             return view
         }

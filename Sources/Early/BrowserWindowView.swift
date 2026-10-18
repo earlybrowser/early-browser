@@ -220,7 +220,7 @@ struct BrowserWindowView: View {
                     Color(nsColor: .windowBackgroundColor)
                 } else {
                     // A softly lifted empty canvas over the shared native blur.
-                    Color.white.opacity(colorScheme == .dark ? 0.02 : 0.28)
+                    Color.white.opacity(colorScheme == .dark ? 0.01 : 0.08)
                 }
                 WebContentView(view: model.activePage?.view, focusRequest: model.contentFocusRequest,
                                canFocus: model.coordinator.commandBar == nil,
@@ -268,11 +268,9 @@ struct BrowserWindowView: View {
 
             sidebar
                 .background {
-                    if reduceTransparency || contrast == .increased {
-                        Color(nsColor: .windowBackgroundColor)
-                    } else if sidebarAutoHides {
+                    if sidebarAutoHides {
                         // Floating chrome must stay legible over web content.
-                        Rectangle().fill(.regularMaterial)
+                        BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray, floating: true)
                     } else {
                         Color.primary.opacity(0.015)
                     }
@@ -312,7 +310,7 @@ struct BrowserWindowView: View {
         .animation(sidebarMotion, value: sidebarAutoHides)
         .animation(sidebarMotion, value: sidebarVisible)
         .padding(6)
-        .background(BrowserChromeBackground())
+        .background(BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray))
         .overlay(alignment: .topTrailing) {
             if let toast = model.toast {
                 Label(toast.message, systemImage: "checkmark")

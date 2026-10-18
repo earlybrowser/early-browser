@@ -316,15 +316,15 @@ final class BrowserWindowModel {
     }
 
     @discardableResult
-    func createSpace(name: String, color: BrowserSpace.Color = .blue) -> UUID? {
-        guard let id = coordinator.createSpace(name: name, color: color) else { return nil }
+    func createSpace(name: String, color: BrowserSpace.Color = .blue, icon: SpaceIcon? = nil) -> UUID? {
+        guard let id = coordinator.createSpace(name: name, color: color, icon: icon) else { return nil }
         save()
         return id
     }
 
     @discardableResult
-    func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color) -> Bool {
-        guard coordinator.editSpace(id, name: name, color: color) else { return false }
+    func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color, icon: SpaceIcon?) -> Bool {
+        guard coordinator.editSpace(id, name: name, color: color, icon: icon) else { return false }
         save()
         return true
     }
