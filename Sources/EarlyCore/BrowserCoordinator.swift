@@ -165,6 +165,22 @@ public final class BrowserCoordinator {
 
     public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
 
+    /// Replace a window's metadata after an atomic workspace operation. Runtime
+    /// views are owned by its profile's manager and are reconciled by the caller.
+    @discardableResult
+    public func applySession(_ session: BrowserSession, using input: NavigationInput = NavigationInput()) -> Bool {
+        guard session.profileID == profileID, (try? session.validate(using: input)) != nil else { return false }
+        tabStore = TabStore(tabs: session.tabs, folders: session.folders)
+        spaces = session.spaces
+        activeSpaceID = session.activeSpaceID
+        selectionBySpace = session.selectionBySpace
+        recentlyClosed = session.recentlyClosed
+        pruneSelections()
+        restoreSelection()
+        dismissCommandBar()
+        return true
+    }
+
     /// Share saved organization, never another window's Today tabs, selection,
     /// open/closed state, or live page URL. Call only for the same profile.
     public func synchronizeSavedItems(from source: BrowserSession) {
@@ -398,6 +414,22 @@ public final class BrowserCoordinator {
     }
 
     public var activeSpace: BrowserSpace? { spaces.first { $0.id == activeSpaceID } }
+
+    /// Change only catalog order. UUID-based selection, live tabs, history and
+    /// pending command-bar intent remain untouched.
+    @discardableResult
+    public func reorderSpace(_ id: UUID, before beforeID: UUID?) -> Bool {
+        guard id != beforeID,
+              let source = spaces.firstIndex(where: { $0.id == id && $0.profileID == profileID }),
+              beforeID == nil || spaces.contains(where: { $0.id == beforeID && $0.profileID == profileID }) else { return false }
+        var reordered = spaces
+        let space = reordered.remove(at: source)
+        let destination = beforeID.flatMap { before in reordered.firstIndex { $0.id == before } } ?? reordered.count
+        reordered.insert(space, at: destination)
+        guard reordered != spaces else { return false }
+        spaces = reordered
+        return true
+    }
 
     @discardableResult
     public func createSpace(name: String, color: BrowserSpace.Color = .blue, icon: SpaceIcon? = nil) -> UUID? {

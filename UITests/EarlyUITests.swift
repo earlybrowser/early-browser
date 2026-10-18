@@ -126,6 +126,172 @@ final class EarlyUITests: XCTestCase {
         item?.click()
     }
 
+    private func openSettings(_ app: XCUIApplication, section: String) {
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "settings.window").firstMatch.waitForExistence(timeout: 5))
+        // The Settings group must not overwrite its children's identifiers.
+        for key in ["appearance", "profiles", "sidebar", "search", "sessions"] {
+            XCTAssertEqual(app.buttons.matching(identifier: "settings.section.\(key)").count, 1,
+                           "Settings navigation should expose a unique identifier for \(key)")
+        }
+        let tab = app.buttons["settings.section.\(section)"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 5))
+        tab.click()
+    }
+
+    @discardableResult private func createProfile(_ app: XCUIApplication, named name: String) -> String {
+        openSettings(app, section: "profiles")
+        app.buttons["profile.create"].click()
+        let field = app.textFields["profile.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText(name)
+        app.buttons["profile.save"].click()
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "profile.", name)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        return String(row.identifier.dropFirst("profile.".count))
+    }
+
+    func testSettingsPersistWithoutReplacingTheLiveWebsite() throws {
+        // Native macOS switches expose NSNumber values on some runner versions
+        // and strings on others. Both describe the same checked state.
+        func switchState(_ control: XCUIElement) -> Bool? {
+            if let value = control.value as? NSNumber { return value.boolValue }
+            switch (control.value as? String)?.lowercased() {
+            case "1", "on", "true": return true
+            case "0", "off", "false": return false
+            default: return nil
+            }
+        }
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let saved = app.windows["browser"].webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep my page through settings")
+        openSettings(app, section: "appearance")
+        app.buttons["settings.appearance.light"].click()
+        let translucency = app.descendants(matching: .any).matching(identifier: "settings.translucency").firstMatch
+        XCTAssertTrue(translucency.waitForExistence(timeout: 3))
+        let themes = app.descendants(matching: .any).matching(identifier: "settings.spaceThemes").firstMatch
+        XCTAssertEqual(themes.frame.midX, translucency.frame.midX, accuracy: 1, "Settings switches should share one trailing column")
+        let originalSetting = try XCTUnwrap(switchState(translucency), "The switch must expose its checked state")
+        translucency.click()
+        let changed = NSPredicate { _, _ in switchState(translucency) == !originalSetting }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: changed, object: nil)], timeout: 3), .completed)
+        let setting = try XCTUnwrap(switchState(translucency))
+        XCTAssertNotEqual(setting, originalSetting)
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertEqual(saved.value as? String, "keep my page through settings")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.terminate()
+        app.launch()
+        expectPage(app, "One")
+        openSettings(app, section: "appearance")
+        XCTAssertTrue(app.buttons["settings.appearance.light"].isSelected)
+        XCTAssertEqual(switchState(translucency), setting)
+        app.typeKey("w", modifierFlags: .command)
+    }
+
+    func testProfilesKeepSeparateTabsAndRestoreBothWindows() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let personalWindow = app.windows["browser"]
+        let personalText = personalWindow.webViews.textFields["Saved text"]
+        personalText.click()
+        personalText.typeText("personal page state")
+        let profileID = createProfile(app, named: "Work")
+        app.buttons["profile.open.\(profileID)"].click()
+        let workWindow = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).firstMatch
+        XCTAssertTrue(workWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(workWindow.textFields["commandBar.query"].waitForExistence(timeout: 5))
+        XCTAssertEqual(workWindow.webViews.count, 0)
+        workWindow.textFields["commandBar.query"].typeText("early-test://fixture/two\n")
+        XCTAssertTrue(workWindow.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+        XCTAssertEqual(personalText.value as? String, "personal page state")
+        // Close Settings, not a browser window, so its restoration cannot mask
+        // whether both profile windows were actually restored by Early.
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.buttons["settings.section.profiles"].waitForExistence(timeout: 5))
+        app.typeKey("w", modifierFlags: .command)
+        app.terminate()
+        app.launch()
+        let browsers = app.windows.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@", "browser", "browser."))
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 2"), object: browsers)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 10), .completed)
+        XCTAssertTrue(app.webViews.staticTexts["Page One"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+    }
+
+    func testDefaultProfileSelectionPersistsWithoutOpeningOrSwitchingProfiles() {
+        let app = launchFreshApp()
+        let profileID = createProfile(app, named: "Work")
+        let menu = app.descendants(matching: .any).matching(identifier: "profile.manage.\(profileID)").firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 3))
+        menu.click()
+        visibleMenuAction("Make Default")
+        menu.click()
+        XCTAssertTrue(app.menuItems["Make Default"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.menuItems["Make Default"].isEnabled, "The current default should not offer to make itself default again")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(app.popUpButtons["profile.default"].exists)
+        XCTAssertEqual(app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).count, 0)
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 10))
+        openSettings(app, section: "profiles")
+        XCTAssertTrue(app.buttons["profile.\(profileID)"].exists)
+        menu.click()
+        XCTAssertTrue(app.menuItems["Make Default"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.menuItems["Make Default"].isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    func testMovingSpaceToAnotherProfileRequiresConfirmationAndKeepsClosedPinsClosed() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let tab = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch
+        tab.rightClick()
+        visibleMenuAction("Pin Tab")
+        app.typeKey("w", modifierFlags: .command)
+        let profileID = createProfile(app, named: "Work")
+        XCTAssertTrue(app.buttons["profile.open.\(profileID)"].exists)
+        app.typeKey("w", modifierFlags: .command)
+        spaceDot(app, named: "Personal").rightClick()
+        visibleMenuAction("Edit Space…")
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.click()
+        app.typeKey("a", modifierFlags: .command)
+        field.typeText("Moved")
+        app.popUpButtons["space.profile"].click()
+        visibleMenuAction("Work")
+        app.buttons["Save"].click()
+        // The editor and Touch Bar also contain Cancel. Target the native
+        // confirmation sheet, not an unrelated underlying button.
+        let confirmation = app.windows["browser"].sheets.matching(NSPredicate(format: "label == %@", "alert")).firstMatch
+        XCTAssertTrue(confirmation.buttons["Move and Reload"].waitForExistence(timeout: 5))
+        confirmation.buttons["Cancel"].click()
+        XCTAssertTrue(confirmation.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(field.exists)
+        XCTAssertEqual(field.value as? String, "Moved")
+        XCTAssertEqual(app.popUpButtons["space.profile"].value as? String, "Work")
+        XCTAssertEqual(app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).count, 0)
+        app.buttons["Save"].click()
+        XCTAssertTrue(confirmation.buttons["Move and Reload"].waitForExistence(timeout: 5))
+        confirmation.buttons["Move and Reload"].click()
+        let destination = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).firstMatch
+        XCTAssertTrue(destination.waitForExistence(timeout: 5))
+        XCTAssertTrue(destination.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "space.", "Moved")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(destination.webViews.count, 0)
+        XCTAssertEqual(app.windows["browser"].webViews.count, 0)
+        XCTAssertTrue(destination.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch.exists)
+    }
+
     private func spaceDot(_ app: XCUIApplication, named name: String) -> XCUIElement {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "space.", name)).firstMatch
     }
@@ -139,6 +305,90 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(spaceDot(app, named: name).waitForExistence(timeout: 5))
         XCTAssertTrue(spaceDot(app, named: name).isSelected)
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
+    }
+
+    func testProfilesSpaceEditFollowsSavedSpaceButCancelKeepsCurrentSpace() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        createSpace(app, named: "Work")
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep the edited Space alive")
+        let work = spaceDot(app, named: "Work")
+        let workID = String(work.identifier.dropFirst("space.".count))
+        spaceDot(app, named: "Personal").click()
+        expectPage(app, "One")
+
+        openSettings(app, section: "profiles")
+        app.buttons["settings.space.edit.\(workID)"].click()
+        XCTAssertTrue(app.textFields["space.name"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectPage(app, "One")
+
+        openSettings(app, section: "profiles")
+        app.buttons["settings.space.edit.\(workID)"].click()
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.click()
+        app.typeKey("a", modifierFlags: .command)
+        field.typeText("Research")
+        app.buttons["Save"].click()
+        let research = spaceDot(app, named: "Research")
+        XCTAssertTrue(research.waitForExistence(timeout: 5))
+        XCTAssertTrue(research.isSelected)
+        expectPage(app, "Two")
+        XCTAssertEqual(saved.value as? String, "keep the edited Space alive")
+        expectRuntime(app, tabs: 1, views: 2, created: 2)
+    }
+
+    func testSpaceIconsDragToReorderWithoutSwitchingTheLivePage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep while reordering Spaces")
+        createSpace(app, named: "Work")
+        createSpace(app, named: "Research")
+        let personal = spaceDot(app, named: "Personal")
+        let work = spaceDot(app, named: "Work")
+        let research = spaceDot(app, named: "Research")
+        // An ancestor's viewport must not become the first icon's AX frame.
+        // In that case both click() and drag coordinates land on another Space.
+        for icon in [personal, work, research] {
+            XCTAssertEqual(icon.frame.width, 30, accuracy: 0.5)
+            XCTAssertEqual(icon.frame.height, 28, accuracy: 0.5)
+        }
+        XCTAssertLessThanOrEqual(personal.frame.maxX, work.frame.minX + 0.5)
+        XCTAssertLessThanOrEqual(work.frame.maxX, research.frame.minX + 0.5)
+        personal.click()
+        let selected = NSPredicate(format: "selected == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: personal)], timeout: 5), .completed)
+        expectPage(app, "One")
+        let source = personal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let target = research.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        source.click(forDuration: 0.2, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.2)
+        let order = NSPredicate { _, _ in
+            self.spaceDot(app, named: "Work").frame.minX < self.spaceDot(app, named: "Research").frame.minX
+                && self.spaceDot(app, named: "Research").frame.minX < personal.frame.minX
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: order, object: nil)], timeout: 5), .completed)
+        XCTAssertTrue(personal.isSelected)
+        XCTAssertFalse(app.textFields["space.name"].exists)
+        XCTAssertEqual(saved.value as? String, "keep while reordering Spaces")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(personal.waitForExistence(timeout: 10))
+        XCTAssertTrue(personal.isSelected)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: order, object: nil)], timeout: 5), .completed)
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
     func testSpaceSwitchingPreservesPageStateAndEmptySpaceRelaunch() {
@@ -554,6 +804,15 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(folder.waitForExistence(timeout: 3))
         let folderID = folder.identifier
         XCTAssertEqual(folder.value as? String, "Collapsed") // Hover reserves a slot; only a drop reveals the contents.
+        // Both rows use the same full-width island, including their icon column.
+        let pinIcon = app.buttons["pinSelect.\(first.dropFirst(4))"]
+        let folderIcon = app.buttons["folderToggle.\(folderID.dropFirst(7))"]
+        let pinBounds = app.buttons[first].frame.union(pinIcon.frame)
+        let folderBounds = folder.frame.union(folderIcon.frame)
+        XCTAssertEqual(folderBounds.height, pinBounds.height, accuracy: 0.5)
+        XCTAssertEqual(folderBounds.width, pinBounds.width, accuracy: 0.5)
+        XCTAssertEqual(folderBounds.minX, pinBounds.minX, accuracy: 0.5)
+        XCTAssertEqual(folder.frame.minX, app.buttons[first].frame.minX, accuracy: 0.5)
         navigate(app, to: "early-test://fixture/two", newTab: true)
         expectPage(app, "Two")
         let second = rows.allElementsBoundByIndex.first { $0.identifier != first }!.identifier
@@ -1649,6 +1908,7 @@ final class EarlyUITests: XCTestCase {
         // the front. Bind the original window by ID before opening another.
         let child = app.windows[childID]
         XCTAssertTrue(child.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+        XCTAssertTrue(child.buttons["navigation.reload"].waitForExistence(timeout: 5))
         let childRuntime = child.staticTexts["test.runtime"]
         expectation(for: NSPredicate(format: "value == %@ OR label == %@", "Tabs 1 · Views 1 · Created 1 · Saved", "Tabs 1 · Views 1 · Created 1 · Saved"), evaluatedWith: childRuntime)
         waitForExpectations(timeout: 5)
@@ -1656,15 +1916,23 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(child.buttons[pinID].value as? String, "Pinned, closed")
         let copied = child.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).firstMatch
         XCTAssertTrue(copied.exists)
-        child.webViews.textFields["Saved text"].click()
-        child.webViews.textFields["Saved text"].typeText("keep original window state")
-        XCTAssertEqual(child.webViews.textFields["Saved text"].value as? String, "keep original window state")
+        let childText = child.webViews.textFields["Saved text"]
+        let savedText = "keep original window state"
+        childText.click()
+        childText.typeText(savedText)
+        // WebKit's out-of-process accessibility tree may still expose a typed
+        // prefix after event synthesis returns. Require the complete value
+        // before opening another window and checking live-state isolation.
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", savedText), object: childText)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 8), .completed,
+                       "The complete typed value must reach the original page")
+        XCTAssertEqual(childText.value as? String, savedText)
         copied.rightClick()
         visibleMenuAction("Open Tab in New Window")
         let third = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser.' AND identifier != %@", childID)).firstMatch
         XCTAssertTrue(third.waitForExistence(timeout: 15))
         XCTAssertTrue(third.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
-        XCTAssertEqual(child.webViews.textFields["Saved text"].value as? String, "keep original window state")
+        XCTAssertEqual(childText.value as? String, savedText)
         XCTAssertEqual(third.webViews.textFields["Saved text"].value as? String, "")
         XCTAssertEqual(third.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).count, 1)
         XCTAssertEqual(main.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).count, 1)

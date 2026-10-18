@@ -10,9 +10,9 @@ import WebKit
 @MainActor @Observable
 final class BrowserWindowModel {
     enum SpaceEditor: Identifiable {
-        case new, edit(UUID)
+        case new, edit(UUID, selectOnSave: Bool = false)
         var id: String {
-            switch self { case .new: "new"; case .edit(let id): id.uuidString }
+            switch self { case .new: "new"; case .edit(let id, _): id.uuidString }
         }
     }
     struct Toast: Identifiable {
@@ -35,6 +35,8 @@ final class BrowserWindowModel {
     let webViews: WebViewManager
     let input: NavigationInput
     let persistence: SessionAutosaver
+    let preferences: BrowserPreferences
+    weak var application: EarlyAppDelegate?
     let isTesting: Bool
     var submissionMessage: String?
     var notice: String?
@@ -54,38 +56,28 @@ final class BrowserWindowModel {
     var renameText = ""
     var contentFocusRequest = 0
     let suggestions: SearchSuggestions
-    private let defaults: UserDefaults
-    private let repository: SessionRepository
-    private let restorationError: String?
-    let restoredWindows: [BrowserSession]
     var onSave: ((BrowserWindowModel) -> Void)?
     var onOpenWindow: ((URL, String?) -> Void)?
-    var presentWindow: ((UUID) -> Void)?
-    var sidebarWidth: Double
+    var sidebarWidth: Double {
+        get { preferences.sidebarWidth }
+        set { preferences.sidebarWidth = newValue }
+    }
 
     func finishSidebarResize() {
         sidebarWidth = SidebarWidth.clamped(sidebarWidth)
-        defaults.set(sidebarWidth, forKey: "sidebarWidth")
     }
     var onlineSuggestionsEnabled: Bool {
-        didSet {
-            defaults.set(onlineSuggestionsEnabled, forKey: "onlineSearchSuggestions")
-            refreshSuggestions()
-        }
+        get { preferences.onlineSuggestions }
+        set { preferences.onlineSuggestions = newValue; refreshSuggestions() }
     }
 
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
-         sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil) {
+         sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
+         preferences: BrowserPreferences? = nil) {
         self.input = input
         self.isTesting = isTesting
-        self.defaults = defaults
-        self.repository = repository
-        self.restorationError = restorationError
-        restoredWindows = session.additionalWindows
-        sidebarWidth = SidebarWidth.clamped(defaults.object(forKey: "sidebarWidth") as? Double ?? SidebarWidth.defaultValue)
-        defaults.register(defaults: ["onlineSearchSuggestions": true])
-        onlineSuggestionsEnabled = defaults.bool(forKey: "onlineSearchSuggestions")
+        self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
         let service = GoogleSearchSuggestions()
         suggestions = SearchSuggestions { query in
             #if DEBUG
@@ -323,9 +315,9 @@ final class BrowserWindowModel {
     }
 
     @discardableResult
-    func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color, icon: SpaceIcon?) -> Bool {
+    func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color, icon: SpaceIcon?, selectOnSave: Bool = false) -> Bool {
         guard coordinator.editSpace(id, name: name, color: color, icon: icon) else { return false }
-        save()
+        if !selectOnSave || !switchSpace(to: id) { save() }
         return true
     }
 
@@ -346,7 +338,7 @@ final class BrowserWindowModel {
         submissionMessage = nil
         activateSelection()
         save()
-        BrowserHaptics.alignment()
+        BrowserHaptics.alignment(enabled: preferences.haptics)
         return true
     }
 
@@ -357,8 +349,29 @@ final class BrowserWindowModel {
 
     var activeSpaceIndex: Int { coordinator.spaces.firstIndex { $0.id == coordinator.activeSpaceID } ?? 0 }
 
+    @discardableResult
+    func reorderSpace(_ id: UUID, before beforeID: UUID?) -> Bool {
+        guard canManageSpaces, coordinator.reorderSpace(id, before: beforeID) else { return false }
+        cancelSpaceSwipePresentation()
+        save()
+        return true
+    }
+
+    /// VoiceOver/keyboard alternative to dragging an icon.
+    @discardableResult
+    func shiftSpace(_ id: UUID, by delta: Int) -> Bool {
+        let spaces = coordinator.spaces
+        guard canManageSpaces, let index = spaces.firstIndex(where: { $0.id == id }),
+              SpaceNavigation.targetIndex(current: index, count: spaces.count, delta: delta) != nil else { return false }
+        let beforeIndex = delta < 0 ? index - 1 : index + 2
+        let before = beforeIndex < spaces.count ? spaces[beforeIndex].id : nil
+        guard reorderSpace(id, before: before) else { return false }
+        BrowserHaptics.alignment(enabled: preferences.haptics)
+        return true
+    }
+
     func updateSpaceSwipe(translation: Double) {
-        guard !spaceSwipeIsSettling else { return }
+        guard !spaceSwipeIsSettling, !sidebarInteractionInProgress else { return }
         let progress = SpaceNavigation.sidebarTravel(translation: translation, width: sidebarWidth,
             canGoPrevious: activeSpaceIndex > 0, canGoNext: activeSpaceIndex + 1 < coordinator.spaces.count)
         var transaction = Transaction()
@@ -441,11 +454,11 @@ final class BrowserWindowModel {
         spaceEditor = .new
     }
 
-    func requestEditSpace(_ id: UUID) {
+    func requestEditSpace(_ id: UUID, selectOnSave: Bool = false) {
         guard canManageSpaces, coordinator.spaces.contains(where: { $0.id == id }) else { return }
         cancelSpaceSwipePresentation()
         dismissCommandBar(restoreFocus: false)
-        spaceEditor = .edit(id)
+        spaceEditor = .edit(id, selectOnSave: selectOnSave)
     }
 
     func requestDeleteSpace(_ id: UUID) {
@@ -503,7 +516,7 @@ final class BrowserWindowModel {
         // Reuse moved live views; following never opens a closed pin or loads
         // every page in a folder. Only the final destination state is saved.
         save()
-        if previousSpace != coordinator.activeSpaceID { BrowserHaptics.alignment() }
+        if previousSpace != coordinator.activeSpaceID { BrowserHaptics.alignment(enabled: preferences.haptics) }
     }
 
     func activateSelection() {
@@ -524,11 +537,17 @@ final class BrowserWindowModel {
         onOpenWindow?(tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL), tab.displayTitle)
     }
 
-    func siblingWindow(session: BrowserSession) -> BrowserWindowModel {
-        BrowserWindowModel(startup: .returningSession, session: session, repository: repository,
-                           input: input, isTesting: isTesting, restorationError: restorationError,
-                           defaults: defaults, sharedPersistence: persistence,
-                           websiteDataStore: webViews.websiteDataStore)
+    func applyProfileSnapshot(_ session: BrowserSession) {
+        let previous = coordinator.activeTabID
+        guard coordinator.applySession(session, using: input) else { return }
+        cancelSpaceSwipePresentation()
+        suggestions.cancel()
+        let remaining = Set(session.tabs.filter(\.isOpen).map(\.id))
+        for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }
+        renamingTabID = nil
+        spaceEditor = nil
+        spaceDeletionID = nil
+        if previous != coordinator.activeTabID { activateSelection() }
     }
 
     func synchronizeSavedItems(from session: BrowserSession) {
@@ -539,7 +558,7 @@ final class BrowserWindowModel {
         let remaining = Set(coordinator.tabStore.tabs.map(\.id))
         for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }
         if let renamingTabID, !remaining.contains(renamingTabID) { self.renamingTabID = nil }
-        if case .edit(let id) = spaceEditor, !coordinator.spaces.contains(where: { $0.id == id }) { spaceEditor = nil }
+        if case .edit(let id, _) = spaceEditor, !coordinator.spaces.contains(where: { $0.id == id }) { spaceEditor = nil }
         if let spaceDeletionID, !coordinator.spaces.contains(where: { $0.id == spaceDeletionID }) { self.spaceDeletionID = nil }
         if previous != coordinator.activeTabID { activateSelection() }
     }
@@ -551,11 +570,13 @@ final class BrowserWindowModel {
 final class SessionAutosaver {
     private let repository: SessionRepository
     private let disabledReason: String?
-    private var pending: BrowserSession?
+    private var pending: BrowserWorkspace?
     private var writer: Task<Void, Never>?
     private var revision: UInt64 = 0
     private(set) var isSaving = false
     private(set) var error: String?
+    private(set) var lastSavedAt: Date?
+    var isAvailable: Bool { disabledReason == nil }
 
     init(repository: SessionRepository, disabledReason: String?) {
         self.repository = repository
@@ -563,7 +584,7 @@ final class SessionAutosaver {
         error = disabledReason
     }
 
-    func enqueue(_ snapshot: BrowserSession) {
+    func enqueue(_ snapshot: BrowserWorkspace) {
         guard disabledReason == nil else { return }
         pending = snapshot
         guard writer == nil else { return }
@@ -575,8 +596,9 @@ final class SessionAutosaver {
                 self.pending = nil
                 self.revision += 1
                 do {
-                    try await self.repository.save(snapshot, revision: self.revision)
+                    try await self.repository.saveWorkspace(snapshot, revision: self.revision)
                     self.error = nil
+                    self.lastSavedAt = Date()
                 } catch { self.error = error.localizedDescription }
             }
             self.isSaving = false
@@ -585,7 +607,9 @@ final class SessionAutosaver {
     }
 
     func flush() async -> Bool {
-        await writer?.value
+        // A callback can enqueue a new writer while this await resumes. Drain
+        // that writer too before quit/deletion treats the snapshot as durable.
+        while let writer { await writer.value }
         return error == nil
     }
 }

@@ -5,6 +5,30 @@ import Testing
 @testable import EarlyCore
 
 struct SpaceAppearanceTests {
+    @Test func folderLayersFollowTheirThemeInBothAppearances() {
+        for color in BrowserSpace.Color.allCases {
+            for dark in [false, true] {
+                let front = color.folderFront(isDark: dark)
+                let back = color.folderBack(isDark: dark)
+                let frontChannels = [front.red, front.green, front.blue]
+                let backChannels = [back.red, back.green, back.blue]
+                #expect((frontChannels + backChannels).allSatisfy { (0...1).contains($0) })
+                #expect(zip(frontChannels, backChannels).allSatisfy { dark ? $0 < $1 : $0 > $1 })
+                if color == .gray {
+                    #expect(front.red == front.green && front.green == front.blue)
+                    #expect(back.red == back.green && back.green == back.blue)
+                    #expect(front.red == (dark ? 0.13 : 0.95))
+                    #expect(back.red == (dark ? 0.47 : 0.72))
+                } else {
+                    #expect(front != BrowserSpace.Color.gray.folderFront(isDark: dark))
+                    #expect(back != BrowserSpace.Color.gray.folderBack(isDark: dark))
+                    #expect((front.red < front.blue) == (color.swatch.red < color.swatch.blue))
+                    #expect((back.red < back.green) == (color.swatch.red < color.swatch.green))
+                }
+            }
+        }
+    }
+
     @Test func oldSpacePayloadsWithoutIconsKeepTheirIdentityAndTheme() throws {
         let space = BrowserSpace(profileID: UUID(), name: "Existing", color: .purple)
         var payload = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(space)) as? [String: Any])

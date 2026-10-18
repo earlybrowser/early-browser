@@ -17,7 +17,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Native macOS interface | Light/dark translucent chrome, native window controls, and opaque website content. Solid surfaces respect Reduce Transparency and increased contrast. | Implemented. |
 | Vertical tabs | Organize pages in a resizable sidebar with an address bar, auto-hide, and edge-hover reveal. | Implemented. |
 | Command-bar navigation | Open URLs or Google searches with `⌘T`; edit the current address with `⌘L`. A tab is created when you submit. | Implemented. |
-| Search suggestions | Google suggestions while typing, with keyboard and mouse selection. Enabled by default; typed search phrases are sent to Google. A Settings control is planned. | Implemented. |
+| Search suggestions | Optional Google suggestions while typing, with keyboard and mouse selection and a privacy control in Settings. | Implemented. |
 | Favorites and pins | Keep frequently visited sites as compact Favorites or named pins. Return a pin to its saved address and reopen closed pins on demand. | Implemented. |
 | Nested folders | Group and reorder tabs with up to two nesting levels. Folder drop previews reserve a single row without opening hidden contents. New subfolders appear inside their parent; deleting a folder removes its contents. | Implemented. |
 | Session restoration | Restore tabs, saved pages, ordering, and selection after quitting. Folders start collapsed, and an empty session opens the command bar. | Implemented. |
@@ -27,7 +27,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. Copy the current page URL with `⌘⇧C`. | Implemented. |
 | Media controls | Identify playing HTML audio or video. Speaker-click tab muting and per-site muting are planned. | Partial. |
 | Website fullscreen | Let compatible website players enter and exit fullscreen. | Implemented. |
-| Spaces and profiles | Named Spaces with optional icons, sliding footer indicators, and appearance-aware color themes. Isolated browsing profile management is planned. | Spaces implemented; profile management planned. |
+| Spaces and profiles | Named Spaces with icons and adaptive themes, plus separate profiles for cookies, logins, website data, and Favorites. | Implemented. |
 | Haptic feedback | Subtle native feedback for sidebar dragging and Space changes on supported devices, respecting macOS preferences. | Implemented. |
 | Universal search and commands | Find tabs, history, and bookmarks, and run browser actions from the command bar. | Planned. |
 | Split views and tab previews | Side-by-side pages with shared controls following the focused pane; thumbnail tab switcher. | Planned. |
@@ -41,7 +41,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | History, bookmarks, and privacy | Search browsing history and bookmarks, use private sessions, manage permissions, and clear site data. | Planned. |
 | GitHub live folders | Automatically collect pull requests and review requests in a folder linked to your GitHub account. | Planned. |
 | Picture in Picture | Watch compatible videos in a floating window, with an on/off preference. | Planned. |
-| Settings and customization | Choose search and startup preferences, themes, keyboard shortcuts, and privacy settings. | Planned. |
+| Settings and customization | Native Settings for profiles, Space assignment, appearance, sidebar behavior, search suggestions, and local session restoration. More customization is planned. | Partial. |
 | macOS distribution | Install packaged releases or use Homebrew, with optional signing and notarization. | Planned. |
 
 Early uses a Safari-compatible browser identity to improve website compatibility.
@@ -74,7 +74,7 @@ open build/DerivedData/Build/Products/Debug/Early.app
 open Early.xcodeproj
 ```
 
-### Run core and WebKit ownership tests
+### Run core, WebKit, and application integration tests
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test

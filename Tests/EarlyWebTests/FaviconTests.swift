@@ -32,6 +32,23 @@ private let iconPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAA
         #expect(FaviconLoader.thumbnail(Data(repeating: 0, count: FaviconLoader.byteLimit + 1)) == nil)
     }
 
+    @Test @MainActor func profileCachesAreSeparateAndShutdownIgnoresLateArtwork() async throws {
+        let first = UUID(), second = UUID()
+        #expect(FaviconStore.cacheDirectory(for: first)?.lastPathComponent == first.uuidString)
+        #expect(FaviconStore.cacheDirectory(for: first) != FaviconStore.cacheDirectory(for: second))
+        let store = FaviconStore { _, _, _ in
+            try? await Task.sleep(for: .milliseconds(40))
+            return iconPNG
+        }
+        let url = URL(string: "https://fixture.invalid/page")!
+        store.request(url)
+        await store.shutdown()
+        #expect(store.images.isEmpty && store.colors.isEmpty)
+        store.request(url)
+        await Task.yield()
+        #expect(store.image(for: url) == nil)
+    }
+
     @Test func fallbackAndProfileDiskCacheWorkWithoutCookies() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Early-Favicon-Test-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }

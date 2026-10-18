@@ -16,7 +16,9 @@ extension FocusedValues {
 }
 
 struct BrowserCommands: Commands {
+    let application: EarlyAppDelegate
     @FocusedValue(\.browserWindow) private var model
+    @Environment(\.openSettings) private var openSettings
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -99,6 +101,22 @@ struct BrowserCommands: Commands {
                             .disabled(!model.canManageSpaces)
                     }
                 }
+            }
+        }
+        CommandMenu("Profile") {
+            ForEach(application.profiles) { profile in
+                Button {
+                    application.openProfile(profile.id)
+                } label: {
+                    if model?.coordinator.profileID == profile.id { Label(profile.name, systemImage: "checkmark") }
+                    else { Text(profile.name) }
+                }
+                .disabled(application.profileOperationInProgress)
+            }
+            Divider()
+            Button("Manage Profiles…") {
+                application.settingsSection = .profiles
+                openSettings()
             }
         }
         CommandMenu("Navigate") {

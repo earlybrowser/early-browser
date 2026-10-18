@@ -15,8 +15,9 @@ Reduce Motion support intact.
 
 ## Testing and pull requests
 
-Run `swift test` for core and WebKit changes. Run relevant UI tests for interface
-changes, and describe any manual checks. UI tests control the mouse and keyboard:
+Run `swift test` for core, WebKit, and application-controller changes. Run
+relevant UI tests for interface changes, and describe any manual checks.
+UI tests control the mouse and keyboard:
 keep your Mac unlocked, allow Xcode's requested automation permissions, and close
 overlays that could cover the app. The HTTPS smoke test needs internet access.
 

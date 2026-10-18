@@ -17,7 +17,7 @@ public enum SessionError: LocalizedError, Sendable {
 /// SQLite work and JSON encoding run on this actor, never MainActor.
 /// Version 1 stores one coherent snapshot; later normalized schemas can migrate it.
 public actor SessionRepository {
-    private let fileURL: URL
+    public nonisolated let fileURL: URL
     private let input: NavigationInput
     private var latestRevision: UInt64 = 0
 
@@ -30,7 +30,19 @@ public actor SessionRepository {
         try Self.readSession(fileURL: fileURL, input: input)
     }
 
+    public func loadWorkspace() throws -> BrowserWorkspace? {
+        guard let data = try Self.readPayload(fileURL: fileURL) else { return nil }
+        return try BrowserWorkspace.decodeMigrating(data, using: input)
+    }
+
     private static func readSession(fileURL: URL, input: NavigationInput) throws -> BrowserSession? {
+        guard let data = try readPayload(fileURL: fileURL) else { return nil }
+        let snapshot = try JSONDecoder().decode(BrowserSession.self, from: data)
+        try snapshot.validate(using: input)
+        return snapshot
+    }
+
+    private static func readPayload(fileURL: URL) throws -> Data? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         return try withDatabase(fileURL: fileURL, readOnly: true) { db in
             guard try schemaVersion(db) == 1 else { throw SessionError.invalidData }
@@ -42,17 +54,23 @@ public actor SessionRepository {
             guard status == SQLITE_ROW, let bytes = sqlite3_column_blob(statement, 0) else {
                 throw SessionError.invalidData
             }
-            let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
-            let snapshot = try JSONDecoder().decode(BrowserSession.self, from: data)
-            try snapshot.validate(using: input)
-            return snapshot
+            return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
         }
     }
 
     public func save(_ snapshot: BrowserSession, revision: UInt64) throws {
         guard revision >= latestRevision else { return }
         try snapshot.validate(using: input)
-        let payload = try JSONEncoder().encode(snapshot)
+        try write(try JSONEncoder().encode(snapshot), revision: revision)
+    }
+
+    public func saveWorkspace(_ snapshot: BrowserWorkspace, revision: UInt64) throws {
+        guard revision >= latestRevision else { return }
+        try snapshot.validate(using: input)
+        try write(try JSONEncoder().encode(snapshot), revision: revision)
+    }
+
+    private func write(_ payload: Data, revision: UInt64) throws {
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Self.withDatabase(fileURL: fileURL, readOnly: false) { db in
             let version = try Self.schemaVersion(db)

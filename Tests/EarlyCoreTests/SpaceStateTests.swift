@@ -20,6 +20,54 @@ struct SpaceStateTests {
             target: .newTab(spaceID: browser.activeSpaceID)))
     }
 
+    @Test func reorderingOnlyChangesCatalogOrderAndRoundTripsWithoutChangingSelection() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let personal = browser.activeSpaceID
+        let folder = try #require(browser.createFolder(name: "Keep folder"))
+        let pin = try open(browser, path: "pin")
+        browser.moveTab(pin, toFolder: folder)
+        browser.closeTab(pin)
+        let selected = try open(browser, path: "live")
+        let work = try #require(browser.createSpace(name: "Work"))
+        let research = try #require(browser.createSpace(name: "Research"))
+        browser.switchSpace(to: work)
+        _ = try open(browser, path: "work")
+        browser.switchSpace(to: personal)
+        browser.presentCommandBar(.newTab)
+        browser.updateQuery("keep the query")
+        let commandBar = browser.commandBar
+        let content = browser.content
+        var expected = browser.session
+        #expect(browser.reorderSpace(personal, before: nil))
+        expected.spaces = [expected.spaces[1], expected.spaces[2], expected.spaces[0]]
+        #expect(browser.session == expected)
+        #expect(browser.activeTabID == selected && browser.activeSpaceID == personal)
+        #expect(browser.commandBar == commandBar && browser.content == content)
+        let decoded = try JSONDecoder().decode(BrowserSession.self, from: JSONEncoder().encode(browser.session))
+        let restored = restore(decoded)
+        #expect(restored.spaces.map(\.id) == [work, research, personal])
+        #expect(restored.activeSpaceID == personal && restored.activeTabID == selected)
+        #expect(browser.reorderSpace(personal, before: work))
+        #expect(browser.spaces.map(\.id) == [personal, work, research])
+        #expect(browser.reorderSpace(research, before: work))
+        #expect(browser.spaces.map(\.id) == [personal, research, work])
+        try browser.session.validate()
+    }
+
+    @Test func invalidAndNoOpSpaceReorderingIsAtomic() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let personal = browser.activeSpaceID
+        #expect(!browser.reorderSpace(personal, before: nil))
+        let work = try #require(browser.createSpace(name: "Work"))
+        let before = browser.session
+        #expect(!browser.reorderSpace(UUID(), before: work))
+        #expect(!browser.reorderSpace(personal, before: UUID()))
+        #expect(!browser.reorderSpace(personal, before: personal))
+        #expect(!browser.reorderSpace(personal, before: work))
+        #expect(!browser.reorderSpace(work, before: nil))
+        #expect(browser.session == before)
+    }
+
     @Test func createEditAndRejectInvalidActionsWithoutChangingSelectionOrIntent() throws {
         let browser = BrowserCoordinator(startup: .returningSession)
         #expect(browser.spaces.count == 1)

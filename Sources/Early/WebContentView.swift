@@ -10,6 +10,7 @@ import WebKit
 struct BrowserChromeBackground: View {
     var spaceColor: BrowserSpace.Color = .gray
     var floating = false
+    var allowsTransparency = true
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -20,12 +21,12 @@ struct BrowserChromeBackground: View {
             if contrast == .increased {
                 Color(nsColor: .windowBackgroundColor)
             } else {
-                if !reduceTransparency { ChromeMaterial(floating: floating) }
-                if colorScheme == .dark, !reduceTransparency { Color.black.opacity(0.30) }
+                if !reduceTransparency && allowsTransparency { ChromeMaterial(floating: floating) }
+                if colorScheme == .dark, !reduceTransparency && allowsTransparency { Color.black.opacity(0.30) }
                 LinearGradient(colors: [spaceColor.chromeTop(isDark: colorScheme == .dark).color,
                                         spaceColor.chromeBottom(isDark: colorScheme == .dark).color],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
-                    .opacity(reduceTransparency ? 1 : (colorScheme == .dark ? 0.64 : 0.68))
+                    .opacity(reduceTransparency || !allowsTransparency ? 1 : (colorScheme == .dark ? 0.64 : 0.68))
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: spaceColor)

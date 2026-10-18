@@ -6,8 +6,14 @@ import EarlyWeb
 import SwiftUI
 
 struct BrowserWindowView: View {
+    /// Folders and pinned tabs share one island geometry at every sidebar width.
+    private enum PinnedIsland {
+        static let height: CGFloat = 34
+        static let cornerRadius: CGFloat = 10
+    }
+
     @Bindable var model: BrowserWindowModel
-    @State private var sidebarAutoHides = false
+    private var sidebarAutoHides: Bool { model.preferences.sidebarAutoHides }
     @State private var sidebarHovered = false
     @State private var resizeStartWidth: Double?
     @State private var tabFrames: [UUID: CGRect] = [:]
@@ -204,11 +210,10 @@ struct BrowserWindowView: View {
         max(Self.windowCornerRadius - 6, 4)
     }
 
-    /// When auto-hiding, the floating sidebar expands by 3 pt (sitting 3 pt from the window edge
-    /// and 3 pt outside the content border). For the sidebar to be concentric with both
-    /// the window frame (3 pt gap) and the content border (3 pt gap) everywhere around the corner:
+    /// The pinned sidebar belongs to the continuous window chrome, not a
+    /// separate rounded island. Only the floating sidebar needs inset corners.
     private var sidebarCornerRadius: CGFloat {
-        sidebarAutoHides ? max(Self.windowCornerRadius - 3, 4) : contentCornerRadius
+        sidebarAutoHides ? max(Self.windowCornerRadius - 3, 4) : 0
     }
 
     var body: some View {
@@ -270,9 +275,8 @@ struct BrowserWindowView: View {
                 .background {
                     if sidebarAutoHides {
                         // Floating chrome must stay legible over web content.
-                        BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray, floating: true)
-                    } else {
-                        Color.primary.opacity(0.015)
+                        BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+                                                floating: true, allowsTransparency: model.preferences.translucentChrome)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: sidebarCornerRadius))
@@ -310,7 +314,10 @@ struct BrowserWindowView: View {
         .animation(sidebarMotion, value: sidebarAutoHides)
         .animation(sidebarMotion, value: sidebarVisible)
         .padding(6)
-        .background(BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray))
+        // One shared surface for the outer frame and pinned sidebar. Only the
+        // clipped page area is inset into it; no sidebar tint or seam on top.
+        .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+                                            allowsTransparency: model.preferences.translucentChrome))
         .overlay(alignment: .topTrailing) {
             if let toast = model.toast {
                 Label(toast.message, systemImage: "checkmark")
@@ -459,7 +466,7 @@ struct BrowserWindowView: View {
             if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
         }
         .background(SpaceSwipeMonitor(model: model,
-            enabled: sidebarVisible && draggingTab == nil && resizeStartWidth == nil && !folderEditor))
+            enabled: model.preferences.spaceSwipes && sidebarVisible && draggingTab == nil && resizeStartWidth == nil && !folderEditor))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
@@ -637,6 +644,11 @@ struct BrowserWindowView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
+            // Reordering footer icons changes page indices, not selection.
+            // Snap those offscreen positions so the footer's drop animation
+            // cannot sweep neighboring tabs/folders through the active page.
+            // A real Space swipe keeps the same catalog and still animates.
+            .animation(nil, value: model.coordinator.spaces.map(\.id))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -647,6 +659,7 @@ struct BrowserWindowView: View {
 
     private func tabRow(_ tab: BrowserTab, selected: Bool, requestsArtwork: Bool) -> some View {
         let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
+        let cornerRadius: CGFloat = tab.pinnedURL == nil ? 7 : PinnedIsland.cornerRadius
         return HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
             if tab.pinnedURL != nil {
                 PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
@@ -701,15 +714,15 @@ struct BrowserWindowView: View {
         .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
         .padding(.trailing, 8)
         .background(Color.primary.opacity(selected ? 0.08 : (hoveredTab == tab.id ? 0.04 : 0)))
-        .clipShape(RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10)
+            RoundedRectangle(cornerRadius: cornerRadius)
                 .strokeBorder(focused ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
                 .allowsHitTesting(false)
         }
         .onHover { updateTabHover(tab.id, hovering: $0) }
         .background(draggingTab == tab.id ? Color(nsColor: .windowBackgroundColor) : .clear,
-                    in: RoundedRectangle(cornerRadius: 7))
+                    in: RoundedRectangle(cornerRadius: cornerRadius))
         .shadow(color: .black.opacity(draggingTab == tab.id ? 0.18 : 0), radius: 6, y: 3)
         .offset(previewOffset(tab.id))
         .opacity(draggingTab == tab.id ? 0 : 1)
@@ -943,7 +956,7 @@ struct BrowserWindowView: View {
                 }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(tab.isOpen ? .primary : .secondary)
-                    .frame(width: 34, height: 34)
+                    .frame(width: PinnedIsland.height, height: PinnedIsland.height)
                     .background(Color.primary.opacity(canReset && (hovered || focused) ? 0.16 : 0),
                                 in: RoundedRectangle(cornerRadius: 7))
                     .contentShape(Rectangle())
@@ -1037,13 +1050,13 @@ struct BrowserWindowView: View {
     }
 
     private func folderRow(_ folder: BrowserFolder) -> some View {
-        let header = HStack(spacing: 6) {
+        let header = HStack(spacing: 4) {
             // Neither disclosure nor title waits for a possible second click.
             Button { toggleFolder(folder) } label: {
-                FolderIcon(isOpen: isFolderOpen(folder))
+                FolderIcon(isOpen: isFolderOpen(folder), themeColor: folderTheme(folder))
                     .frame(width: 19, height: 20)
                     .animation(folderExpansionAnimation, value: isFolderOpen(folder))
-                    .padding(.vertical, 7)
+                    .frame(width: PinnedIsland.height, height: PinnedIsland.height)
                     .contentShape(Rectangle())
                     .accessibilityHidden(true)
             }
@@ -1059,9 +1072,9 @@ struct BrowserWindowView: View {
                     Text(folder.name).lineLimit(1)
                     Spacer(minLength: 0)
                 }
-                // Match the disclosure's full 34-point header. A shorter title
+                // Match the disclosure's full header. A shorter title
                 // puts its top-edge drag target inside the folder retention band.
-                .frame(height: 34).contentShape(Rectangle())
+                .frame(height: PinnedIsland.height).contentShape(Rectangle())
             }
             .buttonStyle(SidebarButtonStyle())
             .focused($focusedSidebarControl, equals: .folder(folder.id))
@@ -1071,13 +1084,13 @@ struct BrowserWindowView: View {
             .accessibilityHint("Click to expand or collapse. Option-click to rename.")
             .highPriorityGesture(folderClickGesture(folder))
         }
-        .padding(.horizontal, 6)
+        .padding(.trailing, 8)
         return header
         .help(folderPath(folder))
-        .background(Color.primary.opacity(hoveredFolder == folder.id ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 7))
-        .background(Color.primary.opacity(showsFolderDragTargets && dropFolder == folder.id ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 7))
+        // The anchored group panel owns the hover fill, including when closed.
+        // A second header island leaves darker, mismatched corners over it.
         .overlay {
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: PinnedIsland.cornerRadius)
                 .strokeBorder(focusedSidebarControl == .folder(folder.id) || focusedSidebarControl == .folderToggle(folder.id) ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
                 .allowsHitTesting(false)
         }
@@ -1128,6 +1141,12 @@ struct BrowserWindowView: View {
         }
     }
 
+    private func folderTheme(_ folder: BrowserFolder) -> BrowserSpace.Color {
+        guard model.preferences.spaceThemes else { return .gray }
+        // Neighboring Space pages and drag previews retain their own theme.
+        return model.coordinator.spaces.first { $0.id == folder.spaceID }?.color ?? .gray
+    }
+
     private enum SidebarFrame: Hashable {
         case item(UUID), folderHeader(UUID), section(Bool), dropArea(String)
     }
@@ -1174,7 +1193,7 @@ struct BrowserWindowView: View {
     private func beginDrag(_ tab: BrowserTab) {
         guard let frame = itemFrame(tab.id) else { return }
         model.sidebarInteractionInProgress = true
-        BrowserHaptics.pickupOrDrop()
+        BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
         frozenFrames = tabFrames
         dragSourceFrame = frame
         dropFolder = section(of: tab) == .pinned ? tab.folderID : nil
@@ -1264,7 +1283,7 @@ struct BrowserWindowView: View {
         insertionSiblings = siblings
         insertionIndex = layout.order(at: hitPoint).firstIndex(of: source)
         let feedback = DragFeedbackTarget(container: container, index: insertionIndex)
-        if let previous = dragFeedbackTarget, previous != feedback { BrowserHaptics.alignment() }
+        if let previous = dragFeedbackTarget, previous != feedback { BrowserHaptics.alignment(enabled: model.preferences.haptics) }
         dragFeedbackTarget = feedback
     }
 
@@ -1477,7 +1496,7 @@ struct BrowserWindowView: View {
                 if dragSourceFrame == .zero {
                     guard let frame = itemFrame(folder.id) else { return }
                     model.sidebarInteractionInProgress = true
-                    BrowserHaptics.pickupOrDrop()
+                    BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
                     frozenFrames = tabFrames
                     dragSourceFrame = frame
                     dropFolder = folder.parentID
@@ -1500,7 +1519,7 @@ struct BrowserWindowView: View {
                 guard dragLayout != nil, insertion != nil || parent != folder.parentID else { return }
                 if model.coordinator.placeFolder(folder.id, in: parent, before: insertion?.before) {
                     model.save()
-                    BrowserHaptics.pickupOrDrop()
+                    BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
                 }
             }
     }
@@ -1552,11 +1571,11 @@ struct BrowserWindowView: View {
                 let folderID = destination == .pinned ? dropFolder : nil
                 if let drop = dragLayout?.insertion(at: value.location) {
                     if model.placeTab(tab.id, in: destination, folderID: folderID, before: drop.before) {
-                        BrowserHaptics.pickupOrDrop()
+                        BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
                     }
                 } else if destination != section(of: tab) || folderID != tab.folderID {
                     if model.placeTab(tab.id, in: destination, folderID: folderID, before: nil) {
-                        BrowserHaptics.pickupOrDrop()
+                        BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
                     }
                 }
             }
@@ -1580,7 +1599,8 @@ struct BrowserWindowView: View {
             let order = dragLayout?.grid == true ? dragLayout?.order(at: dragPoint) ?? [] : []
             let tileFrames = SidebarReorderLayout.favoriteFrames(count: max(1, order.count), in: favoriteBounds)
             let tileWidth = order.firstIndex(of: draggingTab).map { tileFrames[$0].width } ?? tileFrames.first?.width ?? 54
-            let rowHeight: CGFloat = destination == .pinned ? 34 : 32
+            let rowHeight: CGFloat = destination == .pinned ? PinnedIsland.height : 32
+            let cornerRadius: CGFloat = overFavorites ? 9 : (destination == .pinned ? PinnedIsland.cornerRadius : 7)
             let name = tab.customTitle ?? tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
             HStack(spacing: 8) {
                 TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
@@ -1601,7 +1621,7 @@ struct BrowserWindowView: View {
                             .fill(tint.opacity(colorScheme == .dark ? 0.26 : 0.20))
                     }
                 }
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: overFavorites ? 9 : 7))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
                 .overlay {
                     if overFavorites, model.coordinator.activeTabID == tab.id, let tint = favoriteTint(tab) {
                         RoundedRectangle(cornerRadius: 9)
@@ -1621,15 +1641,16 @@ struct BrowserWindowView: View {
                 .allowsHitTesting(false).accessibilityHidden(true)
         } else if let draggingTab, let folder = model.coordinator.folders.first(where: { $0.id == draggingTab }) {
             let bounds = dragRowBounds(at: dragPoint)
-            HStack(spacing: 6) {
-                FolderIcon(isOpen: false)
+            HStack(spacing: 4) {
+                FolderIcon(isOpen: false, themeColor: folderTheme(folder))
                     .frame(width: 19, height: 20)
+                    .frame(width: PinnedIsland.height, height: PinnedIsland.height)
                 Text(folder.name).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
             }
-            .font(.callout).padding(.horizontal, 8)
+            .font(.callout).padding(.trailing, 8)
             .frame(width: bounds.width, height: dragSourceFrame.height)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PinnedIsland.cornerRadius))
             .shadow(radius: 5, y: 2)
             .animation(folderDragAnimation, value: bounds.width)
             .offset(x: bounds.midX)
@@ -1680,14 +1701,17 @@ struct BrowserWindowView: View {
         return point.y >= regular.minY ? .regular : .pinned
     }
 
-    private func groupPanel(active: Bool, dashed: Bool = false, subtle: Bool = false) -> some View {
-        RoundedRectangle(cornerRadius: 12)
-            .fill(Color.primary.opacity(active ? 0.10 : 0.045))
+    private func groupPanel(active: Bool, dashed: Bool = false, isFolder: Bool = false) -> some View {
+        RoundedRectangle(cornerRadius: isFolder ? PinnedIsland.cornerRadius : 12)
+            .fill(Color.primary.opacity(active ? 0.10 : (isFolder ? 0.04 : 0.045)))
             .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.primary.opacity(active ? 0.28 : (subtle ? 0.06 : 0.14)),
-                                  style: StrokeStyle(lineWidth: subtle && !active ? 0.5 : 1,
-                                                     lineCap: .round, dash: dashed ? [3, 2] : []))
+                // Ordinary folder hover uses the same clean fill as a tab.
+                // Borders are reserved for actual drag destinations.
+                if !isFolder || active {
+                    RoundedRectangle(cornerRadius: isFolder ? PinnedIsland.cornerRadius : 12)
+                        .strokeBorder(Color.primary.opacity(active ? 0.28 : 0.14),
+                                      style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: dashed ? [3, 2] : []))
+                }
             }
             .animation(folderDragAnimation, value: active)
             .allowsHitTesting(false).accessibilityHidden(true)
@@ -1766,9 +1790,8 @@ struct BrowserWindowView: View {
                             || hoveredFolder == folder.id
                         // Keep the same panel mounted when collapsed so it can
                         // spring back to the header instead of disappearing.
-                        groupPanel(active: showsFolderDragTargets && isDropAncestor(folder.id), subtle: true)
+                        groupPanel(active: showsFolderDragTargets && isDropAncestor(folder.id), isFolder: true)
                             .frame(width: header.width, height: height)
-                            .animation(reduceMotion ? nil : (draggingTab == nil ? .easeOut(duration: 0.12) : folderDragAnimation), value: height)
                             // Animate the drawing independently of the changing
                             // layout anchors. A bounded rebound stays visible for
                             // short and tall islands without moving their contents
@@ -1782,6 +1805,11 @@ struct BrowserWindowView: View {
                                 CubicKeyframe(CGFloat.zero, duration: 0.08)
                             }
                             .offset(x: header.minX, y: header.minY)
+                            // These anchors already follow the animated rows.
+                            // Re-easing their frame/offset makes ancestor islands
+                            // chase a subfolder instead of resizing alongside it.
+                            // Keyframes above retain their own ending rebound.
+                            .transaction { $0.animation = nil }
                             .opacity(highlighted ? 1 : 0)
                             .animation(folderDragAnimation, value: highlighted)
                     }
@@ -1877,7 +1905,7 @@ struct BrowserWindowView: View {
         HStack(spacing: 6) {
             WindowControls().frame(width: 60, height: 32)
             Button {
-                sidebarAutoHides.toggle()
+                model.preferences.sidebarAutoHides.toggle()
                 sidebarHovered = false
             } label: {
                 Image(systemName: "sidebar.left").frame(width: 32, height: 32)
@@ -1974,17 +2002,7 @@ private struct NavigationButton: View {
             activation += 1
             action()
         } label: {
-            ZStack {
-                Image(systemName: "arrow.clockwise")
-                    .opacity(kind == .stop ? 0 : 1)
-                    .scaleEffect(kind == .stop && !reduceMotion ? 0.55 : 1)
-                    .rotationEffect(.degrees(kind == .stop && !reduceMotion ? 180 : 0))
-                Image(systemName: "xmark")
-                    .opacity(kind == .stop ? 1 : 0)
-                    .scaleEffect(kind != .stop && !reduceMotion ? 0.55 : 1)
-                    .rotationEffect(.degrees(kind != .stop && !reduceMotion ? -90 : 0))
-            }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: kind)
+            ReloadStopArtwork(isLoading: kind == .stop)
         }
         .buttonStyle(NavigationControlStyle(kind: kind, clickFeedback: clickFeedback))
         .task(id: activation) {
@@ -1994,6 +2012,73 @@ private struct NavigationButton: View {
                 clickFeedback = false
             } catch { /* A newer activation or disappearing view cancels feedback. */ }
         }
+    }
+}
+
+private struct ReloadStopArtwork: View {
+    let isLoading: Bool
+    @State private var motion: NavigationSymbolMotion
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(isLoading: Bool) {
+        self.isLoading = isLoading
+        _motion = State(initialValue: NavigationSymbolMotion(isLoading: isLoading))
+    }
+
+    var body: some View {
+        Color.clear.frame(width: 24, height: 24)
+            .modifier(motion)
+            .clipped()
+            .onChange(of: isLoading) { _, loading in
+                // Animate one persistent pair of glyphs, never insertion/removal
+                // transitions. Fast loads can retarget forward through the X
+                // without resetting or unwinding the rotation.
+                withAnimation(reduceMotion ? nil : .linear(duration: 0.16)) {
+                    motion.setLoading(loading)
+                }
+            }
+    }
+}
+
+/// One increasing phase controls both glyphs and their shared rotation. Reload
+/// is visible at even phases, X at odd phases: a complete cycle turns 360°.
+struct NavigationSymbolMotion: ViewModifier, Animatable {
+    // SwiftUI interpolates this value outside the view's main-actor context.
+    nonisolated var phase: Double
+
+    init(isLoading: Bool) { phase = isLoading ? 1 : 0 }
+    init(phase: Double) { self.phase = phase }
+
+    mutating func setLoading(_ loading: Bool) {
+        let wasLoading = !Int(phase).isMultiple(of: 2)
+        guard loading != wasLoading else { return }
+        phase += 1
+    }
+
+    nonisolated var animatableData: Double {
+        get { phase }
+        set { phase = newValue }
+    }
+
+    var rotationDegrees: Double { phase * 180 }
+    var reloadOpacity: Double {
+        let cycle = phase.truncatingRemainder(dividingBy: 2)
+        return (1 + cos(cycle * .pi)) / 2
+    }
+    var stopOpacity: Double { 1 - reloadOpacity }
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                ZStack {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 18, height: 18).opacity(reloadOpacity)
+                    Image(systemName: "xmark")
+                        .frame(width: 18, height: 18).opacity(stopOpacity)
+                }
+                .rotationEffect(.degrees(rotationDegrees), anchor: .center)
+                .accessibilityHidden(true)
+            }
     }
 }
 
@@ -2030,11 +2115,9 @@ private struct NavigationControlStyle: ButtonStyle {
                                 ? (kind == .back ? -1 : 1) * (clickFeedback ? 3 : 1.5) : 0)
                 } else {
                     configuration.label
-                        .rotationEffect(.degrees(kind == .reload && !reduceMotion
-                                                 ? (clickFeedback ? 65 : (pressed ? -30 : (highlighted ? -20 : 0))) : 0))
                 }
             }
-            .scaleEffect(pressed && !reduceMotion ? 0.88 : 1)
+            .scaleEffect((kind == .back || kind == .forward) && pressed && !reduceMotion ? 0.88 : 1)
             .frame(width: 32, height: 32)
             .background(Color.primary.opacity(pressed ? 0.13 : (highlighted ? 0.075 : 0)),
                         in: RoundedRectangle(cornerRadius: 8))
@@ -2074,7 +2157,11 @@ private struct NavigationChevron: Shape {
 /// Layered folder artwork shared by live rows, Space pages and drag previews.
 struct FolderIcon: View {
     let isOpen: Bool
+    var themeColor: BrowserSpace.Color = .gray
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private var color: BrowserSpace.Color { contrast == .increased ? .gray : themeColor }
 
     private var outline: Color {
         colorScheme == .dark
@@ -2085,16 +2172,12 @@ struct FolderIcon: View {
     var body: some View {
         ZStack {
             FolderBack()
-                .fill(colorScheme == .dark
-                      ? Color(white: 0.47)
-                      : Color(white: 0.72))
+                .fill(color.folderBack(isDark: colorScheme == .dark).color)
                 .overlay {
                     FolderBack().stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
                 }
             FolderCover(openness: isOpen ? 1 : 0)
-                .fill(colorScheme == .dark
-                      ? Color(white: 0.13)
-                      : Color(white: 0.95))
+                .fill(color.folderFront(isDark: colorScheme == .dark).color)
                 .overlay {
                     FolderCover(openness: isOpen ? 1 : 0)
                         .stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
