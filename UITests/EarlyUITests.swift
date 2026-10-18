@@ -1908,6 +1908,7 @@ final class EarlyUITests: XCTestCase {
         // the front. Bind the original window by ID before opening another.
         let child = app.windows[childID]
         XCTAssertTrue(child.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+        XCTAssertTrue(child.buttons["navigation.reload"].waitForExistence(timeout: 5))
         let childRuntime = child.staticTexts["test.runtime"]
         expectation(for: NSPredicate(format: "value == %@ OR label == %@", "Tabs 1 · Views 1 · Created 1 · Saved", "Tabs 1 · Views 1 · Created 1 · Saved"), evaluatedWith: childRuntime)
         waitForExpectations(timeout: 5)
@@ -1915,15 +1916,23 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(child.buttons[pinID].value as? String, "Pinned, closed")
         let copied = child.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).firstMatch
         XCTAssertTrue(copied.exists)
-        child.webViews.textFields["Saved text"].click()
-        child.webViews.textFields["Saved text"].typeText("keep original window state")
-        XCTAssertEqual(child.webViews.textFields["Saved text"].value as? String, "keep original window state")
+        let childText = child.webViews.textFields["Saved text"]
+        let savedText = "keep original window state"
+        childText.click()
+        childText.typeText(savedText)
+        // WebKit's out-of-process accessibility tree may still expose a typed
+        // prefix after event synthesis returns. Require the complete value
+        // before opening another window and checking live-state isolation.
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", savedText), object: childText)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 8), .completed,
+                       "The complete typed value must reach the original page")
+        XCTAssertEqual(childText.value as? String, savedText)
         copied.rightClick()
         visibleMenuAction("Open Tab in New Window")
         let third = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH 'browser.' AND identifier != %@", childID)).firstMatch
         XCTAssertTrue(third.waitForExistence(timeout: 15))
         XCTAssertTrue(third.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
-        XCTAssertEqual(child.webViews.textFields["Saved text"].value as? String, "keep original window state")
+        XCTAssertEqual(childText.value as? String, savedText)
         XCTAssertEqual(third.webViews.textFields["Saved text"].value as? String, "")
         XCTAssertEqual(third.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).count, 1)
         XCTAssertEqual(main.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", pinID)).count, 1)
