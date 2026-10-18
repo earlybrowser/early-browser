@@ -61,10 +61,10 @@ struct SpaceSwipeMonitor: NSViewRepresentable {
             initialSpace = nil
             // Detaching/disabling can happen during a SwiftUI view update.
             // Clear presentation afterward, unless a new gesture already began.
-            if model?.spaceSwipeCreationProgress != 0 {
+            if let model, model.spaceSwipeCreationProgress != 0 || model.spaceSwipeProgress != 0 {
                 DispatchQueue.main.async { [weak self, weak model] in
-                    guard self?.initialSpace == nil, let model, model.spaceSwipeCreationProgress != 0 else { return }
-                    model.spaceSwipeCreationProgress = 0
+                    guard self?.initialSpace == nil, let model, !model.spaceSwipeIsSettling else { return }
+                    model.finishSpaceSwipe(nil)
                 }
             }
         }
@@ -108,16 +108,12 @@ struct SpaceSwipeMonitor: NSViewRepresentable {
             if model.spaceSwipeCreationProgress != update.creationProgress {
                 model.spaceSwipeCreationProgress = update.creationProgress
             }
+            if !event.phase.contains(.cancelled) { model.updateSpaceSwipe(translation: update.translation) }
             if update.crossedThreshold { BrowserHaptics.alignment() }
             if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
                 suppressMomentum = update.consumed
                 reset()
-                switch update.action {
-                case .previous: model.cycleSpace(-1)
-                case .next: model.cycleSpace(1)
-                case .create: model.requestNewSpace()
-                case nil: break
-                }
+                model.finishSpaceSwipe(update.action)
                 // The scroll view may have seen the undecided beginning of
                 // this gesture. Let its final phase through to finish live
                 // scrolling, even when horizontal changes were intercepted.

@@ -141,15 +141,7 @@ struct SpaceFooter: View {
         let selected = space.id == model.coordinator.activeSpaceID
         return Button { _ = model.switchSpace(to: space.id) } label: {
             Circle().fill(space.color.tint)
-                .overlay {
-                    if selected {
-                        Circle().strokeBorder(.black.opacity(0.45), lineWidth: 3).padding(3)
-                        Circle().strokeBorder(.white, lineWidth: 1.5).padding(3)
-                    }
-                }
-                .overlay {
-                    if contrast == .increased { Circle().strokeBorder(.primary, lineWidth: 1) }
-                }
+                .saturation(selected ? 1 : 0.5)
                 .frame(width: 16, height: 16)
                 .frame(width: 24, height: 28)
                 .contentShape(Rectangle())
@@ -203,14 +195,35 @@ private struct SpaceEditorSheet: View {
                 Text("Use a name with 1–64 characters and no line breaks.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Picker("Color", selection: $color) {
-                ForEach(BrowserSpace.Color.allCases, id: \.self) { color in
-                    Label {
-                        Text(color.rawValue.capitalized)
-                    } icon: { Image(systemName: "circle.fill").foregroundStyle(color.tint) }
-                    .tag(color)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Color")
+                    Spacer()
+                    Text(color.rawValue.capitalized).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 8) {
+                    ForEach(BrowserSpace.Color.allCases, id: \.self) { option in
+                        Button { color = option } label: {
+                            Circle().fill(option.tint)
+                                .frame(width: 22, height: 22)
+                                .overlay {
+                                    if color == option {
+                                        Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(.white).shadow(color: .black.opacity(0.6), radius: 1)
+                                    }
+                                }
+                                .frame(width: 28, height: 30)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(option.rawValue.capitalized)
+                        .accessibilityAddTraits(color == option ? .isSelected : [])
+                        .accessibilityIdentifier("space.color.\(option.rawValue)")
+                        .help(option.rawValue.capitalized)
+                    }
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("space.color")
             if let error { Text(error).font(.callout).foregroundStyle(.secondary) }
             HStack {
@@ -242,5 +255,126 @@ private struct SpaceEditorSheet: View {
         }
         if success { model.spaceEditor = nil }
         else { error = "Could not save this Space. It may have been removed in another window." }
+    }
+}
+
+/// A non-interactive neighboring page during a swipe. Read cached artwork and
+/// saved organization only: previewing must never fetch icons or load web pages.
+struct SpaceSidebarPreview: View {
+    let model: BrowserWindowModel
+    let space: BrowserSpace
+
+    private var selectedTab: UUID? { model.coordinator.session.selectionBySpace[space.id] }
+
+    private enum Item: Identifiable {
+        case bookend(String), divider, newTab
+        case tab(BrowserTab, Int), folder(BrowserFolder, Int), folderEnd(UUID)
+
+        var id: String {
+            switch self {
+            case .bookend(let name): name
+            case .divider: "divider"
+            case .newTab: "new-tab"
+            case .tab(let tab, _): "tab-\(tab.id)"
+            case .folder(let folder, _): "folder-\(folder.id)"
+            case .folderEnd(let id): "folder-end-\(id)"
+            }
+        }
+    }
+
+    private func folderItems(parent: UUID? = nil, depth: Int = 0) -> [Item] {
+        guard depth <= 32 else { return [] }
+        return model.coordinator.tabStore.pinnedItems(in: space.id, parentID: parent).flatMap { item -> [Item] in
+            switch item {
+            case .tab(let tab): return [.tab(tab, depth)]
+            case .folder(let folder):
+                let children = folder.isExpanded ? folderItems(parent: folder.id, depth: depth + 1) : []
+                return [.folder(folder, depth)] + children + (children.isEmpty ? [] : [.folderEnd(folder.id)])
+            }
+        }
+    }
+
+    private var items: [Item] {
+        let pins = folderItems()
+        return (pins.isEmpty ? [] : [.bookend("pinned-start")] + pins + [.bookend("pinned-end")])
+            + [.divider, .newTab]
+            + model.coordinator.tabStore.todayTabs(in: space.id).map { .tab($0, 0) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(space.name).font(.callout.weight(.medium)).foregroundStyle(.secondary).padding(.horizontal, 8)
+            ScrollView {
+                // Match the live sidebar's fonts, row heights, nesting and end
+                // spacers so settling the swipe never changes the layout.
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(items) { item in
+                        row(item).padding(.bottom, item.id == items.last?.id ? 0 : 4)
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    @ViewBuilder private func row(_ item: Item) -> some View {
+        switch item {
+        case .bookend: Color.clear.frame(height: 4)
+        case .folderEnd: Color.clear.frame(height: 6)
+        case .divider: Divider().padding(.vertical, 8)
+        case .newTab:
+            HStack {
+                Label("New Tab", systemImage: "plus")
+                Spacer()
+                Text("⌘T").foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 8)
+        case .folder(let folder, let depth):
+            HStack(spacing: 6) {
+                FolderIcon(isOpen: folder.isExpanded)
+                    .frame(width: 19, height: 20).padding(.vertical, 7)
+                HStack {
+                    Text(folder.name).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 34)
+            }
+            .padding(.horizontal, 6)
+            .padding(.leading, CGFloat(min(depth, 8)) * 12)
+            .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+        case .tab(let tab, let depth):
+            HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
+                if tab.pinnedURL != nil {
+                    artwork(tab).font(.system(size: 13, weight: .medium))
+                        .frame(width: 34, height: 34)
+                }
+                HStack(spacing: tab.hasNavigatedFromPin ? 3 : 8) {
+                    if tab.pinnedURL == nil { artwork(tab) }
+                    if tab.hasNavigatedFromPin { Text("/").foregroundStyle(.tertiary) }
+                    if model.webViews.pages[tab.id]?.isPlayingMedia == true {
+                        Image(systemName: "speaker.wave.2.fill").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(tab.displayTitle).lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 8)
+            }
+            .foregroundStyle(tab.isOpen ? .primary : .secondary)
+            .padding(.leading, tab.pinnedURL == nil ? 8 : 0).padding(.trailing, 8)
+            .background(Color.primary.opacity(tab.id == selectedTab ? 0.08 : 0),
+                        in: RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
+            .padding(.leading, CGFloat(min(depth, 8)) * 12)
+            .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+        }
+    }
+
+    @ViewBuilder private func artwork(_ tab: BrowserTab) -> some View {
+        if let image = model.webViews.favicons.image(for: tab.pinnedURL ?? tab.currentURL) {
+            Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16)
+        } else {
+            Image(systemName: tab.pinnedURL == nil ? "globe" : "pin").frame(width: 16, height: 16)
+        }
     }
 }

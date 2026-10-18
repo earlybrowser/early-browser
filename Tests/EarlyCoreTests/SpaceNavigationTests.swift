@@ -2,6 +2,29 @@ import Testing
 @testable import EarlyCore
 
 struct SpaceNavigationTests {
+    @Test func sidebarTravelTracksFingersAndResistsOnlyTheBoundaries() {
+        #expect(SpaceNavigation.sidebarTravel(translation: -60, width: 240, canGoPrevious: true, canGoNext: true) == -0.25)
+        #expect(SpaceNavigation.sidebarTravel(translation: 120, width: 240, canGoPrevious: true, canGoNext: true) == 0.5)
+        #expect(SpaceNavigation.sidebarTravel(translation: -500, width: 240, canGoPrevious: true, canGoNext: true) == -1)
+        let edge = SpaceNavigation.sidebarTravel(translation: -180, width: 240, canGoPrevious: true, canGoNext: false)
+        #expect(edge < 0 && edge > -0.24)
+        #expect(SpaceNavigation.sidebarTravel(translation: 180, width: 240, canGoPrevious: false, canGoNext: true) == -edge)
+        for width in [0.0, -1, .infinity, .nan] {
+            #expect(SpaceNavigation.sidebarTravel(translation: -60, width: width, canGoPrevious: true, canGoNext: true) == 0)
+        }
+        #expect(SpaceNavigation.sidebarTravel(translation: .nan, width: 240, canGoPrevious: true, canGoNext: true) == 0)
+    }
+
+    @Test func visualTravelIsAvailableBeforeCommitAndResetsOnCancellation() {
+        var swipe = SpaceSwipe()
+        let first = swipe.update(x: -40, y: 0, phase: .began, canGoPrevious: false, canGoNext: true)
+        #expect(first.translation == -40 && first.action == nil)
+        let reversed = swipe.update(x: 25, y: 0, phase: .changed, canGoPrevious: false, canGoNext: true)
+        #expect(reversed.translation == -15 && reversed.action == nil)
+        #expect(swipe.update(x: 0, y: 0, phase: .cancelled, canGoPrevious: false, canGoNext: true).translation == 0)
+        #expect(swipe.update(x: 0, y: 10, phase: .began, canGoPrevious: false, canGoNext: true).translation == 0)
+    }
+
     @Test func navigationBoundsAndNumberShortcutsDoNotWrap() {
         #expect(SpaceNavigation.targetIndex(current: 0, count: 3, delta: -1) == nil)
         #expect(SpaceNavigation.targetIndex(current: 2, count: 3, delta: 1) == nil)

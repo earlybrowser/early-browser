@@ -218,6 +218,26 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 2, views: 2, created: 2)
     }
 
+    func testSpaceColorSwatchesPersistTheSelectedColor() {
+        let app = launchFreshApp()
+        app.buttons["space.new"].click()
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText("Green Space")
+        for color in ["gray", "blue", "purple", "pink", "red", "orange", "yellow", "green"] {
+            XCTAssertTrue(app.buttons["space.color.\(color)"].exists)
+        }
+        app.buttons["space.color.green"].click()
+        XCTAssertTrue(app.buttons["space.color.green"].isSelected)
+        app.buttons["Save"].click()
+        XCTAssertTrue(spaceDot(app, named: "Green Space").waitForExistence(timeout: 5))
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Rename Space…")
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["space.color.green"].isSelected)
+        app.buttons["Cancel"].click()
+    }
+
     func testSpaceFooterOverflowStaysCenteredAndExposesAllSpaces() {
         let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])
@@ -1353,6 +1373,40 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(other.waitForExistence(timeout: 5))
         other.click()
         expectPage(app, "Two")
+    }
+
+    func testHiddenSidebarShowsNewTabConfirmationForLinks() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let confirmation = app.staticTexts["browser.newTabCreated"]
+        // A visible sidebar already provides feedback for the new tab.
+        XCUIElement.perform(withKeyModifiers: .command) {
+            app.webViews.links["Go to Two"].click()
+        }
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        XCTAssertFalse(confirmation.exists)
+
+        app.buttons["sidebar.toggle"].click()
+        app.webViews.firstMatch.hover()
+        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForNonExistence(timeout: 3))
+        for (index, title) in ["Go to Two", "Open new tab"].enumerated() {
+            XCUIElement.perform(withKeyModifiers: .command) {
+                app.webViews.links[title].click()
+            }
+            XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+            XCTAssertEqual(confirmation.label, "New Tab Created")
+            expectRuntime(app, tabs: index + 3, views: index + 3, created: index + 3)
+            expectPage(app, "One")
+        }
+        // Unmodified target=_blank links use the same confirmation while
+        // retaining their normal foreground-tab behavior.
+        app.webViews.links["Open new tab"].click()
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 5, views: 5, created: 5)
+        XCTAssertTrue(confirmation.waitForNonExistence(timeout: 4))
+        XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
     }
 
     func testBrowserIdentityMatchesAcrossBackgroundAndPopupTabs() {

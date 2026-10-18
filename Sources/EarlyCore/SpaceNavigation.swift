@@ -14,6 +14,18 @@ public enum SpaceNavigation {
         return index < count ? index : nil
     }
 
+    /// Fraction of one sidebar page. Interior pages track the fingers directly;
+    /// the first/last boundary resists travel instead of exposing a blank page.
+    public static func sidebarTravel(translation: Double, width: Double, canGoPrevious: Bool, canGoNext: Bool) -> Double {
+        guard translation.isFinite, width.isFinite, width > 0 else { return 0 }
+        let hasNeighbor = translation > 0 ? canGoPrevious : canGoNext
+        if hasNeighbor { return min(1, max(-1, translation / width)) }
+        let limit = min(52, width * 0.24)
+        guard limit > 0 else { return 0 }
+        let resisted = limit * (1 - 1 / (1 + abs(translation) / limit))
+        return (translation < 0 ? -resisted : resisted) / width
+    }
+
     /// Reserve both side controls and, when needed, one overflow control. Keep
     /// the active dot in a bounded centered cluster even with many Spaces.
     public static func footerRange(count: Int, activeIndex: Int, width: Double) -> Range<Int> {
@@ -37,6 +49,7 @@ public struct SpaceSwipe: Sendable {
         public var action: Action?
         public var creationProgress = 0.0
         public var crossedThreshold = false
+        public var translation = 0.0
     }
     private enum Axis { case undecided, horizontal, vertical }
     private var axis = Axis.undecided
@@ -68,6 +81,7 @@ public struct SpaceSwipe: Sendable {
         }
         var result = Update(consumed: axis == .horizontal)
         if axis == .horizontal {
+            result.translation = x
             let horizontal = abs(x) > abs(y) * 1.2
             if x < 0, !canGoNext { result.creationProgress = min(1, max(0, -x / Self.createDistance)) }
             let candidate: Action? = horizontal ? (
