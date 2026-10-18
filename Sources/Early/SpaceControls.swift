@@ -182,6 +182,8 @@ private struct SpaceEditorSheet: View {
     @State private var name: String
     @State private var color: BrowserSpace.Color
     @State private var icon: SpaceIcon?
+    @State private var profileID: UUID
+    @State private var confirmingProfileMove = false
     @State private var showingIconPicker = false
     @State private var error: String?
     @FocusState private var nameFocused: Bool
@@ -195,6 +197,7 @@ private struct SpaceEditorSheet: View {
         _name = State(initialValue: existing?.name ?? "")
         _color = State(initialValue: existing?.color ?? .blue)
         _icon = State(initialValue: existing?.icon)
+        _profileID = State(initialValue: model.coordinator.profileID)
     }
 
     var body: some View {
@@ -257,6 +260,16 @@ private struct SpaceEditorSheet: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("space.color")
+            if case .edit = request, let application = model.application {
+                Picker("Profile", selection: $profileID) {
+                    ForEach(application.profiles) { profile in Text(profile.name).tag(profile.id) }
+                }
+                .accessibilityIdentifier("space.profile")
+                Text(profileID == model.coordinator.profileID
+                     ? "Spaces in this profile share its cookies and logins."
+                     : "Moving to another profile reloads this Space’s pages. Logins and Favorites are not transferred.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let error { Text(error).font(.callout).foregroundStyle(.secondary) }
             HStack {
                 Button("Cancel") { model.spaceEditor = nil }.keyboardShortcut(.cancelAction)
@@ -268,14 +281,24 @@ private struct SpaceEditorSheet: View {
         }
         .padding(24).frame(width: 340)
         .task { await Task.yield(); nameFocused = true }
+        .alert("Move Space to another profile?", isPresented: $confirmingProfileMove) {
+            Button("Cancel", role: .cancel) {}
+            Button("Move and Reload") { save(confirmedMove: true) }
+        } message: {
+            Text("This moves its tabs and folders in every window and reloads open pages with the destination profile’s website data. Unsaved page changes may be lost. Closed pins stay closed, and Favorites stay in the original profile.")
+        }
     }
 
     private var title: String {
         switch request { case .new: "New Space"; case .edit: "Edit Space" }
     }
 
-    private func save() {
+    private func save(confirmedMove: Bool = false) {
         guard model.spaceEditor != nil, BrowserSpace.normalizedName(name) != nil else { return }
+        if profileID != model.coordinator.profileID && !confirmedMove {
+            confirmingProfileMove = true
+            return
+        }
         let success: Bool
         switch request {
         case .new:
@@ -283,7 +306,10 @@ private struct SpaceEditorSheet: View {
                 _ = model.switchSpace(to: id)
                 success = true
             } else { success = false }
-        case .edit(let id): success = model.editSpace(id, name: name, color: color, icon: icon)
+        case .edit(let id):
+            if profileID != model.coordinator.profileID {
+                success = model.application?.moveSpace(id, from: model, to: profileID, name: name, color: color, icon: icon) == true
+            } else { success = model.editSpace(id, name: name, color: color, icon: icon) }
         }
         if success { model.spaceEditor = nil }
         else { error = "Could not save this Space. It may have been removed in another window." }

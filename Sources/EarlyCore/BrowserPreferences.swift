@@ -7,7 +7,7 @@ import Observation
 public final class BrowserPreferences {
     public enum Appearance: String, CaseIterable, Sendable { case system, light, dark }
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored public var onChange: (() -> Void)?
+    @ObservationIgnored public var onChange: ((String) -> Void)?
 
     public var appearance: Appearance { didSet { store(appearance.rawValue, for: "browserAppearance") } }
     public var onlineSuggestions: Bool { didSet { store(onlineSuggestions, for: "onlineSearchSuggestions") } }
@@ -44,6 +44,6 @@ public final class BrowserPreferences {
 
     private func store(_ value: Any, for key: String) {
         defaults.set(value, forKey: key)
-        onChange?()
+        onChange?(key)
     }
 }

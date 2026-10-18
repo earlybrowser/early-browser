@@ -10,14 +10,16 @@ import SwiftUI
 enum BrowserHaptics {
     private static var lastAlignment: TimeInterval = 0
 
-    static func alignment() {
+    static func alignment(enabled: Bool = true) {
+        guard enabled else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastAlignment >= 0.08 else { return }
         lastAlignment = now
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
     }
 
-    static func pickupOrDrop() {
+    static func pickupOrDrop(enabled: Bool = true) {
+        guard enabled else { return }
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
     }
 }
@@ -111,7 +113,7 @@ struct SpaceSwipeMonitor: NSViewRepresentable {
                 model.spaceSwipeCreationProgress = update.creationProgress
             }
             if !event.phase.contains(.cancelled) { model.updateSpaceSwipe(translation: update.translation) }
-            if update.crossedThreshold { BrowserHaptics.alignment() }
+            if update.crossedThreshold { BrowserHaptics.alignment(enabled: model.preferences.haptics) }
             if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
                 suppressMomentum = update.consumed
                 reset()

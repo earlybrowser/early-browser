@@ -126,6 +126,117 @@ final class EarlyUITests: XCTestCase {
         item?.click()
     }
 
+    private func openSettings(_ app: XCUIApplication, section: String) {
+        app.typeKey(",", modifierFlags: .command)
+        let tab = app.buttons["settings.section.\(section)"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 5))
+        tab.click()
+    }
+
+    @discardableResult private func createProfile(_ app: XCUIApplication, named name: String) -> String {
+        openSettings(app, section: "profiles")
+        app.buttons["profile.create"].click()
+        let field = app.textFields["profile.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText(name)
+        app.buttons["profile.save"].click()
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "profile.", name)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        return String(row.identifier.dropFirst("profile.".count))
+    }
+
+    func testSettingsPersistWithoutReplacingTheLiveWebsite() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let saved = app.windows["browser"].webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep my page through settings")
+        openSettings(app, section: "appearance")
+        app.buttons["settings.appearance.light"].click()
+        let translucency = app.descendants(matching: .any).matching(identifier: "settings.translucency").firstMatch
+        XCTAssertTrue(translucency.waitForExistence(timeout: 3))
+        translucency.click()
+        let setting = translucency.value as? String
+        XCTAssertNotNil(setting)
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertEqual(saved.value as? String, "keep my page through settings")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.terminate()
+        app.launch()
+        expectPage(app, "One")
+        openSettings(app, section: "appearance")
+        XCTAssertTrue(app.buttons["settings.appearance.light"].isSelected)
+        XCTAssertEqual(translucency.value as? String, setting)
+        app.typeKey("w", modifierFlags: .command)
+    }
+
+    func testProfilesKeepSeparateTabsAndRestoreBothWindows() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let personalWindow = app.windows["browser"]
+        let personalText = personalWindow.webViews.textFields["Saved text"]
+        personalText.click()
+        personalText.typeText("personal page state")
+        let profileID = createProfile(app, named: "Work")
+        app.buttons["profile.open.\(profileID)"].click()
+        let workWindow = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).firstMatch
+        XCTAssertTrue(workWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(workWindow.textFields["commandBar.query"].waitForExistence(timeout: 5))
+        XCTAssertEqual(workWindow.webViews.count, 0)
+        workWindow.textFields["commandBar.query"].typeText("early-test://fixture/two\n")
+        XCTAssertTrue(workWindow.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+        XCTAssertEqual(personalText.value as? String, "personal page state")
+        // Close Settings, not a browser window, so its restoration cannot mask
+        // whether both profile windows were actually restored by Early.
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.buttons["settings.section.profiles"].waitForExistence(timeout: 5))
+        app.typeKey("w", modifierFlags: .command)
+        app.terminate()
+        app.launch()
+        let browsers = app.windows.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@", "browser", "browser."))
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 2"), object: browsers)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 10), .completed)
+        XCTAssertTrue(app.webViews.staticTexts["Page One"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+    }
+
+    func testMovingSpaceToAnotherProfileRequiresConfirmationAndKeepsClosedPinsClosed() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let tab = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch
+        tab.rightClick()
+        visibleMenuAction("Pin Tab")
+        app.typeKey("w", modifierFlags: .command)
+        let profileID = createProfile(app, named: "Work")
+        XCTAssertTrue(app.buttons["profile.open.\(profileID)"].exists)
+        app.typeKey("w", modifierFlags: .command)
+        spaceDot(app, named: "Personal").rightClick()
+        visibleMenuAction("Edit Space…")
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.click()
+        app.typeKey("a", modifierFlags: .command)
+        field.typeText("Moved")
+        app.popUpButtons["space.profile"].click()
+        visibleMenuAction("Work")
+        app.buttons["Save"].click()
+        XCTAssertTrue(app.buttons["Move and Reload"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(field.exists)
+        XCTAssertEqual(app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).count, 0)
+        app.buttons["Save"].click()
+        app.buttons["Move and Reload"].click()
+        let destination = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).firstMatch
+        XCTAssertTrue(destination.waitForExistence(timeout: 5))
+        XCTAssertTrue(destination.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "space.", "Moved")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(destination.webViews.count, 0)
+        XCTAssertEqual(app.windows["browser"].webViews.count, 0)
+        XCTAssertTrue(destination.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch.exists)
+    }
+
     private func spaceDot(_ app: XCUIApplication, named name: String) -> XCUIElement {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "space.", name)).firstMatch
     }

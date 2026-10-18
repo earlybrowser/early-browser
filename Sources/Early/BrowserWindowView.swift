@@ -7,7 +7,7 @@ import SwiftUI
 
 struct BrowserWindowView: View {
     @Bindable var model: BrowserWindowModel
-    @State private var sidebarAutoHides = false
+    private var sidebarAutoHides: Bool { model.preferences.sidebarAutoHides }
     @State private var sidebarHovered = false
     @State private var resizeStartWidth: Double?
     @State private var tabFrames: [UUID: CGRect] = [:]
@@ -270,7 +270,8 @@ struct BrowserWindowView: View {
                 .background {
                     if sidebarAutoHides {
                         // Floating chrome must stay legible over web content.
-                        BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray, floating: true)
+                        BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+                                                floating: true, allowsTransparency: model.preferences.translucentChrome)
                     } else {
                         Color.primary.opacity(0.015)
                     }
@@ -310,7 +311,8 @@ struct BrowserWindowView: View {
         .animation(sidebarMotion, value: sidebarAutoHides)
         .animation(sidebarMotion, value: sidebarVisible)
         .padding(6)
-        .background(BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray))
+        .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+                                            allowsTransparency: model.preferences.translucentChrome))
         .overlay(alignment: .topTrailing) {
             if let toast = model.toast {
                 Label(toast.message, systemImage: "checkmark")
@@ -459,7 +461,7 @@ struct BrowserWindowView: View {
             if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
         }
         .background(SpaceSwipeMonitor(model: model,
-            enabled: sidebarVisible && draggingTab == nil && resizeStartWidth == nil && !folderEditor))
+            enabled: model.preferences.spaceSwipes && sidebarVisible && draggingTab == nil && resizeStartWidth == nil && !folderEditor))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
@@ -1174,7 +1176,7 @@ struct BrowserWindowView: View {
     private func beginDrag(_ tab: BrowserTab) {
         guard let frame = itemFrame(tab.id) else { return }
         model.sidebarInteractionInProgress = true
-        BrowserHaptics.pickupOrDrop()
+        BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
         frozenFrames = tabFrames
         dragSourceFrame = frame
         dropFolder = section(of: tab) == .pinned ? tab.folderID : nil
@@ -1264,7 +1266,7 @@ struct BrowserWindowView: View {
         insertionSiblings = siblings
         insertionIndex = layout.order(at: hitPoint).firstIndex(of: source)
         let feedback = DragFeedbackTarget(container: container, index: insertionIndex)
-        if let previous = dragFeedbackTarget, previous != feedback { BrowserHaptics.alignment() }
+        if let previous = dragFeedbackTarget, previous != feedback { BrowserHaptics.alignment(enabled: model.preferences.haptics) }
         dragFeedbackTarget = feedback
     }
 
@@ -1477,7 +1479,7 @@ struct BrowserWindowView: View {
                 if dragSourceFrame == .zero {
                     guard let frame = itemFrame(folder.id) else { return }
                     model.sidebarInteractionInProgress = true
-                    BrowserHaptics.pickupOrDrop()
+                    BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
                     frozenFrames = tabFrames
                     dragSourceFrame = frame
                     dropFolder = folder.parentID
@@ -1500,7 +1502,7 @@ struct BrowserWindowView: View {
                 guard dragLayout != nil, insertion != nil || parent != folder.parentID else { return }
                 if model.coordinator.placeFolder(folder.id, in: parent, before: insertion?.before) {
                     model.save()
-                    BrowserHaptics.pickupOrDrop()
+                    BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
                 }
             }
     }
@@ -1552,11 +1554,11 @@ struct BrowserWindowView: View {
                 let folderID = destination == .pinned ? dropFolder : nil
                 if let drop = dragLayout?.insertion(at: value.location) {
                     if model.placeTab(tab.id, in: destination, folderID: folderID, before: drop.before) {
-                        BrowserHaptics.pickupOrDrop()
+                        BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
                     }
                 } else if destination != section(of: tab) || folderID != tab.folderID {
                     if model.placeTab(tab.id, in: destination, folderID: folderID, before: nil) {
-                        BrowserHaptics.pickupOrDrop()
+                        BrowserHaptics.pickupOrDrop(enabled: model.preferences.haptics)
                     }
                 }
             }
@@ -1877,7 +1879,7 @@ struct BrowserWindowView: View {
         HStack(spacing: 6) {
             WindowControls().frame(width: 60, height: 32)
             Button {
-                sidebarAutoHides.toggle()
+                model.preferences.sidebarAutoHides.toggle()
                 sidebarHovered = false
             } label: {
                 Image(systemName: "sidebar.left").frame(width: 32, height: 32)

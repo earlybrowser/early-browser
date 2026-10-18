@@ -17,7 +17,7 @@ public enum SessionError: LocalizedError, Sendable {
 /// SQLite work and JSON encoding run on this actor, never MainActor.
 /// Version 1 stores one coherent snapshot; later normalized schemas can migrate it.
 public actor SessionRepository {
-    private let fileURL: URL
+    public nonisolated let fileURL: URL
     private let input: NavigationInput
     private var latestRevision: UInt64 = 0
 

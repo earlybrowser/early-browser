@@ -35,6 +35,8 @@ final class BrowserWindowModel {
     let webViews: WebViewManager
     let input: NavigationInput
     let persistence: SessionAutosaver
+    let preferences: BrowserPreferences
+    weak var application: EarlyAppDelegate?
     let isTesting: Bool
     var submissionMessage: String?
     var notice: String?
@@ -54,38 +56,28 @@ final class BrowserWindowModel {
     var renameText = ""
     var contentFocusRequest = 0
     let suggestions: SearchSuggestions
-    private let defaults: UserDefaults
-    private let repository: SessionRepository
-    private let restorationError: String?
-    let restoredWindows: [BrowserSession]
     var onSave: ((BrowserWindowModel) -> Void)?
     var onOpenWindow: ((URL, String?) -> Void)?
-    var presentWindow: ((UUID) -> Void)?
-    var sidebarWidth: Double
+    var sidebarWidth: Double {
+        get { preferences.sidebarWidth }
+        set { preferences.sidebarWidth = newValue }
+    }
 
     func finishSidebarResize() {
         sidebarWidth = SidebarWidth.clamped(sidebarWidth)
-        defaults.set(sidebarWidth, forKey: "sidebarWidth")
     }
     var onlineSuggestionsEnabled: Bool {
-        didSet {
-            defaults.set(onlineSuggestionsEnabled, forKey: "onlineSearchSuggestions")
-            refreshSuggestions()
-        }
+        get { preferences.onlineSuggestions }
+        set { preferences.onlineSuggestions = newValue; refreshSuggestions() }
     }
 
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
-         sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil) {
+         sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
+         preferences: BrowserPreferences? = nil) {
         self.input = input
         self.isTesting = isTesting
-        self.defaults = defaults
-        self.repository = repository
-        self.restorationError = restorationError
-        restoredWindows = session.additionalWindows
-        sidebarWidth = SidebarWidth.clamped(defaults.object(forKey: "sidebarWidth") as? Double ?? SidebarWidth.defaultValue)
-        defaults.register(defaults: ["onlineSearchSuggestions": true])
-        onlineSuggestionsEnabled = defaults.bool(forKey: "onlineSearchSuggestions")
+        self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
         let service = GoogleSearchSuggestions()
         suggestions = SearchSuggestions { query in
             #if DEBUG
@@ -346,7 +338,7 @@ final class BrowserWindowModel {
         submissionMessage = nil
         activateSelection()
         save()
-        BrowserHaptics.alignment()
+        BrowserHaptics.alignment(enabled: preferences.haptics)
         return true
     }
 
@@ -503,7 +495,7 @@ final class BrowserWindowModel {
         // Reuse moved live views; following never opens a closed pin or loads
         // every page in a folder. Only the final destination state is saved.
         save()
-        if previousSpace != coordinator.activeSpaceID { BrowserHaptics.alignment() }
+        if previousSpace != coordinator.activeSpaceID { BrowserHaptics.alignment(enabled: preferences.haptics) }
     }
 
     func activateSelection() {
@@ -524,11 +516,17 @@ final class BrowserWindowModel {
         onOpenWindow?(tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL), tab.displayTitle)
     }
 
-    func siblingWindow(session: BrowserSession) -> BrowserWindowModel {
-        BrowserWindowModel(startup: .returningSession, session: session, repository: repository,
-                           input: input, isTesting: isTesting, restorationError: restorationError,
-                           defaults: defaults, sharedPersistence: persistence,
-                           websiteDataStore: webViews.websiteDataStore)
+    func applyProfileSnapshot(_ session: BrowserSession) {
+        let previous = coordinator.activeTabID
+        guard coordinator.applySession(session, using: input) else { return }
+        cancelSpaceSwipePresentation()
+        suggestions.cancel()
+        let remaining = Set(session.tabs.filter(\.isOpen).map(\.id))
+        for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }
+        renamingTabID = nil
+        spaceEditor = nil
+        spaceDeletionID = nil
+        if previous != coordinator.activeTabID { activateSelection() }
     }
 
     func synchronizeSavedItems(from session: BrowserSession) {
@@ -551,11 +549,13 @@ final class BrowserWindowModel {
 final class SessionAutosaver {
     private let repository: SessionRepository
     private let disabledReason: String?
-    private var pending: BrowserSession?
+    private var pending: BrowserWorkspace?
     private var writer: Task<Void, Never>?
     private var revision: UInt64 = 0
     private(set) var isSaving = false
     private(set) var error: String?
+    private(set) var lastSavedAt: Date?
+    var isAvailable: Bool { disabledReason == nil }
 
     init(repository: SessionRepository, disabledReason: String?) {
         self.repository = repository
@@ -563,7 +563,7 @@ final class SessionAutosaver {
         error = disabledReason
     }
 
-    func enqueue(_ snapshot: BrowserSession) {
+    func enqueue(_ snapshot: BrowserWorkspace) {
         guard disabledReason == nil else { return }
         pending = snapshot
         guard writer == nil else { return }
@@ -575,8 +575,9 @@ final class SessionAutosaver {
                 self.pending = nil
                 self.revision += 1
                 do {
-                    try await self.repository.save(snapshot, revision: self.revision)
+                    try await self.repository.saveWorkspace(snapshot, revision: self.revision)
                     self.error = nil
+                    self.lastSavedAt = Date()
                 } catch { self.error = error.localizedDescription }
             }
             self.isSaving = false
@@ -585,7 +586,9 @@ final class SessionAutosaver {
     }
 
     func flush() async -> Bool {
-        await writer?.value
+        // A callback can enqueue a new writer while this await resumes. Drain
+        // that writer too before quit/deletion treats the snapshot as durable.
+        while let writer { await writer.value }
         return error == nil
     }
 }

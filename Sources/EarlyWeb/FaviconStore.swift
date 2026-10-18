@@ -16,6 +16,8 @@ public final class FaviconStore {
     @ObservationIgnored private var order: [String] = []
     @ObservationIgnored private var pending: [String] = []
     @ObservationIgnored private var running: Set<String> = []
+    @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var stopped = false
     @ObservationIgnored private let load: @Sendable (String, [URL], Bool) async -> Data?
 
     private struct Request {
@@ -25,13 +27,39 @@ public final class FaviconStore {
     }
 
     public convenience init(profileID: UUID, ephemeral: Bool = false) {
-        let directory = ephemeral ? nil : FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Early/Favicons/\(profileID.uuidString)", isDirectory: true)
+        let directory = ephemeral ? nil : Self.cacheDirectory(for: profileID)
         let loader = FaviconLoader(directory: directory)
         self.init { origin, urls, cached in await loader.load(origin: origin, candidates: urls, preferCache: cached) }
     }
 
     init(load: @escaping @Sendable (String, [URL], Bool) async -> Data?) { self.load = load }
+
+    nonisolated static func cacheDirectory(for profileID: UUID) -> URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Early/Favicons/\(profileID.uuidString)", isDirectory: true)
+    }
+
+    /// Only used after deleting a profile and waiting for its artwork requests.
+    public nonisolated static func removeCache(for profileID: UUID) async throws {
+        guard let directory = cacheDirectory(for: profileID) else { return }
+        try await Task.detached(priority: .utility) {
+            if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
+        }.value
+    }
+
+    public func shutdown() async {
+        stopped = true
+        let outstanding = Array(tasks.values)
+        outstanding.forEach { $0.cancel() }
+        pending.removeAll()
+        requests.removeAll()
+        for task in outstanding { await task.value }
+        tasks.removeAll()
+        running.removeAll()
+        images.removeAll()
+        colors.removeAll()
+        order.removeAll()
+    }
 
     public func image(for url: URL) -> NSImage? {
         Self.origin(url).flatMap { images[$0] }
@@ -44,7 +72,7 @@ public final class FaviconStore {
     /// Called by visible rows and once after a live page finishes navigating.
     /// Restored/closed pins only read the cache or request the site's icon file.
     public func request(_ pageURL: URL, discovered: [String] = []) {
-        guard let origin = Self.origin(pageURL) else { return }
+        guard !stopped, let origin = Self.origin(pageURL) else { return }
         let candidates = Self.candidates(pageURL: pageURL, discovered: discovered)
         let isDiscovered = candidates.count > 1 || candidates.first != URL(string: origin + "/favicon.ico")
         if let previous = requests[origin] {
@@ -67,23 +95,25 @@ public final class FaviconStore {
     }
 
     private func drain() {
+        guard !stopped else { return }
         while running.count < 4, let index = pending.firstIndex(where: { !running.contains($0) }) {
             let origin = pending.remove(at: index)
             guard let request = requests[origin] else { continue }
             running.insert(origin)
             let load = load
-            Task { [weak self] in
+            tasks[origin] = Task { [weak self] in
                 let data = await load(origin, request.candidates, !request.discovered)
                 let color = await Task.detached(priority: .utility) {
                     data.flatMap { FaviconColor.extract(from: $0) }
                 }.value
                 guard let self else { return }
-                if self.requests[origin]?.token == request.token,
+                if !Task.isCancelled, self.requests[origin]?.token == request.token,
                    let data, let image = NSImage(data: data) {
                     self.images[origin] = image
                     self.colors[origin] = color
                 }
                 self.running.remove(origin)
+                self.tasks.removeValue(forKey: origin)
                 self.drain()
             }
         }
@@ -156,7 +186,7 @@ actor FaviconLoader {
                     if data.count >= Self.byteLimit || Task.isCancelled { bytes.task.cancel(); break }
                     data.append(byte)
                 }
-                guard data.count < Self.byteLimit, let png = Self.thumbnail(data) else { continue }
+                guard !Task.isCancelled, data.count < Self.byteLimit, let png = Self.thumbnail(data) else { continue }
                 write(png, origin: origin)
                 return png
             } catch { continue }

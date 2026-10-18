@@ -13,8 +13,12 @@ let package = Package(
     targets: [
         .target(name: "EarlyCore"),
         .target(name: "EarlyWeb", dependencies: ["EarlyCore"]),
+        // Compile the native application layer without its executable entry
+        // point so lifecycle/settings integration can be tested without UI automation.
+        .target(name: "EarlyBrowser", dependencies: ["EarlyCore", "EarlyWeb"], path: "Sources/Early", exclude: ["EarlyApp.swift"]),
         .testTarget(name: "EarlyCoreTests", dependencies: ["EarlyCore"]),
-        .testTarget(name: "EarlyWebTests", dependencies: ["EarlyWeb", "EarlyCore"])
+        .testTarget(name: "EarlyWebTests", dependencies: ["EarlyWeb", "EarlyCore"]),
+        .testTarget(name: "EarlyBrowserTests", dependencies: ["EarlyBrowser", "EarlyCore", "EarlyWeb"])
     ],
     swiftLanguageModes: [.v6]
 )
