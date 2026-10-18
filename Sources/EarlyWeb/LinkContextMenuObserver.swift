@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import WebKit
 
 /// Only trusted link context-menu events enter the native menu bridge. The

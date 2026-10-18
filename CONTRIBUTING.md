@@ -24,10 +24,15 @@ Open a PR against `main` with a short explanation of what changed, why, and what
 you tested. Include screenshots or a recording for visible changes. If a check
 was not run, say so; don't report a build as a passing test run.
 
-GitHub Actions runs package and UI tests on PRs and pushes to `main`. Logs and
-UI result bundles are attached to the workflow run for seven days. Maintainers
+GitHub Actions runs package and UI tests on PRs and pushes to `main`. Four
+separate macOS runners split the full UI suite; each runs its tests serially.
+A fifth macOS runner runs the package tests. Logs, selected test lists, and UI
+result bundles are attached to the workflow run for seven days. Maintainers
 can also start the workflow from the Actions tab. A green run does not replace
 manual review of animation, accessibility, or behavior on other macOS versions.
+
+The [workflow plan](.github/WORKFLOWS.md) describes inactive scaffolds for release,
+Homebrew, and repository checks. These are not implemented or active checks yet.
 
 ## AI-assisted contributions
 
@@ -39,4 +44,4 @@ Do not submit changes you cannot explain or include private data in prompts,
 logs, screenshots, or test results.
 
 By contributing, you agree that your contribution is licensed under the
-project's [MIT license](LICENSE).
+project's [Mozilla Public License 2.0 (MPL-2.0)](LICENSE).

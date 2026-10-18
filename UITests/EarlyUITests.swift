@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import AppKit
 import XCTest
 
@@ -124,6 +126,205 @@ final class EarlyUITests: XCTestCase {
         item?.click()
     }
 
+    private func spaceDot(_ app: XCUIApplication, named name: String) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "space.", name)).firstMatch
+    }
+
+    private func createSpace(_ app: XCUIApplication, named name: String) {
+        app.buttons["space.new"].click()
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText(name)
+        app.buttons["Save"].click()
+        XCTAssertTrue(spaceDot(app, named: name).waitForExistence(timeout: 5))
+        XCTAssertTrue(spaceDot(app, named: name).isSelected)
+        XCTAssertFalse(app.textFields["commandBar.query"].exists)
+    }
+
+    func testSpaceSwitchingPreservesPageStateAndEmptySpaceRelaunch() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep this Space alive")
+        createSpace(app, named: "Work")
+        expectRuntime(app, tabs: 0, views: 1, created: 1)
+        app.typeKey("l", modifierFlags: .command)
+        let query = app.textFields["commandBar.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        query.typeText("cancel when switching")
+        app.typeKey(.leftArrow, modifierFlags: [.command, .option])
+        XCTAssertFalse(query.exists)
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep this Space alive")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.typeKey("9", modifierFlags: [.command, .option])
+        XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
+        XCTAssertFalse(query.exists)
+        expectRuntime(app, tabs: 0, views: 1, created: 1)
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertFalse(query.exists)
+        expectRuntime(app, tabs: 0, views: 1, created: 2)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(query.waitForExistence(timeout: 10))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        spaceDot(app, named: "Personal").click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testSpaceRenameDuplicateMoveAndDeleteConfirmation() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let original = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch
+        pinAction("Pin Tab", on: original)
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Duplicate Space")
+        XCTAssertTrue(spaceDot(app, named: "Personal Copy").waitForExistence(timeout: 5))
+        expectRuntime(app, tabs: 0, views: 1, created: 1)
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Rename Space…")
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.click()
+        app.typeKey("a", modifierFlags: .command)
+        field.typeText("Research")
+        app.buttons["Save"].click()
+        XCTAssertTrue(spaceDot(app, named: "Research").waitForExistence(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 2, created: 2)
+        app.menuBarItems["Tab"].click()
+        app.menuItems["Move Tab to Space"].hover()
+        visibleMenuAction("Personal")
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        spaceDot(app, named: "Research").click()
+        expectRuntime(app, tabs: 0, views: 2, created: 2)
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Delete Space…")
+        // Native alerts also mirror their actions into the Touch Bar. Scope
+        // these queries to the sheet so its duplicate buttons cannot match.
+        let cancelDeletion = app.sheets.buttons["Cancel"]
+        XCTAssertTrue(cancelDeletion.waitForExistence(timeout: 5))
+        cancelDeletion.click()
+        XCTAssertTrue(cancelDeletion.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(spaceDot(app, named: "Research").exists)
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Delete Space…")
+        let confirmDeletion = app.sheets.buttons["Delete Space"]
+        XCTAssertTrue(confirmDeletion.waitForExistence(timeout: 5))
+        confirmDeletion.click()
+        XCTAssertTrue(confirmDeletion.waitForNonExistence(timeout: 3))
+        XCTAssertFalse(spaceDot(app, named: "Research").exists)
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+    }
+
+    func testContextMenusMoveTodayTabsPinsAndFoldersWithoutReplacingLivePages() {
+        let app = launchFreshApp()
+        createSpace(app, named: "Work")
+        spaceDot(app, named: "Personal").click()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let tabID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep through Space moves")
+        func move(_ row: XCUIElement, to name: String) {
+            row.rightClick()
+            XCTAssertTrue(app.menuItems["Move to Space"].waitForExistence(timeout: 3))
+            app.menuItems["Move to Space"].hover()
+            visibleMenuAction(name)
+        }
+        move(app.buttons[tabID], to: "Work")
+        XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
+        XCTAssertTrue(app.buttons[tabID].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons[tabID].value as? String, "Today")
+        XCTAssertTrue(app.buttons[tabID].isSelected)
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep through Space moves")
+
+        pinAction("Pin Tab", on: app.buttons[tabID])
+        move(app.buttons[tabID], to: "Personal")
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        XCTAssertTrue(app.buttons[tabID].waitForExistence(timeout: 3))
+        XCTAssertTrue((app.buttons[tabID].value as? String)?.hasPrefix("Pinned, open") == true)
+        XCTAssertTrue(app.buttons[tabID].isSelected)
+        expectPage(app, "One")
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let name = app.textFields["folder.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click()
+        name.typeText("Collection")
+        app.buttons["Save"].click()
+        let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Collection'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        let folderID = folder.identifier
+        app.buttons[tabID].rightClick()
+        app.menuItems["Move to Folder"].hover()
+        visibleMenuAction("Collection")
+        move(app.buttons[folderID], to: "Work")
+        XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
+        XCTAssertTrue(app.buttons[folderID].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons[tabID].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons[folderID].isHittable)
+        XCTAssertTrue(app.buttons[tabID].isSelected)
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep through Space moves")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testSpaceColorSwatchesPersistTheSelectedColor() {
+        let app = launchFreshApp()
+        app.buttons["space.new"].click()
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText("Green Space")
+        for color in ["gray", "blue", "purple", "pink", "red", "orange", "yellow", "green"] {
+            XCTAssertTrue(app.buttons["space.color.\(color)"].exists)
+        }
+        app.buttons["space.color.green"].click()
+        XCTAssertTrue(app.buttons["space.color.green"].isSelected)
+        app.buttons["Save"].click()
+        XCTAssertTrue(spaceDot(app, named: "Green Space").waitForExistence(timeout: 5))
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Rename Space…")
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["space.color.green"].isSelected)
+        app.buttons["Cancel"].click()
+    }
+
+    func testSpaceFooterOverflowStaysCenteredAndExposesAllSpaces() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        for number in 1...6 { createSpace(app, named: "Space \(number)") }
+        let overflow = app.descendants(matching: .any).matching(identifier: "space.overflow").firstMatch
+        XCTAssertTrue(overflow.waitForExistence(timeout: 5))
+        let footer = app.descendants(matching: .any).matching(identifier: "sidebar.footer").firstMatch
+        let dots = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier != %@ AND identifier != %@", "space.", "space.new", "space.overflow")).allElementsBoundByIndex
+        XCTAssertLessThanOrEqual(dots.count, 4)
+        let cluster = dots.map(\.frame).reduce(overflow.frame) { $0.union($1) }
+        XCTAssertEqual(cluster.midX, footer.frame.midX, accuracy: 2)
+        overflow.click()
+        visibleMenuAction("Personal")
+        XCTAssertTrue(spaceDot(app, named: "Personal").waitForExistence(timeout: 5))
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        app.typeKey("9", modifierFlags: [.command, .option])
+        XCTAssertTrue(spaceDot(app, named: "Space 6").isSelected)
+    }
+
     private func pinAction(_ title: String, on row: XCUIElement) {
         row.rightClick()
         visibleMenuAction(title)
@@ -154,11 +355,42 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 0, views: 0, created: 0)
     }
 
-    /// Empty saved-section targets appear after the drag starts. Aim within
-    /// their revealed bounds using the persistent address control as the anchor.
+    /// XCTest resolves the destination before mouse-down. Anchor Pins to its
+    /// actual scroll viewport (below the Space heading), then account for the
+    /// Favorites row that will appear when dragging begins.
     private func savedSectionTarget(_ app: XCUIApplication, favorites: Bool) -> XCUICoordinate {
-        app.buttons["sidebar.addressBar"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
-            .withOffset(CGVector(dx: 0, dy: favorites ? 24 : 100))
+        let favoriteSection = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.favorites").firstMatch
+        let favoritesVisible = favoriteSection.exists
+        let favoriteRowHeight: CGFloat = 43.2
+        let sectionSpacing: CGFloat = 16
+        if favorites {
+            if favoritesVisible {
+                return favoriteSection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            }
+            return app.buttons["sidebar.addressBar"]
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
+                .withOffset(CGVector(dx: 0, dy: sectionSpacing + favoriteRowHeight / 2))
+        }
+        let revealOffset = favoritesVisible ? 0 : favoriteRowHeight + sectionSpacing
+        return app.scrollViews["sidebar.tabs"]
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: revealOffset + 17)) // Center of the 34-point empty Pins target.
+    }
+
+    private func dragSidebarItem(_ element: XCUIElement, to target: XCUICoordinate,
+                                 holdDuration: TimeInterval = 0.8,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        // A revealed Pins target can overlap the source row's old center.
+        // Start off-center so horizontal travel crosses DragGesture's minimum
+        // distance even when there is almost no vertical travel before reveal.
+        let source = element.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
+        let start = source.screenPoint
+        let end = target.screenPoint
+        XCTAssertGreaterThan(hypot(end.x - start.x, end.y - start.y), 12,
+                             "Drag must move far enough to start: \(start) → \(end)", file: file, line: line)
+        source.click(forDuration: 0.2, thenDragTo: target,
+                     withVelocity: .slow, thenHoldForDuration: holdDuration)
     }
 
     /// Native drag destinations are resolved before mouse-down. Account for
@@ -193,13 +425,9 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "One")
         let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
         let firstID = rows.firstMatch.identifier
-        func drag(_ element: XCUIElement, to target: XCUICoordinate) {
-            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .click(forDuration: 0.2, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.8)
-        }
-        drag(app.buttons[firstID], to: savedSectionTarget(app, favorites: false))
+        dragSidebarItem(app.buttons[firstID], to: savedSectionTarget(app, favorites: false))
         expectSidebarStatus(app.buttons[firstID], "Pinned, open")
-        drag(app.buttons[firstID], to: savedSectionTarget(app, favorites: true))
+        dragSidebarItem(app.buttons[firstID], to: savedSectionTarget(app, favorites: true))
         let first = app.buttons["favorite.\(firstID.dropFirst(4))"]
         XCTAssertTrue(first.waitForExistence(timeout: 3))
         let width = first.frame.width
@@ -240,7 +468,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(child.waitForExistence(timeout: 3))
         XCTAssertEqual(root.value as? String, "Expanded")
         XCTAssertEqual(child.value as? String, "Collapsed")
-        drag(third, to: child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+        dragSidebarItem(third, to: child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
         XCTAssertTrue(app.buttons[thirdID].waitForExistence(timeout: 3))
         XCTAssertEqual(child.value as? String, "Expanded")
         XCTAssertGreaterThan(app.buttons[thirdID].frame.minY, child.frame.minY)
@@ -351,28 +579,24 @@ final class EarlyUITests: XCTestCase {
         field.click()
         field.typeText("keep across sections")
         let sidebar = app.descendants(matching: .any).matching(identifier: "browser.sidebar").firstMatch
-        let pinned = savedSectionTarget(app, favorites: false)
-        let favorites = savedSectionTarget(app, favorites: true)
         let regular = app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
-        func drag(_ element: XCUIElement, to destination: XCUICoordinate) {
-            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .click(forDuration: 0.2, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.2)
-        }
         XCTAssertTrue(sidebar.exists)
-        drag(app.buttons["tab.\(id)"], to: pinned)
-        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Pinned, open")
-        drag(app.buttons["tab.\(id)"], to: favorites)
+        // Recompute for each drag: moving into/out of Favorites changes whether
+        // revealing its empty drop target will shift the Pins viewport.
+        dragSidebarItem(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: false), holdDuration: 0.2)
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Pinned, open")
+        dragSidebarItem(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: true), holdDuration: 0.2)
         XCTAssertTrue(app.buttons["favorite.\(id)"].waitForExistence(timeout: 3))
-        drag(app.buttons["favorite.\(id)"], to: pinned)
+        dragSidebarItem(app.buttons["favorite.\(id)"], to: savedSectionTarget(app, favorites: false), holdDuration: 0.2)
         XCTAssertTrue(app.buttons["tab.\(id)"].waitForExistence(timeout: 3))
-        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Pinned, open")
-        drag(app.buttons["tab.\(id)"], to: regular)
-        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Today")
-        drag(app.buttons["tab.\(id)"], to: favorites)
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Pinned, open")
+        dragSidebarItem(app.buttons["tab.\(id)"], to: regular, holdDuration: 0.2)
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Today")
+        dragSidebarItem(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: true), holdDuration: 0.2)
         XCTAssertTrue(app.buttons["favorite.\(id)"].waitForExistence(timeout: 3))
-        drag(app.buttons["favorite.\(id)"], to: regular)
+        dragSidebarItem(app.buttons["favorite.\(id)"], to: regular, holdDuration: 0.2)
         XCTAssertTrue(app.buttons["tab.\(id)"].waitForExistence(timeout: 3))
-        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Today")
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Today")
         XCTAssertEqual(field.value as? String, "keep across sections")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
@@ -1030,7 +1254,8 @@ final class EarlyUITests: XCTestCase {
         let scroll = app.scrollViews["sidebar.tabs"]
         let footer = app.descendants(matching: .any).matching(identifier: "sidebar.footer").firstMatch
         XCTAssertTrue(footer.exists)
-        XCTAssertEqual(footer.label, "Current space: Personal")
+        XCTAssertEqual(footer.label, "Spaces")
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
         XCTAssertGreaterThanOrEqual(footer.frame.minY, scroll.frame.maxY)
         let footerY = footer.frame.minY
         let last = app.buttons["Test Pin 32"]
@@ -1075,9 +1300,20 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(result, .completed, "Runtime: \(probe.exists ? probe.debugDescription : "missing")", file: file, line: line)
     }
 
-    private func expectPage(_ app: XCUIApplication, _ name: String,
+    private func expectPage(_ app: XCUIApplication, _ name: String, sidebarHidden: Bool = false,
                             file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(app.webViews.staticTexts["Page \(name)"].firstMatch.waitForExistence(timeout: 10), file: file, line: line)
+        if sidebarHidden {
+            // Auto-hide deliberately removes navigation controls from the AX
+            // tree. Verify the document without revealing the sidebar, and
+            // require its controls to remain hidden rather than waiting for
+            // Reload to appear on a surface that must stay out of view.
+            for identifier in ["sidebar.newTab", "navigation.reload", "navigation.stop"] {
+                XCTAssertFalse(app.buttons[identifier].exists,
+                               "Sidebar control should stay hidden: \(identifier)", file: file, line: line)
+            }
+            return
+        }
         // DOM content can appear before WebKit finishes loading. Sidebar
         // assertions should observe the completed state, not that brief gap.
         XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5), file: file, line: line)
@@ -1086,7 +1322,17 @@ final class EarlyUITests: XCTestCase {
     private func expectSidebarStatus(_ element: XCUIElement, _ value: String,
                                      file: StaticString = #filePath, line: UInt = #line) {
         let check = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
-        XCTAssertEqual(XCTWaiter.wait(for: [check], timeout: 5), .completed, file: file, line: line)
+        XCTAssertEqual(XCTWaiter.wait(for: [check], timeout: 5), .completed,
+                       "Expected \(value): \(element.exists ? element.debugDescription : "missing")", file: file, line: line)
+    }
+
+    private func expectStaticText(_ element: XCUIElement, _ text: String,
+                                  file: StaticString = #filePath, line: UInt = #line) {
+        // macOS versions expose static-text content through either AXValue or
+        // AXLabel. Still require the exact message, not just an existing toast.
+        let value = element.value as? String
+        XCTAssertTrue(value == text || element.label == text,
+                      "Expected static text: \(text). Element: \(element.debugDescription)", file: file, line: line)
     }
 
     func testInvalidSubmissionDoesNotCreateTabOrView() {
@@ -1238,6 +1484,41 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(other.waitForExistence(timeout: 5))
         other.click()
         expectPage(app, "Two")
+    }
+
+    func testHiddenSidebarShowsNewTabConfirmationForLinks() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let confirmation = app.staticTexts["browser.newTabCreated"]
+        // A visible sidebar already provides feedback for the new tab.
+        XCUIElement.perform(withKeyModifiers: .command) {
+            app.webViews.links["Go to Two"].click()
+        }
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        XCTAssertFalse(confirmation.exists)
+
+        app.buttons["sidebar.toggle"].click()
+        app.webViews.firstMatch.hover()
+        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForNonExistence(timeout: 3))
+        for (index, title) in ["Go to Two", "Open new tab"].enumerated() {
+            XCUIElement.perform(withKeyModifiers: .command) {
+                app.webViews.links[title].click()
+            }
+            XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+            expectStaticText(confirmation, "New Tab Created")
+            expectRuntime(app, tabs: index + 3, views: index + 3, created: index + 3)
+            expectPage(app, "One", sidebarHidden: true)
+        }
+        // Unmodified target=_blank links use the same confirmation while
+        // retaining their normal foreground-tab behavior.
+        app.webViews.links["Open new tab"].click()
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        expectStaticText(confirmation, "New Tab Created")
+        expectPage(app, "Two", sidebarHidden: true)
+        expectRuntime(app, tabs: 5, views: 5, created: 5)
+        XCTAssertTrue(confirmation.waitForNonExistence(timeout: 4))
+        XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
     }
 
     func testBrowserIdentityMatchesAcrossBackgroundAndPopupTabs() {

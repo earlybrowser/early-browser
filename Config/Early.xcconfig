@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Development-only namespace. Select a verified owned namespace before release.
 PRODUCT_BUNDLE_IDENTIFIER = local.early.browser
 PRODUCT_NAME = Early

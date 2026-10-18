@@ -1,11 +1,36 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import AppKit
 import EarlyCore
 import EarlyWeb
 import Observation
+import SwiftUI
 import WebKit
 
 @MainActor @Observable
 final class BrowserWindowModel {
+    enum SpaceEditor: Identifiable {
+        case new, edit(UUID)
+        var id: String {
+            switch self { case .new: "new"; case .edit(let id): id.uuidString }
+        }
+    }
+    struct Toast: Identifiable {
+        enum Kind { case copiedURL, newTab }
+        let id = UUID()
+        let kind: Kind
+        var message: String {
+            switch kind { case .copiedURL: "Copied Current URL"; case .newTab: "New Tab Created" }
+        }
+        var accessibilityIdentifier: String {
+            switch kind { case .copiedURL: "browser.copiedURL"; case .newTab: "browser.newTabCreated" }
+        }
+    }
+    struct SidebarReveal: Equatable {
+        let id = UUID()
+        let spaceID: UUID
+        let itemID: String
+    }
     let coordinator: BrowserCoordinator
     let webViews: WebViewManager
     let input: NavigationInput
@@ -13,7 +38,18 @@ final class BrowserWindowModel {
     let isTesting: Bool
     var submissionMessage: String?
     var notice: String?
-    var copiedURLNoticeID: UUID?
+    var toast: Toast?
+    var sidebarIsHidden = false
+    var sidebarReveal: SidebarReveal?
+    var spaceEditor: SpaceEditor?
+    var spaceDeletionID: UUID?
+    var spaceSwipeCreationProgress = 0.0
+    var spaceSwipeProgress = 0.0
+    var spaceSwipeIsSettling = false
+    @ObservationIgnored private var spaceSwipeSettleTask: Task<Void, Never>?
+    @ObservationIgnored private var spaceSwipeRevision = UUID()
+    var sidebarInteractionInProgress = false
+    var folderEditorIsPresented = false
     var renamingTabID: UUID?
     var renameText = ""
     var contentFocusRequest = 0
@@ -79,6 +115,7 @@ final class BrowserWindowModel {
             guard let self, let id = self.coordinator.navigate(to: url, target: .newTab(spaceID: self.coordinator.activeSpaceID)),
                   let tab = self.coordinator.tabStore.tab(id: id) else { return nil }
             let view = self.webViews.prepare(tab, configuration: configuration).view
+            self.showNewTabToastIfNeeded()
             self.save()
             self.contentFocusRequest += 1
             // WebKit performs this load after the delegate returns the new view.
@@ -89,6 +126,7 @@ final class BrowserWindowModel {
             let id = self.coordinator.openBackgroundTab(to: url)
             guard let tab = self.coordinator.tabStore.tab(id: id) else { return }
             self.webViews.load(url, in: tab)
+            self.showNewTabToastIfNeeded()
             self.save()
             // Context-menu and Command-click actions load only the background view;
             // selection and the visible page's first responder stay unchanged.
@@ -111,6 +149,8 @@ final class BrowserWindowModel {
     var todayTabs: [BrowserTab] { coordinator.tabStore.todayTabs(in: coordinator.activeSpaceID) }
 
     func presentCommandBar(_ intent: CommandBarIntent) {
+        sidebarReveal = nil
+        cancelSpaceSwipePresentation()
         suggestions.cancel()
         submissionMessage = nil
         coordinator.presentCommandBar(intent)
@@ -122,11 +162,21 @@ final class BrowserWindowModel {
         guard let url = currentPageURL else { return }
         NSPasteboard.general.clearContents()
         guard NSPasteboard.general.setString(url.absoluteString, forType: .string) else { return }
-        // A new identity restarts the confirmation lifetime on repeated copies.
-        copiedURLNoticeID = UUID()
+        showToast(.copiedURL)
+    }
+
+    private func showNewTabToastIfNeeded() {
+        guard sidebarIsHidden else { return }
+        showToast(.newTab)
+    }
+
+    private func showToast(_ kind: Toast.Kind) {
+        // A new identity restarts the confirmation lifetime on repeated actions.
+        let confirmation = Toast(kind: kind)
+        toast = confirmation
         if let window = NSApp.keyWindow {
             NSAccessibility.post(element: window, notification: .announcementRequested,
-                userInfo: [.announcement: "Copied Current URL", .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+                userInfo: [.announcement: confirmation.message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
         }
     }
 
@@ -166,6 +216,8 @@ final class BrowserWindowModel {
     }
 
     func selectTab(_ id: UUID) {
+        sidebarReveal = nil
+        cancelSpaceSwipePresentation()
         guard coordinator.openTab(id) else { return }
         activateSelection()
         save()
@@ -286,12 +338,128 @@ final class BrowserWindowModel {
 
     @discardableResult
     func switchSpace(to id: UUID) -> Bool {
+        guard id != coordinator.activeSpaceID, !sidebarInteractionInProgress else { return false }
+        sidebarReveal = nil
+        cancelSpaceSwipePresentation()
         guard coordinator.switchSpace(to: id) else { return false }
         suggestions.cancel()
         submissionMessage = nil
         activateSelection()
         save()
+        BrowserHaptics.alignment()
         return true
+    }
+
+    var canManageSpaces: Bool {
+        !spaceSwipeIsSettling && !sidebarInteractionInProgress && !folderEditorIsPresented && activePage?.hasDialog != true
+            && renamingTabID == nil && spaceEditor == nil && spaceDeletionID == nil
+    }
+
+    var activeSpaceIndex: Int { coordinator.spaces.firstIndex { $0.id == coordinator.activeSpaceID } ?? 0 }
+
+    func updateSpaceSwipe(translation: Double) {
+        guard !spaceSwipeIsSettling else { return }
+        let progress = SpaceNavigation.sidebarTravel(translation: translation, width: sidebarWidth,
+            canGoPrevious: activeSpaceIndex > 0, canGoNext: activeSpaceIndex + 1 < coordinator.spaces.count)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            spaceSwipeProgress = progress
+        }
+    }
+
+    func cancelSpaceSwipePresentation() {
+        spaceSwipeSettleTask?.cancel()
+        spaceSwipeSettleTask = nil
+        spaceSwipeRevision = UUID()
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            spaceSwipeProgress = 0
+            spaceSwipeCreationProgress = 0
+            spaceSwipeIsSettling = false
+        }
+    }
+
+    /// Settle the native sidebar page before committing selection. No page is
+    /// activated and no session is saved while the fingers are still moving.
+    func finishSpaceSwipe(_ action: SpaceSwipe.Action?) {
+        guard !spaceSwipeIsSettling else { return }
+        let action = canManageSpaces ? action : nil
+        let source = coordinator.activeSpaceID
+        let catalog = coordinator.spaces.map(\.id)
+        let delta = action == .next ? 1 : -1
+        let target = (action == .next || action == .previous)
+            ? SpaceNavigation.targetIndex(current: activeSpaceIndex, count: catalog.count, delta: delta).map { catalog[$0] }
+            : nil
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || (spaceSwipeProgress == 0 && target == nil) {
+            cancelSpaceSwipePresentation()
+            if let target { _ = switchSpace(to: target) }
+            else if action == .create { requestNewSpace() }
+            return
+        }
+        let revision = UUID()
+        spaceSwipeRevision = revision
+        spaceSwipeIsSettling = true
+        withAnimation(.easeOut(duration: target == nil ? 0.18 : 0.15)) {
+            spaceSwipeProgress = target == nil ? 0 : (delta > 0 ? -1 : 1)
+            spaceSwipeCreationProgress = 0
+        }
+        spaceSwipeSettleTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(target == nil ? 180 : 150)) } catch { return }
+            guard let self, self.spaceSwipeRevision == revision else { return }
+            let contextMatches = self.coordinator.activeSpaceID == source && self.coordinator.spaces.map(\.id) == catalog
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                self.spaceSwipeIsSettling = false
+                self.spaceSwipeSettleTask = nil
+                self.spaceSwipeProgress = 0
+                guard contextMatches, self.canManageSpaces else { return }
+                if let target { _ = self.switchSpace(to: target) }
+                else if action == .create { self.requestNewSpace() }
+            }
+        }
+    }
+
+    func cycleSpace(_ delta: Int) {
+        guard canManageSpaces,
+              let index = SpaceNavigation.targetIndex(current: activeSpaceIndex, count: coordinator.spaces.count, delta: delta) else { return }
+        _ = switchSpace(to: coordinator.spaces[index].id)
+    }
+
+    func selectSpace(number: Int) {
+        guard canManageSpaces,
+              let index = SpaceNavigation.shortcutIndex(number: number, count: coordinator.spaces.count) else { return }
+        _ = switchSpace(to: coordinator.spaces[index].id)
+    }
+
+    func requestNewSpace() {
+        guard canManageSpaces else { return }
+        cancelSpaceSwipePresentation()
+        dismissCommandBar(restoreFocus: false)
+        spaceEditor = .new
+    }
+
+    func requestEditSpace(_ id: UUID) {
+        guard canManageSpaces, coordinator.spaces.contains(where: { $0.id == id }) else { return }
+        cancelSpaceSwipePresentation()
+        dismissCommandBar(restoreFocus: false)
+        spaceEditor = .edit(id)
+    }
+
+    func requestDeleteSpace(_ id: UUID) {
+        guard canManageSpaces, coordinator.spaces.count > 1,
+              coordinator.spaces.contains(where: { $0.id == id }) else { return }
+        cancelSpaceSwipePresentation()
+        dismissCommandBar(restoreFocus: false)
+        spaceDeletionID = id
+    }
+
+    func duplicateAndSelectSpace(_ id: UUID) {
+        guard canManageSpaces, let source = coordinator.spaces.first(where: { $0.id == id }),
+              let copy = duplicateSpace(id, name: String(source.name.prefix(59)) + " Copy") else { return }
+        _ = switchSpace(to: copy)
     }
 
     @discardableResult
@@ -309,13 +477,33 @@ final class BrowserWindowModel {
 
     @discardableResult
     func moveTab(_ id: UUID, toSpace spaceID: UUID) -> Bool {
+        cancelSpaceSwipePresentation()
         let previous = coordinator.activeTabID
-        guard coordinator.moveTab(id, toSpace: spaceID) else { return false }
-        if previous != coordinator.activeTabID { activateSelection() }
-        // The moved tab retains its existing live view; moving alone never
-        // prepares a destination page or switches this window's Space.
-        save()
+        let previousSpace = coordinator.activeSpaceID
+        guard coordinator.moveTab(id, toSpace: spaceID, follow: true) else { return false }
+        finishSpaceMove(from: previousSpace, previousTab: previous, revealing: "tab-\(id)")
         return true
+    }
+
+    @discardableResult
+    func moveFolder(_ id: UUID, toSpace spaceID: UUID) -> Bool {
+        cancelSpaceSwipePresentation()
+        let previous = coordinator.activeTabID
+        let previousSpace = coordinator.activeSpaceID
+        guard coordinator.moveFolder(id, toSpace: spaceID, follow: true) else { return false }
+        finishSpaceMove(from: previousSpace, previousTab: previous, revealing: "folder-\(id)")
+        return true
+    }
+
+    private func finishSpaceMove(from previousSpace: UUID, previousTab: UUID?, revealing itemID: String) {
+        suggestions.cancel()
+        submissionMessage = nil
+        if previousTab != coordinator.activeTabID || previousSpace != coordinator.activeSpaceID { activateSelection() }
+        sidebarReveal = SidebarReveal(spaceID: coordinator.activeSpaceID, itemID: itemID)
+        // Reuse moved live views; following never opens a closed pin or loads
+        // every page in a folder. Only the final destination state is saved.
+        save()
+        if previousSpace != coordinator.activeSpaceID { BrowserHaptics.alignment() }
     }
 
     func activateSelection() {
@@ -345,9 +533,14 @@ final class BrowserWindowModel {
 
     func synchronizeSavedItems(from session: BrowserSession) {
         let previous = coordinator.activeTabID
+        let previousSpaces = coordinator.spaces.map(\.id)
         coordinator.synchronizeSavedItems(from: session)
+        if previousSpaces != coordinator.spaces.map(\.id) { cancelSpaceSwipePresentation() }
         let remaining = Set(coordinator.tabStore.tabs.map(\.id))
         for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }
+        if let renamingTabID, !remaining.contains(renamingTabID) { self.renamingTabID = nil }
+        if case .edit(let id) = spaceEditor, !coordinator.spaces.contains(where: { $0.id == id }) { spaceEditor = nil }
+        if let spaceDeletionID, !coordinator.spaces.contains(where: { $0.id == spaceDeletionID }) { self.spaceDeletionID = nil }
         if previous != coordinator.activeTabID { activateSelection() }
     }
 }

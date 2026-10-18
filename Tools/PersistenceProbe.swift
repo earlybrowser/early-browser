@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // Synthetic Phase 0 sizing probe, not production persistence or a browser benchmark.
 // Compile with swiftc -O Tools/PersistenceProbe.swift -o build/persistence-probe.
 import Foundation

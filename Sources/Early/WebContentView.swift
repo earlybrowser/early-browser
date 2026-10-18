@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import AppKit
 import SwiftUI
 import WebKit
@@ -43,6 +45,29 @@ struct BrowserChromeBackground: View {
 }
 
 #if DEBUG
+/// A window-scoped, non-drawing probe. Keeping it outside the sidebar lets UI
+/// tests verify lazy-page counts while the actual sidebar stays hidden.
+struct TestRuntimeState: NSViewRepresentable {
+    let value: String
+
+    func makeNSView(context: Context) -> StateView { StateView() }
+
+    func updateNSView(_ view: StateView, context: Context) {
+        guard view.runtime != value else { return }
+        view.runtime = value
+        if view.window != nil { NSAccessibility.post(element: view, notification: .valueChanged) }
+    }
+
+    final class StateView: NSView {
+        var runtime = ""
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+        override func accessibilityIdentifier() -> String { "test.runtime" }
+        override func accessibilityValue() -> Any? { runtime }
+    }
+}
+
 /// Read-only test seam: fullscreen state must not be inferred from window width
 /// (a maximized window can have the same width). Not installed in normal runs.
 struct TestWindowState: NSViewRepresentable {

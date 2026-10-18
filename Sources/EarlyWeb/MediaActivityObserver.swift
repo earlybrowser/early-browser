@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import WebKit
 
 /// Isolated, event-driven HTML audio/video activity, including child frames.

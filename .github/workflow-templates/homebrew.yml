@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MPL-2.0
+# INACTIVE SCAFFOLD: see ../WORKFLOWS.md before enabling.
+
+name: Homebrew distribution
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published release tag to distribute through Homebrew
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Same group as Release. Do not synchronously call this workflow while the
+# caller holds this group; use a single orchestrator or a separate later run.
+concurrency:
+  group: distribution
+  cancel-in-progress: false
+
+jobs:
+  update-tap:
+    name: Update Homebrew release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    steps:
+      # TODO: Confirm the trusted release exists and verify its artifact manifest.
+      # TODO: Finalize the tap repository and cask/formula naming.
+      # TODO: Set version, published download URL, and SHA-256 without rebuilding.
+      # TODO: Propose the tap update using a credential scoped to that repository.
+      - name: Homebrew publishing is not implemented
+        run: |
+          echo '::error::Implement verified Homebrew metadata updates before enabling this job.'
+          exit 1
+
+  verify-install:
+    name: Verify Homebrew installation
+    needs: update-tap
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      # TODO: Validate the proposed tap revision against the published archive.
+      # TODO: Audit and install; verify version, signature, notarization, and launch.
+      # TODO: Check uninstall behavior and clean up even when verification fails.
+      # TODO: Require verification before merging/promoting the tap update.
+      - name: Homebrew installation checks are not implemented
+        run: |
+          echo '::error::Implement Homebrew installation verification before enabling this job.'
+          exit 1
