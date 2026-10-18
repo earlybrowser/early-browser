@@ -7,7 +7,7 @@ struct WindowSessionTests {
     private func coordinator(_ session: BrowserSession) -> BrowserCoordinator {
         BrowserCoordinator(startup: .returningSession, activeSpaceID: session.activeSpaceID,
             tabStore: TabStore(tabs: session.tabs, folders: session.folders),
-            selectionBySpace: session.selectionBySpace, profileID: session.profileID)
+            selectionBySpace: session.selectionBySpace, profileID: session.profileID, spaces: session.spaces)
     }
 
     @Test func newWindowHasOneTodayTabAndUnloadedSavedContents() throws {

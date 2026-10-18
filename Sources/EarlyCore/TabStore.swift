@@ -106,6 +106,47 @@ public struct TabStore: Equatable, Sendable {
         tabs.first { $0.id == id }
     }
 
+    mutating func moveTab(_ id: UUID, toSpace spaceID: UUID) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id && !$0.isFavorite }) else { return false }
+        var tab = tabs.remove(at: index)
+        tab.spaceID = spaceID
+        tab.folderID = nil
+        tab.sidebarPosition = nil
+        tabs.append(tab)
+        if tab.pinnedURL != nil { _ = placePin(id, before: nil) }
+        return true
+    }
+
+    mutating func deleteSpace(_ id: UUID, rehomeFavoritesTo fallback: UUID) -> Set<UUID> {
+        let removed = Set(tabs.filter { $0.spaceID == id && !$0.isFavorite }.map(\.id))
+        tabs.removeAll { removed.contains($0.id) }
+        for index in tabs.indices where tabs[index].spaceID == id { tabs[index].spaceID = fallback }
+        folders.removeAll { $0.spaceID == id }
+        return removed
+    }
+
+    mutating func duplicateSavedItems(in source: UUID, to destination: UUID) {
+        let originals = folders.filter { $0.spaceID == source }
+        let folderIDs = Dictionary(uniqueKeysWithValues: originals.map { ($0.id, UUID()) })
+        let copies = originals.map { original in
+            var copy = BrowserFolder(id: folderIDs[original.id]!, spaceID: destination,
+                parentID: original.parentID.flatMap { folderIDs[$0] }, name: original.name)
+            copy.sidebarPosition = original.sidebarPosition
+            return copy
+        }
+        let pins = tabs.filter { $0.spaceID == source && $0.pinnedURL != nil && !$0.isFavorite }.map { original in
+            var copy = BrowserTab(spaceID: destination, profileID: original.profileID,
+                title: original.pinnedTitle ?? original.pinnedURL!.host ?? original.title,
+                currentURL: original.pinnedURL!, pinnedURL: original.pinnedURL, isOpen: false,
+                pinnedTitle: original.pinnedTitle, customTitle: original.customTitle)
+            copy.folderID = original.folderID.flatMap { folderIDs[$0] }
+            copy.sidebarPosition = original.sidebarPosition
+            return copy
+        }
+        folders.append(contentsOf: copies)
+        tabs.append(contentsOf: pins)
+    }
+
     @discardableResult
     public mutating func move(_ id: UUID, to section: Section, in spaceID: UUID) -> Bool {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }

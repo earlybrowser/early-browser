@@ -540,7 +540,7 @@ struct BrowserWindowView: View {
     /// do not present a button or chevron that cannot perform an action yet.
     private var sidebarFooter: some View {
         HStack {
-            Label("Personal", systemImage: "square.stack")
+            Label(model.coordinator.activeSpace?.name ?? "Personal", systemImage: "square.stack")
                 .font(.callout.weight(.medium))
             Spacer(minLength: 0)
         }
@@ -550,9 +550,9 @@ struct BrowserWindowView: View {
         .padding(.bottom, 2)
         .overlay(alignment: .top) { Divider() }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Current space: Personal")
+        .accessibilityLabel("Current space: \(model.coordinator.activeSpace?.name ?? "Personal")")
         .accessibilityIdentifier("sidebar.footer")
-        .help("Current space: Personal")
+        .help("Current space: \(model.coordinator.activeSpace?.name ?? "Personal")")
     }
 
     private func tabRow(_ tab: BrowserTab) -> some View {
