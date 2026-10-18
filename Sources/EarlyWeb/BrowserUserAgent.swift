@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import Foundation
 
 /// macOS WKWebView's default identity omits Safari's Version/Safari tokens,

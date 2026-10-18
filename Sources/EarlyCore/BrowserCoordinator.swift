@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import Foundation
 import Observation
 
@@ -449,9 +451,10 @@ public final class BrowserCoordinator {
     }
 
     /// Move within this profile, preserving URL, pin state, open state and ID.
-    /// Append at the destination's top level without selecting or loading it.
+    /// Append at the destination's top level. UI moves can follow the item;
+    /// closed pins stay closed even when following them to their new Space.
     @discardableResult
-    public func moveTab(_ id: UUID, toSpace spaceID: UUID) -> Bool {
+    public func moveTab(_ id: UUID, toSpace spaceID: UUID, follow: Bool = false) -> Bool {
         guard spaces.contains(where: { $0.id == spaceID && $0.profileID == profileID }),
               let tab = tabStore.tab(id: id), tab.profileID == profileID,
               !tab.isFavorite, tab.spaceID != spaceID else { return false }
@@ -467,6 +470,41 @@ public final class BrowserCoordinator {
             dismissCommandBar()
         }
         restoreSelection()
+        if follow {
+            _ = switchSpace(to: spaceID)
+            if tab.isOpen { selectOpenTab(id) }
+        }
+        return true
+    }
+
+    /// Move the folder and all descendants without changing identities, live
+    /// URLs or open/closed state. Following keeps a selected tab in the moved
+    /// subtree; otherwise it retains the destination's existing selection.
+    @discardableResult
+    public func moveFolder(_ id: UUID, toSpace spaceID: UUID, follow: Bool = false) -> Bool {
+        guard spaces.contains(where: { $0.id == spaceID && $0.profileID == profileID }),
+              let folder = tabStore.folders.first(where: { $0.id == id }), folder.spaceID != spaceID,
+              spaces.contains(where: { $0.id == folder.spaceID && $0.profileID == profileID }),
+              tabStore.tabs.allSatisfy({ $0.profileID == profileID }) else { return false }
+        let previousActive = activeTabID
+        let oldOrder = tabStore.openTabs(in: folder.spaceID).map(\.id)
+        guard let moved = tabStore.moveFolder(id, toSpace: spaceID) else { return false }
+        recentlyClosed.removeAll {
+            moved.tabIDs.contains($0.tab.id) || $0.tab.folderID.map { moved.folderIDs.contains($0) } == true
+        }
+        pruneSelections()
+        if let previousActive, moved.tabIDs.contains(previousActive) {
+            let index = oldOrder.firstIndex(of: previousActive) ?? 0
+            let next = oldOrder.dropFirst(index + 1).first { !moved.tabIDs.contains($0) }
+                ?? oldOrder.prefix(index).last { !moved.tabIDs.contains($0) }
+            selectionBySpace[activeSpaceID] = next
+            dismissCommandBar()
+        }
+        restoreSelection()
+        if follow {
+            _ = switchSpace(to: spaceID)
+            if let previousActive, moved.tabIDs.contains(previousActive) { selectOpenTab(previousActive) }
+        }
         return true
     }
 

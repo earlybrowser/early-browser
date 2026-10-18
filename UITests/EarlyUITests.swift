@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import AppKit
 import XCTest
 
@@ -203,6 +205,10 @@ final class EarlyUITests: XCTestCase {
         app.menuBarItems["Tab"].click()
         app.menuItems["Move Tab to Space"].hover()
         visibleMenuAction("Personal")
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        spaceDot(app, named: "Research").click()
         expectRuntime(app, tabs: 0, views: 2, created: 2)
         app.menuBarItems["Space"].click()
         visibleMenuAction("Delete Space…")
@@ -216,6 +222,61 @@ final class EarlyUITests: XCTestCase {
         XCTAssertFalse(spaceDot(app, named: "Research").exists)
         XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
         expectRuntime(app, tabs: 2, views: 2, created: 2)
+    }
+
+    func testContextMenusMoveTodayTabsPinsAndFoldersWithoutReplacingLivePages() {
+        let app = launchFreshApp()
+        createSpace(app, named: "Work")
+        spaceDot(app, named: "Personal").click()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let tabID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch.identifier
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep through Space moves")
+        func move(_ row: XCUIElement, to name: String) {
+            row.rightClick()
+            XCTAssertTrue(app.menuItems["Move to Space"].waitForExistence(timeout: 3))
+            app.menuItems["Move to Space"].hover()
+            visibleMenuAction(name)
+        }
+        move(app.buttons[tabID], to: "Work")
+        XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
+        XCTAssertTrue(app.buttons[tabID].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons[tabID].value as? String, "Today")
+        XCTAssertTrue(app.buttons[tabID].isSelected)
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep through Space moves")
+
+        pinAction("Pin Tab", on: app.buttons[tabID])
+        move(app.buttons[tabID], to: "Personal")
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        XCTAssertTrue(app.buttons[tabID].waitForExistence(timeout: 3))
+        XCTAssertTrue((app.buttons[tabID].value as? String)?.hasPrefix("Pinned, open") == true)
+        XCTAssertTrue(app.buttons[tabID].isSelected)
+        expectPage(app, "One")
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let name = app.textFields["folder.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.click()
+        name.typeText("Collection")
+        app.buttons["Save"].click()
+        let folder = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Collection'")).firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        let folderID = folder.identifier
+        app.buttons[tabID].rightClick()
+        app.menuItems["Move to Folder"].hover()
+        visibleMenuAction("Collection")
+        move(app.buttons[folderID], to: "Work")
+        XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
+        XCTAssertTrue(app.buttons[folderID].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons[tabID].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons[folderID].isHittable)
+        XCTAssertTrue(app.buttons[tabID].isSelected)
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep through Space moves")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
     func testSpaceColorSwatchesPersistTheSelectedColor() {

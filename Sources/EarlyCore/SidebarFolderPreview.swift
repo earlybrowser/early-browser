@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import CoreGraphics
 
 /// Drag placement does not navigate the folder tree. Only explicit expansion

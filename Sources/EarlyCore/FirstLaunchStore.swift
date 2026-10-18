@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import Foundation
 
 /// Only a first-use preference is stored in Phase 0. It is not inferred from

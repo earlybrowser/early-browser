@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import Foundation
 import Testing
 @testable import EarlyCore
@@ -156,6 +158,172 @@ struct SpaceStateTests {
         #expect(!browser.moveTab(UUID(), toSpace: destination))
         #expect(browser.session == snapshot)
         try snapshot.validate()
+    }
+
+    @Test(arguments: [false, true])
+    func followingTabMoveSelectsTheMovedTabAndKeepsSourceFallback(pinned: Bool) throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let source = browser.activeSpaceID
+        let moving = try open(browser, path: "move")
+        if pinned { browser.setPinned(moving, pinned: true) }
+        let neighbor = try open(browser, path: "neighbor")
+        let destination = try #require(browser.createSpace(name: "Destination"))
+        browser.switchSpace(to: destination)
+        _ = try open(browser, path: "existing")
+        browser.switchSpace(to: source)
+        browser.presentCommandBar(.newTab)
+        #expect(browser.moveTab(moving, toSpace: destination, follow: true))
+        #expect(browser.activeSpaceID == destination && browser.activeTabID == moving)
+        #expect(browser.commandBar == nil && browser.tabStore.tabs.count == 3)
+        #expect((browser.tabStore.tab(id: moving)?.pinnedURL != nil) == pinned)
+        browser.switchSpace(to: source)
+        #expect(browser.activeTabID == neighbor)
+        try browser.session.validate()
+    }
+
+    @Test func followingClosedPinMoveSwitchesSpaceWithoutReopeningIt() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let source = browser.activeSpaceID
+        let pin = try open(browser, path: "closed")
+        browser.setPinned(pin, pinned: true)
+        browser.closeTab(pin)
+        let destination = try #require(browser.createSpace(name: "Destination"))
+        browser.switchSpace(to: destination)
+        let existing = try open(browser, path: "existing")
+        browser.switchSpace(to: source)
+        #expect(browser.moveTab(pin, toSpace: destination, follow: true))
+        #expect(browser.activeSpaceID == destination && browser.activeTabID == existing)
+        #expect(browser.tabStore.tab(id: pin)?.isOpen == false)
+        let snapshot = browser.session
+        #expect(!browser.moveTab(pin, toSpace: UUID(), follow: true))
+        #expect(browser.session == snapshot)
+        try browser.session.validate()
+    }
+
+    @Test func followingFolderMoveKeepsItsActiveTabAndDoesNotOpenPagesForEmptyFolders() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let source = browser.activeSpaceID
+        let folder = try #require(browser.createFolder(name: "Move"))
+        let nested = try #require(browser.createFolder(name: "Nested", parentID: folder))
+        let empty = try #require(browser.createFolder(name: "Empty"))
+        let moving = try open(browser, path: "move")
+        browser.moveTab(moving, toFolder: nested)
+        let neighbor = try open(browser, path: "neighbor")
+        let destination = try #require(browser.createSpace(name: "Destination"))
+        browser.switchSpace(to: destination)
+        _ = try open(browser, path: "existing")
+        browser.switchSpace(to: source)
+        browser.selectOpenTab(moving)
+        #expect(browser.moveFolder(folder, toSpace: destination, follow: true))
+        #expect(browser.activeSpaceID == destination && browser.activeTabID == moving)
+        browser.switchSpace(to: source)
+        #expect(browser.activeTabID == neighbor)
+        #expect(browser.moveFolder(empty, toSpace: destination, follow: true))
+        #expect(browser.activeSpaceID == destination && browser.activeTabID == moving)
+        #expect(browser.tabStore.tabs.count == 3 && browser.commandBar == nil)
+        let snapshot = browser.session
+        #expect(!browser.moveFolder(folder, toSpace: UUID(), follow: true))
+        #expect(browser.session == snapshot)
+        try browser.session.validate()
+    }
+
+    @Test func movingFolderTransfersItsWholeSubtreeAndKeepsDestinationSelectionAndOrder() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let source = browser.activeSpaceID
+        let parent = try #require(browser.createFolder(name: "Parent"))
+        let child = try #require(browser.createFolder(name: "Move me", parentID: parent))
+        let nested = try #require(browser.createFolder(name: "Nested", parentID: child))
+        let live = try open(browser, path: "saved")
+        browser.moveTab(live, toFolder: child)
+        browser.renameTab(live, to: "Keep my name")
+        browser.navigate(to: home.appendingPathComponent("detour"), target: .currentTab(live))
+        let closed = try open(browser, path: "closed")
+        browser.moveTab(closed, toFolder: nested)
+        browser.closeTab(closed)
+        let neighbor = try open(browser, path: "neighbor")
+        let favorite = try open(browser, path: "favorite")
+        browser.setFavorite(favorite, favorite: true)
+        let favoriteRecord = browser.tabStore.tab(id: favorite)
+        let liveRecord = try #require(browser.tabStore.tab(id: live))
+        let childRecord = try #require(browser.folders.first { $0.id == child })
+        let destination = try #require(browser.createSpace(name: "Destination"))
+        browser.switchSpace(to: destination)
+        let destinationFolder = try #require(browser.createFolder(name: "Existing folder"))
+        let destinationTab = try open(browser, path: "destination")
+        browser.setPinned(destinationTab, pinned: true)
+        browser.placeTab(destinationTab, in: .pinned, before: destinationFolder)
+        let destinationOrder = browser.tabStore.pinnedItems(in: destination, parentID: nil).map(\.id)
+        browser.switchSpace(to: source)
+        browser.selectOpenTab(live)
+        browser.presentCommandBar(.newTab)
+
+        #expect(browser.moveFolder(child, toSpace: destination))
+        #expect(browser.activeSpaceID == source && browser.activeTabID == neighbor && browser.commandBar == nil)
+        #expect(browser.folders.map(\.id) == [parent])
+        let movedRoot = try #require(browser.tabStore.folders.first { $0.id == child })
+        #expect(movedRoot.spaceID == destination && movedRoot.parentID == nil)
+        #expect(movedRoot.name == childRecord.name && movedRoot.isExpanded == childRecord.isExpanded)
+        #expect(browser.tabStore.folders.first { $0.id == nested }?.parentID == child)
+        #expect(browser.tabStore.folders.first { $0.id == nested }?.spaceID == destination)
+        var expected = liveRecord
+        expected.spaceID = destination
+        #expect(browser.tabStore.tab(id: live) == expected)
+        #expect(browser.tabStore.tab(id: closed)?.spaceID == destination)
+        #expect(browser.tabStore.tab(id: closed)?.folderID == nested)
+        #expect(browser.tabStore.tab(id: closed)?.isOpen == false)
+        #expect(browser.recentlyClosed.isEmpty)
+        #expect(browser.tabStore.tab(id: favorite) == favoriteRecord)
+        #expect(browser.tabStore.pinnedItems(in: destination, parentID: nil).map(\.id) == destinationOrder + [child])
+        browser.switchSpace(to: destination)
+        #expect(browser.activeTabID == destinationTab)
+        #expect(browser.tabStore.openTabs(in: destination).contains { $0.id == live })
+        try browser.session.validate()
+    }
+
+    @Test func movingEmptyFolderAndRejectingInvalidMovesAreAtomic() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let source = browser.activeSpaceID
+        let folder = try #require(browser.createFolder(name: "Empty"))
+        let destination = try #require(browser.createSpace(name: "Destination"))
+        browser.presentCommandBar(.newTab)
+        browser.updateQuery("keep draft")
+        let bar = browser.commandBar
+        let before = browser.session
+        #expect(!browser.moveFolder(folder, toSpace: source))
+        #expect(!browser.moveFolder(folder, toSpace: UUID()))
+        #expect(!browser.moveFolder(UUID(), toSpace: destination))
+        #expect(browser.session == before && browser.commandBar == bar)
+        #expect(browser.moveFolder(folder, toSpace: destination))
+        #expect(browser.activeTabID == nil && browser.activeSpaceID == source && browser.commandBar == bar)
+        #expect(browser.tabStore.tabs.isEmpty)
+        #expect(browser.tabStore.folders.first?.id == folder && browser.tabStore.folders.first?.spaceID == destination)
+        try browser.session.validate()
+    }
+
+    @Test func movingFolderPrunesSharedSelectionsAndHistoryWithoutChangingOtherWindowLiveURLs() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let source = browser.activeSpaceID
+        let folder = try #require(browser.createFolder(name: "Shared"))
+        let pin = try open(browser, path: "pin")
+        browser.moveTab(pin, toFolder: folder)
+        let destination = try #require(browser.createSpace(name: "Destination"))
+        let child = restore(browser.session.openingWindow(at: home))
+        child.openTab(pin)
+        child.navigate(to: home.appendingPathComponent("window-detour"), target: .currentTab(pin))
+        let closedWindow = restore(browser.session.openingWindow(at: home))
+        closedWindow.openTab(pin)
+        closedWindow.closeTab(pin)
+        #expect(browser.moveFolder(folder, toSpace: destination))
+        #expect(browser.activeSpaceID == source && browser.content == .empty && browser.commandBar == nil)
+        child.synchronizeSavedItems(from: browser.session)
+        closedWindow.synchronizeSavedItems(from: browser.session)
+        #expect(child.activeSpaceID == source && child.activeTabID == nil)
+        #expect(child.tabStore.tab(id: pin)?.currentURL == home.appendingPathComponent("window-detour"))
+        #expect(child.tabStore.tab(id: pin)?.folderID == folder && child.tabStore.tab(id: pin)?.spaceID == destination)
+        #expect(closedWindow.recentlyClosed.isEmpty && closedWindow.reopenLastTab() == nil)
+        try child.session.validate()
+        try closedWindow.session.validate()
+        try browser.session.validate()
     }
 
     @Test func deletionPreservesGlobalFavoritesAndFallbackSelectionButCannotRemoveLastSpace() throws {

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import Foundation
 
 /// Shared bounds for footer, keyboard and swipe navigation. Selection never wraps.
@@ -24,6 +26,27 @@ public enum SpaceNavigation {
         guard limit > 0 else { return 0 }
         let resisted = limit * (1 - 1 / (1 + abs(translation) / limit))
         return (translation < 0 ? -resisted : resisted) / width
+    }
+
+    /// Keep the active page and its immediate neighbors mounted in one stable
+    /// identity domain, including before and after a swipe commits.
+    public static func sidebarPageRange(current: Int, count: Int) -> Range<Int> {
+        guard count > 0, (0..<count).contains(current) else { return 0..<0 }
+        return max(0, current - 1)..<(current < count - 1 ? current + 2 : count)
+    }
+
+    /// Page-width units. At commit, the incoming page stays at zero and the
+    /// outgoing page stays offscreen, without a reset/rebuild frame between.
+    public static func sidebarPagePosition(index: Int, current: Int, progress: Double) -> Double {
+        Double(index) - Double(current) + progress
+    }
+
+    /// Filled at the center, outlined one page away. This continuously follows
+    /// the swipe and has the same value immediately before/after selection.
+    public static func indicatorFill(index: Int, current: Int, count: Int, progress: Double) -> Double {
+        guard (0..<max(0, count)).contains(index), (0..<max(0, count)).contains(current) else { return 0 }
+        let position = min(Double(count - 1), max(0, Double(current) - (progress.isFinite ? progress : 0)))
+        return max(0, 1 - abs(Double(index) - position))
     }
 
     /// Reserve both side controls and, when needed, one overflow control. Keep

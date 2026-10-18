@@ -39,4 +39,4 @@ Do not submit changes you cannot explain or include private data in prompts,
 logs, screenshots, or test results.
 
 By contributing, you agree that your contribution is licensed under the
-project's [MIT license](LICENSE).
+project's [Mozilla Public License 2.0 (MPL-2.0)](LICENSE).

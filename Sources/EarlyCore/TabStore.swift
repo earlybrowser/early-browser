@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import Foundation
 
 /// Ordered metadata for one profile, independent of presentation and live views.
@@ -115,6 +117,41 @@ public struct TabStore: Equatable, Sendable {
         tabs.append(tab)
         if tab.pinnedURL != nil { _ = placePin(id, before: nil) }
         return true
+    }
+
+    /// Transfer an intact saved subtree, appending its root at the destination.
+    /// Build a candidate first so a malformed branch cannot be partially moved.
+    mutating func moveFolder(_ id: UUID, toSpace spaceID: UUID) -> (folderIDs: Set<UUID>, tabIDs: Set<UUID>)? {
+        guard let root = folders.first(where: { $0.id == id }), root.spaceID != spaceID else { return nil }
+        let children = Dictionary(grouping: folders, by: \.parentID)
+        var folderIDs: Set<UUID> = []
+        var pending = [id]
+        while let next = pending.popLast(), folderIDs.insert(next).inserted {
+            pending.append(contentsOf: (children[next] ?? []).map(\.id))
+        }
+        let destinationOrder = pinnedItems(in: spaceID, parentID: nil).map(\.id)
+        var candidate = self
+        for index in candidate.folders.indices where folderIDs.contains(candidate.folders[index].id) {
+            let original = candidate.folders[index]
+            guard original.spaceID == root.spaceID else { return nil }
+            var moved = BrowserFolder(id: original.id, spaceID: spaceID,
+                parentID: original.id == id ? nil : original.parentID, name: original.name,
+                isExpanded: original.isExpanded)
+            moved.sidebarPosition = original.id == id ? nil : original.sidebarPosition
+            candidate.folders[index] = moved
+        }
+        var tabIDs: Set<UUID> = []
+        for index in candidate.tabs.indices {
+            guard let folder = candidate.tabs[index].folderID, folderIDs.contains(folder) else { continue }
+            guard candidate.tabs[index].spaceID == root.spaceID,
+                  candidate.tabs[index].pinnedURL != nil, !candidate.tabs[index].isFavorite else { return nil }
+            candidate.tabs[index].spaceID = spaceID
+            tabIDs.insert(candidate.tabs[index].id)
+        }
+        guard (try? BrowserFolder.validate(candidate.folders)) != nil else { return nil }
+        candidate.assignPositions(destinationOrder + [id])
+        self = candidate
+        return (folderIDs, tabIDs)
     }
 
     mutating func deleteSpace(_ id: UUID, rehomeFavoritesTo fallback: UUID) -> Set<UUID> {

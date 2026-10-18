@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import AppKit
 import EarlyCore
 import EarlyWeb
@@ -132,14 +134,19 @@ struct BrowserWindowView: View {
     }
 
     private var sidebarItems: [SidebarItem] {
-        let pins = folderItems(parent: nil, depth: 0)
-        return (pins.isEmpty && !revealDropSections ? [] : [.pinnedStart] + pins + [.pinnedEnd])
-            + [.divider, .newTab] + model.todayTabs.map { .tab($0, 0) }
+        sidebarItems(in: model.coordinator.activeSpaceID)
     }
 
-    private func folderItems(parent: UUID?, depth: Int) -> [SidebarItem] {
+    private func sidebarItems(in spaceID: UUID) -> [SidebarItem] {
+        let pins = folderItems(in: spaceID, parent: nil, depth: 0)
+        let revealsDropSections = spaceID == model.coordinator.activeSpaceID && revealDropSections
+        return (pins.isEmpty && !revealsDropSections ? [] : [.pinnedStart] + pins + [.pinnedEnd])
+            + [.divider, .newTab] + model.coordinator.tabStore.todayTabs(in: spaceID).map { .tab($0, 0) }
+    }
+
+    private func folderItems(in spaceID: UUID, parent: UUID?, depth: Int) -> [SidebarItem] {
         guard depth <= 32 else { return [] }
-        return model.coordinator.tabStore.pinnedItems(in: model.coordinator.activeSpaceID, parentID: parent).flatMap { item -> [SidebarItem] in
+        return model.coordinator.tabStore.pinnedItems(in: spaceID, parentID: parent).flatMap { item -> [SidebarItem] in
             switch item {
             case .tab(let tab):
                 return [.tab(tab, depth)]
@@ -147,7 +154,7 @@ struct BrowserWindowView: View {
                 var items: [SidebarItem] = [.folder(folder, depth)]
                 let preview = folderPreview(folder)
                 if preview.showsContents {
-                    items += folderItems(parent: folder.id, depth: depth + 1)
+                    items += folderItems(in: spaceID, parent: folder.id, depth: depth + 1)
                 }
                 if preview.showsPanel {
                     items.append(.folderEnd(folder, depth))
@@ -157,12 +164,12 @@ struct BrowserWindowView: View {
         }
     }
 
-    private func folderHasChildren(_ id: UUID) -> Bool {
-        !model.coordinator.tabStore.pinnedItems(in: model.coordinator.activeSpaceID, parentID: id).isEmpty
+    private func folderHasChildren(_ id: UUID, in spaceID: UUID? = nil) -> Bool {
+        !model.coordinator.tabStore.pinnedItems(in: spaceID ?? model.coordinator.activeSpaceID, parentID: id).isEmpty
     }
 
     private func folderPreview(_ folder: BrowserFolder) -> SidebarFolderPreview {
-        SidebarFolderPreview(isExpanded: folder.isExpanded, hasChildren: folderHasChildren(folder.id),
+        SidebarFolderPreview(isExpanded: folder.isExpanded, hasChildren: folderHasChildren(folder.id, in: folder.spaceID),
                              isDragSource: folder.id == draggingTab, receivesSlot: reservedFolderSlot == folder.id)
     }
 
@@ -501,100 +508,124 @@ struct BrowserWindowView: View {
         }
     }
 
-    private var spaceContents: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(model.coordinator.activeSpace?.name ?? "Personal")
+    private func spaceContents(for space: BrowserSpace) -> some View {
+        let active = space.id == model.coordinator.activeSpaceID
+        let items = sidebarItems(in: space.id)
+        let hasPins = !model.coordinator.tabStore.pinnedItems(in: space.id, parentID: nil).isEmpty
+        let selection = model.coordinator.session.selectionBySpace[space.id]
+        return VStack(alignment: .leading, spacing: 16) {
+            Text(space.name)
                 .font(.callout.weight(.medium)).foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
                 .contentTransition(.opacity)
                 .accessibilityAddTraits(.isHeader)
                 .contextMenu {
-                    if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
+                    SpaceActions(model: model, space: space)
                     Button("New Space…") { model.requestNewSpace() }
                 }
-            ScrollView {
-                // Pins and Today share a scroll region: many persistent pins
-                // must not push Today or New Tab outside the reachable sidebar.
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    // One identity domain: moving the same UUID between two
-                    // sibling ForEach collections can retain a stale lazy row.
-                    ForEach(sidebarItems) { item in
-                        Group {
-                        switch item {
-                        case .pinnedStart:
+            ScrollViewReader { scroll in
+                ScrollView {
+                    // Pins and Today share a scroll region: many persistent pins
+                    // must not push Today or New Tab outside the reachable sidebar.
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        // One identity domain: moving the same UUID between two
+                        // sibling ForEach collections can retain a stale lazy row.
+                        ForEach(items) { item in
                             Group {
-                                if pinnedOutline.isEmpty {
-                                    Text("Pins").font(.callout).foregroundStyle(.secondary)
-                                        .frame(maxWidth: .infinity).frame(height: 34)
-                                        .accessibilityIdentifier("sidebar.pinned.dropTarget")
-                                } else {
-                                    Color.clear.frame(height: 4).accessibilityHidden(true)
+                            switch item {
+                            case .pinnedStart:
+                                Group {
+                                    if !hasPins {
+                                        Text("Pins").font(.callout).foregroundStyle(.secondary)
+                                            .frame(maxWidth: .infinity).frame(height: 34)
+                                            .accessibilityIdentifier("sidebar.pinned.dropTarget")
+                                    } else {
+                                        Color.clear.frame(height: 4).accessibilityHidden(true)
+                                    }
                                 }
+                                    .background(dropArea("pinned"))
+                            case .pinnedEnd:
+                                Color.clear.frame(height: active && hasPins && needsPinInsertionSpace(in: nil) ? 38 : 4)
+                                    .background(dropArea("pinnedEnd"))
+                                    .accessibilityHidden(true)
+                            case .divider:
+                                Divider().padding(.vertical, 8)
+                                    .background(dropArea("divider"))
+                            case .newTab:
+                                newTabButton
+                                    .background(dropArea("regular"))
+                            case .tab(let tab, let depth):
+                                tabRow(tab, selected: tab.id == selection, requestsArtwork: active)
+                                    .padding(.leading, CGFloat(min(depth, 8)) * 12)
+                                    .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+                            case .folder(let folder, let depth):
+                                folderRow(folder).padding(.leading, CGFloat(min(depth, 8)) * 12)
+                                    .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+                            case .folderEnd(let folder, let depth):
+                                Color.clear.frame(height: folderPreview(folder).footerHeight)
+                                    .padding(.leading, CGFloat(min(depth, 8)) * 12)
+                                    .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+                                    .anchorPreference(key: FolderBoundaries.self, value: .bounds) {
+                                        [.end(folder.id): $0]
+                                    }
+                                    .offset(previewOffset(folder.id))
+                                    .animation(draggingTab == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
+                                    .background(dropArea("folderEnd.\(folder.id)"))
+                                    .accessibilityHidden(true)
                             }
-                                .background(dropArea("pinned"))
-                        case .pinnedEnd:
-                            Color.clear.frame(height: !pinnedOutline.isEmpty && needsPinInsertionSpace(in: nil) ? 38 : 4)
-                                .background(dropArea("pinnedEnd"))
-                                .accessibilityHidden(true)
-                        case .divider:
-                            Divider().padding(.vertical, 8)
-                                .background(dropArea("divider"))
-                        case .newTab:
-                            newTabButton
-                                .background(dropArea("regular"))
-                        case .tab(let tab, let depth):
-                            tabRow(tab).padding(.leading, CGFloat(min(depth, 8)) * 12)
-                                .padding(.trailing, CGFloat(min(depth, 8)) * 4)
-                        case .folder(let folder, let depth):
-                            folderRow(folder).padding(.leading, CGFloat(min(depth, 8)) * 12)
-                                .padding(.trailing, CGFloat(min(depth, 8)) * 4)
-                        case .folderEnd(let folder, let depth):
-                            Color.clear.frame(height: folderPreview(folder).footerHeight)
-                                .padding(.leading, CGFloat(min(depth, 8)) * 12)
-                                .padding(.trailing, CGFloat(min(depth, 8)) * 4)
-                                .anchorPreference(key: FolderBoundaries.self, value: .bounds) {
-                                    [.end(folder.id): $0]
-                                }
-                                .offset(previewOffset(folder.id))
-                                .animation(draggingTab == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
-                                .background(dropArea("folderEnd.\(folder.id)"))
-                                .accessibilityHidden(true)
+                            }
+                            // Keep the gesture mounted while neighboring rows fill
+                            // its old space. Only the destination owns a drop slot.
+                            .transition(.opacity)
+                            .frame(height: vacatesSourceRow(item) ? 0 : nil)
+                            .padding(.bottom, vacatesSourceRow(item) || item.id == items.last?.id ? 0 : 4)
+                            .animation(folderDragAnimation, value: vacatesSourceRow(item))
+                            .id(item.id)
                         }
-                        }
-                        // Keep the gesture mounted while neighboring rows fill
-                        // its old space. Only the destination owns a drop slot.
-                        .transition(.opacity)
-                        .frame(height: vacatesSourceRow(item) ? 0 : nil)
-                        .padding(.bottom, vacatesSourceRow(item) || item.id == sidebarItems.last?.id ? 0 : 4)
-                        .animation(folderDragAnimation, value: vacatesSourceRow(item))
+                    }
+                    .backgroundPreferenceValue(FolderBoundaries.self) { anchors in
+                        pinnedGroupBackgrounds(anchors: anchors)
                     }
                 }
-                .backgroundPreferenceValue(FolderBoundaries.self) { anchors in
-                    pinnedGroupBackgrounds(anchors: anchors)
+                .frame(maxHeight: .infinity)
+                .accessibilityIdentifier(active ? "sidebar.tabs" : "sidebar.tabs.preview.\(space.id)")
+                .background(sectionFrame(favorites: false))
+                .task(id: active ? model.sidebarReveal?.id : nil) {
+                    guard let request = model.sidebarReveal, request.spaceID == space.id else { return }
+                    // Let the moved row enter the destination's lazy layout first.
+                    await Task.yield()
+                    guard !Task.isCancelled, model.coordinator.activeSpaceID == space.id,
+                          model.sidebarReveal?.id == request.id else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                        scroll.scrollTo(request.itemID, anchor: .center)
+                    }
+                    model.sidebarReveal = nil
                 }
             }
-            .frame(maxHeight: .infinity)
-            .accessibilityIdentifier("sidebar.tabs")
-            .background(sectionFrame(favorites: false))
-            .id(model.coordinator.activeSpaceID)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Neighboring pages keep the same rows and native scroll view when
+        // selected, but cannot receive input or publish active drag geometry.
+        .disabled(!active)
+        .allowsHitTesting(active && model.spaceSwipeProgress == 0 && !model.spaceSwipeIsSettling)
+        .accessibilityHidden(!active)
+        .transformPreference(SidebarFrames.self) { if !active { $0 = [:] } }
     }
 
     private var spacePager: some View {
         GeometryReader { geometry in
             let progress = reduceMotion ? 0 : model.spaceSwipeProgress
-            let direction = reduceMotion ? 0 : model.spaceSwipePreviewDirection
-            let offset = CGFloat(progress) * geometry.size.width
+            let activeIndex = model.activeSpaceIndex
+            let range = SpaceNavigation.sidebarPageRange(current: activeIndex, count: model.coordinator.spaces.count)
             ZStack(alignment: .topLeading) {
-                spaceContents
-                    .offset(x: offset)
-                if direction < 0, model.activeSpaceIndex > 0 {
-                    SpaceSidebarPreview(model: model, space: model.coordinator.spaces[model.activeSpaceIndex - 1])
-                        .offset(x: offset - geometry.size.width)
-                } else if direction > 0, model.activeSpaceIndex + 1 < model.coordinator.spaces.count {
-                    SpaceSidebarPreview(model: model, space: model.coordinator.spaces[model.activeSpaceIndex + 1])
-                        .offset(x: offset + geometry.size.width)
+                // Identity belongs to the Space, not to its role as the active
+                // page or preview. A completed swipe only changes offsets; it
+                // never replaces the arriving page with a fresh lazy list.
+                ForEach(Array(model.coordinator.spaces.enumerated()).filter { range.contains($0.offset) }, id: \.element.id) { index, space in
+                    spaceContents(for: space)
+                        .offset(x: CGFloat(SpaceNavigation.sidebarPagePosition(index: index, current: activeIndex,
+                            progress: progress)) * geometry.size.width)
+                        .transition(.identity)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -607,18 +638,18 @@ struct BrowserWindowView: View {
         SpaceFooter(model: model)
     }
 
-    private func tabRow(_ tab: BrowserTab) -> some View {
-        let selected = model.coordinator.activeTabID == tab.id
+    private func tabRow(_ tab: BrowserTab, selected: Bool, requestsArtwork: Bool) -> some View {
         let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
         return HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
             if tab.pinnedURL != nil {
                 PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
-                              reset: { model.resetPinnedTab(tab.id) })
+                              reset: { model.resetPinnedTab(tab.id) }, requestsArtwork: requestsArtwork)
             }
             Button { model.selectTab(tab.id) } label: {
                 HStack(spacing: tab.hasNavigatedFromPin ? 3 : 8) {
                     if tab.pinnedURL == nil {
-                        TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id], size: 16)
+                        TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
+                                   size: 16, requestsArtwork: requestsArtwork)
                     }
                     if tab.hasNavigatedFromPin {
                         Text("/").foregroundStyle(.tertiary).accessibilityHidden(true)
@@ -635,7 +666,7 @@ struct BrowserWindowView: View {
                 .padding(.vertical, 8)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SidebarButtonStyle())
             .focused($focusedSidebarControl, equals: .tab(tab.id))
             .accessibilityIdentifier("tab.\(tab.id)")
             .accessibilityLabel(tab.displayTitle)
@@ -653,7 +684,7 @@ struct BrowserWindowView: View {
                                     in: RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                 }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SidebarButtonStyle())
                     .focused($focusedSidebarControl, equals: .close(tab.id))
                     .accessibilityIdentifier("tabClose.\(tab.id)")
                     .accessibilityLabel("Close \(tab.displayTitle)")
@@ -706,6 +737,7 @@ struct BrowserWindowView: View {
                         .disabled(space.id == tab.spaceID)
                 }
             }
+            .disabled(!model.canManageSpaces || model.coordinator.spaces.count <= 1)
             Menu("Move to Folder") {
                 Button("Top Level") { _ = model.coordinator.moveTab(tab.id, toFolder: nil); model.save() }
                     .disabled(tab.folderID == nil)
@@ -886,6 +918,7 @@ struct BrowserWindowView: View {
         let favicons: FaviconStore
         let page: BrowserPage?
         let reset: () -> Void
+        var requestsArtwork = true
         @State private var hovered = false
         @FocusState private var focused: Bool
 
@@ -897,7 +930,8 @@ struct BrowserWindowView: View {
                     if canReset && (hovered || focused) {
                         Image(systemName: "arrow.uturn.backward")
                     } else {
-                        TabArtwork(tab: tab, store: favicons, page: page, size: 16, fallback: "pin")
+                        TabArtwork(tab: tab, store: favicons, page: page, size: 16, fallback: "pin",
+                                   requestsArtwork: requestsArtwork)
                     }
                 }
                     .font(.system(size: 13, weight: .medium))
@@ -907,7 +941,7 @@ struct BrowserWindowView: View {
                                 in: RoundedRectangle(cornerRadius: 7))
                     .contentShape(Rectangle())
             }
-            .buttonStyle(PinIconStyle())
+            .buttonStyle(SidebarButtonStyle())
             .disabled(!canReset)
             .focused($focused)
             .overlay {
@@ -922,9 +956,9 @@ struct BrowserWindowView: View {
         }
     }
 
-    /// Being at the saved URL disables the reset action, not the page itself.
-    /// PlainButtonStyle dims disabled labels, which made active pins look idle.
-    private struct PinIconStyle: ButtonStyle {
+    /// Disabled neighbor pages and unavailable pin-reset actions stay visually
+    /// unchanged. PlainButtonStyle would dim them, then flash on selection.
+    private struct SidebarButtonStyle: ButtonStyle {
         func makeBody(configuration: Configuration) -> some View {
             configuration.label.opacity(configuration.isPressed ? 0.8 : 1)
         }
@@ -939,10 +973,11 @@ struct BrowserWindowView: View {
         let size: CGFloat
         var fallback = "globe"
         var monogram: String?
+        var requestsArtwork = true
 
         var body: some View {
             SiteIcon(url: tab.pinnedURL ?? tab.currentURL, store: store, size: size,
-                     fallback: fallback, monogram: monogram)
+                     fallback: fallback, monogram: monogram, requestsArtwork: requestsArtwork)
             .frame(width: size, height: size)
             // The parent button supplies the accessible name and status.
             .accessibilityHidden(true)
@@ -955,6 +990,7 @@ struct BrowserWindowView: View {
         let size: CGFloat
         var fallback = "globe"
         var monogram: String?
+        var requestsArtwork = true
 
         var body: some View {
             Group {
@@ -968,7 +1004,9 @@ struct BrowserWindowView: View {
             }
             .frame(width: size, height: size)
             .accessibilityHidden(true)
-            .task(id: url) { store.request(url) }
+            .task(id: requestsArtwork ? url : nil) {
+                if requestsArtwork { store.request(url) }
+            }
         }
     }
 
@@ -1002,7 +1040,7 @@ struct BrowserWindowView: View {
                     .contentShape(Rectangle())
                     .accessibilityHidden(true)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SidebarButtonStyle())
             .focused($focusedSidebarControl, equals: .folderToggle(folder.id))
             .accessibilityIdentifier("folderToggle.\(folder.id)")
             .accessibilityLabel("\(isFolderOpen(folder) ? "Collapse" : "Expand") \(folder.name)")
@@ -1018,7 +1056,7 @@ struct BrowserWindowView: View {
                 // puts its top-edge drag target inside the folder retention band.
                 .frame(height: 34).contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SidebarButtonStyle())
             .focused($focusedSidebarControl, equals: .folder(folder.id))
             .accessibilityIdentifier("folder.\(folder.id)")
             .accessibilityLabel(folder.name)
@@ -1052,6 +1090,18 @@ struct BrowserWindowView: View {
             Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
                 .disabled(!model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID))
             Button("Rename Folder…") { editFolder(folder, parent: folder.parentID) }
+            Menu("Move to Space") {
+                ForEach(model.coordinator.spaces) { space in
+                    Button(space.name) {
+                        endDrag()
+                        hoveredFolder = nil
+                        focusedSidebarControl = nil
+                        _ = model.moveFolder(folder.id, toSpace: space.id)
+                    }
+                    .disabled(space.id == folder.spaceID)
+                }
+            }
+            .disabled(!model.canManageSpaces || model.coordinator.spaces.count <= 1)
             Menu("Move Folder") {
                 Button("Top Level") { _ = model.coordinator.moveFolder(folder.id, to: nil); model.save() }
                     .disabled(folder.parentID == nil)
@@ -1811,7 +1861,7 @@ struct BrowserWindowView: View {
             .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SidebarButtonStyle())
         .accessibilityIdentifier("sidebar.newTab")
         .help("Open the command bar (Command-T)")
     }

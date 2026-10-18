@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import EarlyCore
 import SwiftUI
 
@@ -60,15 +62,16 @@ struct SpaceFooter: View {
                             }
                         }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SpaceControlStyle())
                 .accessibilityLabel("New Space")
                 .accessibilityIdentifier("space.new")
                 .help("New Space")
                 .disabled(!model.canManageSpaces)
             }
             HStack(spacing: 2) {
-                ForEach(Array(model.coordinator.spaces.enumerated()).filter { visibleRange.contains($0.offset) }, id: \.element.id) { _, space in
-                    spaceDot(space)
+                ForEach(Array(model.coordinator.spaces.enumerated()).filter { visibleRange.contains($0.offset) }, id: \.element.id) { index, space in
+                    spaceDot(space, index: index)
+                        .transition(.opacity)
                 }
                 if visibleRange.count < model.coordinator.spaces.count {
                     Menu {
@@ -93,6 +96,12 @@ struct SpaceFooter: View {
                 }
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.coordinator.activeSpaceID)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: visibleRange)
+            .transaction {
+                // The page handoff disables offset-reset animations. Footer
+                // selection/overflow transitions remain independently smooth.
+                $0.disablesAnimations = reduceMotion
+            }
         }
         .frame(height: 32)
         .padding(.horizontal, 6)
@@ -137,12 +146,17 @@ struct SpaceFooter: View {
 
     private var deletingSpace: BrowserSpace? { model.coordinator.spaces.first { $0.id == model.spaceDeletionID } }
 
-    private func spaceDot(_ space: BrowserSpace) -> some View {
+    private func spaceDot(_ space: BrowserSpace, index: Int) -> some View {
         let selected = space.id == model.coordinator.activeSpaceID
+        let fill = SpaceNavigation.indicatorFill(index: index, current: model.activeSpaceIndex,
+            count: model.coordinator.spaces.count, progress: reduceMotion ? 0 : model.spaceSwipeProgress)
         return Button { _ = model.switchSpace(to: space.id) } label: {
-            Circle().fill(space.color.tint)
-                .saturation(selected ? 1 : 0.5)
-                .frame(width: 16, height: 16)
+            Circle().strokeBorder(space.color.tint, lineWidth: 1.5)
+                .overlay {
+                    Circle().fill(space.color.tint).opacity(fill)
+                }
+                .saturation(0.4)
+                .frame(width: 14, height: 14)
                 .frame(width: 24, height: 28)
                 .contentShape(Rectangle())
                 .overlay {
@@ -151,7 +165,7 @@ struct SpaceFooter: View {
                     }
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SpaceControlStyle())
         .focused($focusedSpace, equals: space.id)
         .disabled(!model.canManageSpaces)
         .accessibilityLabel(space.name)
@@ -164,6 +178,14 @@ struct SpaceFooter: View {
             Divider()
             Button("New Space…") { model.requestNewSpace() }
         }
+    }
+}
+
+/// Swipes briefly lock controls while settling. Keep their colors unchanged
+/// during that lock instead of PlainButtonStyle's dim/restore flash.
+private struct SpaceControlStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.8 : 1)
     }
 }
 
@@ -255,126 +277,5 @@ private struct SpaceEditorSheet: View {
         }
         if success { model.spaceEditor = nil }
         else { error = "Could not save this Space. It may have been removed in another window." }
-    }
-}
-
-/// A non-interactive neighboring page during a swipe. Read cached artwork and
-/// saved organization only: previewing must never fetch icons or load web pages.
-struct SpaceSidebarPreview: View {
-    let model: BrowserWindowModel
-    let space: BrowserSpace
-
-    private var selectedTab: UUID? { model.coordinator.session.selectionBySpace[space.id] }
-
-    private enum Item: Identifiable {
-        case bookend(String), divider, newTab
-        case tab(BrowserTab, Int), folder(BrowserFolder, Int), folderEnd(UUID)
-
-        var id: String {
-            switch self {
-            case .bookend(let name): name
-            case .divider: "divider"
-            case .newTab: "new-tab"
-            case .tab(let tab, _): "tab-\(tab.id)"
-            case .folder(let folder, _): "folder-\(folder.id)"
-            case .folderEnd(let id): "folder-end-\(id)"
-            }
-        }
-    }
-
-    private func folderItems(parent: UUID? = nil, depth: Int = 0) -> [Item] {
-        guard depth <= 32 else { return [] }
-        return model.coordinator.tabStore.pinnedItems(in: space.id, parentID: parent).flatMap { item -> [Item] in
-            switch item {
-            case .tab(let tab): return [.tab(tab, depth)]
-            case .folder(let folder):
-                let children = folder.isExpanded ? folderItems(parent: folder.id, depth: depth + 1) : []
-                return [.folder(folder, depth)] + children + (children.isEmpty ? [] : [.folderEnd(folder.id)])
-            }
-        }
-    }
-
-    private var items: [Item] {
-        let pins = folderItems()
-        return (pins.isEmpty ? [] : [.bookend("pinned-start")] + pins + [.bookend("pinned-end")])
-            + [.divider, .newTab]
-            + model.coordinator.tabStore.todayTabs(in: space.id).map { .tab($0, 0) }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(space.name).font(.callout.weight(.medium)).foregroundStyle(.secondary).padding(.horizontal, 8)
-            ScrollView {
-                // Match the live sidebar's fonts, row heights, nesting and end
-                // spacers so settling the swipe never changes the layout.
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(items) { item in
-                        row(item).padding(.bottom, item.id == items.last?.id ? 0 : 4)
-                    }
-                }
-            }
-            .frame(maxHeight: .infinity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .allowsHitTesting(false).accessibilityHidden(true)
-    }
-
-    @ViewBuilder private func row(_ item: Item) -> some View {
-        switch item {
-        case .bookend: Color.clear.frame(height: 4)
-        case .folderEnd: Color.clear.frame(height: 6)
-        case .divider: Divider().padding(.vertical, 8)
-        case .newTab:
-            HStack {
-                Label("New Tab", systemImage: "plus")
-                Spacer()
-                Text("⌘T").foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 8)
-        case .folder(let folder, let depth):
-            HStack(spacing: 6) {
-                FolderIcon(isOpen: folder.isExpanded)
-                    .frame(width: 19, height: 20).padding(.vertical, 7)
-                HStack {
-                    Text(folder.name).lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .frame(height: 34)
-            }
-            .padding(.horizontal, 6)
-            .padding(.leading, CGFloat(min(depth, 8)) * 12)
-            .padding(.trailing, CGFloat(min(depth, 8)) * 4)
-        case .tab(let tab, let depth):
-            HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
-                if tab.pinnedURL != nil {
-                    artwork(tab).font(.system(size: 13, weight: .medium))
-                        .frame(width: 34, height: 34)
-                }
-                HStack(spacing: tab.hasNavigatedFromPin ? 3 : 8) {
-                    if tab.pinnedURL == nil { artwork(tab) }
-                    if tab.hasNavigatedFromPin { Text("/").foregroundStyle(.tertiary) }
-                    if model.webViews.pages[tab.id]?.isPlayingMedia == true {
-                        Image(systemName: "speaker.wave.2.fill").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text(tab.displayTitle).lineLimit(1).truncationMode(.tail)
-                    Spacer(minLength: 0)
-                }
-                .padding(.vertical, 8)
-            }
-            .foregroundStyle(tab.isOpen ? .primary : .secondary)
-            .padding(.leading, tab.pinnedURL == nil ? 8 : 0).padding(.trailing, 8)
-            .background(Color.primary.opacity(tab.id == selectedTab ? 0.08 : 0),
-                        in: RoundedRectangle(cornerRadius: tab.pinnedURL == nil ? 7 : 10))
-            .padding(.leading, CGFloat(min(depth, 8)) * 12)
-            .padding(.trailing, CGFloat(min(depth, 8)) * 4)
-        }
-    }
-
-    @ViewBuilder private func artwork(_ tab: BrowserTab) -> some View {
-        if let image = model.webViews.favicons.image(for: tab.pinnedURL ?? tab.currentURL) {
-            Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16)
-        } else {
-            Image(systemName: tab.pinnedURL == nil ? "globe" : "pin").frame(width: 16, height: 16)
-        }
     }
 }

@@ -1,7 +1,54 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import Testing
 @testable import EarlyCore
 
 struct SpaceNavigationTests {
+    @Test func indicatorFillFollowsBothSwipeDirectionsAndKeepsBoundarySelection() {
+        #expect(SpaceNavigation.indicatorFill(index: 1, current: 1, count: 3, progress: -0.25) == 0.75)
+        #expect(SpaceNavigation.indicatorFill(index: 2, current: 1, count: 3, progress: -0.25) == 0.25)
+        #expect(SpaceNavigation.indicatorFill(index: 1, current: 1, count: 3, progress: 0.25) == 0.75)
+        #expect(SpaceNavigation.indicatorFill(index: 0, current: 1, count: 3, progress: 0.25) == 0.25)
+        #expect(SpaceNavigation.indicatorFill(index: 0, current: 0, count: 3, progress: 0.2) == 1)
+        #expect(SpaceNavigation.indicatorFill(index: 2, current: 2, count: 3, progress: -0.2) == 1)
+        #expect(SpaceNavigation.indicatorFill(index: 0, current: 0, count: 1, progress: -0.2) == 1)
+        #expect(SpaceNavigation.indicatorFill(index: 1, current: 1, count: 3, progress: .nan) == 1)
+        #expect(SpaceNavigation.indicatorFill(index: 0, current: 0, count: 0, progress: 0) == 0)
+    }
+
+    @Test func sidebarPagesStayBoundedAndIncludeBothNeighbors() {
+        #expect(SpaceNavigation.sidebarPageRange(current: 0, count: 0).isEmpty)
+        #expect(SpaceNavigation.sidebarPageRange(current: -1, count: 3).isEmpty)
+        #expect(SpaceNavigation.sidebarPageRange(current: 3, count: 3).isEmpty)
+        #expect(SpaceNavigation.sidebarPageRange(current: 0, count: 1) == 0..<1)
+        #expect(SpaceNavigation.sidebarPageRange(current: 0, count: 5) == 0..<2)
+        #expect(SpaceNavigation.sidebarPageRange(current: 2, count: 5) == 1..<4)
+        #expect(SpaceNavigation.sidebarPageRange(current: 4, count: 5) == 3..<5)
+    }
+
+    @Test func committedSwipeRetainsTheIncomingAndOutgoingPagePositions() {
+        for count in [2, 3, 6] {
+            for source in 0..<count {
+                for delta in [-1, 1] {
+                    guard let target = SpaceNavigation.targetIndex(current: source, count: count, delta: delta) else { continue }
+                    let before = SpaceNavigation.sidebarPageRange(current: source, count: count)
+                    let after = SpaceNavigation.sidebarPageRange(current: target, count: count)
+                    // The same Space identities exist on both sides of commit.
+                    #expect(before.contains(target) && after.contains(target))
+                    #expect(before.contains(source) && after.contains(source))
+                    for page in [source, target] {
+                        let arriving = SpaceNavigation.sidebarPagePosition(index: page, current: source, progress: -Double(delta))
+                        let committed = SpaceNavigation.sidebarPagePosition(index: page, current: target, progress: 0)
+                        #expect(arriving == committed)
+                        #expect(SpaceNavigation.indicatorFill(index: page, current: source, count: count, progress: -Double(delta))
+                            == SpaceNavigation.indicatorFill(index: page, current: target, count: count, progress: 0))
+                    }
+                    #expect(SpaceNavigation.sidebarPagePosition(index: target, current: target, progress: 0) == 0)
+                }
+            }
+        }
+    }
+
     @Test func sidebarTravelTracksFingersAndResistsOnlyTheBoundaries() {
         #expect(SpaceNavigation.sidebarTravel(translation: -60, width: 240, canGoPrevious: true, canGoNext: true) == -0.25)
         #expect(SpaceNavigation.sidebarTravel(translation: 120, width: 240, canGoPrevious: true, canGoNext: true) == 0.5)

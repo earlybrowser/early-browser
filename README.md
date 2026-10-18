@@ -46,11 +46,6 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 
 Early uses a Safari-compatible browser identity to improve website compatibility.
 
-Use `⌘⌥N` to create a Space, `⌘⌥←` / `⌘⌥→` to switch, `⌘⌥1`–`⌘⌥8` to
-select a Space, and `⌘⌥9` for the last Space. Right-click a Space dot for management
-actions, or use the Space menu. Swipe horizontally over the sidebar to switch;
-a longer swipe past the last Space opens the creation sheet on release.
-
 ## Commands
 
 Run all commands from the repository root directory (`early-browser`):
@@ -108,4 +103,6 @@ Package and native UI tests run in GitHub Actions on pull requests and pushes to
 
 ## License
 
-[MIT](LICENSE)
+[Mozilla Public License 2.0 (MPL-2.0)](LICENSE).
+
+Copyright (c) 2026 rangaNP.

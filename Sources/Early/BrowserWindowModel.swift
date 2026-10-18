@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 import AppKit
 import EarlyCore
 import EarlyWeb
@@ -24,6 +26,11 @@ final class BrowserWindowModel {
             switch kind { case .copiedURL: "browser.copiedURL"; case .newTab: "browser.newTabCreated" }
         }
     }
+    struct SidebarReveal: Equatable {
+        let id = UUID()
+        let spaceID: UUID
+        let itemID: String
+    }
     let coordinator: BrowserCoordinator
     let webViews: WebViewManager
     let input: NavigationInput
@@ -33,11 +40,11 @@ final class BrowserWindowModel {
     var notice: String?
     var toast: Toast?
     var sidebarIsHidden = false
+    var sidebarReveal: SidebarReveal?
     var spaceEditor: SpaceEditor?
     var spaceDeletionID: UUID?
     var spaceSwipeCreationProgress = 0.0
     var spaceSwipeProgress = 0.0
-    var spaceSwipePreviewDirection = 0
     var spaceSwipeIsSettling = false
     @ObservationIgnored private var spaceSwipeSettleTask: Task<Void, Never>?
     @ObservationIgnored private var spaceSwipeRevision = UUID()
@@ -142,6 +149,7 @@ final class BrowserWindowModel {
     var todayTabs: [BrowserTab] { coordinator.tabStore.todayTabs(in: coordinator.activeSpaceID) }
 
     func presentCommandBar(_ intent: CommandBarIntent) {
+        sidebarReveal = nil
         cancelSpaceSwipePresentation()
         suggestions.cancel()
         submissionMessage = nil
@@ -208,6 +216,7 @@ final class BrowserWindowModel {
     }
 
     func selectTab(_ id: UUID) {
+        sidebarReveal = nil
         cancelSpaceSwipePresentation()
         guard coordinator.openTab(id) else { return }
         activateSelection()
@@ -330,6 +339,7 @@ final class BrowserWindowModel {
     @discardableResult
     func switchSpace(to id: UUID) -> Bool {
         guard id != coordinator.activeSpaceID, !sidebarInteractionInProgress else { return false }
+        sidebarReveal = nil
         cancelSpaceSwipePresentation()
         guard coordinator.switchSpace(to: id) else { return false }
         suggestions.cancel()
@@ -355,7 +365,6 @@ final class BrowserWindowModel {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             spaceSwipeProgress = progress
-            spaceSwipePreviewDirection = progress < 0 ? 1 : (progress > 0 ? -1 : 0)
         }
     }
 
@@ -367,7 +376,6 @@ final class BrowserWindowModel {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             spaceSwipeProgress = 0
-            spaceSwipePreviewDirection = 0
             spaceSwipeCreationProgress = 0
             spaceSwipeIsSettling = false
         }
@@ -407,7 +415,6 @@ final class BrowserWindowModel {
                 self.spaceSwipeIsSettling = false
                 self.spaceSwipeSettleTask = nil
                 self.spaceSwipeProgress = 0
-                self.spaceSwipePreviewDirection = 0
                 guard contextMatches, self.canManageSpaces else { return }
                 if let target { _ = self.switchSpace(to: target) }
                 else if action == .create { self.requestNewSpace() }
@@ -470,13 +477,33 @@ final class BrowserWindowModel {
 
     @discardableResult
     func moveTab(_ id: UUID, toSpace spaceID: UUID) -> Bool {
+        cancelSpaceSwipePresentation()
         let previous = coordinator.activeTabID
-        guard coordinator.moveTab(id, toSpace: spaceID) else { return false }
-        if previous != coordinator.activeTabID { activateSelection() }
-        // The moved tab retains its existing live view; moving alone never
-        // prepares a destination page or switches this window's Space.
-        save()
+        let previousSpace = coordinator.activeSpaceID
+        guard coordinator.moveTab(id, toSpace: spaceID, follow: true) else { return false }
+        finishSpaceMove(from: previousSpace, previousTab: previous, revealing: "tab-\(id)")
         return true
+    }
+
+    @discardableResult
+    func moveFolder(_ id: UUID, toSpace spaceID: UUID) -> Bool {
+        cancelSpaceSwipePresentation()
+        let previous = coordinator.activeTabID
+        let previousSpace = coordinator.activeSpaceID
+        guard coordinator.moveFolder(id, toSpace: spaceID, follow: true) else { return false }
+        finishSpaceMove(from: previousSpace, previousTab: previous, revealing: "folder-\(id)")
+        return true
+    }
+
+    private func finishSpaceMove(from previousSpace: UUID, previousTab: UUID?, revealing itemID: String) {
+        suggestions.cancel()
+        submissionMessage = nil
+        if previousTab != coordinator.activeTabID || previousSpace != coordinator.activeSpaceID { activateSelection() }
+        sidebarReveal = SidebarReveal(spaceID: coordinator.activeSpaceID, itemID: itemID)
+        // Reuse moved live views; following never opens a closed pin or loads
+        // every page in a folder. Only the final destination state is saved.
+        save()
+        if previousSpace != coordinator.activeSpaceID { BrowserHaptics.alignment() }
     }
 
     func activateSelection() {
