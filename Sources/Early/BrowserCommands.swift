@@ -59,6 +59,10 @@ struct BrowserCommands: Commands {
             .disabled(model?.activeTab?.pinnedURL == nil)
         }
         CommandMenu("Navigate") {
+            Button("Copy Current URL") { model?.copyCurrentURL() }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(model?.currentPageURL == nil)
+            Divider()
             Button("Back") { model?.back() }.keyboardShortcut("[")
                 .disabled(model?.activePage?.canGoBack != true)
             Button("Forward") { model?.forward() }.keyboardShortcut("]")

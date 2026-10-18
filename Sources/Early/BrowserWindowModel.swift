@@ -13,6 +13,7 @@ final class BrowserWindowModel {
     let isTesting: Bool
     var submissionMessage: String?
     var notice: String?
+    var copiedURLNoticeID: UUID?
     var renamingTabID: UUID?
     var renameText = ""
     var contentFocusRequest = 0
@@ -115,10 +116,24 @@ final class BrowserWindowModel {
         coordinator.presentCommandBar(intent)
     }
 
-    func dismissCommandBar() {
+    var currentPageURL: URL? { activePage?.view.url ?? activeTab?.currentURL }
+
+    func copyCurrentURL() {
+        guard let url = currentPageURL else { return }
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(url.absoluteString, forType: .string) else { return }
+        // A new identity restarts the confirmation lifetime on repeated copies.
+        copiedURLNoticeID = UUID()
+        if let window = NSApp.keyWindow {
+            NSAccessibility.post(element: window, notification: .announcementRequested,
+                userInfo: [.announcement: "Copied Current URL", .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        }
+    }
+
+    func dismissCommandBar(restoreFocus: Bool = true) {
         suggestions.cancel()
         coordinator.dismissCommandBar()
-        contentFocusRequest += 1
+        if restoreFocus { contentFocusRequest += 1 }
     }
 
     func refreshSuggestions() {

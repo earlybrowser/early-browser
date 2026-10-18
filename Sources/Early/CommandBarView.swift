@@ -10,6 +10,7 @@ struct CommandBarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -74,14 +75,16 @@ struct CommandBarView: View {
             if reduceTransparency || contrast == .increased {
                 RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .controlBackgroundColor))
             } else {
-                RoundedRectangle(cornerRadius: 16).fill(.regularMaterial)
+                RoundedRectangle(cornerRadius: 16).fill(.thickMaterial)
             }
         }
         .overlay {
             RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(.primary.opacity(contrast == .increased ? 0.35 : 0.10), lineWidth: 1)
+                .strokeBorder(.primary.opacity(contrast == .increased ? 0.55 : 0.24), lineWidth: 1)
+                .allowsHitTesting(false)
         }
-        .shadow(color: .black.opacity(0.12), radius: 24, y: 8)
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.40 : 0.22), radius: 24, y: 10)
+        .shadow(color: .black.opacity(0.16), radius: 3, y: 1)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.results.count)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.unavailable)
         .task(id: model.coordinator.commandBarFocusRequest) {
@@ -202,8 +205,14 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
                 if self.bounds.contains(localPoint) {
                     return event
                 } else {
-                    model.dismissCommandBar()
-                    return nil
+                    // Let this very click reach its original destination. Do
+                    // not queue a web-content focus request that could steal
+                    // focus from the sidebar control or page field it selects.
+                    if let editor = self.fieldEditor, window.firstResponder === editor {
+                        window.makeFirstResponder(nil)
+                    }
+                    model.dismissCommandBar(restoreFocus: false)
+                    return event
                 }
             }
         }
