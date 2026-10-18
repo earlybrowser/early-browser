@@ -165,6 +165,22 @@ public final class BrowserCoordinator {
 
     public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
 
+    /// Replace a window's metadata after an atomic workspace operation. Runtime
+    /// views are owned by its profile's manager and are reconciled by the caller.
+    @discardableResult
+    public func applySession(_ session: BrowserSession, using input: NavigationInput = NavigationInput()) -> Bool {
+        guard session.profileID == profileID, (try? session.validate(using: input)) != nil else { return false }
+        tabStore = TabStore(tabs: session.tabs, folders: session.folders)
+        spaces = session.spaces
+        activeSpaceID = session.activeSpaceID
+        selectionBySpace = session.selectionBySpace
+        recentlyClosed = session.recentlyClosed
+        pruneSelections()
+        restoreSelection()
+        dismissCommandBar()
+        return true
+    }
+
     /// Share saved organization, never another window's Today tabs, selection,
     /// open/closed state, or live page URL. Call only for the same profile.
     public func synchronizeSavedItems(from source: BrowserSession) {
