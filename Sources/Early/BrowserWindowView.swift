@@ -279,13 +279,8 @@ struct BrowserWindowView: View {
 
             if model.coordinator.commandBar != nil {
                 ZStack(alignment: .top) {
-                    Color.black.opacity(0.001)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            model.dismissCommandBar()
-                        }
-                        .accessibilityHidden(true)
+                    // Only the card intercepts input. Outside clicks dismiss
+                    // through its event monitor; scrolls reach the live page.
                     GeometryReader { geometry in
                         CommandBarView(model: model, suggestionListHeight: max(64, min(220, geometry.size.height * 0.60 - 96)))
                             .frame(maxWidth: .infinity, alignment: .top)
@@ -301,6 +296,35 @@ struct BrowserWindowView: View {
         .animation(sidebarMotion, value: sidebarVisible)
         .padding(6)
         .background(BrowserChromeBackground())
+        .overlay(alignment: .topTrailing) {
+            if let noticeID = model.copiedURLNoticeID {
+                Label("Copied Current URL", systemImage: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background {
+                        if reduceTransparency || contrast == .increased {
+                            RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
+                        } else {
+                            RoundedRectangle(cornerRadius: 12).fill(.thickMaterial)
+                        }
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.4 : 0.16), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+                    .padding(20)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("browser.copiedURL")
+                    .transition(.opacity)
+                    .task(id: noticeID) {
+                        do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                        if model.copiedURLNoticeID == noticeID { model.copiedURLNoticeID = nil }
+                    }
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.copiedURLNoticeID != nil)
         .overlay(alignment: .leading) {
             if sidebarAutoHides && !sidebarVisible {
                 Color.clear

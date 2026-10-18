@@ -12,9 +12,22 @@ public enum SearchSuggestionPolicy {
         return query
     }
 
-    static func parse(_ data: Data, query: String) throws -> [String] {
-        guard data.count <= 65_536,
-              let response = try JSONSerialization.jsonObject(with: data) as? [Any],
+    static func parse(_ data: Data, query: String, textEncodingName: String? = nil) throws -> [String] {
+        guard data.count <= 65_536 else { return [] }
+        // The Chrome endpoint can return Latin-1 even when the query itself is
+        // ASCII (e.g. a GitHub description containing a middle dot for "git").
+        // JSONSerialization accepts Unicode, not arbitrary HTTP encodings.
+        let json: Data
+        switch textEncodingName?.lowercased() {
+        case "iso-8859-1", "latin1", "latin-1":
+            guard let decoded = String(data: data, encoding: .isoLatin1) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            json = Data(decoded.utf8)
+        case nil, "utf-8", "utf8": json = data
+        default: throw URLError(.cannotDecodeContentData)
+        }
+        guard let response = try JSONSerialization.jsonObject(with: json) as? [Any],
               response.count >= 2, response[0] as? String == query,
               let candidates = response[1] as? [String] else { return [] }
         var seen: Set<String> = [query.lowercased()]
@@ -50,6 +63,7 @@ public struct GoogleSearchSuggestions: Sendable {
         // Google documents this suggest URL in its Chrome search-provider policy.
         var components = URLComponents(string: "https://www.google.com/complete/search")!
         components.queryItems = [URLQueryItem(name: "output", value: "chrome"),
+                                 URLQueryItem(name: "oe", value: "utf-8"),
                                  URLQueryItem(name: "q", value: query)]
         var request = URLRequest(url: components.url!)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -67,7 +81,7 @@ public struct GoogleSearchSuggestions: Sendable {
             guard data.count < 65_536 else { throw URLError(.dataLengthExceedsMaximum) }
             data.append(byte)
         }
-        return try SearchSuggestionPolicy.parse(data, query: query)
+        return try SearchSuggestionPolicy.parse(data, query: query, textEncodingName: response.textEncodingName)
     }
 }
 

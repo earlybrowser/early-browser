@@ -20,6 +20,7 @@ struct SearchSuggestionPolicyTests {
         #expect(components.scheme == "https")
         #expect(components.host == "www.google.com")
         #expect(components.queryItems?.first(where: { $0.name == "q" })?.value == "café & tea")
+        #expect(components.queryItems?.first(where: { $0.name == "oe" })?.value == "utf-8")
         let configuration = GoogleSearchSuggestions.configuration()
         #expect(configuration.httpCookieStorage == nil)
         #expect(configuration.urlCredentialStorage == nil)
@@ -45,6 +46,20 @@ struct SearchSuggestionPolicyTests {
         #expect(url.host == "www.google.com")
         #expect(url.path == "/search")
         #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "https://example.com/?secret=yes")
+    }
+
+    @Test func gitResponseWithLatin1DescriptionStillReturnsSuggestions() throws {
+        // The real provider puts a Latin-1 middle dot in unused description
+        // metadata. Even ASCII candidates previously failed JSON decoding.
+        let response = #"["git",["github","https://github.com/","git café"],["","How people build software · GitHub",""]]"#
+        let latin1 = try #require(response.data(using: .isoLatin1))
+        #expect(throws: (any Error).self) { try SearchSuggestionPolicy.parse(latin1, query: "git") }
+        #expect(try SearchSuggestionPolicy.parse(latin1, query: "git", textEncodingName: "ISO-8859-1") == ["github", "git café"])
+        #expect(try SearchSuggestionPolicy.parse(Data(response.utf8), query: "git", textEncodingName: "UTF-8") == ["github", "git café"])
+        #expect(try SearchSuggestionPolicy.parse(latin1, query: "github", textEncodingName: "ISO-8859-1").isEmpty)
+        #expect(throws: (any Error).self) {
+            try SearchSuggestionPolicy.parse(latin1, query: "git", textEncodingName: "unsupported")
+        }
     }
 }
 
