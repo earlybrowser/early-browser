@@ -151,7 +151,17 @@ final class EarlyUITests: XCTestCase {
         return String(row.identifier.dropFirst("profile.".count))
     }
 
-    func testSettingsPersistWithoutReplacingTheLiveWebsite() {
+    func testSettingsPersistWithoutReplacingTheLiveWebsite() throws {
+        // Native macOS switches expose NSNumber values on some runner versions
+        // and strings on others. Both describe the same checked state.
+        func switchState(_ control: XCUIElement) -> Bool? {
+            if let value = control.value as? NSNumber { return value.boolValue }
+            switch (control.value as? String)?.lowercased() {
+            case "1", "on", "true": return true
+            case "0", "off", "false": return false
+            default: return nil
+            }
+        }
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
@@ -164,9 +174,12 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(translucency.waitForExistence(timeout: 3))
         let themes = app.descendants(matching: .any).matching(identifier: "settings.spaceThemes").firstMatch
         XCTAssertEqual(themes.frame.midX, translucency.frame.midX, accuracy: 1, "Settings switches should share one trailing column")
+        let originalSetting = try XCTUnwrap(switchState(translucency), "The switch must expose its checked state")
         translucency.click()
-        let setting = translucency.value as? String
-        XCTAssertNotNil(setting)
+        let changed = NSPredicate { _, _ in switchState(translucency) == !originalSetting }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: changed, object: nil)], timeout: 3), .completed)
+        let setting = try XCTUnwrap(switchState(translucency))
+        XCTAssertNotEqual(setting, originalSetting)
         app.typeKey("w", modifierFlags: .command)
         XCTAssertEqual(saved.value as? String, "keep my page through settings")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
@@ -175,7 +188,7 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "One")
         openSettings(app, section: "appearance")
         XCTAssertTrue(app.buttons["settings.appearance.light"].isSelected)
-        XCTAssertEqual(translucency.value as? String, setting)
+        XCTAssertEqual(switchState(translucency), setting)
         app.typeKey("w", modifierFlags: .command)
     }
 
@@ -258,12 +271,19 @@ final class EarlyUITests: XCTestCase {
         app.popUpButtons["space.profile"].click()
         visibleMenuAction("Work")
         app.buttons["Save"].click()
-        XCTAssertTrue(app.buttons["Move and Reload"].waitForExistence(timeout: 5))
-        app.buttons["Cancel"].click()
+        // The editor and Touch Bar also contain Cancel. Target the native
+        // confirmation sheet, not an unrelated underlying button.
+        let confirmation = app.windows["browser"].sheets.matching(NSPredicate(format: "label == %@", "alert")).firstMatch
+        XCTAssertTrue(confirmation.buttons["Move and Reload"].waitForExistence(timeout: 5))
+        confirmation.buttons["Cancel"].click()
+        XCTAssertTrue(confirmation.waitForNonExistence(timeout: 5))
         XCTAssertTrue(field.exists)
+        XCTAssertEqual(field.value as? String, "Moved")
+        XCTAssertEqual(app.popUpButtons["space.profile"].value as? String, "Work")
         XCTAssertEqual(app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).count, 0)
         app.buttons["Save"].click()
-        app.buttons["Move and Reload"].click()
+        XCTAssertTrue(confirmation.buttons["Move and Reload"].waitForExistence(timeout: 5))
+        confirmation.buttons["Move and Reload"].click()
         let destination = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).firstMatch
         XCTAssertTrue(destination.waitForExistence(timeout: 5))
         XCTAssertTrue(destination.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "space.", "Moved")).firstMatch.waitForExistence(timeout: 5))
@@ -335,10 +355,22 @@ final class EarlyUITests: XCTestCase {
         createSpace(app, named: "Work")
         createSpace(app, named: "Research")
         let personal = spaceDot(app, named: "Personal")
+        let work = spaceDot(app, named: "Work")
+        let research = spaceDot(app, named: "Research")
+        // An ancestor's viewport must not become the first icon's AX frame.
+        // In that case both click() and drag coordinates land on another Space.
+        for icon in [personal, work, research] {
+            XCTAssertEqual(icon.frame.width, 30, accuracy: 0.5)
+            XCTAssertEqual(icon.frame.height, 28, accuracy: 0.5)
+        }
+        XCTAssertLessThanOrEqual(personal.frame.maxX, work.frame.minX + 0.5)
+        XCTAssertLessThanOrEqual(work.frame.maxX, research.frame.minX + 0.5)
         personal.click()
+        let selected = NSPredicate(format: "selected == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: personal)], timeout: 5), .completed)
         expectPage(app, "One")
         let source = personal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        let target = spaceDot(app, named: "Research").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let target = research.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         source.click(forDuration: 0.2, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.2)
         let order = NSPredicate { _, _ in
             self.spaceDot(app, named: "Work").frame.minX < self.spaceDot(app, named: "Research").frame.minX

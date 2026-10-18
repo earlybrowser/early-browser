@@ -141,10 +141,15 @@ struct SpaceFooter: View {
                         .animation(reduceMotion || spaceDrag?.source == space.id ? nil : .easeInOut(duration: 0.14), value: translation)
                         .zIndex(spaceDrag?.source == space.id ? 1 : 0)
                         .highPriorityGesture(reordering(space.id, width: layout.width, offset: layout.offset))
+                        .frame(width: SpaceNavigation.footerItemWidth, height: 28)
                         .disabled(!visible)
                         .accessibilityHidden(!visible)
                 }
             }
+            // Own the viewport's accessibility geometry here. Without this
+            // inner boundary, SwiftUI can give the first button the entire
+            // strip's frame, sending clicks/drags to a neighboring Space.
+            .accessibilityElement(children: .contain)
             .frame(width: contentWidth, height: 32, alignment: .leading)
             .offset(x: -offset)
             .frame(width: viewport, height: 32, alignment: .leading)
