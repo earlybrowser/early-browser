@@ -6,6 +6,12 @@ import WebKit
 
 @MainActor @Observable
 final class BrowserWindowModel {
+    enum SpaceEditor: Identifiable {
+        case new, edit(UUID)
+        var id: String {
+            switch self { case .new: "new"; case .edit(let id): id.uuidString }
+        }
+    }
     let coordinator: BrowserCoordinator
     let webViews: WebViewManager
     let input: NavigationInput
@@ -14,6 +20,11 @@ final class BrowserWindowModel {
     var submissionMessage: String?
     var notice: String?
     var copiedURLNoticeID: UUID?
+    var spaceEditor: SpaceEditor?
+    var spaceDeletionID: UUID?
+    var spaceSwipeCreationProgress = 0.0
+    var sidebarInteractionInProgress = false
+    var folderEditorIsPresented = false
     var renamingTabID: UUID?
     var renameText = ""
     var contentFocusRequest = 0
@@ -286,12 +297,58 @@ final class BrowserWindowModel {
 
     @discardableResult
     func switchSpace(to id: UUID) -> Bool {
+        guard id != coordinator.activeSpaceID, !sidebarInteractionInProgress else { return false }
         guard coordinator.switchSpace(to: id) else { return false }
         suggestions.cancel()
         submissionMessage = nil
         activateSelection()
         save()
+        BrowserHaptics.alignment()
         return true
+    }
+
+    var canManageSpaces: Bool {
+        !sidebarInteractionInProgress && !folderEditorIsPresented && activePage?.hasDialog != true
+            && renamingTabID == nil && spaceEditor == nil && spaceDeletionID == nil
+    }
+
+    var activeSpaceIndex: Int { coordinator.spaces.firstIndex { $0.id == coordinator.activeSpaceID } ?? 0 }
+
+    func cycleSpace(_ delta: Int) {
+        guard canManageSpaces,
+              let index = SpaceNavigation.targetIndex(current: activeSpaceIndex, count: coordinator.spaces.count, delta: delta) else { return }
+        _ = switchSpace(to: coordinator.spaces[index].id)
+    }
+
+    func selectSpace(number: Int) {
+        guard canManageSpaces,
+              let index = SpaceNavigation.shortcutIndex(number: number, count: coordinator.spaces.count) else { return }
+        _ = switchSpace(to: coordinator.spaces[index].id)
+    }
+
+    func requestNewSpace() {
+        guard canManageSpaces else { return }
+        dismissCommandBar(restoreFocus: false)
+        spaceEditor = .new
+    }
+
+    func requestEditSpace(_ id: UUID) {
+        guard canManageSpaces, coordinator.spaces.contains(where: { $0.id == id }) else { return }
+        dismissCommandBar(restoreFocus: false)
+        spaceEditor = .edit(id)
+    }
+
+    func requestDeleteSpace(_ id: UUID) {
+        guard canManageSpaces, coordinator.spaces.count > 1,
+              coordinator.spaces.contains(where: { $0.id == id }) else { return }
+        dismissCommandBar(restoreFocus: false)
+        spaceDeletionID = id
+    }
+
+    func duplicateAndSelectSpace(_ id: UUID) {
+        guard canManageSpaces, let source = coordinator.spaces.first(where: { $0.id == id }),
+              let copy = duplicateSpace(id, name: String(source.name.prefix(59)) + " Copy") else { return }
+        _ = switchSpace(to: copy)
     }
 
     @discardableResult
@@ -348,6 +405,9 @@ final class BrowserWindowModel {
         coordinator.synchronizeSavedItems(from: session)
         let remaining = Set(coordinator.tabStore.tabs.map(\.id))
         for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }
+        if let renamingTabID, !remaining.contains(renamingTabID) { self.renamingTabID = nil }
+        if case .edit(let id) = spaceEditor, !coordinator.spaces.contains(where: { $0.id == id }) { spaceEditor = nil }
+        if let spaceDeletionID, !coordinator.spaces.contains(where: { $0.id == spaceDeletionID }) { self.spaceDeletionID = nil }
         if previous != coordinator.activeTabID { activateSelection() }
     }
 }

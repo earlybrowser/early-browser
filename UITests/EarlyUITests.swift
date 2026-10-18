@@ -124,6 +124,120 @@ final class EarlyUITests: XCTestCase {
         item?.click()
     }
 
+    private func spaceDot(_ app: XCUIApplication, named name: String) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "space.", name)).firstMatch
+    }
+
+    private func createSpace(_ app: XCUIApplication, named name: String) {
+        app.buttons["space.new"].click()
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText(name)
+        app.buttons["Save"].click()
+        XCTAssertTrue(spaceDot(app, named: name).waitForExistence(timeout: 5))
+        XCTAssertTrue(spaceDot(app, named: name).isSelected)
+        XCTAssertFalse(app.textFields["commandBar.query"].exists)
+    }
+
+    func testSpaceSwitchingPreservesPageStateAndEmptySpaceRelaunch() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep this Space alive")
+        createSpace(app, named: "Work")
+        expectRuntime(app, tabs: 0, views: 1, created: 1)
+        app.typeKey("l", modifierFlags: .command)
+        let query = app.textFields["commandBar.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        query.typeText("cancel when switching")
+        app.typeKey(.leftArrow, modifierFlags: [.command, .option])
+        XCTAssertFalse(query.exists)
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep this Space alive")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.typeKey("9", modifierFlags: [.command, .option])
+        XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
+        XCTAssertFalse(query.exists)
+        expectRuntime(app, tabs: 0, views: 1, created: 1)
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertFalse(query.exists)
+        expectRuntime(app, tabs: 0, views: 1, created: 2)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(query.waitForExistence(timeout: 10))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        spaceDot(app, named: "Personal").click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testSpaceRenameDuplicateMoveAndDeleteConfirmation() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let original = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch
+        pinAction("Pin Tab", on: original)
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Duplicate Space")
+        XCTAssertTrue(spaceDot(app, named: "Personal Copy").waitForExistence(timeout: 5))
+        expectRuntime(app, tabs: 0, views: 1, created: 1)
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Rename Space…")
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.click()
+        app.typeKey("a", modifierFlags: .command)
+        field.typeText("Research")
+        app.buttons["Save"].click()
+        XCTAssertTrue(spaceDot(app, named: "Research").waitForExistence(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 2, created: 2)
+        app.menuBarItems["Tab"].click()
+        app.menuItems["Move Tab to Space"].hover()
+        visibleMenuAction("Personal")
+        expectRuntime(app, tabs: 0, views: 2, created: 2)
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Delete Space…")
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(spaceDot(app, named: "Research").exists)
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Delete Space…")
+        XCTAssertTrue(app.buttons["Delete Space"].waitForExistence(timeout: 5))
+        app.buttons["Delete Space"].click()
+        XCTAssertFalse(spaceDot(app, named: "Research").exists)
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+    }
+
+    func testSpaceFooterOverflowStaysCenteredAndExposesAllSpaces() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        for number in 1...6 { createSpace(app, named: "Space \(number)") }
+        let overflow = app.descendants(matching: .any).matching(identifier: "space.overflow").firstMatch
+        XCTAssertTrue(overflow.waitForExistence(timeout: 5))
+        let footer = app.descendants(matching: .any).matching(identifier: "sidebar.footer").firstMatch
+        let dots = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier != %@ AND identifier != %@", "space.", "space.new", "space.overflow")).allElementsBoundByIndex
+        XCTAssertLessThanOrEqual(dots.count, 4)
+        let cluster = dots.map(\.frame).reduce(overflow.frame) { $0.union($1) }
+        XCTAssertEqual(cluster.midX, footer.frame.midX, accuracy: 2)
+        overflow.click()
+        visibleMenuAction("Personal")
+        XCTAssertTrue(spaceDot(app, named: "Personal").waitForExistence(timeout: 5))
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        app.typeKey("9", modifierFlags: [.command, .option])
+        XCTAssertTrue(spaceDot(app, named: "Space 6").isSelected)
+    }
+
     private func pinAction(_ title: String, on row: XCUIElement) {
         row.rightClick()
         visibleMenuAction(title)
@@ -1030,7 +1144,8 @@ final class EarlyUITests: XCTestCase {
         let scroll = app.scrollViews["sidebar.tabs"]
         let footer = app.descendants(matching: .any).matching(identifier: "sidebar.footer").firstMatch
         XCTAssertTrue(footer.exists)
-        XCTAssertEqual(footer.label, "Current space: Personal")
+        XCTAssertEqual(footer.label, "Spaces")
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
         XCTAssertGreaterThanOrEqual(footer.frame.minY, scroll.frame.maxY)
         let footerY = footer.frame.minY
         let last = app.buttons["Test Pin 32"]

@@ -25,6 +25,7 @@ struct BrowserWindowView: View {
     @State private var insertionContainer: DragContainer?
     @State private var insertionSiblings: [UUID] = []
     @State private var insertionIndex: Int?
+    @State private var dragFeedbackTarget: DragFeedbackTarget?
     @State private var reservedFolderSlot: UUID?
     @State private var revealDropSections = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -104,6 +105,11 @@ struct BrowserWindowView: View {
     private struct DragContainer: Equatable {
         let section: TabStore.Section
         let parent: UUID?
+    }
+
+    private struct DragFeedbackTarget: Equatable {
+        let container: DragContainer
+        let index: Int?
     }
 
     private enum SidebarItem: Identifiable {
@@ -387,7 +393,13 @@ struct BrowserWindowView: View {
             }
           }.padding(24).frame(width: 340)
         }
-        .onDisappear { endDrag(); model.save(); model.webViews.discardAll() }
+        .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
+        .onDisappear {
+            endDrag()
+            model.folderEditorIsPresented = false
+            model.save()
+            model.webViews.discardAll()
+        }
     }
 
     private var sidebar: some View {
@@ -399,6 +411,15 @@ struct BrowserWindowView: View {
             if !model.favorites.isEmpty || revealDropSections {
                 favoritesSection
             }
+            Text(model.coordinator.activeSpace?.name ?? "Personal")
+                .font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .contentTransition(.opacity)
+                .accessibilityAddTraits(.isHeader)
+                .contextMenu {
+                    if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
+                    Button("New Space…") { model.requestNewSpace() }
+                }
             ScrollView {
                 // Pins and Today share a scroll region: many persistent pins
                 // must not push Today or New Tab outside the reachable sidebar.
@@ -450,6 +471,7 @@ struct BrowserWindowView: View {
                         }
                         // Keep the gesture mounted while neighboring rows fill
                         // its old space. Only the destination owns a drop slot.
+                        .transition(.opacity)
                         .frame(height: vacatesSourceRow(item) ? 0 : nil)
                         .padding(.bottom, vacatesSourceRow(item) || item.id == sidebarItems.last?.id ? 0 : 4)
                         .animation(folderDragAnimation, value: vacatesSourceRow(item))
@@ -462,6 +484,7 @@ struct BrowserWindowView: View {
             .frame(maxHeight: .infinity)
             .accessibilityIdentifier("sidebar.tabs")
             .background(sectionFrame(favorites: false))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.coordinator.activeSpaceID)
             #if DEBUG
             if model.isTesting {
                 HStack(spacing: 0) {
@@ -487,7 +510,12 @@ struct BrowserWindowView: View {
         .contextMenu {
             Button("New Tab") { model.presentCommandBar(.newTab) }
             Button("New Folder") { editFolder(nil, parent: nil) }
+            Divider()
+            Button("New Space…") { model.requestNewSpace() }
+            if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
         }
+        .background(SpaceSwipeMonitor(model: model,
+            enabled: sidebarVisible && draggingTab == nil && resizeStartWidth == nil && !folderEditor))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
         .accessibilityIdentifier("browser.sidebar")
@@ -529,6 +557,13 @@ struct BrowserWindowView: View {
         .onChange(of: draggingTab) { _, id in
             if id == nil { endDrag() }
         }
+        .onChange(of: model.coordinator.activeSpaceID) { _, _ in
+            endDrag()
+            hoveredTab = nil
+            hoveredFolder = nil
+            hoveredFolderGroups = []
+            focusedSidebarControl = nil
+        }
         .onDisappear {
             sidebarPointer.location = nil
             hoveredFolderGroups = []
@@ -536,23 +571,8 @@ struct BrowserWindowView: View {
         }
     }
 
-    /// Fixed outside both scroll regions. Space switching arrives in Phase 3;
-    /// do not present a button or chevron that cannot perform an action yet.
     private var sidebarFooter: some View {
-        HStack {
-            Label(model.coordinator.activeSpace?.name ?? "Personal", systemImage: "square.stack")
-                .font(.callout.weight(.medium))
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 8)
-        .padding(.top, 12)
-        .padding(.bottom, 2)
-        .overlay(alignment: .top) { Divider() }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Current space: \(model.coordinator.activeSpace?.name ?? "Personal")")
-        .accessibilityIdentifier("sidebar.footer")
-        .help("Current space: \(model.coordinator.activeSpace?.name ?? "Personal")")
+        SpaceFooter(model: model)
     }
 
     private func tabRow(_ tab: BrowserTab) -> some View {
@@ -648,6 +668,12 @@ struct BrowserWindowView: View {
         Button("Open Tab in New Window") { model.openTabInNewWindow(tab.id) }
         Button("Rename Tab…") { model.requestRename(tab.id) }
         if !tab.isFavorite {
+            Menu("Move to Space") {
+                ForEach(model.coordinator.spaces) { space in
+                    Button(space.name) { _ = model.moveTab(tab.id, toSpace: space.id) }
+                        .disabled(space.id == tab.spaceID)
+                }
+            }
             Menu("Move to Folder") {
                 Button("Top Level") { _ = model.coordinator.moveTab(tab.id, toFolder: nil); model.save() }
                     .disabled(tab.folderID == nil)
@@ -1058,6 +1084,8 @@ struct BrowserWindowView: View {
 
     private func beginDrag(_ tab: BrowserTab) {
         guard let frame = itemFrame(tab.id) else { return }
+        model.sidebarInteractionInProgress = true
+        BrowserHaptics.pickupOrDrop()
         frozenFrames = tabFrames
         dragSourceFrame = frame
         dropFolder = section(of: tab) == .pinned ? tab.folderID : nil
@@ -1066,6 +1094,8 @@ struct BrowserWindowView: View {
     }
 
     private func endDrag() {
+        model.sidebarInteractionInProgress = false
+        dragFeedbackTarget = nil
         pendingFolder = nil
         dropFolder = nil
         previousDragPoint = nil
@@ -1144,6 +1174,9 @@ struct BrowserWindowView: View {
         insertionContainer = container
         insertionSiblings = siblings
         insertionIndex = layout.order(at: hitPoint).firstIndex(of: source)
+        let feedback = DragFeedbackTarget(container: container, index: insertionIndex)
+        if let previous = dragFeedbackTarget, previous != feedback { BrowserHaptics.alignment() }
+        dragFeedbackTarget = feedback
     }
 
     private func destinationSlots(in destination: TabStore.Section, folderID: UUID?) -> [SidebarReorderLayout.Slot] {
@@ -1353,8 +1386,11 @@ struct BrowserWindowView: View {
                 guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
                 dragPoint = value.location
                 if dragSourceFrame == .zero {
+                    guard let frame = itemFrame(folder.id) else { return }
+                    model.sidebarInteractionInProgress = true
+                    BrowserHaptics.pickupOrDrop()
                     frozenFrames = tabFrames
-                    dragSourceFrame = itemFrame(folder.id) ?? .zero
+                    dragSourceFrame = frame
                     dropFolder = folder.parentID
                     updateFolderDropSlot(dropFolder)
                 }
@@ -1373,7 +1409,10 @@ struct BrowserWindowView: View {
                 let parent = dropFolder
                 let insertion = dragLayout?.insertion(at: value.location)
                 guard dragLayout != nil, insertion != nil || parent != folder.parentID else { return }
-                if model.coordinator.placeFolder(folder.id, in: parent, before: insertion?.before) { model.save() }
+                if model.coordinator.placeFolder(folder.id, in: parent, before: insertion?.before) {
+                    model.save()
+                    BrowserHaptics.pickupOrDrop()
+                }
             }
     }
 
@@ -1423,9 +1462,13 @@ struct BrowserWindowView: View {
                 refreshDragLayout(for: tab, at: value.location)
                 let folderID = destination == .pinned ? dropFolder : nil
                 if let drop = dragLayout?.insertion(at: value.location) {
-                    _ = model.placeTab(tab.id, in: destination, folderID: folderID, before: drop.before)
+                    if model.placeTab(tab.id, in: destination, folderID: folderID, before: drop.before) {
+                        BrowserHaptics.pickupOrDrop()
+                    }
                 } else if destination != section(of: tab) || folderID != tab.folderID {
-                    _ = model.placeTab(tab.id, in: destination, folderID: folderID, before: nil)
+                    if model.placeTab(tab.id, in: destination, folderID: folderID, before: nil) {
+                        BrowserHaptics.pickupOrDrop()
+                    }
                 }
             }
     }

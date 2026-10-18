@@ -1,4 +1,5 @@
 import AppKit
+import EarlyCore
 import SwiftUI
 
 private struct BrowserWindowKey: FocusedValueKey {
@@ -57,6 +58,46 @@ struct BrowserCommands: Commands {
                 if let id = model?.activeTab?.id { model?.resetPinnedTab(id) }
             }
             .disabled(model?.activeTab?.pinnedURL == nil)
+            Menu("Move Tab to Space") {
+                if let model, let tab = model.activeTab {
+                    ForEach(model.coordinator.spaces) { space in
+                        Button(space.name) { _ = model.moveTab(tab.id, toSpace: space.id) }
+                            .disabled(space.id == tab.spaceID)
+                    }
+                }
+            }
+            .disabled(model?.activeTab == nil || model?.activeTab?.isFavorite == true || model?.canManageSpaces != true)
+        }
+        CommandMenu("Space") {
+            Button("New Space…") { model?.requestNewSpace() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(model?.canManageSpaces != true)
+            if let model, let space = model.coordinator.activeSpace {
+                Group { SpaceActions(model: model, space: space) }
+                    .disabled(!model.canManageSpaces)
+            }
+            Divider()
+            Button("Previous Space") { model?.cycleSpace(-1) }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .disabled(model?.canManageSpaces != true || (model?.activeSpaceIndex ?? 0) == 0)
+            Button("Next Space") { model?.cycleSpace(1) }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled(model?.canManageSpaces != true || (model?.activeSpaceIndex ?? 0) + 1 >= (model?.coordinator.spaces.count ?? 0))
+            Button("Last Space") { model?.selectSpace(number: 9) }
+                .keyboardShortcut("9", modifiers: [.command, .option])
+                .disabled(model?.canManageSpaces != true)
+            if let model {
+                ForEach(Array(model.coordinator.spaces.enumerated()), id: \.element.id) { index, space in
+                    if index < 8 {
+                        Button(space.name) { _ = model.switchSpace(to: space.id) }
+                            .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.command, .option])
+                            .disabled(!model.canManageSpaces)
+                    } else {
+                        Button(space.name) { _ = model.switchSpace(to: space.id) }
+                            .disabled(!model.canManageSpaces)
+                    }
+                }
+            }
         }
         CommandMenu("Navigate") {
             Button("Copy Current URL") { model?.copyCurrentURL() }
