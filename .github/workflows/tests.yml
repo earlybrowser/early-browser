@@ -41,30 +41,70 @@ jobs:
           retention-days: 7
 
   ui:
-    name: Native UI tests
+    name: Native UI tests (${{ matrix.shard }}/4)
     runs-on: macos-26
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Test macOS app
+        shell: bash
+        env:
+          UI_SHARD: ${{ matrix.shard }}
+          UI_SHARD_COUNT: ${{ strategy.job-total }}
         run: |
           set -o pipefail
           mkdir -p build/TestResults
-          xcodebuild \
-            -project Early.xcodeproj \
-            -scheme Early \
-            -configuration Debug \
-            -destination 'platform=macOS' \
-            -parallel-testing-enabled NO \
-            -derivedDataPath build/DerivedData \
-            -resultBundlePath build/TestResults/UI.xcresult \
-            test 2>&1 | tee build/TestResults/ui.log
+          xcode_args=(
+            -project Early.xcodeproj
+            -scheme Early
+            -configuration Debug
+            -destination 'platform=macOS'
+            -parallel-testing-enabled NO
+            -derivedDataPath build/DerivedData
+          )
+
+          # Build and discover the complete suite without executing test methods.
+          xcodebuild "${xcode_args[@]}" \
+            -enumerate-tests \
+            -test-enumeration-style flat \
+            -test-enumeration-format json \
+            -test-enumeration-output-path build/TestResults/discovered-tests.json \
+            test 2>&1 | tee build/TestResults/discovery.log
+
+          # Interleave the sorted test IDs so every enabled test runs exactly once.
+          jq -er --argjson shard "$UI_SHARD" --argjson count "$UI_SHARD_COUNT" '
+            if .errors != [] then error("Test discovery failed: \(.errors)")
+            else
+              [.values[].enabledTests[].identifier | sub("\\(\\)$"; "")]
+              | unique | to_entries
+              | map(select(.key % $count == ($shard - 1)) | .value)
+              | if length == 0 then error("No tests selected for this shard")
+                else .[] end
+            end
+          ' build/TestResults/discovered-tests.json > build/TestResults/selected-tests.txt
+
+          test_args=()
+          while IFS= read -r identifier; do
+            test_args+=("-only-testing:$identifier")
+          done < build/TestResults/selected-tests.txt
+          printf 'UI shard %s/%s: %s tests\n' "$UI_SHARD" "$UI_SHARD_COUNT" "${#test_args[@]}"
+          printf '%s\n' "${test_args[@]}"
+
+          # UI automation stays serial on each Mac to avoid input/focus conflicts.
+          xcodebuild "${xcode_args[@]}" "${test_args[@]}" \
+            -resultBundlePath "build/TestResults/UI-$UI_SHARD.xcresult" \
+            test-without-building 2>&1 | tee build/TestResults/ui.log
       - name: Upload UI results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ui-results
+          name: ui-results-${{ matrix.shard }}
           path: build/TestResults/
           retention-days: 7
