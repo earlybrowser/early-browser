@@ -92,6 +92,13 @@ public struct BrowserWorkspace: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func setDefaultProfile(_ id: UUID) -> Bool {
+        guard profiles.contains(where: { $0.id == id }), session(for: id) != nil else { return false }
+        defaultProfileID = id
+        return true
+    }
+
+    @discardableResult
     public mutating func deleteProfile(_ id: UUID) -> Bool {
         guard id != defaultProfileID, profiles.contains(where: { $0.id == id }) else { return false }
         profiles.removeAll { $0.id == id }
@@ -167,7 +174,8 @@ public struct BrowserWorkspace: Codable, Equatable, Sendable {
     public func startingWithSavedItemsOnly() -> Self {
         var copy = self
         copy.sessions = sessions.map { $0.savedItemsOnly }
-        copy.openProfileIDs = [activeProfileID]
+        copy.activeProfileID = defaultProfileID
+        copy.openProfileIDs = [defaultProfileID]
         return copy
     }
 }

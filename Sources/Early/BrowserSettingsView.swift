@@ -5,7 +5,7 @@ import EarlyCore
 import SwiftUI
 
 enum BrowserSettingsSection: String, CaseIterable, Identifiable {
-    case profiles = "Profiles", appearance = "Appearance & Spaces", sidebar = "Sidebar", search = "Search", sessions = "Sessions"
+    case appearance = "General", profiles = "Profiles", sidebar = "Sidebar", search = "Search", sessions = "Sessions"
     var id: Self { self }
     var key: String {
         switch self { case .profiles: "profiles"; case .appearance: "appearance"; case .sidebar: "sidebar"; case .search: "search"; case .sessions: "sessions" }
@@ -13,7 +13,7 @@ enum BrowserSettingsSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .profiles: "person.crop.circle"
-        case .appearance: "paintpalette"
+        case .appearance: "gearshape"
         case .sidebar: "sidebar.left"
         case .search: "magnifyingglass"
         case .sessions: "clock.arrow.circlepath"
@@ -59,6 +59,7 @@ struct BrowserSettingsView: View {
                 .padding(30)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
+            .accessibilityIdentifier("settings.content")
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .frame(minWidth: 760, minHeight: 560)
@@ -91,11 +92,9 @@ struct BrowserSettingsView: View {
 
     private var navigation: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 9) {
-                Image(systemName: "sunrise.fill").font(.title2).foregroundStyle(.secondary)
-                Text("Early").font(.system(size: 21, weight: .semibold, design: .rounded))
-            }
-            .padding(.horizontal, 12).padding(.top, 28).padding(.bottom, 25)
+            Text("Settings").font(.system(size: 21, weight: .semibold, design: .rounded))
+                .accessibilityIdentifier("settings.title")
+                .padding(.horizontal, 12).padding(.top, 28).padding(.bottom, 25)
             ForEach(BrowserSettingsSection.allCases) { section in
                 Button { application.settingsSection = section } label: {
                     Label(section.rawValue, systemImage: section.symbol)
@@ -114,7 +113,6 @@ struct BrowserSettingsView: View {
             }
             Spacer()
             VStack(alignment: .leading, spacing: 4) {
-                Text("A calmer place to browse.").font(.caption)
                 Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development")")
                     .font(.caption2)
             }
@@ -157,6 +155,22 @@ struct BrowserSettingsView: View {
             VStack(spacing: 8) {
                 ForEach(application.profiles) { profile in profileRow(profile) }
             }
+            if let defaultProfileID = application.workspace?.defaultProfileID {
+                SettingsCard {
+                    Picker("Default profile", selection: Binding(
+                        get: { application.workspace?.defaultProfileID ?? defaultProfileID },
+                        set: { id in
+                            if !application.setDefaultProfile(id) { application.profileError = "This profile could not be made the default. Please try again." }
+                        }
+                    )) {
+                        ForEach(application.profiles) { profile in Text(profile.name).tag(profile.id) }
+                    }
+                    .disabled(!application.canEditProfiles)
+                    .accessibilityIdentifier("profile.default")
+                    Text("Used for fresh sessions. Restoring a session keeps its last active profile.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if let profile = selectedProfile {
                 spacesCard(profile)
             }
@@ -177,6 +191,7 @@ struct BrowserSettingsView: View {
                             if profile.id == application.workspace?.defaultProfileID {
                                 Text("Default").font(.caption2).foregroundStyle(.secondary)
                                     .padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: Capsule())
+                                    .accessibilityIdentifier("profile.defaultBadge.\(profile.id)")
                             }
                         }
                         let count = application.workspace?.session(for: profile.id)?.spaces.count ?? 0
@@ -365,13 +380,18 @@ private struct SettingsToggle: View {
         self.title = title; self.detail = detail; _isOn = isOn; self.identifier = identifier
     }
     var body: some View {
-        Toggle(isOn: $isOn) {
+        HStack(spacing: 20) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(title).font(.body.weight(.medium))
                 Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle(title, isOn: $isOn)
+                .labelsHidden().toggleStyle(.switch).fixedSize()
+                .accessibilityLabel(title).accessibilityHint(detail)
+                .accessibilityIdentifier(identifier)
         }
-        .toggleStyle(.switch).accessibilityIdentifier(identifier)
+        .frame(maxWidth: .infinity)
     }
 }
 

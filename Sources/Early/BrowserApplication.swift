@@ -26,7 +26,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     private(set) var storageURL: URL?
     private(set) var profileOperationInProgress = false
     var profileError: String?
-    var settingsSection: BrowserSettingsSection = .profiles
+    var settingsSection: BrowserSettingsSection = .appearance
     @ObservationIgnored var presentWindow: ((UUID) -> Void)?
     @ObservationIgnored private var windows: [WindowEntry] = []
     @ObservationIgnored private var loading: Task<Loaded, Never>?
@@ -87,7 +87,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         self.testing = loaded.testing
         let writer = SessionAutosaver(repository: loaded.repository, disabledReason: loaded.error)
         persistence = writer
-        var snapshot = preferences.restoreSession ? loaded.workspace : loaded.workspace.startingWithSavedItemsOnly()
+        var snapshot = loaded.workspace
+        if !preferences.restoreSession || snapshot.openProfileIDs.isEmpty {
+            snapshot = snapshot.startingWithSavedItemsOnly()
+        }
         // A closed profile keeps saved organization, not abandoned Today tabs.
         let active = snapshot.activeProfileID
         let startup = loaded.error == nil ? launchStore.claimStartupContext() : .returningSession
@@ -118,11 +121,12 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     func ensurePrimaryWindow() {
         guard !primaryWindowIsOpen, let workspace else { return }
-        let session = workspace.session(for: workspace.activeProfileID)!.savedItemsOnly
+        let session = workspace.session(for: workspace.defaultProfileID)!.savedItemsOnly
         let primary = makeModel(session: session)
         model = primary
         primaryWindowIsOpen = true
         attach(primary)
+        self.workspace?.activeProfileID = workspace.defaultProfileID
         save(primary)
     }
 
@@ -238,6 +242,12 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult func editProfile(_ id: UUID, name: String, color: BrowserSpace.Color) -> Bool {
         guard canEditProfiles, workspace?.editProfile(id, name: name, color: color) == true else { return false }
+        saveAll()
+        return true
+    }
+
+    @discardableResult func setDefaultProfile(_ id: UUID) -> Bool {
+        guard canEditProfiles, workspace?.setDefaultProfile(id) == true else { return false }
         saveAll()
         return true
     }

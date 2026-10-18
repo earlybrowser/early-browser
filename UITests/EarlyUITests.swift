@@ -156,6 +156,8 @@ final class EarlyUITests: XCTestCase {
         app.buttons["settings.appearance.light"].click()
         let translucency = app.descendants(matching: .any).matching(identifier: "settings.translucency").firstMatch
         XCTAssertTrue(translucency.waitForExistence(timeout: 3))
+        let themes = app.descendants(matching: .any).matching(identifier: "settings.spaceThemes").firstMatch
+        XCTAssertEqual(themes.frame.midX, translucency.frame.midX, accuracy: 1, "Settings switches should share one trailing column")
         translucency.click()
         let setting = translucency.value as? String
         XCTAssertNotNil(setting)
@@ -200,6 +202,27 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 10), .completed)
         XCTAssertTrue(app.webViews.staticTexts["Page One"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+    }
+
+    func testDefaultProfileSelectionPersistsWithoutOpeningOrSwitchingProfiles() {
+        let app = launchFreshApp()
+        let profileID = createProfile(app, named: "Work")
+        let picker = app.popUpButtons["profile.default"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 3))
+        if !picker.isHittable { app.scrollViews["settings.content"].scroll(byDeltaX: 0, deltaY: -200) }
+        picker.click()
+        visibleMenuAction("Work")
+        XCTAssertEqual(picker.value as? String, "Work")
+        XCTAssertEqual(app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).count, 0)
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 10))
+        openSettings(app, section: "profiles")
+        XCTAssertTrue(app.buttons["profile.\(profileID)"].exists)
+        XCTAssertEqual(picker.value as? String, "Work")
     }
 
     func testMovingSpaceToAnotherProfileRequiresConfirmationAndKeepsClosedPinsClosed() {

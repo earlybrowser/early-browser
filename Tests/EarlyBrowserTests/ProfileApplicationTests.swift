@@ -307,4 +307,77 @@ struct ProfileApplicationTests {
         #expect(try await repository.loadWorkspace() == workspace)
         await fixture.cleanup()
     }
+
+    @Test func settingsNavigationStartsWithGeneralAndKeepsTheRequestedOrder() {
+        #expect(BrowserSettingsSection.allCases.map(\.rawValue) == ["General", "Profiles", "Sidebar", "Search", "Sessions"])
+        #expect(EarlyAppDelegate().settingsSection == .appearance)
+    }
+
+    @Test func choosingDefaultPersistsWithoutSwitchingProfilesOrReplacingLiveViews() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let personal = try #require(app.model)
+        let tab = try #require(personal.coordinator.navigate(to: url, target: .newTab(spaceID: personal.coordinator.activeSpaceID)))
+        personal.activateSelection()
+        let view = personal.webViews.existingView(for: tab)
+        let store = personal.webViews.websiteDataStore
+        let work = try #require(app.createProfile(name: "Work", color: .purple))
+        #expect(app.setDefaultProfile(work))
+        #expect(app.workspace?.activeProfileID == personal.coordinator.profileID)
+        #expect(personal.webViews.existingView(for: tab) === view)
+        #expect(personal.webViews.websiteDataStore === store)
+        #expect(fixture.opened.isEmpty)
+        #expect(!app.setDefaultProfile(UUID()))
+        #expect(await app.persistence?.flush() == true)
+        let repository = SessionRepository(fileURL: fixture.directory.appendingPathComponent("session.sqlite"), input: input)
+        #expect(try await repository.loadWorkspace()?.defaultProfileID == work)
+        await app.deleteProfile(work)
+        #expect(app.profiles.contains { $0.id == work })
+        await fixture.cleanup()
+    }
+
+    @Test(arguments: [true, false]) func defaultIsUsedForFreshStartupButNotInsteadOfARestoredSession(restoreSession: Bool) async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let personal = try #require(app.model)
+        let tab = try #require(personal.coordinator.navigate(to: url, target: .newTab(spaceID: personal.coordinator.activeSpaceID)))
+        let work = try #require(app.createProfile(name: "Work", color: .green))
+        #expect(app.setDefaultProfile(work))
+        fixture.preferences.restoreSession = restoreSession
+        #expect(await app.persistence?.flush() == true)
+        let restored = EarlyAppDelegate()
+        _ = await restored.bootstrap(launchStore: FirstLaunchStore(defaults: fixture.defaults), preferences: fixture.preferences,
+            defaults: fixture.defaults, storageDirectory: fixture.directory, isTesting: true)
+        #expect(restored.model?.coordinator.profileID == (restoreSession ? personal.coordinator.profileID : work))
+        #expect(restored.model?.coordinator.activeTabID == (restoreSession ? tab : nil))
+        #expect(restored.model?.webViews.liveViewCount == (restoreSession ? 1 : 0))
+        restored.closeWindow(nil)
+        _ = await restored.persistence?.flush()
+        await fixture.cleanup()
+    }
+
+    @Test func reopeningOrLaunchingAfterAllWindowsCloseUsesChosenDefault() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let work = try #require(app.createProfile(name: "Work", color: .green))
+        #expect(app.setDefaultProfile(work))
+        app.closeWindow(nil)
+        #expect(app.workspace?.openProfileIDs.isEmpty == true)
+        #expect(await app.persistence?.flush() == true)
+        let restored = EarlyAppDelegate()
+        _ = await restored.bootstrap(launchStore: FirstLaunchStore(defaults: fixture.defaults), preferences: fixture.preferences,
+            defaults: fixture.defaults, storageDirectory: fixture.directory, isTesting: true)
+        #expect(restored.model?.coordinator.profileID == work)
+        #expect(restored.model?.webViews.creationCount == 0)
+        restored.closeWindow(nil)
+        _ = await restored.persistence?.flush()
+        app.ensurePrimaryWindow()
+        #expect(app.model?.coordinator.profileID == work)
+        #expect(app.workspace?.activeProfileID == work)
+        #expect(app.model?.webViews.creationCount == 0)
+        await fixture.cleanup()
+    }
 }

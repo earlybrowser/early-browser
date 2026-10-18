@@ -91,6 +91,40 @@ struct ProfileTests {
         try workspace.validate()
     }
 
+    @Test func changingDefaultKeepsStorageIdentitiesAndProtectsTheNewDefault() throws {
+        var workspace = BrowserWorkspace()
+        let previousDefault = workspace.defaultProfileID
+        let created = workspace.createProfile(name: "Work", color: .purple)
+        let work = try #require(created)
+        let original = workspace
+        let invalid = workspace.setDefaultProfile(UUID())
+        #expect(!invalid && workspace == original)
+        let changed = workspace.setDefaultProfile(work)
+        #expect(changed)
+        var expected = original
+        expected.defaultProfileID = work
+        #expect(workspace == expected)
+        let protected = workspace.deleteProfile(work)
+        #expect(!protected && workspace == expected)
+        let removed = workspace.deleteProfile(previousDefault)
+        #expect(removed && workspace.activeProfileID == work)
+        #expect(workspace.sessions.map(\.profileID) == [work])
+        try workspace.validate()
+    }
+
+    @Test func freshSessionsUseChosenDefaultInsteadOfLastActiveProfile() throws {
+        var workspace = BrowserWorkspace()
+        let created = workspace.createProfile(name: "Work")
+        let work = try #require(created)
+        let changed = workspace.setDefaultProfile(work)
+        #expect(changed && workspace.activeProfileID != work)
+        let startup = workspace.startingWithSavedItemsOnly()
+        #expect(startup.defaultProfileID == work && startup.activeProfileID == work)
+        #expect(startup.openProfileIDs == [work])
+        #expect(startup.profiles == workspace.profiles && startup.sessions == workspace.sessions)
+        try startup.validate()
+    }
+
     @Test func rejectedSpaceTransfersAreAtomicAndProfilesStayIsolated() throws {
         var workspace = BrowserWorkspace()
         let source = workspace.defaultProfileID
