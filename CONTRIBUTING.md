@@ -31,6 +31,9 @@ result bundles are attached to the workflow run for seven days. Maintainers
 can also start the workflow from the Actions tab. A green run does not replace
 manual review of animation, accessibility, or behavior on other macOS versions.
 
+The [workflow plan](.github/WORKFLOWS.md) describes inactive scaffolds for release,
+Homebrew, and repository checks. These are not implemented or active checks yet.
+
 ## AI-assisted contributions
 
 AI tools are allowed. You are responsible for understanding, reviewing, and

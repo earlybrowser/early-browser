@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: MPL-2.0
+# INACTIVE SCAFFOLD: see ../WORKFLOWS.md before enabling.
+
+name: Repository checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  documentation:
+    name: Documentation and workflow checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # TODO: Check out source with persisted credentials disabled.
+      # TODO: Validate Markdown, local links, license notices, and workflow syntax.
+      # TODO: Add narrowly scoped PR/main triggers once these checks are real.
+      - name: Documentation checks are not implemented
+        run: |
+          echo '::error::Implement repository documentation checks before enabling this job.'
+          exit 1
+
+  security:
+    name: Repository security checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # TODO: Choose dependency/advisory and secret-scanning checks for this repo.
+      # TODO: Review action pins and permissions without granting PRs secrets.
+      # TODO: Configure any required publishing permissions per job, not globally.
+      - name: Security checks are not implemented
+        run: |
+          echo '::error::Implement repository security checks before enabling this job.'
+          exit 1

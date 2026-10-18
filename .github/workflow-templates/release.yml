@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: MPL-2.0
+# INACTIVE SCAFFOLD: see ../WORKFLOWS.md before enabling.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing trusted version tag whose exact commit passed tests
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Shared with Homebrew; never interrupt an active distribution operation.
+concurrency:
+  group: distribution
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build, sign, notarize, and package
+    runs-on: macos-26
+    timeout-minutes: 45
+    environment: release
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      # TODO: Verify the tag's commit and its successful required test checks.
+      # TODO: Check out that exact commit with persisted credentials disabled.
+      # TODO: Configure the owned bundle ID, version, architectures, and signing.
+      # TODO: Use temporary signing credentials; clean them up even on failure.
+      # TODO: Build, sign, notarize, staple, and verify the distributable archive.
+      # TODO: Upload the archive, checksum, and source-commit manifest for publish.
+      - name: Release build is not implemented
+        run: |
+          echo '::error::Implement and validate release packaging before enabling this job.'
+          exit 1
+
+  publish:
+    name: Publish verified release artifacts
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # TODO: Download only this run's signed artifacts and source manifest.
+      # TODO: Verify their checksums and association with the requested tag.
+      # TODO: Publish GitHub release notes, archives, and checksums; do not rebuild.
+      # TODO: Hand the published release identity to the Homebrew workflow.
+      - name: Release publishing is not implemented
+        run: |
+          echo '::error::Implement verified artifact publishing before enabling this job.'
+          exit 1
