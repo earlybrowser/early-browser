@@ -1042,7 +1042,7 @@ struct BrowserWindowView: View {
         let header = HStack(spacing: 6) {
             // Neither disclosure nor title waits for a possible second click.
             Button { toggleFolder(folder) } label: {
-                FolderIcon(isOpen: isFolderOpen(folder))
+                FolderIcon(isOpen: isFolderOpen(folder), themeColor: folderTheme(folder))
                     .frame(width: 19, height: 20)
                     .animation(folderExpansionAnimation, value: isFolderOpen(folder))
                     .padding(.vertical, 7)
@@ -1076,8 +1076,8 @@ struct BrowserWindowView: View {
         .padding(.horizontal, 6)
         return header
         .help(folderPath(folder))
-        .background(Color.primary.opacity(hoveredFolder == folder.id ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 7))
-        .background(Color.primary.opacity(showsFolderDragTargets && dropFolder == folder.id ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 7))
+        // The anchored group panel owns the hover fill, including when closed.
+        // A second header island leaves darker, mismatched corners over it.
         .overlay {
             RoundedRectangle(cornerRadius: 7)
                 .strokeBorder(focusedSidebarControl == .folder(folder.id) || focusedSidebarControl == .folderToggle(folder.id) ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
@@ -1128,6 +1128,12 @@ struct BrowserWindowView: View {
             }
             .help("Delete this folder, all subfolders, and all their tabs")
         }
+    }
+
+    private func folderTheme(_ folder: BrowserFolder) -> BrowserSpace.Color {
+        guard model.preferences.spaceThemes else { return .gray }
+        // Neighboring Space pages and drag previews retain their own theme.
+        return model.coordinator.spaces.first { $0.id == folder.spaceID }?.color ?? .gray
     }
 
     private enum SidebarFrame: Hashable {
@@ -1624,7 +1630,7 @@ struct BrowserWindowView: View {
         } else if let draggingTab, let folder = model.coordinator.folders.first(where: { $0.id == draggingTab }) {
             let bounds = dragRowBounds(at: dragPoint)
             HStack(spacing: 6) {
-                FolderIcon(isOpen: false)
+                FolderIcon(isOpen: false, themeColor: folderTheme(folder))
                     .frame(width: 19, height: 20)
                 Text(folder.name).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
@@ -1682,14 +1688,17 @@ struct BrowserWindowView: View {
         return point.y >= regular.minY ? .regular : .pinned
     }
 
-    private func groupPanel(active: Bool, dashed: Bool = false, subtle: Bool = false) -> some View {
-        RoundedRectangle(cornerRadius: 12)
-            .fill(Color.primary.opacity(active ? 0.10 : 0.045))
+    private func groupPanel(active: Bool, dashed: Bool = false, isFolder: Bool = false) -> some View {
+        RoundedRectangle(cornerRadius: isFolder ? 7 : 12)
+            .fill(Color.primary.opacity(active ? 0.10 : (isFolder ? 0.04 : 0.045)))
             .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.primary.opacity(active ? 0.28 : (subtle ? 0.06 : 0.14)),
-                                  style: StrokeStyle(lineWidth: subtle && !active ? 0.5 : 1,
-                                                     lineCap: .round, dash: dashed ? [3, 2] : []))
+                // Ordinary folder hover uses the same clean fill as a tab.
+                // Borders are reserved for actual drag destinations.
+                if !isFolder || active {
+                    RoundedRectangle(cornerRadius: isFolder ? 7 : 12)
+                        .strokeBorder(Color.primary.opacity(active ? 0.28 : 0.14),
+                                      style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: dashed ? [3, 2] : []))
+                }
             }
             .animation(folderDragAnimation, value: active)
             .allowsHitTesting(false).accessibilityHidden(true)
@@ -1768,7 +1777,7 @@ struct BrowserWindowView: View {
                             || hoveredFolder == folder.id
                         // Keep the same panel mounted when collapsed so it can
                         // spring back to the header instead of disappearing.
-                        groupPanel(active: showsFolderDragTargets && isDropAncestor(folder.id), subtle: true)
+                        groupPanel(active: showsFolderDragTargets && isDropAncestor(folder.id), isFolder: true)
                             .frame(width: header.width, height: height)
                             .animation(reduceMotion ? nil : (draggingTab == nil ? .easeOut(duration: 0.12) : folderDragAnimation), value: height)
                             // Animate the drawing independently of the changing
@@ -2076,7 +2085,11 @@ private struct NavigationChevron: Shape {
 /// Layered folder artwork shared by live rows, Space pages and drag previews.
 struct FolderIcon: View {
     let isOpen: Bool
+    var themeColor: BrowserSpace.Color = .gray
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private var color: BrowserSpace.Color { contrast == .increased ? .gray : themeColor }
 
     private var outline: Color {
         colorScheme == .dark
@@ -2087,16 +2100,12 @@ struct FolderIcon: View {
     var body: some View {
         ZStack {
             FolderBack()
-                .fill(colorScheme == .dark
-                      ? Color(white: 0.47)
-                      : Color(white: 0.72))
+                .fill(color.folderBack(isDark: colorScheme == .dark).color)
                 .overlay {
                     FolderBack().stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
                 }
             FolderCover(openness: isOpen ? 1 : 0)
-                .fill(colorScheme == .dark
-                      ? Color(white: 0.13)
-                      : Color(white: 0.95))
+                .fill(color.folderFront(isDark: colorScheme == .dark).color)
                 .overlay {
                     FolderCover(openness: isOpen ? 1 : 0)
                         .stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))

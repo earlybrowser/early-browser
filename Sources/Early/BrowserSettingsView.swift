@@ -63,6 +63,10 @@ struct BrowserSettingsView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .frame(minWidth: 760, minHeight: 560)
+        // Scope this ID to a real group. On macOS a bare container ID replaces
+        // the navigation buttons' IDs instead of identifying the container.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Settings")
         .accessibilityIdentifier("settings.window")
         .onAppear { application.presentWindow = { id in openWindow(id: "browser", value: id) } }
         .sheet(item: $profileEditor) { request in
@@ -210,7 +214,7 @@ struct BrowserSettingsView: View {
                 Button("Delete Profile…", role: .destructive) { deletingProfile = profile }
                     .disabled(profile.id == application.workspace?.defaultProfileID)
             } label: { Image(systemName: "ellipsis").frame(width: 18) }
-            .menuStyle(.borderlessButton).fixedSize().disabled(!application.canEditProfiles)
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(!application.canEditProfiles)
             .accessibilityLabel("Manage \(profile.name)")
         }
         .padding(14)

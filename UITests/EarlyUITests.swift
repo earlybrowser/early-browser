@@ -128,6 +128,12 @@ final class EarlyUITests: XCTestCase {
 
     private func openSettings(_ app: XCUIApplication, section: String) {
         app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "settings.window").firstMatch.waitForExistence(timeout: 5))
+        // The Settings group must not overwrite its children's identifiers.
+        for key in ["appearance", "profiles", "sidebar", "search", "sessions"] {
+            XCTAssertEqual(app.buttons.matching(identifier: "settings.section.\(key)").count, 1,
+                           "Settings navigation should expose a unique identifier for \(key)")
+        }
         let tab = app.buttons["settings.section.\(section)"]
         XCTAssertTrue(tab.waitForExistence(timeout: 5))
         tab.click()
