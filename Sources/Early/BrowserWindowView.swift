@@ -40,6 +40,10 @@ struct BrowserWindowView: View {
     @State private var folderName = ""
     #if DEBUG
     @State private var folderToggleActionCount = 0
+
+    private var testRuntimeValue: String {
+        "Tabs \(model.openTabs.count) · Views \(model.webViews.liveViewCount) · Created \(model.webViews.creationCount) · \(model.persistence.isSaving ? "Saving" : "Saved")"
+    }
     #endif
     @State private var hoveredTab: UUID?
     @State private var hoveredFolder: UUID?
@@ -368,7 +372,13 @@ struct BrowserWindowView: View {
         .ignoresSafeArea(.container, edges: .top)
         .background {
             #if DEBUG
-            if model.isTesting { TestWindowState().frame(width: 1, height: 1) }
+            if model.isTesting {
+                HStack(spacing: 0) {
+                    TestWindowState().frame(width: 1, height: 1)
+                    // State assertions must not depend on sidebar visibility.
+                    TestRuntimeState(value: testRuntimeValue).frame(width: 1, height: 1)
+                }
+            }
             #endif
         }
         .focusedSceneValue(\.browserWindow, model)
@@ -425,9 +435,8 @@ struct BrowserWindowView: View {
             #if DEBUG
             if model.isTesting {
                 HStack(spacing: 0) {
-                    Text("Tabs \(model.openTabs.count) · Views \(model.webViews.liveViewCount) · Created \(model.webViews.creationCount) · \(model.persistence.isSaving ? "Saving" : "Saved")")
+                    Text(testRuntimeValue)
                         .font(.caption2)
-                        .accessibilityIdentifier("test.runtime")
                     // Count actions, not just final state: two unintended toggles
                     // would otherwise look like an unchanged folder in a UI test.
                     Text("\(folderToggleActionCount)").font(.caption2)

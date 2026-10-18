@@ -378,6 +378,21 @@ final class EarlyUITests: XCTestCase {
             .withOffset(CGVector(dx: 0, dy: revealOffset + 17)) // Center of the 34-point empty Pins target.
     }
 
+    private func dragSidebarItem(_ element: XCUIElement, to target: XCUICoordinate,
+                                 holdDuration: TimeInterval = 0.8,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        // A revealed Pins target can overlap the source row's old center.
+        // Start off-center so horizontal travel crosses DragGesture's minimum
+        // distance even when there is almost no vertical travel before reveal.
+        let source = element.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
+        let start = source.screenPoint
+        let end = target.screenPoint
+        XCTAssertGreaterThan(hypot(end.x - start.x, end.y - start.y), 12,
+                             "Drag must move far enough to start: \(start) → \(end)", file: file, line: line)
+        source.click(forDuration: 0.2, thenDragTo: target,
+                     withVelocity: .slow, thenHoldForDuration: holdDuration)
+    }
+
     /// Native drag destinations are resolved before mouse-down. Account for
     /// the empty saved-section targets that appear once dragging begins.
     private func savedSectionRevealOffset(_ app: XCUIApplication) -> CGFloat {
@@ -410,13 +425,9 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "One")
         let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
         let firstID = rows.firstMatch.identifier
-        func drag(_ element: XCUIElement, to target: XCUICoordinate) {
-            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .click(forDuration: 0.2, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.8)
-        }
-        drag(app.buttons[firstID], to: savedSectionTarget(app, favorites: false))
+        dragSidebarItem(app.buttons[firstID], to: savedSectionTarget(app, favorites: false))
         expectSidebarStatus(app.buttons[firstID], "Pinned, open")
-        drag(app.buttons[firstID], to: savedSectionTarget(app, favorites: true))
+        dragSidebarItem(app.buttons[firstID], to: savedSectionTarget(app, favorites: true))
         let first = app.buttons["favorite.\(firstID.dropFirst(4))"]
         XCTAssertTrue(first.waitForExistence(timeout: 3))
         let width = first.frame.width
@@ -457,7 +468,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(child.waitForExistence(timeout: 3))
         XCTAssertEqual(root.value as? String, "Expanded")
         XCTAssertEqual(child.value as? String, "Collapsed")
-        drag(third, to: child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+        dragSidebarItem(third, to: child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
         XCTAssertTrue(app.buttons[thirdID].waitForExistence(timeout: 3))
         XCTAssertEqual(child.value as? String, "Expanded")
         XCTAssertGreaterThan(app.buttons[thirdID].frame.minY, child.frame.minY)
@@ -569,25 +580,21 @@ final class EarlyUITests: XCTestCase {
         field.typeText("keep across sections")
         let sidebar = app.descendants(matching: .any).matching(identifier: "browser.sidebar").firstMatch
         let regular = app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
-        func drag(_ element: XCUIElement, to destination: XCUICoordinate) {
-            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .click(forDuration: 0.2, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.2)
-        }
         XCTAssertTrue(sidebar.exists)
         // Recompute for each drag: moving into/out of Favorites changes whether
         // revealing its empty drop target will shift the Pins viewport.
-        drag(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: false))
+        dragSidebarItem(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: false), holdDuration: 0.2)
         expectSidebarStatus(app.buttons["tab.\(id)"], "Pinned, open")
-        drag(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: true))
+        dragSidebarItem(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: true), holdDuration: 0.2)
         XCTAssertTrue(app.buttons["favorite.\(id)"].waitForExistence(timeout: 3))
-        drag(app.buttons["favorite.\(id)"], to: savedSectionTarget(app, favorites: false))
+        dragSidebarItem(app.buttons["favorite.\(id)"], to: savedSectionTarget(app, favorites: false), holdDuration: 0.2)
         XCTAssertTrue(app.buttons["tab.\(id)"].waitForExistence(timeout: 3))
         expectSidebarStatus(app.buttons["tab.\(id)"], "Pinned, open")
-        drag(app.buttons["tab.\(id)"], to: regular)
+        dragSidebarItem(app.buttons["tab.\(id)"], to: regular, holdDuration: 0.2)
         expectSidebarStatus(app.buttons["tab.\(id)"], "Today")
-        drag(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: true))
+        dragSidebarItem(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: true), holdDuration: 0.2)
         XCTAssertTrue(app.buttons["favorite.\(id)"].waitForExistence(timeout: 3))
-        drag(app.buttons["favorite.\(id)"], to: regular)
+        dragSidebarItem(app.buttons["favorite.\(id)"], to: regular, holdDuration: 0.2)
         XCTAssertTrue(app.buttons["tab.\(id)"].waitForExistence(timeout: 3))
         expectSidebarStatus(app.buttons["tab.\(id)"], "Today")
         XCTAssertEqual(field.value as? String, "keep across sections")
@@ -1304,7 +1311,8 @@ final class EarlyUITests: XCTestCase {
     private func expectSidebarStatus(_ element: XCUIElement, _ value: String,
                                      file: StaticString = #filePath, line: UInt = #line) {
         let check = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
-        XCTAssertEqual(XCTWaiter.wait(for: [check], timeout: 5), .completed, file: file, line: line)
+        XCTAssertEqual(XCTWaiter.wait(for: [check], timeout: 5), .completed,
+                       "Expected \(value): \(element.exists ? element.debugDescription : "missing")", file: file, line: line)
     }
 
     private func expectStaticText(_ element: XCUIElement, _ text: String,
