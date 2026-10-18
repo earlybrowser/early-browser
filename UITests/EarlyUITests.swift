@@ -212,13 +212,19 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 0, views: 2, created: 2)
         app.menuBarItems["Space"].click()
         visibleMenuAction("Delete Space…")
-        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
-        app.buttons["Cancel"].click()
+        // Native alerts also mirror their actions into the Touch Bar. Scope
+        // these queries to the sheet so its duplicate buttons cannot match.
+        let cancelDeletion = app.sheets.buttons["Cancel"]
+        XCTAssertTrue(cancelDeletion.waitForExistence(timeout: 5))
+        cancelDeletion.click()
+        XCTAssertTrue(cancelDeletion.waitForNonExistence(timeout: 3))
         XCTAssertTrue(spaceDot(app, named: "Research").exists)
         app.menuBarItems["Space"].click()
         visibleMenuAction("Delete Space…")
-        XCTAssertTrue(app.buttons["Delete Space"].waitForExistence(timeout: 5))
-        app.buttons["Delete Space"].click()
+        let confirmDeletion = app.sheets.buttons["Delete Space"]
+        XCTAssertTrue(confirmDeletion.waitForExistence(timeout: 5))
+        confirmDeletion.click()
+        XCTAssertTrue(confirmDeletion.waitForNonExistence(timeout: 3))
         XCTAssertFalse(spaceDot(app, named: "Research").exists)
         XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
         expectRuntime(app, tabs: 2, views: 2, created: 2)
@@ -349,11 +355,27 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 0, views: 0, created: 0)
     }
 
-    /// Empty saved-section targets appear after the drag starts. Aim within
-    /// their revealed bounds using the persistent address control as the anchor.
+    /// XCTest resolves the destination before mouse-down. Anchor Pins to its
+    /// actual scroll viewport (below the Space heading), then account for the
+    /// Favorites row that will appear when dragging begins.
     private func savedSectionTarget(_ app: XCUIApplication, favorites: Bool) -> XCUICoordinate {
-        app.buttons["sidebar.addressBar"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
-            .withOffset(CGVector(dx: 0, dy: favorites ? 24 : 100))
+        let favoriteSection = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.favorites").firstMatch
+        let favoritesVisible = favoriteSection.exists
+        let favoriteRowHeight: CGFloat = 43.2
+        let sectionSpacing: CGFloat = 16
+        if favorites {
+            if favoritesVisible {
+                return favoriteSection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            }
+            return app.buttons["sidebar.addressBar"]
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
+                .withOffset(CGVector(dx: 0, dy: sectionSpacing + favoriteRowHeight / 2))
+        }
+        let revealOffset = favoritesVisible ? 0 : favoriteRowHeight + sectionSpacing
+        return app.scrollViews["sidebar.tabs"]
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: revealOffset + 17)) // Center of the 34-point empty Pins target.
     }
 
     /// Native drag destinations are resolved before mouse-down. Account for
@@ -546,28 +568,28 @@ final class EarlyUITests: XCTestCase {
         field.click()
         field.typeText("keep across sections")
         let sidebar = app.descendants(matching: .any).matching(identifier: "browser.sidebar").firstMatch
-        let pinned = savedSectionTarget(app, favorites: false)
-        let favorites = savedSectionTarget(app, favorites: true)
         let regular = app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
         func drag(_ element: XCUIElement, to destination: XCUICoordinate) {
             element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
                 .click(forDuration: 0.2, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.2)
         }
         XCTAssertTrue(sidebar.exists)
-        drag(app.buttons["tab.\(id)"], to: pinned)
-        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Pinned, open")
-        drag(app.buttons["tab.\(id)"], to: favorites)
+        // Recompute for each drag: moving into/out of Favorites changes whether
+        // revealing its empty drop target will shift the Pins viewport.
+        drag(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: false))
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Pinned, open")
+        drag(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: true))
         XCTAssertTrue(app.buttons["favorite.\(id)"].waitForExistence(timeout: 3))
-        drag(app.buttons["favorite.\(id)"], to: pinned)
+        drag(app.buttons["favorite.\(id)"], to: savedSectionTarget(app, favorites: false))
         XCTAssertTrue(app.buttons["tab.\(id)"].waitForExistence(timeout: 3))
-        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Pinned, open")
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Pinned, open")
         drag(app.buttons["tab.\(id)"], to: regular)
-        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Today")
-        drag(app.buttons["tab.\(id)"], to: favorites)
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Today")
+        drag(app.buttons["tab.\(id)"], to: savedSectionTarget(app, favorites: true))
         XCTAssertTrue(app.buttons["favorite.\(id)"].waitForExistence(timeout: 3))
         drag(app.buttons["favorite.\(id)"], to: regular)
         XCTAssertTrue(app.buttons["tab.\(id)"].waitForExistence(timeout: 3))
-        XCTAssertEqual(app.buttons["tab.\(id)"].value as? String, "Today")
+        expectSidebarStatus(app.buttons["tab.\(id)"], "Today")
         XCTAssertEqual(field.value as? String, "keep across sections")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
@@ -1285,6 +1307,15 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [check], timeout: 5), .completed, file: file, line: line)
     }
 
+    private func expectStaticText(_ element: XCUIElement, _ text: String,
+                                  file: StaticString = #filePath, line: UInt = #line) {
+        // macOS versions expose static-text content through either AXValue or
+        // AXLabel. Still require the exact message, not just an existing toast.
+        let value = element.value as? String
+        XCTAssertTrue(value == text || element.label == text,
+                      "Expected static text: \(text). Element: \(element.debugDescription)", file: file, line: line)
+    }
+
     func testInvalidSubmissionDoesNotCreateTabOrView() {
         let app = launchFreshApp()
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
@@ -1456,7 +1487,7 @@ final class EarlyUITests: XCTestCase {
                 app.webViews.links[title].click()
             }
             XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-            XCTAssertEqual(confirmation.label, "New Tab Created")
+            expectStaticText(confirmation, "New Tab Created")
             expectRuntime(app, tabs: index + 3, views: index + 3, created: index + 3)
             expectPage(app, "One")
         }
@@ -1464,6 +1495,7 @@ final class EarlyUITests: XCTestCase {
         // retaining their normal foreground-tab behavior.
         app.webViews.links["Open new tab"].click()
         XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        expectStaticText(confirmation, "New Tab Created")
         expectPage(app, "Two")
         expectRuntime(app, tabs: 5, views: 5, created: 5)
         XCTAssertTrue(confirmation.waitForNonExistence(timeout: 4))
