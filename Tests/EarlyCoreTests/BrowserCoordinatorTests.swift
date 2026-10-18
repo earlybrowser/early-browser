@@ -157,7 +157,8 @@ struct BrowserCoordinatorTests {
         let existing = tab()
         let browser = coordinator(tabs: [existing], selected: existing.id)
         browser.presentCommandBar(.navigateCurrentTab)
-        browser.switchSpace(to: UUID())
+        let empty = browser.createSpace(name: "Empty")!
+        browser.switchSpace(to: empty)
         #expect(browser.content == .empty)
         #expect(browser.commandBar == nil)
         browser.selectOpenTab(existing.id)
@@ -492,7 +493,7 @@ struct BrowserCoordinatorTests {
         let pin = tab(pinned: true)
         let browser = coordinator(tabs: [pin], selected: pin.id)
         browser.setFavorite(pin.id, favorite: true)
-        let otherSpace = UUID()
+        let otherSpace = browser.createSpace(name: "Other")!
         browser.switchSpace(to: otherSpace)
         browser.openTab(pin.id)
         #expect(browser.setFavorite(pin.id, favorite: false))

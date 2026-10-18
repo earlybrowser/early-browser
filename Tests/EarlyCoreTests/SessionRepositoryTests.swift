@@ -99,7 +99,7 @@ struct SessionRepositoryTests {
         #expect(restored.content == .empty)
         #expect(restored.tabStore.favorites.map(\.id) == ids)
         #expect(restored.tabStore.favorites.allSatisfy { !$0.isOpen && $0.currentURL == $0.pinnedURL && $0.title == $0.pinnedTitle })
-        restored.switchSpace(to: UUID())
+        restored.switchSpace(to: try #require(restored.createSpace(name: "Other")))
         #expect(restored.openTab(ids[0]))
         #expect(restored.tabStore.tabs.count == 32)
         #expect(restored.activeTabID == ids[0])

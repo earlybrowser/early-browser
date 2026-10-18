@@ -6,6 +6,7 @@ import Observation
 public final class BrowserCoordinator {
     public private(set) var tabStore: TabStore
     public private(set) var activeSpaceID: UUID
+    public private(set) var spaces: [BrowserSpace]
     public private(set) var content: BrowserContentPresentation = .empty
     public private(set) var commandBar: CommandBarPresentation?
     public private(set) var commandBarFocusRequest = 0
@@ -19,16 +20,20 @@ public final class BrowserCoordinator {
         tabStore: TabStore = TabStore(),
         selectionBySpace: [UUID: UUID] = [:],
         profileID: UUID = UUID(),
-        recentlyClosed: [ClosedTab] = []
+        recentlyClosed: [ClosedTab] = [],
+        spaces: [BrowserSpace]? = nil
     ) {
         self.activeSpaceID = activeSpaceID
         self.tabStore = tabStore
         self.selectionBySpace = selectionBySpace
         self.profileID = profileID
         self.recentlyClosed = Array(recentlyClosed.suffix(20))
+        self.spaces = spaces ?? BrowserSpace.migrated(profileID: profileID, activeID: activeSpaceID,
+            tabs: tabStore.tabs, folders: tabStore.folders, selection: selectionBySpace, closed: recentlyClosed)
         for folder in tabStore.folders {
             self.tabStore.setFolderExpanded(folder.id, expanded: false)
         }
+        pruneSelections()
         restoreSelection()
         if case .firstLaunch = startup, tabStore.tabs.isEmpty {
             presentCommandBar(.newTab)
@@ -153,7 +158,7 @@ public final class BrowserCoordinator {
     public var session: BrowserSession {
         BrowserSession(profileID: profileID, activeSpaceID: activeSpaceID,
                        tabs: tabStore.tabs, selectionBySpace: selectionBySpace,
-                       recentlyClosed: recentlyClosed, folders: tabStore.folders)
+                       recentlyClosed: recentlyClosed, folders: tabStore.folders, spaces: spaces)
     }
 
     public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
@@ -162,13 +167,27 @@ public final class BrowserCoordinator {
     /// open/closed state, or live page URL. Call only for the same profile.
     public func synchronizeSavedItems(from source: BrowserSession) {
         guard source.profileID == profileID else { return }
+        // Runtime snapshots may use an app-approved test/custom scheme; URL
+        // policy is checked by persistence, not by organization sharing.
+        guard (try? BrowserSpace.validate(source.spaces, profileID: profileID)) != nil else { return }
+        let previousSpace = activeSpaceID
+        let previousIndex = spaces.firstIndex { $0.id == activeSpaceID } ?? 0
+        spaces = source.spaces
+        let spaceIDs = Set(spaces.map(\.id))
+        if !spaceIDs.contains(activeSpaceID) {
+            activeSpaceID = spaces[min(max(previousIndex - 1, 0), spaces.count - 1)].id
+            dismissCommandBar()
+        }
         let saved = source.tabs.filter { $0.pinnedURL != nil }
         let savedIDs = Set(saved.map(\.id))
+        let savedByID = Dictionary(saved.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let localByID = Dictionary(uniqueKeysWithValues: tabStore.tabs.map { ($0.id, $0) })
-        var regular = tabStore.tabs.filter { $0.pinnedURL == nil && !savedIDs.contains($0.id) }
+        var regular = tabStore.tabs.filter {
+            $0.pinnedURL == nil && !savedIDs.contains($0.id) && spaceIDs.contains($0.spaceID)
+        }
         // Unpinning is shared, but a live copy in this window must survive.
         let unpinnedIDs = Set(source.tabs.filter { $0.pinnedURL == nil }.map(\.id))
-        for var tab in tabStore.tabs where tab.pinnedURL != nil && !savedIDs.contains(tab.id) && unpinnedIDs.contains(tab.id) && tab.isOpen {
+        for var tab in tabStore.tabs where tab.pinnedURL != nil && !savedIDs.contains(tab.id) && unpinnedIDs.contains(tab.id) && tab.isOpen && spaceIDs.contains(tab.spaceID) {
             tab.pinnedURL = nil
             tab.pinnedTitle = nil
             tab.isFavorite = false
@@ -199,10 +218,18 @@ public final class BrowserCoordinator {
         let folderIDs = Set(folders.map(\.id))
         // Do not resurrect deleted saved items or references to deleted folders.
         recentlyClosed.removeAll { closed in
+            !spaceIDs.contains(closed.tab.spaceID) ||
             (closed.tab.pinnedURL != nil && !savedIDs.contains(closed.tab.id)) ||
+            savedByID[closed.tab.id].map {
+                $0.spaceID != closed.tab.spaceID || $0.folderID != closed.tab.folderID || $0.isFavorite != closed.tab.isFavorite
+            } == true ||
             closed.tab.folderID.map { !folderIDs.contains($0) } == true
         }
+        // Shared pins may move to a different Space; a local live view keeps
+        // its identity, but its old Space must no longer select it.
+        pruneSelections()
         restoreSelection()
+        if previousSpace != activeSpaceID { dismissCommandBar() }
     }
 
     @discardableResult
@@ -368,10 +395,96 @@ public final class BrowserCoordinator {
         return closed.tab.id
     }
 
-    public func switchSpace(to id: UUID) {
+    public var activeSpace: BrowserSpace? { spaces.first { $0.id == activeSpaceID } }
+
+    @discardableResult
+    public func createSpace(name: String, color: BrowserSpace.Color = .blue) -> UUID? {
+        guard let name = BrowserSpace.normalizedName(name) else { return nil }
+        let space = BrowserSpace(profileID: profileID, name: name, color: color)
+        spaces.append(space)
+        return space.id
+    }
+
+    @discardableResult
+    public func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color) -> Bool {
+        guard let name = BrowserSpace.normalizedName(name),
+              let index = spaces.firstIndex(where: { $0.id == id && $0.profileID == profileID }) else { return false }
+        spaces[index].name = name
+        spaces[index].color = color
+        return true
+    }
+
+    /// Copy saved organization, not Today tabs, shared Favorites, live page
+    /// state, or selection. All copies are closed and receive fresh identities.
+    @discardableResult
+    public func duplicateSpace(_ id: UUID, name: String) -> UUID? {
+        guard let source = spaces.first(where: { $0.id == id && $0.profileID == profileID }),
+              let name = BrowserSpace.normalizedName(name) else { return nil }
+        let copy = BrowserSpace(profileID: profileID, name: name, color: source.color)
+        tabStore.duplicateSavedItems(in: id, to: copy.id)
+        spaces.append(copy)
+        return copy.id
+    }
+
+    /// Explicitly destructive: remove this Space's contents/history in every
+    /// window. Favorites are profile-wide and are rehomed without duplication.
+    /// The owner discards returned live-page identities. The last Space stays.
+    @discardableResult
+    public func deleteSpace(_ id: UUID) -> Set<UUID>? {
+        guard spaces.count > 1, let index = spaces.firstIndex(where: { $0.id == id && $0.profileID == profileID }) else { return nil }
+        let fallback = spaces[index == 0 ? 1 : index - 1].id
+        let removed = tabStore.deleteSpace(id, rehomeFavoritesTo: fallback)
+        spaces.remove(at: index)
+        recentlyClosed.removeAll { !$0.tab.isFavorite && $0.tab.spaceID == id }
+        for index in recentlyClosed.indices where recentlyClosed[index].tab.spaceID == id {
+            recentlyClosed[index].tab.spaceID = fallback
+        }
+        if activeSpaceID == id {
+            activeSpaceID = fallback
+            dismissCommandBar()
+        }
+        pruneSelections()
+        restoreSelection()
+        return removed
+    }
+
+    /// Move within this profile, preserving URL, pin state, open state and ID.
+    /// Append at the destination's top level without selecting or loading it.
+    @discardableResult
+    public func moveTab(_ id: UUID, toSpace spaceID: UUID) -> Bool {
+        guard spaces.contains(where: { $0.id == spaceID && $0.profileID == profileID }),
+              let tab = tabStore.tab(id: id), tab.profileID == profileID,
+              !tab.isFavorite, tab.spaceID != spaceID else { return false }
+        let wasActive = activeTabID == id
+        let oldOrder = tabStore.openTabs(in: tab.spaceID).map(\.id)
+        guard tabStore.moveTab(id, toSpace: spaceID) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        pruneSelections()
+        if wasActive {
+            let index = oldOrder.firstIndex(of: id) ?? 0
+            let next = oldOrder.dropFirst(index + 1).first ?? oldOrder.prefix(index).last
+            selectionBySpace[activeSpaceID] = next
+            dismissCommandBar()
+        }
+        restoreSelection()
+        return true
+    }
+
+    @discardableResult
+    public func switchSpace(to id: UUID) -> Bool {
+        guard spaces.contains(where: { $0.id == id && $0.profileID == profileID }) else { return false }
         activeSpaceID = id
         dismissCommandBar()
         restoreSelection()
+        return true
+    }
+
+    private func pruneSelections() {
+        selectionBySpace = selectionBySpace.filter { space, id in
+            spaces.contains { $0.id == space } && tabStore.tabs.contains {
+                $0.id == id && $0.profileID == profileID && $0.isOpen && $0.isVisible(in: space)
+            }
+        }
     }
 
     private func restoreSelection() {

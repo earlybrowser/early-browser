@@ -63,7 +63,7 @@ final class BrowserWindowModel {
         }
         coordinator = BrowserCoordinator(startup: startup, activeSpaceID: session.activeSpaceID,
             tabStore: TabStore(tabs: session.tabs, folders: session.folders), selectionBySpace: session.selectionBySpace,
-            profileID: session.profileID, recentlyClosed: session.recentlyClosed)
+            profileID: session.profileID, recentlyClosed: session.recentlyClosed, spaces: session.spaces)
         persistence = sharedPersistence ?? SessionAutosaver(repository: repository, disabledReason: restorationError)
         webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
                                  websiteDataStore: websiteDataStore) { configuration in
@@ -261,6 +261,61 @@ final class BrowserWindowModel {
         guard coordinator.reopenLastTab() != nil else { return }
         activateSelection()
         save()
+    }
+
+    @discardableResult
+    func createSpace(name: String, color: BrowserSpace.Color = .blue) -> UUID? {
+        guard let id = coordinator.createSpace(name: name, color: color) else { return nil }
+        save()
+        return id
+    }
+
+    @discardableResult
+    func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color) -> Bool {
+        guard coordinator.editSpace(id, name: name, color: color) else { return false }
+        save()
+        return true
+    }
+
+    @discardableResult
+    func duplicateSpace(_ id: UUID, name: String) -> UUID? {
+        guard let copy = coordinator.duplicateSpace(id, name: name) else { return nil }
+        save()
+        return copy
+    }
+
+    @discardableResult
+    func switchSpace(to id: UUID) -> Bool {
+        guard coordinator.switchSpace(to: id) else { return false }
+        suggestions.cancel()
+        submissionMessage = nil
+        activateSelection()
+        save()
+        return true
+    }
+
+    @discardableResult
+    func deleteSpace(_ id: UUID) -> Bool {
+        let previous = coordinator.activeTabID
+        let previousSpace = coordinator.activeSpaceID
+        guard let removed = coordinator.deleteSpace(id) else { return false }
+        for tabID in removed { webViews.discard(tabID: tabID) }
+        if let renamingTabID, removed.contains(renamingTabID) { self.renamingTabID = nil }
+        if coordinator.commandBar == nil { suggestions.cancel() }
+        if previous != coordinator.activeTabID || previousSpace != coordinator.activeSpaceID { activateSelection() }
+        save()
+        return true
+    }
+
+    @discardableResult
+    func moveTab(_ id: UUID, toSpace spaceID: UUID) -> Bool {
+        let previous = coordinator.activeTabID
+        guard coordinator.moveTab(id, toSpace: spaceID) else { return false }
+        if previous != coordinator.activeTabID { activateSelection() }
+        // The moved tab retains its existing live view; moving alone never
+        // prepares a destination page or switches this window's Space.
+        save()
+        return true
     }
 
     func activateSelection() {

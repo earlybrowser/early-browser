@@ -27,7 +27,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. Copy the current page URL with `⌘⇧C`. | Implemented. |
 | Media controls | Identify playing HTML audio or video. Speaker-click tab muting and per-site muting are planned. | Partial. |
 | Website fullscreen | Let compatible website players enter and exit fullscreen. | Implemented. |
-| Spaces and profiles | Separate workspaces with colored space dots and isolated browsing profiles. | Planned. |
+| Spaces and profiles | Persistent named/color-coded Space records and validated organization operations. Space controls and isolated browsing profile management are planned. | State foundation implemented; UI and profile management planned. |
 | Universal search and commands | Find tabs, history, and bookmarks, and run browser actions from the command bar. | Planned. |
 | Split views and tab previews | Side-by-side pages with shared controls following the focused pane; thumbnail tab switcher. | Planned. |
 | Page lifecycle | Create pages on demand and release them when closed. Automatic suspension and recovery are planned. | Partial. |
