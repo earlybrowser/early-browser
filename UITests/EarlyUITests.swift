@@ -1300,9 +1300,20 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(result, .completed, "Runtime: \(probe.exists ? probe.debugDescription : "missing")", file: file, line: line)
     }
 
-    private func expectPage(_ app: XCUIApplication, _ name: String,
+    private func expectPage(_ app: XCUIApplication, _ name: String, sidebarHidden: Bool = false,
                             file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(app.webViews.staticTexts["Page \(name)"].firstMatch.waitForExistence(timeout: 10), file: file, line: line)
+        if sidebarHidden {
+            // Auto-hide deliberately removes navigation controls from the AX
+            // tree. Verify the document without revealing the sidebar, and
+            // require its controls to remain hidden rather than waiting for
+            // Reload to appear on a surface that must stay out of view.
+            for identifier in ["sidebar.newTab", "navigation.reload", "navigation.stop"] {
+                XCTAssertFalse(app.buttons[identifier].exists,
+                               "Sidebar control should stay hidden: \(identifier)", file: file, line: line)
+            }
+            return
+        }
         // DOM content can appear before WebKit finishes loading. Sidebar
         // assertions should observe the completed state, not that brief gap.
         XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5), file: file, line: line)
@@ -1497,14 +1508,14 @@ final class EarlyUITests: XCTestCase {
             XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
             expectStaticText(confirmation, "New Tab Created")
             expectRuntime(app, tabs: index + 3, views: index + 3, created: index + 3)
-            expectPage(app, "One")
+            expectPage(app, "One", sidebarHidden: true)
         }
         // Unmodified target=_blank links use the same confirmation while
         // retaining their normal foreground-tab behavior.
         app.webViews.links["Open new tab"].click()
         XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
         expectStaticText(confirmation, "New Tab Created")
-        expectPage(app, "Two")
+        expectPage(app, "Two", sidebarHidden: true)
         expectRuntime(app, tabs: 5, views: 5, created: 5)
         XCTAssertTrue(confirmation.waitForNonExistence(timeout: 4))
         XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
