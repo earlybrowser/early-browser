@@ -10,9 +10,9 @@ import WebKit
 @MainActor @Observable
 final class BrowserWindowModel {
     enum SpaceEditor: Identifiable {
-        case new, edit(UUID)
+        case new, edit(UUID, selectOnSave: Bool = false)
         var id: String {
-            switch self { case .new: "new"; case .edit(let id): id.uuidString }
+            switch self { case .new: "new"; case .edit(let id, _): id.uuidString }
         }
     }
     struct Toast: Identifiable {
@@ -315,9 +315,9 @@ final class BrowserWindowModel {
     }
 
     @discardableResult
-    func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color, icon: SpaceIcon?) -> Bool {
+    func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color, icon: SpaceIcon?, selectOnSave: Bool = false) -> Bool {
         guard coordinator.editSpace(id, name: name, color: color, icon: icon) else { return false }
-        save()
+        if !selectOnSave || !switchSpace(to: id) { save() }
         return true
     }
 
@@ -349,8 +349,29 @@ final class BrowserWindowModel {
 
     var activeSpaceIndex: Int { coordinator.spaces.firstIndex { $0.id == coordinator.activeSpaceID } ?? 0 }
 
+    @discardableResult
+    func reorderSpace(_ id: UUID, before beforeID: UUID?) -> Bool {
+        guard canManageSpaces, coordinator.reorderSpace(id, before: beforeID) else { return false }
+        cancelSpaceSwipePresentation()
+        save()
+        return true
+    }
+
+    /// VoiceOver/keyboard alternative to dragging an icon.
+    @discardableResult
+    func shiftSpace(_ id: UUID, by delta: Int) -> Bool {
+        let spaces = coordinator.spaces
+        guard canManageSpaces, let index = spaces.firstIndex(where: { $0.id == id }),
+              SpaceNavigation.targetIndex(current: index, count: spaces.count, delta: delta) != nil else { return false }
+        let beforeIndex = delta < 0 ? index - 1 : index + 2
+        let before = beforeIndex < spaces.count ? spaces[beforeIndex].id : nil
+        guard reorderSpace(id, before: before) else { return false }
+        BrowserHaptics.alignment(enabled: preferences.haptics)
+        return true
+    }
+
     func updateSpaceSwipe(translation: Double) {
-        guard !spaceSwipeIsSettling else { return }
+        guard !spaceSwipeIsSettling, !sidebarInteractionInProgress else { return }
         let progress = SpaceNavigation.sidebarTravel(translation: translation, width: sidebarWidth,
             canGoPrevious: activeSpaceIndex > 0, canGoNext: activeSpaceIndex + 1 < coordinator.spaces.count)
         var transaction = Transaction()
@@ -433,11 +454,11 @@ final class BrowserWindowModel {
         spaceEditor = .new
     }
 
-    func requestEditSpace(_ id: UUID) {
+    func requestEditSpace(_ id: UUID, selectOnSave: Bool = false) {
         guard canManageSpaces, coordinator.spaces.contains(where: { $0.id == id }) else { return }
         cancelSpaceSwipePresentation()
         dismissCommandBar(restoreFocus: false)
-        spaceEditor = .edit(id)
+        spaceEditor = .edit(id, selectOnSave: selectOnSave)
     }
 
     func requestDeleteSpace(_ id: UUID) {
@@ -537,7 +558,7 @@ final class BrowserWindowModel {
         let remaining = Set(coordinator.tabStore.tabs.map(\.id))
         for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }
         if let renamingTabID, !remaining.contains(renamingTabID) { self.renamingTabID = nil }
-        if case .edit(let id) = spaceEditor, !coordinator.spaces.contains(where: { $0.id == id }) { spaceEditor = nil }
+        if case .edit(let id, _) = spaceEditor, !coordinator.spaces.contains(where: { $0.id == id }) { spaceEditor = nil }
         if let spaceDeletionID, !coordinator.spaces.contains(where: { $0.id == spaceDeletionID }) { self.spaceDeletionID = nil }
         if previous != coordinator.activeTabID { activateSelection() }
     }

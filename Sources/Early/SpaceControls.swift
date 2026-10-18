@@ -28,6 +28,8 @@ struct SpaceActions: View {
 struct SpaceFooter: View {
     @Bindable var model: BrowserWindowModel
     @FocusState private var focusedSpace: UUID?
+    @State private var spaceDrag: SpaceReorderDrag?
+    @GestureState private var spaceDragGestureActive = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -77,6 +79,28 @@ struct SpaceFooter: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
         .accessibilityIdentifier("sidebar.footer")
+        .task(id: spaceDrag?.source) {
+            while !Task.isCancelled, spaceDrag != nil {
+                do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+                guard var preview = spaceDrag else { return }
+                let previous = preview.destinationIndex
+                if preview.autoScrollStep() {
+                    spaceDrag = preview
+                    if previous != preview.destinationIndex { signalReorder() }
+                }
+            }
+        }
+        .onChange(of: spaceDragGestureActive) { _, active in
+            if !active { cancelSpaceDrag() }
+        }
+        .onChange(of: model.coordinator.spaces.map(\.id)) { _, ids in
+            if let spaceDrag, spaceDrag.ids != ids { cancelSpaceDrag() }
+        }
+        .onChange(of: model.coordinator.activeSpaceID) { cancelSpaceDrag() }
+        .onChange(of: model.sidebarIsHidden) { _, hidden in
+            if hidden { cancelSpaceDrag() }
+        }
+        .onDisappear { cancelSpaceDrag() }
         .sheet(item: $model.spaceEditor, onDismiss: { model.activateSelection() }) { request in
             SpaceEditorSheet(model: model, request: request)
         }
@@ -106,28 +130,38 @@ struct SpaceFooter: View {
             let layout = SpaceNavigation.footerLayout(count: spaces.count, current: model.activeSpaceIndex,
                 progress: reduceMotion ? 0 : model.spaceSwipeProgress, width: geometry.size.width)
             let contentWidth = Double(spaces.count) * SpaceNavigation.footerItemWidth
+            let viewport = spaceDrag?.width ?? layout.width
+            let offset = spaceDrag?.viewportOffset ?? layout.offset
             HStack(spacing: 0) {
                 ForEach(Array(spaces.enumerated()), id: \.element.id) { index, space in
+                    let visible = spaceDrag?.isVisible(space.id) ?? layout.visibleRange.contains(index)
+                    let translation = spaceDrag?.offset(for: space.id) ?? 0
                     spaceDot(space, index: index)
-                        .disabled(!layout.visibleRange.contains(index))
-                        .accessibilityHidden(!layout.visibleRange.contains(index))
+                        .offset(x: translation)
+                        .animation(reduceMotion || spaceDrag?.source == space.id ? nil : .easeInOut(duration: 0.14), value: translation)
+                        .zIndex(spaceDrag?.source == space.id ? 1 : 0)
+                        .highPriorityGesture(reordering(space.id, width: layout.width, offset: layout.offset))
+                        .disabled(!visible)
+                        .accessibilityHidden(!visible)
                 }
             }
             .frame(width: contentWidth, height: 32, alignment: .leading)
-            .offset(x: -layout.offset)
-            .frame(width: layout.width, height: 32, alignment: .leading)
+            .offset(x: -offset)
+            .frame(width: viewport, height: 32, alignment: .leading)
             .clipped()
             .contentShape(Rectangle())
+            .coordinateSpace(name: "spaceReordering")
             .mask {
-                let fade = min(0.12, 8 / max(1, layout.width))
+                let fade = min(0.12, 8 / max(1, viewport))
                 LinearGradient(stops: [
-                    .init(color: layout.offset > 0 ? .clear : .black, location: 0),
+                    .init(color: offset > 0 ? .clear : .black, location: 0),
                     .init(color: .black, location: fade),
                     .init(color: .black, location: 1 - fade),
-                    .init(color: layout.offset + layout.width < contentWidth ? .clear : .black, location: 1)
+                    .init(color: offset + viewport < contentWidth ? .clear : .black, location: 1)
                 ], startPoint: .leading, endPoint: .trailing)
             }
             .frame(width: geometry.size.width, height: 32)
+            .onChange(of: layout.width) { cancelSpaceDrag() }
         }
         .frame(height: 32)
         .accessibilityElement(children: .contain)
@@ -141,7 +175,10 @@ struct SpaceFooter: View {
         let selected = space.id == model.coordinator.activeSpaceID
         let fill = SpaceNavigation.indicatorFill(index: index, current: model.activeSpaceIndex,
             count: model.coordinator.spaces.count, progress: reduceMotion ? 0 : model.spaceSwipeProgress)
-        return Button { _ = model.switchSpace(to: space.id) } label: {
+        return Button {
+            guard spaceDrag == nil else { return }
+            _ = model.switchSpace(to: space.id)
+        } label: {
             SpaceIconView(icon: space.icon)
                 .opacity((contrast == .increased ? 0.65 : 0.35) + (contrast == .increased ? 0.35 : 0.65) * fill)
                 .frame(width: SpaceNavigation.footerItemWidth, height: 28)
@@ -154,11 +191,14 @@ struct SpaceFooter: View {
         }
         .buttonStyle(SpaceControlStyle())
         .focused($focusedSpace, equals: space.id)
-        .disabled(!model.canManageSpaces)
+        .disabled(!model.canManageSpaces && spaceDrag == nil)
         .accessibilityLabel(space.name)
         .accessibilityValue("\(selected ? "Current Space" : "Switch Space") · \(space.icon?.accessibilityName ?? "Default dot")")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("space.\(space.id)")
+        .accessibilityHint("Drag horizontally to reorder, or use the Move Left and Move Right actions.")
+        .accessibilityAction(named: Text("Move Left")) { _ = model.shiftSpace(space.id, by: -1) }
+        .accessibilityAction(named: Text("Move Right")) { _ = model.shiftSpace(space.id, by: 1) }
         .help(space.name)
         .contextMenu {
             SpaceActions(model: model, space: space)
@@ -166,6 +206,47 @@ struct SpaceFooter: View {
             Button("New Space…") { model.requestNewSpace() }
         }
     }
+
+    private func reordering(_ id: UUID, width: Double, offset: Double) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named("spaceReordering"))
+            .updating($spaceDragGestureActive) { _, active, _ in active = true }
+            .onChanged { value in
+                if spaceDrag == nil {
+                    guard model.canManageSpaces,
+                          abs(value.translation.width) > abs(value.translation.height) * 1.2,
+                          let preview = SpaceReorderDrag(ids: model.coordinator.spaces.map(\.id), source: id,
+                              width: width, viewportOffset: offset, startX: value.startLocation.x) else { return }
+                    model.cancelSpaceSwipePresentation()
+                    spaceDrag = preview
+                    model.sidebarInteractionInProgress = true
+                    signalReorder()
+                }
+                guard var preview = spaceDrag, preview.source == id else { return }
+                let crossed = preview.update(pointerX: value.location.x, pointerY: value.location.y)
+                spaceDrag = preview
+                if crossed { signalReorder() }
+            }
+            .onEnded { value in
+                guard var preview = spaceDrag, preview.source == id else { return }
+                preview.update(pointerX: value.location.x, pointerY: value.location.y)
+                let canCommit = preview.canDrop && preview.hasMoved && preview.ids == model.coordinator.spaces.map(\.id)
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                    spaceDrag = nil
+                    model.sidebarInteractionInProgress = false
+                    if canCommit, model.reorderSpace(id, before: preview.beforeID) { signalReorder() }
+                }
+            }
+    }
+
+    private func cancelSpaceDrag() {
+        guard spaceDrag != nil else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+            spaceDrag = nil
+            model.sidebarInteractionInProgress = false
+        }
+    }
+
+    private func signalReorder() { BrowserHaptics.alignment(enabled: model.preferences.haptics) }
 }
 
 /// Swipes briefly lock controls while settling. Keep their colors unchanged
@@ -192,7 +273,7 @@ private struct SpaceEditorSheet: View {
         self.model = model
         self.request = request
         let existing: BrowserSpace?
-        if case .edit(let id) = request { existing = model.coordinator.spaces.first { $0.id == id } }
+        if case .edit(let id, _) = request { existing = model.coordinator.spaces.first { $0.id == id } }
         else { existing = nil }
         _name = State(initialValue: existing?.name ?? "")
         _color = State(initialValue: existing?.color ?? .blue)
@@ -306,10 +387,10 @@ private struct SpaceEditorSheet: View {
                 _ = model.switchSpace(to: id)
                 success = true
             } else { success = false }
-        case .edit(let id):
+        case .edit(let id, let selectOnSave):
             if profileID != model.coordinator.profileID {
                 success = model.application?.moveSpace(id, from: model, to: profileID, name: name, color: color, icon: icon) == true
-            } else { success = model.editSpace(id, name: name, color: color, icon: icon) }
+            } else { success = model.editSpace(id, name: name, color: color, icon: icon, selectOnSave: selectOnSave) }
         }
         if success { model.spaceEditor = nil }
         else { error = "Could not save this Space. It may have been removed in another window." }

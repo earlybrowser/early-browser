@@ -256,7 +256,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard canEditProfiles else { return }
         openProfile(profileID)
         guard let owner = visibleModels.first(where: { $0.coordinator.profileID == profileID }) else { return }
-        if let spaceID { owner.requestEditSpace(spaceID) }
+        if let spaceID { owner.requestEditSpace(spaceID, selectOnSave: true) }
         else { owner.requestNewSpace() }
     }
 

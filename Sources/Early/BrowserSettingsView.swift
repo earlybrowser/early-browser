@@ -159,22 +159,6 @@ struct BrowserSettingsView: View {
             VStack(spacing: 8) {
                 ForEach(application.profiles) { profile in profileRow(profile) }
             }
-            if let defaultProfileID = application.workspace?.defaultProfileID {
-                SettingsCard {
-                    Picker("Default profile", selection: Binding(
-                        get: { application.workspace?.defaultProfileID ?? defaultProfileID },
-                        set: { id in
-                            if !application.setDefaultProfile(id) { application.profileError = "This profile could not be made the default. Please try again." }
-                        }
-                    )) {
-                        ForEach(application.profiles) { profile in Text(profile.name).tag(profile.id) }
-                    }
-                    .disabled(!application.canEditProfiles)
-                    .accessibilityIdentifier("profile.default")
-                    Text("Used for fresh sessions. Restoring a session keeps its last active profile.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
             if let profile = selectedProfile {
                 spacesCard(profile)
             }
@@ -211,11 +195,20 @@ struct BrowserSettingsView: View {
                 .disabled(application.profileOperationInProgress).accessibilityIdentifier("profile.open.\(profile.id)")
             Menu {
                 Button("Edit Profile…") { profileEditor = .edit(profile) }
+                Button("Make Default") {
+                    if !application.setDefaultProfile(profile.id) {
+                        application.profileError = "This profile could not be made the default. Please try again."
+                    }
+                }
+                .disabled(profile.id == application.workspace?.defaultProfileID)
+                .help("Use this profile for fresh sessions. Restoring a session keeps its last active profile.")
+                Divider()
                 Button("Delete Profile…", role: .destructive) { deletingProfile = profile }
                     .disabled(profile.id == application.workspace?.defaultProfileID)
             } label: { Image(systemName: "ellipsis").frame(width: 18) }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(!application.canEditProfiles)
             .accessibilityLabel("Manage \(profile.name)")
+            .accessibilityIdentifier("profile.manage.\(profile.id)")
         }
         .padding(14)
         .background(.primary.opacity(selectedProfile?.id == profile.id ? 0.065 : 0.025), in: RoundedRectangle(cornerRadius: 13))
@@ -238,6 +231,7 @@ struct BrowserSettingsView: View {
                     Circle().fill(space.color.tint).frame(width: 9, height: 9).accessibilityLabel(space.color.rawValue)
                     Button("Edit…") { application.showSpaceEditor(profileID: profile.id, spaceID: space.id) }
                         .disabled(!application.canEditProfiles)
+                        .accessibilityIdentifier("settings.space.edit.\(space.id)")
                 }
                 .padding(.vertical, 5)
             }

@@ -213,12 +213,15 @@ final class EarlyUITests: XCTestCase {
     func testDefaultProfileSelectionPersistsWithoutOpeningOrSwitchingProfiles() {
         let app = launchFreshApp()
         let profileID = createProfile(app, named: "Work")
-        let picker = app.popUpButtons["profile.default"]
-        XCTAssertTrue(picker.waitForExistence(timeout: 3))
-        if !picker.isHittable { app.scrollViews["settings.content"].scroll(byDeltaX: 0, deltaY: -200) }
-        picker.click()
-        visibleMenuAction("Work")
-        XCTAssertEqual(picker.value as? String, "Work")
+        let menu = app.descendants(matching: .any).matching(identifier: "profile.manage.\(profileID)").firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 3))
+        menu.click()
+        visibleMenuAction("Make Default")
+        menu.click()
+        XCTAssertTrue(app.menuItems["Make Default"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.menuItems["Make Default"].isEnabled, "The current default should not offer to make itself default again")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(app.popUpButtons["profile.default"].exists)
         XCTAssertEqual(app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).count, 0)
         app.typeKey("w", modifierFlags: .command)
         XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
@@ -228,7 +231,10 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 10))
         openSettings(app, section: "profiles")
         XCTAssertTrue(app.buttons["profile.\(profileID)"].exists)
-        XCTAssertEqual(picker.value as? String, "Work")
+        menu.click()
+        XCTAssertTrue(app.menuItems["Make Default"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.menuItems["Make Default"].isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
     }
 
     func testMovingSpaceToAnotherProfileRequiresConfirmationAndKeepsClosedPinsClosed() {
@@ -279,6 +285,78 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(spaceDot(app, named: name).waitForExistence(timeout: 5))
         XCTAssertTrue(spaceDot(app, named: name).isSelected)
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
+    }
+
+    func testProfilesSpaceEditFollowsSavedSpaceButCancelKeepsCurrentSpace() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        createSpace(app, named: "Work")
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep the edited Space alive")
+        let work = spaceDot(app, named: "Work")
+        let workID = String(work.identifier.dropFirst("space.".count))
+        spaceDot(app, named: "Personal").click()
+        expectPage(app, "One")
+
+        openSettings(app, section: "profiles")
+        app.buttons["settings.space.edit.\(workID)"].click()
+        XCTAssertTrue(app.textFields["space.name"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        expectPage(app, "One")
+
+        openSettings(app, section: "profiles")
+        app.buttons["settings.space.edit.\(workID)"].click()
+        let field = app.textFields["space.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.click()
+        app.typeKey("a", modifierFlags: .command)
+        field.typeText("Research")
+        app.buttons["Save"].click()
+        let research = spaceDot(app, named: "Research")
+        XCTAssertTrue(research.waitForExistence(timeout: 5))
+        XCTAssertTrue(research.isSelected)
+        expectPage(app, "Two")
+        XCTAssertEqual(saved.value as? String, "keep the edited Space alive")
+        expectRuntime(app, tabs: 1, views: 2, created: 2)
+    }
+
+    func testSpaceIconsDragToReorderWithoutSwitchingTheLivePage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep while reordering Spaces")
+        createSpace(app, named: "Work")
+        createSpace(app, named: "Research")
+        let personal = spaceDot(app, named: "Personal")
+        personal.click()
+        expectPage(app, "One")
+        let source = personal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let target = spaceDot(app, named: "Research").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        source.click(forDuration: 0.2, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.2)
+        let order = NSPredicate { _, _ in
+            self.spaceDot(app, named: "Work").frame.minX < self.spaceDot(app, named: "Research").frame.minX
+                && self.spaceDot(app, named: "Research").frame.minX < personal.frame.minX
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: order, object: nil)], timeout: 5), .completed)
+        XCTAssertTrue(personal.isSelected)
+        XCTAssertFalse(app.textFields["space.name"].exists)
+        XCTAssertEqual(saved.value as? String, "keep while reordering Spaces")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+        app.launch()
+        XCTAssertTrue(personal.waitForExistence(timeout: 10))
+        XCTAssertTrue(personal.isSelected)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: order, object: nil)], timeout: 5), .completed)
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
     func testSpaceSwitchingPreservesPageStateAndEmptySpaceRelaunch() {
@@ -694,6 +772,15 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(folder.waitForExistence(timeout: 3))
         let folderID = folder.identifier
         XCTAssertEqual(folder.value as? String, "Collapsed") // Hover reserves a slot; only a drop reveals the contents.
+        // Both rows use the same full-width island, including their icon column.
+        let pinIcon = app.buttons["pinSelect.\(first.dropFirst(4))"]
+        let folderIcon = app.buttons["folderToggle.\(folderID.dropFirst(7))"]
+        let pinBounds = app.buttons[first].frame.union(pinIcon.frame)
+        let folderBounds = folder.frame.union(folderIcon.frame)
+        XCTAssertEqual(folderBounds.height, pinBounds.height, accuracy: 0.5)
+        XCTAssertEqual(folderBounds.width, pinBounds.width, accuracy: 0.5)
+        XCTAssertEqual(folderBounds.minX, pinBounds.minX, accuracy: 0.5)
+        XCTAssertEqual(folder.frame.minX, app.buttons[first].frame.minX, accuracy: 0.5)
         navigate(app, to: "early-test://fixture/two", newTab: true)
         expectPage(app, "Two")
         let second = rows.allElementsBoundByIndex.first { $0.identifier != first }!.identifier

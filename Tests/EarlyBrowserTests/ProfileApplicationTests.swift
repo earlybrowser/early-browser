@@ -44,6 +44,162 @@ struct ProfileApplicationTests {
         }
     }
 
+    @Test func profilesSpaceEditSelectsOnlyAfterSuccessfulSaveAndPreservesLivePages() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let model = try #require(app.model)
+        let personal = model.coordinator.activeSpaceID
+        let personalTab = try #require(model.coordinator.navigate(to: url, target: .newTab(spaceID: personal)))
+        model.activateSelection()
+        let personalView = try #require(model.webViews.existingView(for: personalTab))
+        let work = try #require(model.createSpace(name: "Work"))
+        model.switchSpace(to: work)
+        let workTab = try #require(model.coordinator.navigate(to: url, target: .newTab(spaceID: work)))
+        model.activateSelection()
+        let workView = try #require(model.webViews.existingView(for: workTab))
+        model.switchSpace(to: personal)
+        model.onOpenWindow?(url, "Sibling")
+        let siblingID = try #require(fixture.opened.last)
+        let sibling = try #require(app.windowModel(siblingID))
+        let siblingSelection = sibling.coordinator.activeTabID
+
+        app.showSpaceEditor(profileID: model.coordinator.profileID, spaceID: work)
+        #expect(model.coordinator.activeSpaceID == personal && model.coordinator.activeTabID == personalTab)
+        model.spaceEditor = nil // Cancel must not follow the edited Space.
+        #expect(model.coordinator.activeSpaceID == personal && model.webViews.creationCount == 2)
+        app.showSpaceEditor(profileID: model.coordinator.profileID, spaceID: work)
+        let request = try #require(model.spaceEditor)
+        guard case .edit(let id, let selectOnSave) = request else {
+            Issue.record("Profiles should open an edit request")
+            await fixture.cleanup()
+            return
+        }
+        #expect(id == work && selectOnSave)
+        #expect(!model.editSpace(id, name: " ", color: .green, icon: nil, selectOnSave: selectOnSave))
+        #expect(model.coordinator.activeSpaceID == personal)
+        #expect(model.editSpace(id, name: "Research", color: .green, icon: nil, selectOnSave: selectOnSave))
+        model.spaceEditor = nil
+        #expect(model.coordinator.activeSpaceID == work && model.coordinator.activeTabID == workTab)
+        #expect(model.coordinator.activeSpace?.name == "Research" && model.coordinator.activeSpace?.color == .green)
+        #expect(model.webViews.existingView(for: workTab) === workView)
+        #expect(model.webViews.existingView(for: personalTab) === personalView)
+        #expect(model.webViews.creationCount == 2)
+        #expect(sibling.coordinator.activeSpaceID == personal && sibling.coordinator.activeTabID == siblingSelection)
+        #expect(sibling.coordinator.spaces.first { $0.id == work }?.name == "Research")
+        #expect(await app.persistence?.flush() == true)
+        let repository = SessionRepository(fileURL: fixture.directory.appendingPathComponent("session.sqlite"), input: input)
+        let workspace = try #require(try await repository.loadWorkspace())
+        #expect(workspace.session(for: model.coordinator.profileID)?.activeSpaceID == work)
+        await fixture.cleanup()
+    }
+
+    @Test func sidebarEditsKeepSelectionAndProfilesCanFollowAnEmptySpaceWithoutCreatingPages() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let model = try #require(app.model)
+        let personal = model.coordinator.activeSpaceID
+        let work = try #require(model.createSpace(name: "Work"))
+        model.requestEditSpace(work)
+        if case .edit(let id, let selectOnSave) = model.spaceEditor {
+            #expect(id == work && !selectOnSave)
+            #expect(model.editSpace(id, name: "Work 2", color: .blue, icon: nil, selectOnSave: selectOnSave))
+        } else { Issue.record("Sidebar should open an edit request") }
+        model.spaceEditor = nil
+        #expect(model.coordinator.activeSpaceID == personal)
+        app.showSpaceEditor(profileID: model.coordinator.profileID, spaceID: work)
+        #expect(model.editSpace(work, name: "Work 3", color: .purple, icon: nil, selectOnSave: true))
+        model.spaceEditor = nil
+        #expect(model.coordinator.activeSpaceID == work && model.coordinator.content == .empty)
+        #expect(model.coordinator.activeTabID == nil && model.coordinator.commandBar == nil)
+        #expect(model.webViews.creationCount == 0)
+        await fixture.cleanup()
+    }
+
+    @Test func spaceReorderingPersistsAcrossProfileWindowsWithoutSwitchingOrReloadingPages() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let primary = try #require(app.model)
+        let personal = primary.coordinator.activeSpaceID
+        let page = try #require(primary.coordinator.navigate(to: url, target: .newTab(spaceID: personal)))
+        primary.activateSelection()
+        let primaryView = try #require(primary.webViews.existingView(for: page))
+        let work = try #require(primary.createSpace(name: "Work"))
+        let research = try #require(primary.createSpace(name: "Research"))
+        primary.onOpenWindow?(url, "Sibling")
+        let siblingID = try #require(fixture.opened.last)
+        let sibling = try #require(app.windowModel(siblingID))
+        sibling.switchSpace(to: work)
+        let siblingPage = try #require(sibling.coordinator.navigate(to: url, target: .newTab(spaceID: work)))
+        sibling.activateSelection()
+        sibling.save()
+        let siblingView = try #require(sibling.webViews.existingView(for: siblingPage))
+        let creations = [primary.webViews.creationCount, sibling.webViews.creationCount]
+        let otherProfile = try #require(app.createProfile(name: "Other", color: .purple))
+        app.openProfile(otherProfile)
+        let otherWindow = try #require(fixture.opened.last)
+        let other = try #require(app.windowModel(otherWindow))
+        let otherSession = other.coordinator.session
+
+        #expect(primary.reorderSpace(personal, before: nil))
+        let expected = [work, research, personal]
+        #expect(primary.coordinator.spaces.map(\.id) == expected)
+        #expect(sibling.coordinator.spaces.map(\.id) == expected)
+        #expect(primary.coordinator.activeSpaceID == personal && primary.coordinator.activeTabID == page)
+        #expect(sibling.coordinator.activeSpaceID == work && sibling.coordinator.activeTabID == siblingPage)
+        #expect(primary.webViews.existingView(for: page) === primaryView)
+        #expect(sibling.webViews.existingView(for: siblingPage) === siblingView)
+        #expect([primary.webViews.creationCount, sibling.webViews.creationCount] == creations)
+        #expect(other.coordinator.session == otherSession)
+        #expect(await app.persistence?.flush() == true)
+        let repository = SessionRepository(fileURL: fixture.directory.appendingPathComponent("session.sqlite"), input: input)
+        let workspace = try #require(try await repository.loadWorkspace())
+        let session = try #require(workspace.session(for: primary.coordinator.profileID))
+        #expect(session.spaces.map(\.id) == expected)
+        #expect(session.additionalWindows.count == 1)
+        #expect(session.additionalWindows.first?.spaces.map(\.id) == expected)
+        try workspace.validate(using: input)
+        await fixture.cleanup()
+    }
+
+    @Test func accessibleSpaceMovesRespectBoundsAndInteractionLocksWithoutChangingSelection() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let model = try #require(fixture.application.model)
+        let personal = model.coordinator.activeSpaceID
+        let work = try #require(model.createSpace(name: "Work"))
+        let research = try #require(model.createSpace(name: "Research"))
+        let original = model.coordinator.session
+        model.sidebarInteractionInProgress = true
+        #expect(!model.reorderSpace(personal, before: nil))
+        #expect(!model.shiftSpace(personal, by: 1))
+        #expect(!model.switchSpace(to: work))
+        model.updateSpaceSwipe(translation: -100)
+        #expect(model.spaceSwipeProgress == 0 && !model.spaceSwipeIsSettling)
+        #expect(model.coordinator.session == original)
+        model.sidebarInteractionInProgress = false
+        model.updateSpaceSwipe(translation: -100)
+        #expect(model.spaceSwipeProgress < 0)
+        model.cancelSpaceSwipePresentation()
+        model.spaceSwipeIsSettling = true
+        #expect(!model.reorderSpace(personal, before: nil))
+        model.spaceSwipeIsSettling = false
+        #expect(!model.shiftSpace(personal, by: -1))
+        #expect(!model.shiftSpace(research, by: 1))
+        #expect(!model.shiftSpace(personal, by: 0))
+        #expect(!model.shiftSpace(personal, by: 2))
+        #expect(!model.shiftSpace(UUID(), by: 1))
+        #expect(model.shiftSpace(personal, by: 1))
+        #expect(model.coordinator.spaces.map(\.id) == [work, personal, research])
+        #expect(model.shiftSpace(research, by: -1))
+        #expect(model.coordinator.spaces.map(\.id) == [work, research, personal])
+        #expect(model.coordinator.activeSpaceID == personal)
+        #expect(model.coordinator.content == .empty && model.webViews.creationCount == 0)
+        await fixture.cleanup()
+    }
+
     @Test func defaultMigrationAndSharedWriterKeepProfileWindowsAndWebsiteStoresSeparate() async throws {
         let fixture = Fixture()
         let legacy = BrowserSession()

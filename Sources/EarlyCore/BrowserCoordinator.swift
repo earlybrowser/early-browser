@@ -415,6 +415,22 @@ public final class BrowserCoordinator {
 
     public var activeSpace: BrowserSpace? { spaces.first { $0.id == activeSpaceID } }
 
+    /// Change only catalog order. UUID-based selection, live tabs, history and
+    /// pending command-bar intent remain untouched.
+    @discardableResult
+    public func reorderSpace(_ id: UUID, before beforeID: UUID?) -> Bool {
+        guard id != beforeID,
+              let source = spaces.firstIndex(where: { $0.id == id && $0.profileID == profileID }),
+              beforeID == nil || spaces.contains(where: { $0.id == beforeID && $0.profileID == profileID }) else { return false }
+        var reordered = spaces
+        let space = reordered.remove(at: source)
+        let destination = beforeID.flatMap { before in reordered.firstIndex { $0.id == before } } ?? reordered.count
+        reordered.insert(space, at: destination)
+        guard reordered != spaces else { return false }
+        spaces = reordered
+        return true
+    }
+
     @discardableResult
     public func createSpace(name: String, color: BrowserSpace.Color = .blue, icon: SpaceIcon? = nil) -> UUID? {
         guard let name = BrowserSpace.normalizedName(name) else { return nil }
