@@ -191,7 +191,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(spaceDot(app, named: "Personal Copy").waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 0, views: 1, created: 1)
         app.menuBarItems["Space"].click()
-        visibleMenuAction("Rename Space…")
+        visibleMenuAction("Edit Space…")
         let field = app.textFields["space.name"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.click()
@@ -299,30 +299,83 @@ final class EarlyUITests: XCTestCase {
         app.buttons["Save"].click()
         XCTAssertTrue(spaceDot(app, named: "Green Space").waitForExistence(timeout: 5))
         app.menuBarItems["Space"].click()
-        visibleMenuAction("Rename Space…")
+        visibleMenuAction("Edit Space…")
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["space.color.green"].isSelected)
         app.buttons["Cancel"].click()
     }
 
-    func testSpaceFooterOverflowStaysCenteredAndExposesAllSpaces() {
+    func testSpaceFooterSlidesToKeepSelectionVisibleWithoutOverflowMenu() {
         let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])
         for number in 1...6 { createSpace(app, named: "Space \(number)") }
         let overflow = app.descendants(matching: .any).matching(identifier: "space.overflow").firstMatch
-        XCTAssertTrue(overflow.waitForExistence(timeout: 5))
-        let footer = app.descendants(matching: .any).matching(identifier: "sidebar.footer").firstMatch
-        let dots = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier != %@ AND identifier != %@", "space.", "space.new", "space.overflow")).allElementsBoundByIndex
-        XCTAssertLessThanOrEqual(dots.count, 4)
-        let cluster = dots.map(\.frame).reduce(overflow.frame) { $0.union($1) }
-        XCTAssertEqual(cluster.midX, footer.frame.midX, accuracy: 2)
-        overflow.click()
+        XCTAssertFalse(overflow.exists)
+        let strip = app.descendants(matching: .any).matching(identifier: "space.strip").firstMatch
+        XCTAssertTrue(strip.exists)
+        let newSpace = app.buttons["space.new"]
+        let newSpaceFrame = newSpace.frame
+        let last = spaceDot(app, named: "Space 6")
+        XCTAssertTrue(last.isHittable)
+        XCTAssertGreaterThanOrEqual(last.frame.minX, strip.frame.minX)
+        XCTAssertLessThanOrEqual(last.frame.maxX, strip.frame.maxX)
+        // The ordinary Space menu remains available for direct navigation to
+        // a hidden item; the footer itself never inserts another control.
+        app.menuBarItems["Space"].click()
         visibleMenuAction("Personal")
         XCTAssertTrue(spaceDot(app, named: "Personal").waitForExistence(timeout: 5))
         XCTAssertTrue(spaceDot(app, named: "Personal").isSelected)
+        XCTAssertTrue(spaceDot(app, named: "Personal").isHittable)
         expectRuntime(app, tabs: 0, views: 0, created: 0)
         app.typeKey("9", modifierFlags: [.command, .option])
         XCTAssertTrue(spaceDot(app, named: "Space 6").isSelected)
+        XCTAssertTrue(spaceDot(app, named: "Space 6").isHittable)
+        XCTAssertEqual(newSpace.frame, newSpaceFrame)
+        XCTAssertFalse(overflow.exists)
+    }
+
+    func testSpaceIconPickerPersistsAndCancelKeepsOriginalAppearance() {
+        let app = launchFreshApp()
+        app.buttons["space.new"].click()
+        let name = app.textFields["space.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.typeText("Star Space")
+        let picker = app.buttons["space.iconPicker"]
+        picker.click()
+        let star = app.buttons["space.symbol.star.fill"]
+        XCTAssertTrue(star.waitForExistence(timeout: 3))
+        star.click()
+        XCTAssertEqual(picker.value as? String, "Star")
+        app.buttons["space.color.purple"].click()
+        app.buttons["Save"].click()
+        let space = spaceDot(app, named: "Star Space")
+        XCTAssertTrue(space.waitForExistence(timeout: 5))
+        XCTAssertEqual(space.value as? String, "Current Space · Star")
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Edit Space…")
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        picker.click()
+        let moon = app.buttons["space.symbol.moon.fill"]
+        XCTAssertTrue(moon.waitForExistence(timeout: 3))
+        moon.click()
+        app.buttons["space.color.red"].click()
+        app.buttons["Cancel"].click()
+        XCTAssertEqual(space.value as? String, "Current Space · Star")
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 10))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(space.value as? String, "Current Space · Star")
+        app.menuBarItems["Space"].click()
+        visibleMenuAction("Edit Space…")
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["space.color.purple"].isSelected)
+        picker.click()
+        let reset = app.buttons["space.icon.none"]
+        XCTAssertTrue(reset.waitForExistence(timeout: 3))
+        reset.click()
+        app.buttons["Save"].click()
+        XCTAssertEqual(space.value as? String, "Current Space · Default dot")
     }
 
     private func pinAction(_ title: String, on row: XCUIElement) {

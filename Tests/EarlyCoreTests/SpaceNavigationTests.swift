@@ -88,18 +88,33 @@ struct SpaceNavigationTests {
         #expect(SpaceNavigation.shortcutIndex(number: 9, count: 0) == nil)
     }
 
-    @Test(arguments: [180.0, 200, 240, 340, .infinity, .nan])
-    func footerKeepsEveryActiveSpaceReachableAndCapacityBounded(width: Double) {
+    @Test(arguments: [60.0, 100, 150, 240, .infinity, .nan])
+    func footerKeepsEveryActiveSpaceVisibleInOneClippedStrip(width: Double) {
         for count in [1, 3, 5, 6, 20, 100] {
             for active in 0..<count {
-                let range = SpaceNavigation.footerRange(count: count, activeIndex: active, width: width)
-                #expect(range.contains(active))
-                #expect(range.lowerBound >= 0 && range.upperBound <= count)
-                #expect(range.count <= 5)
-                if count > 5 { #expect(range.count <= 4) }
+                let layout = SpaceNavigation.footerLayout(count: count, current: active, progress: 0, width: width)
+                #expect(layout.visibleRange.contains(active))
+                #expect(layout.visibleRange.lowerBound >= 0 && layout.visibleRange.upperBound <= count)
+                #expect(layout.offset >= 0 && layout.offset + layout.width <= Double(count) * 30)
+                let left = Double(active) * 30 - layout.offset
+                #expect(left >= 0 && left + 30 <= layout.width)
             }
         }
-        #expect(SpaceNavigation.footerRange(count: 0, activeIndex: 0, width: width).isEmpty)
+        #expect(SpaceNavigation.footerLayout(count: 0, current: 0, progress: 0, width: width).visibleRange.isEmpty)
+    }
+
+    @Test func footerTracksSwipesContinuouslyAndDoesNotJumpOnCommit() {
+        let start = SpaceNavigation.footerLayout(count: 20, current: 8, progress: 0, width: 150)
+        let middle = SpaceNavigation.footerLayout(count: 20, current: 8, progress: -0.5, width: 150)
+        let end = SpaceNavigation.footerLayout(count: 20, current: 8, progress: -1, width: 150)
+        let committed = SpaceNavigation.footerLayout(count: 20, current: 9, progress: 0, width: 150)
+        #expect(middle.offset - start.offset == 15)
+        #expect(end.offset - start.offset == 30)
+        #expect(end == committed)
+        #expect(SpaceNavigation.footerLayout(count: 20, current: 8, progress: .nan, width: 150) == start)
+        for width in [0.0, -10] {
+            #expect(SpaceNavigation.footerLayout(count: 20, current: 8, progress: 0, width: width).visibleRange.isEmpty)
+        }
     }
 
     @Test func deliberateSwipeOnlyCommitsOnceOnRelease() {

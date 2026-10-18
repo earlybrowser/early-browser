@@ -12,12 +12,27 @@ public struct BrowserSpace: Identifiable, Codable, Equatable, Sendable {
     public let profileID: UUID
     public var name: String
     public var color: Color
+    public var icon: SpaceIcon?
 
-    public init(id: UUID = UUID(), profileID: UUID, name: String, color: Color = .blue) {
+    public init(id: UUID = UUID(), profileID: UUID, name: String, color: Color = .blue, icon: SpaceIcon? = nil) {
         self.id = id
         self.profileID = profileID
         self.name = name
         self.color = color
+        self.icon = icon
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, profileID, name, color, icon }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        profileID = try values.decode(UUID.self, forKey: .profileID)
+        name = try values.decode(String.self, forKey: .name)
+        color = try values.decode(Color.self, forKey: .color)
+        // Decorative metadata must not prevent restoring a whole workspace.
+        // This also retires emoji saved by the initial local appearance build.
+        icon = try? values.decode(SpaceIcon.self, forKey: .icon)
     }
 
     public static func normalizedName(_ name: String) -> String? {

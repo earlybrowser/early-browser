@@ -400,19 +400,25 @@ public final class BrowserCoordinator {
     public var activeSpace: BrowserSpace? { spaces.first { $0.id == activeSpaceID } }
 
     @discardableResult
-    public func createSpace(name: String, color: BrowserSpace.Color = .blue) -> UUID? {
+    public func createSpace(name: String, color: BrowserSpace.Color = .blue, icon: SpaceIcon? = nil) -> UUID? {
         guard let name = BrowserSpace.normalizedName(name) else { return nil }
-        let space = BrowserSpace(profileID: profileID, name: name, color: color)
+        let space = BrowserSpace(profileID: profileID, name: name, color: color, icon: icon)
         spaces.append(space)
         return space.id
     }
 
     @discardableResult
     public func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color) -> Bool {
+        editSpace(id, name: name, color: color, icon: spaces.first { $0.id == id }?.icon)
+    }
+
+    @discardableResult
+    public func editSpace(_ id: UUID, name: String, color: BrowserSpace.Color, icon: SpaceIcon?) -> Bool {
         guard let name = BrowserSpace.normalizedName(name),
               let index = spaces.firstIndex(where: { $0.id == id && $0.profileID == profileID }) else { return false }
         spaces[index].name = name
         spaces[index].color = color
+        spaces[index].icon = icon
         return true
     }
 
@@ -422,7 +428,7 @@ public final class BrowserCoordinator {
     public func duplicateSpace(_ id: UUID, name: String) -> UUID? {
         guard let source = spaces.first(where: { $0.id == id && $0.profileID == profileID }),
               let name = BrowserSpace.normalizedName(name) else { return nil }
-        let copy = BrowserSpace(profileID: profileID, name: name, color: source.color)
+        let copy = BrowserSpace(profileID: profileID, name: name, color: source.color, icon: source.icon)
         tabStore.duplicateSavedItems(in: id, to: copy.id)
         spaces.append(copy)
         return copy.id

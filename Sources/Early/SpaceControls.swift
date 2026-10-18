@@ -5,17 +5,12 @@ import SwiftUI
 
 extension BrowserSpace.Color {
     var tint: SwiftUI.Color {
-        switch self {
-        case .gray: .gray
-        case .blue: .blue
-        case .purple: .purple
-        case .pink: .pink
-        case .red: .red
-        case .orange: .orange
-        case .yellow: .yellow
-        case .green: .green
-        }
+        swatch.color
     }
+}
+
+extension SpaceThemeRGB {
+    var color: SwiftUI.Color { Color(.sRGB, red: red, green: green, blue: blue, opacity: 1) }
 }
 
 struct SpaceActions: View {
@@ -23,7 +18,7 @@ struct SpaceActions: View {
     let space: BrowserSpace
 
     var body: some View {
-        Button("Rename Space…") { model.requestEditSpace(space.id) }
+        Button("Edit Space…") { model.requestEditSpace(space.id) }
         Button("Duplicate Space") { model.duplicateAndSelectSpace(space.id) }
         Button("Delete Space…", role: .destructive) { model.requestDeleteSpace(space.id) }
             .disabled(model.coordinator.spaces.count <= 1)
@@ -37,71 +32,30 @@ struct SpaceFooter: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
-    private var visibleRange: Range<Int> {
-        SpaceNavigation.footerRange(count: model.coordinator.spaces.count,
-            activeIndex: model.activeSpaceIndex, width: model.sidebarWidth)
-    }
-
     var body: some View {
-        ZStack {
-            HStack {
-                // Reserved until the real downloads service is implemented.
-                Image(systemName: "arrow.down.circle")
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 28, height: 28)
-                    .accessibilityLabel("Downloads, not available yet")
-                    .help("Downloads (not available yet)")
-                Spacer(minLength: 0)
-                Button { model.requestNewSpace() } label: {
-                    Image(systemName: "plus").frame(width: 28, height: 28)
-                        .overlay {
-                            if model.spaceSwipeCreationProgress > 0 {
-                                Circle().trim(from: 0, to: model.spaceSwipeCreationProgress)
-                                    .stroke(Color.primary.opacity(0.55), lineWidth: 1.5)
-                                    .padding(1).rotationEffect(.degrees(-90))
-                            }
+        HStack(spacing: 8) {
+            // Reserved until the real downloads service is implemented.
+            Image(systemName: "arrow.down.circle")
+                .foregroundStyle(.tertiary)
+                .frame(width: 28, height: 28)
+                .accessibilityLabel("Downloads, not available yet")
+                .help("Downloads (not available yet)")
+            indicatorStrip
+            Button { model.requestNewSpace() } label: {
+                Image(systemName: "plus").frame(width: 28, height: 28)
+                    .overlay {
+                        if model.spaceSwipeCreationProgress > 0 {
+                            Circle().trim(from: 0, to: model.spaceSwipeCreationProgress)
+                                .stroke(Color.primary.opacity(0.55), lineWidth: 1.5)
+                                .padding(1).rotationEffect(.degrees(-90))
                         }
-                }
-                .buttonStyle(SpaceControlStyle())
-                .accessibilityLabel("New Space")
-                .accessibilityIdentifier("space.new")
-                .help("New Space")
-                .disabled(!model.canManageSpaces)
+                    }
             }
-            HStack(spacing: 2) {
-                ForEach(Array(model.coordinator.spaces.enumerated()).filter { visibleRange.contains($0.offset) }, id: \.element.id) { index, space in
-                    spaceDot(space, index: index)
-                        .transition(.opacity)
-                }
-                if visibleRange.count < model.coordinator.spaces.count {
-                    Menu {
-                        ForEach(model.coordinator.spaces) { space in
-                            Button {
-                                _ = model.switchSpace(to: space.id)
-                            } label: {
-                                Label(space.name, systemImage: space.id == model.coordinator.activeSpaceID ? "checkmark.circle.fill" : "circle")
-                            }
-                        }
-                        Divider()
-                        if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
-                        Button("New Space…") { model.requestNewSpace() }
-                    } label: { Image(systemName: "ellipsis").frame(width: 24, height: 28) }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .accessibilityLabel("More Spaces")
-                    .accessibilityIdentifier("space.overflow")
-                    .help("All Spaces and Space actions")
-                    .disabled(!model.canManageSpaces)
-                }
-            }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.coordinator.activeSpaceID)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: visibleRange)
-            .transaction {
-                // The page handoff disables offset-reset animations. Footer
-                // selection/overflow transitions remain independently smooth.
-                $0.disablesAnimations = reduceMotion
-            }
+            .buttonStyle(SpaceControlStyle())
+            .accessibilityLabel("New Space")
+            .accessibilityIdentifier("space.new")
+            .help("New Space")
+            .disabled(!model.canManageSpaces)
         }
         .frame(height: 32)
         .padding(.horizontal, 6)
@@ -146,18 +100,51 @@ struct SpaceFooter: View {
 
     private var deletingSpace: BrowserSpace? { model.coordinator.spaces.first { $0.id == model.spaceDeletionID } }
 
+    private var indicatorStrip: some View {
+        GeometryReader { geometry in
+            let spaces = model.coordinator.spaces
+            let layout = SpaceNavigation.footerLayout(count: spaces.count, current: model.activeSpaceIndex,
+                progress: reduceMotion ? 0 : model.spaceSwipeProgress, width: geometry.size.width)
+            let contentWidth = Double(spaces.count) * SpaceNavigation.footerItemWidth
+            HStack(spacing: 0) {
+                ForEach(Array(spaces.enumerated()), id: \.element.id) { index, space in
+                    spaceDot(space, index: index)
+                        .disabled(!layout.visibleRange.contains(index))
+                        .accessibilityHidden(!layout.visibleRange.contains(index))
+                }
+            }
+            .frame(width: contentWidth, height: 32, alignment: .leading)
+            .offset(x: -layout.offset)
+            .frame(width: layout.width, height: 32, alignment: .leading)
+            .clipped()
+            .contentShape(Rectangle())
+            .mask {
+                let fade = min(0.12, 8 / max(1, layout.width))
+                LinearGradient(stops: [
+                    .init(color: layout.offset > 0 ? .clear : .black, location: 0),
+                    .init(color: .black, location: fade),
+                    .init(color: .black, location: 1 - fade),
+                    .init(color: layout.offset + layout.width < contentWidth ? .clear : .black, location: 1)
+                ], startPoint: .leading, endPoint: .trailing)
+            }
+            .frame(width: geometry.size.width, height: 32)
+        }
+        .frame(height: 32)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Space switcher")
+        .accessibilityIdentifier("space.strip")
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.20), value: model.coordinator.activeSpaceID)
+        .transaction { $0.disablesAnimations = reduceMotion }
+    }
+
     private func spaceDot(_ space: BrowserSpace, index: Int) -> some View {
         let selected = space.id == model.coordinator.activeSpaceID
         let fill = SpaceNavigation.indicatorFill(index: index, current: model.activeSpaceIndex,
             count: model.coordinator.spaces.count, progress: reduceMotion ? 0 : model.spaceSwipeProgress)
         return Button { _ = model.switchSpace(to: space.id) } label: {
-            Circle().strokeBorder(space.color.tint, lineWidth: 1.5)
-                .overlay {
-                    Circle().fill(space.color.tint).opacity(fill)
-                }
-                .saturation(0.4)
-                .frame(width: 14, height: 14)
-                .frame(width: 24, height: 28)
+            SpaceIconView(icon: space.icon)
+                .opacity((contrast == .increased ? 0.65 : 0.35) + (contrast == .increased ? 0.35 : 0.65) * fill)
+                .frame(width: SpaceNavigation.footerItemWidth, height: 28)
                 .contentShape(Rectangle())
                 .overlay {
                     if focusedSpace == space.id {
@@ -169,7 +156,7 @@ struct SpaceFooter: View {
         .focused($focusedSpace, equals: space.id)
         .disabled(!model.canManageSpaces)
         .accessibilityLabel(space.name)
-        .accessibilityValue(selected ? "Current Space" : "Switch Space")
+        .accessibilityValue("\(selected ? "Current Space" : "Switch Space") · \(space.icon?.accessibilityName ?? "Default dot")")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("space.\(space.id)")
         .help(space.name)
@@ -194,6 +181,8 @@ private struct SpaceEditorSheet: View {
     let request: BrowserWindowModel.SpaceEditor
     @State private var name: String
     @State private var color: BrowserSpace.Color
+    @State private var icon: SpaceIcon?
+    @State private var showingIconPicker = false
     @State private var error: String?
     @FocusState private var nameFocused: Bool
 
@@ -205,6 +194,7 @@ private struct SpaceEditorSheet: View {
         else { existing = nil }
         _name = State(initialValue: existing?.name ?? "")
         _color = State(initialValue: existing?.color ?? .blue)
+        _icon = State(initialValue: existing?.icon)
     }
 
     var body: some View {
@@ -217,9 +207,29 @@ private struct SpaceEditorSheet: View {
                 Text("Use a name with 1–64 characters and no line breaks.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            HStack(spacing: 12) {
+                Button { showingIconPicker.toggle() } label: {
+                    SpaceIconView(icon: icon, size: 15)
+                        .frame(width: 38, height: 38)
+                        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.12)) }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Choose Space icon")
+                .accessibilityValue(icon?.accessibilityName ?? "Default dot")
+                .accessibilityIdentifier("space.iconPicker")
+                .popover(isPresented: $showingIconPicker, arrowEdge: .bottom) {
+                    SpaceIconPicker(selection: $icon) { showingIconPicker = false }
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Space icon")
+                    Text("Optional. A small dot is used by default.").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Color")
+                    Text("Theme color")
                     Spacer()
                     Text(color.rawValue.capitalized).foregroundStyle(.secondary)
                 }
@@ -269,11 +279,11 @@ private struct SpaceEditorSheet: View {
         let success: Bool
         switch request {
         case .new:
-            if let id = model.createSpace(name: name, color: color) {
+            if let id = model.createSpace(name: name, color: color, icon: icon) {
                 _ = model.switchSpace(to: id)
                 success = true
             } else { success = false }
-        case .edit(let id): success = model.editSpace(id, name: name, color: color)
+        case .edit(let id): success = model.editSpace(id, name: name, color: color, icon: icon)
         }
         if success { model.spaceEditor = nil }
         else { error = "Could not save this Space. It may have been removed in another window." }
