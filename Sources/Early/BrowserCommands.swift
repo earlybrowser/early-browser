@@ -42,6 +42,10 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
         CommandMenu("Tab") {
+            Button("Duplicate Tab") {
+                if let tab = model?.activeTab { model?.perform(.duplicateTab(tab.id)) }
+            }
+            .disabled(model?.activeTab.map { model?.canPerform(.duplicateTab($0.id)) == true } != true)
             Button("Open Tab in New Window") {
                 if let tab = model?.activeTab { model?.perform(.openTabInNewWindow(tab.id)) }
             }

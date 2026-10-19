@@ -153,4 +153,38 @@ struct CommandSearchTests {
         search.cancel()
         #expect(search.results.isEmpty && search.selectedResult == nil && !search.isRefreshing && !search.isLoadingProviders)
     }
+
+
+    @Test func tabSwitcherOrdersOpenTabsByMostRecentUseStepsCircularlyAndCommitsViaSelectTab() throws {
+        let space = UUID(), profile = UUID()
+        let url = URL(string: "https://example.com")!
+        var first = BrowserTab(spaceID: space, profileID: profile, title: "First", currentURL: url)
+        var second = BrowserTab(spaceID: space, profileID: profile, title: "Second", currentURL: url)
+        var third = BrowserTab(spaceID: space, profileID: profile, title: "Third", currentURL: url)
+        first.recordActivation(at: now.addingTimeInterval(-300))
+        third.recordActivation(at: now.addingTimeInterval(-60))
+        second.recordActivation(at: now.addingTimeInterval(-10))
+
+        #expect(TabSwitcher(openTabs: [], activeTabID: nil) == nil)
+
+        var switcher = try #require(TabSwitcher(openTabs: [first, second, third], activeTabID: first.id, initialDelta: 1))
+        #expect(switcher.tabIDs == [first.id, second.id, third.id])
+        // Starting with Control-Tab (+1) highlights the most recently used sibling.
+        #expect(switcher.selectedTabID == second.id)
+        #expect(switcher.commitAction == .selectTab(second.id))
+
+        switcher.step(1)
+        #expect(switcher.selectedTabID == third.id)
+        switcher.step(1)
+        #expect(switcher.selectedTabID == first.id)
+        // Committing on the originally active tab is a no-op.
+        #expect(switcher.commitAction == nil)
+
+        switcher.step(-1)
+        #expect(switcher.selectedTabID == third.id)
+        let selectedValid = switcher.select(second.id)
+        let selectedMissing = switcher.select(UUID())
+        #expect(selectedValid && !selectedMissing)
+        #expect(switcher.selectedTabID == second.id)
+    }
 }

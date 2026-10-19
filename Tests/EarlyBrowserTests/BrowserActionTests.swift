@@ -431,4 +431,59 @@ struct BrowserActionTests {
         #expect(model.moveCommandBarSelection(-1))
         #expect(model.selectedCommandResult == nil && model.suggestions.selectedIndex == nil)
     }
+
+
+    @Test func commandBarSurfacesAndExecutesActionsSpacesProfilesDuplicateAndSettingsWithProperFocus() async throws {
+        let profile = UUID(), work = UUID(), personal = UUID()
+        let active = BrowserTab(spaceID: work, profileID: profile, title: "Active Work", currentURL: firstURL)
+        let session = BrowserSession(profileID: profile, activeSpaceID: work,
+            tabs: [active], selectionBySpace: [work: active.id],
+            spaces: [BrowserSpace(id: work, profileID: profile, name: "Work"),
+                     BrowserSpace(id: personal, profileID: profile, name: "Personal")])
+        let fixture = Fixture(session: session)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        model.activateSelection()
+        var openedSettings = 0
+        model.onOpenSettings = { openedSettings += 1 }
+
+        // 1. Search and run "Pin Tab" from the command bar -> pins active tab without creating a tab, restores content focus.
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("pin tab")
+        for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }
+        let pinResult = try #require(model.visibleCommandResults.first { $0.id == "action.pin.\(active.id.uuidString)" })
+        let focusBeforePin = model.contentFocusRequest
+        #expect(model.perform(pinResult, source: .commandBar))
+        #expect(model.coordinator.tabStore.tab(id: active.id)?.pinnedURL == firstURL)
+        #expect(model.coordinator.tabStore.tabs.count == 1 && model.coordinator.commandBar == nil)
+        #expect(model.contentFocusRequest == focusBeforePin + 1)
+
+        // 2. Search and run "Duplicate Tab" -> creates a second open tab with the same URL and focuses content.
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("duplicate tab")
+        for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }
+        model.selectCommandResult(id: "action.duplicate.\(active.id.uuidString)")
+        #expect(model.selectedCommandResult?.id == "action.duplicate.\(active.id.uuidString)")
+        #expect(model.performCommandBarSelection())
+        #expect(model.coordinator.tabStore.tabs.count == 2 && model.coordinator.activeTabID != active.id)
+        #expect(model.activeTab?.currentURL == firstURL && model.coordinator.commandBar == nil)
+
+        // 3. Search and run "Open Settings" -> invokes settings handler and does not steal focus back to web content.
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("open settings")
+        for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }
+        model.selectCommandResult(id: "action.openSettings")
+        let focusBeforeSettings = model.contentFocusRequest
+        #expect(model.performCommandBarSelection())
+        #expect(openedSettings == 1 && model.coordinator.commandBar == nil)
+        #expect(model.contentFocusRequest == focusBeforeSettings)
+
+        // 4. Search and switch Space from the command bar -> switches to Personal without creating a tab.
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("personal")
+        for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }
+        model.selectCommandResult(id: "space.\(personal.uuidString)")
+        #expect(model.performCommandBarSelection())
+        #expect(model.coordinator.activeSpaceID == personal && model.coordinator.commandBar == nil)
+    }
 }

@@ -218,8 +218,7 @@ struct CommandBarView: View {
             if let iconURL, let image = model.webViews.favicons.image(for: iconURL) {
                 Image(nsImage: image).resizable().scaledToFit()
             } else {
-                Image(systemName: candidate.kind == .favorite ? "star.fill"
-                    : (candidate.kind == .pinnedTab ? "pin" : "globe"))
+                Image(systemName: resultSymbol(for: candidate))
                     .foregroundStyle(.secondary)
             }
         }
@@ -231,22 +230,64 @@ struct CommandBarView: View {
     }
 
     private func resultIconURL(for candidate: CommandSearchCandidate) -> URL? {
+        guard candidate.kind.isTab || candidate.kind == .bookmark || candidate.kind == .history else { return nil }
         if case .tab(let id) = candidate.target, let tab = model.coordinator.tabStore.tab(id: id) {
             return tab.pinnedURL ?? tab.currentURL
         }
         return candidate.detail.flatMap(URL.init(string:))
     }
 
+    private func resultSymbol(for candidate: CommandSearchCandidate) -> String {
+        switch candidate.kind {
+        case .favorite: return "star.fill"
+        case .pinnedTab: return "pin"
+        case .openTab, .history: return "globe"
+        case .bookmark: return "bookmark"
+        case .space: return "square.grid.2x2"
+        case .profile: return "person.crop.circle"
+        case .action:
+            guard case .action(let action) = candidate.target else { return "command" }
+            switch action {
+            case .closeActiveTab, .closeTab: return "xmark"
+            case .reopenLastTab: return "arrow.uturn.backward"
+            case .copyCurrentURL: return "link"
+            case .reload: return "arrow.clockwise"
+            case .stop: return "xmark.octagon"
+            case .back: return "chevron.left"
+            case .forward: return "chevron.right"
+            case .toggleSidebar: return "sidebar.left"
+            case .newSpace: return "plus.square.on.square"
+            case .openSettings: return "gearshape"
+            case .setPinned(_, let pinned): return pinned ? "pin" : "pin.slash"
+            case .setFavorite(_, let favorite): return favorite ? "star" : "star.slash"
+            case .resetPinnedTab: return "arrow.counterclockwise"
+            case .requestRename: return "pencil"
+            case .duplicateTab: return "plus.square.on.square"
+            case .openTabInNewWindow: return "macwindow.badge.plus"
+            case .moveTab: return "arrow.right.square"
+            default: return "command"
+            }
+        }
+    }
+
     private func resultBadge(for candidate: CommandSearchCandidate) -> String {
         switch candidate.kind {
         case .favorite: candidate.isOpen ? "Switch to Tab" : "Open Favorite"
         case .pinnedTab: candidate.isOpen ? "Switch to Tab" : "Open Pin"
-        default: "Switch to Tab"
+        case .openTab: "Switch to Tab"
+        case .space: "Switch Space"
+        case .profile: "Switch Profile"
+        case .action: "Command"
+        case .bookmark: "Open Bookmark"
+        case .history: "Open History"
         }
     }
 
     private func resultAccessibilityLabel(for candidate: CommandSearchCandidate) -> String {
-        "\(resultBadge(for: candidate)): \(candidate.title)"
+        if candidate.kind == .action {
+            return candidate.title
+        }
+        return "\(resultBadge(for: candidate)): \(candidate.title)"
     }
 }
 

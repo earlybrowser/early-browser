@@ -60,6 +60,7 @@ final class BrowserWindowModel {
     let commandSearch: CommandSearch
     var onSave: ((BrowserWindowModel) -> Void)?
     var onOpenWindow: ((URL, String?) -> Void)?
+    var onOpenSettings: (() -> Void)?
     var sidebarWidth: Double {
         get { preferences.sidebarWidth }
         set { preferences.sidebarWidth = newValue }
@@ -568,8 +569,24 @@ final class BrowserWindowModel {
     func save() { onSave?(self) }
 
     func openTabInNewWindow(_ id: UUID) {
-        guard let tab = coordinator.tabStore.tab(id: id), (try? input.validate(tab.currentURL)) != nil else { return }
-        onOpenWindow?(tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL), tab.displayTitle)
+        guard let tab = coordinator.tabStore.tab(id: id) else { return }
+        let url = tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL)
+        guard (try? input.validate(url)) != nil else { return }
+        onOpenWindow?(url, tab.displayTitle)
+    }
+
+    @discardableResult
+    func duplicateTab(_ id: UUID) -> UUID? {
+        guard let source = coordinator.tabStore.tab(id: id) else { return nil }
+        let rawURL = source.isOpen ? source.currentURL : (source.pinnedURL ?? source.currentURL)
+        guard let url = try? input.validate(rawURL),
+              let copyID = coordinator.navigate(to: url, target: .newTab(spaceID: coordinator.activeSpaceID)),
+              let copy = coordinator.tabStore.tab(id: copyID) else { return nil }
+        webViews.load(url, in: copy)
+        showNewTabToastIfNeeded()
+        contentFocusRequest += 1
+        save()
+        return copyID
     }
 
     func applyProfileSnapshot(_ session: BrowserSession) {

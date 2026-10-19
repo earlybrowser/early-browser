@@ -47,6 +47,7 @@ private struct BrowserWindowRoot: View {
     let appDelegate: EarlyAppDelegate
     let windowID: UUID?
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Group {
@@ -66,6 +67,7 @@ private struct BrowserWindowRoot: View {
             onRegister: { appDelegate.windowDidRegister(windowID) }))
         .task {
             appDelegate.presentWindow = { id in openWindow(id: "browser", value: id) }
+            appDelegate.presentSettingsWindow = { openSettings() }
             let restored = await appDelegate.bootstrap(launchStore: launchStore, preferences: preferences, defaults: defaults)
             guard !Task.isCancelled else { return }
             if windowID == nil { appDelegate.ensurePrimaryWindow() }
