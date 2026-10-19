@@ -236,7 +236,7 @@ struct BrowserWindowView: View {
                         Label("Unable to open this page", systemImage: "exclamationmark.triangle")
                             .font(.headline)
                         Text(error).multilineTextAlignment(.center)
-                        Button("Try Again") { model.reload() }
+                        Button("Try Again") { model.perform(.reload) }
                             .accessibilityIdentifier("browser.retry")
                     }
                     .padding(24)
@@ -301,10 +301,11 @@ struct BrowserWindowView: View {
                     // Only the card intercepts input. Outside clicks dismiss
                     // through its event monitor; scrolls reach the live page.
                     GeometryReader { geometry in
-                        CommandBarView(model: model, suggestionListHeight: max(64, min(220, geometry.size.height * 0.60 - 96)))
+                        CommandBarView(model: model, availableHeight: geometry.size.height)
                             .frame(maxWidth: .infinity, alignment: .top)
                             .padding(.horizontal, 32)
-                            .padding(.top, max(32, geometry.size.height * 0.40 - 32))
+                            .padding(.top, CommandBarLayout(availableHeight: geometry.size.height,
+                                hasSuggestions: false, statusCount: 0).topInset)
                             .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
                     }
                 }
@@ -459,10 +460,10 @@ struct BrowserWindowView: View {
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
         .contextMenu {
-            Button("New Tab") { model.presentCommandBar(.newTab) }
+            Button("New Tab") { model.perform(.presentCommandBar(.newTab)) }
             Button("New Folder") { editFolder(nil, parent: nil) }
             Divider()
-            Button("New Space…") { model.requestNewSpace() }
+            Button("New Space…") { model.perform(.newSpace) }
             if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
         }
         .background(SpaceSwipeMonitor(model: model,
@@ -535,7 +536,7 @@ struct BrowserWindowView: View {
                 .accessibilityAddTraits(.isHeader)
                 .contextMenu {
                     SpaceActions(model: model, space: space)
-                    Button("New Space…") { model.requestNewSpace() }
+                    Button("New Space…") { model.perform(.newSpace) }
                 }
             ScrollViewReader { scroll in
                 ScrollView {
@@ -663,9 +664,9 @@ struct BrowserWindowView: View {
         return HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
             if tab.pinnedURL != nil {
                 PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
-                              reset: { model.resetPinnedTab(tab.id) }, requestsArtwork: requestsArtwork)
+                              reset: { model.perform(.resetPinnedTab(tab.id)) }, requestsArtwork: requestsArtwork)
             }
-            Button { model.selectTab(tab.id) } label: {
+            Button { model.perform(.selectTab(tab.id)) } label: {
                 HStack(spacing: tab.hasNavigatedFromPin ? 3 : 8) {
                     if tab.pinnedURL == nil {
                         TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
@@ -697,7 +698,7 @@ struct BrowserWindowView: View {
                   ?? tab.currentURL.absoluteString)
             .highPriorityGesture(tabClickGesture(tab))
             if tab.isOpen && hoveredTab == tab.id {
-                Button { model.closeTab(tab.id) } label: {
+                Button { model.perform(.closeTab(tab.id)) } label: {
                     Image(systemName: "xmark").font(.caption)
                         .frame(width: 24, height: 24)
                         .background(Color.primary.opacity(hoveredTab == tab.id ? 0.12 : 0.07),
@@ -748,12 +749,12 @@ struct BrowserWindowView: View {
 
     @ViewBuilder
     private func tabActions(_ tab: BrowserTab) -> some View {
-        Button("Open Tab in New Window") { model.openTabInNewWindow(tab.id) }
-        Button("Rename Tab…") { model.requestRename(tab.id) }
+        Button("Open Tab in New Window") { model.perform(.openTabInNewWindow(tab.id)) }
+        Button("Rename Tab…") { model.perform(.requestRename(tab.id)) }
         if !tab.isFavorite {
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
-                    Button(space.name) { _ = model.moveTab(tab.id, toSpace: space.id) }
+                    Button(space.name) { model.perform(.moveTab(tab.id, toSpace: space.id)) }
                         .disabled(space.id == tab.spaceID)
                 }
             }
@@ -767,26 +768,26 @@ struct BrowserWindowView: View {
                 }
             }
         }
-        Button("Move Up") { model.moveTab(tab.id, direction: -1) }
+        Button("Move Up") { model.perform(.moveTabBy(tab.id, -1)) }
             .disabled(model.coordinator.tabStore.siblingIDs(of: tab).first == tab.id)
-        Button("Move Down") { model.moveTab(tab.id, direction: 1) }
+        Button("Move Down") { model.perform(.moveTabBy(tab.id, 1)) }
             .disabled(model.coordinator.tabStore.siblingIDs(of: tab).last == tab.id)
         Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
-            model.setFavorite(tab.id, favorite: !tab.isFavorite)
+            model.perform(.setFavorite(tab.id, !tab.isFavorite))
         }
         if !tab.isFavorite {
             Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
-                model.setPinned(tab.id, pinned: tab.pinnedURL == nil)
+                model.perform(.setPinned(tab.id, tab.pinnedURL == nil))
             }
         }
         if tab.pinnedURL != nil {
-            Button("Reset to Pinned URL") { model.resetPinnedTab(tab.id) }
+            Button("Reset to Pinned URL") { model.perform(.resetPinnedTab(tab.id)) }
         }
         if model.webViews.pages[tab.id]?.isLoading == true {
             Button("Stop Loading") { model.webViews.stop(tab.id) }
         }
         Divider()
-        Button("Close Tab") { model.closeTab(tab.id) }
+        Button("Close Tab") { model.perform(.closeTab(tab.id)) }
             .disabled(!tab.isOpen)
     }
 
@@ -882,7 +883,7 @@ struct BrowserWindowView: View {
         let tint = favoriteTint(tab)
         let border = (selected ? tint : nil)?.opacity(contrast == .increased ? 0.80 : 0.55)
             ?? Color.primary.opacity(contrast == .increased ? 0.30 : 0.07)
-        return Button { model.selectTab(tab.id) } label: {
+        return Button { model.perform(.selectTab(tab.id)) } label: {
             SiteIcon(url: tab.pinnedURL ?? tab.currentURL, store: model.webViews.favicons,
                      size: 18, monogram: String(name.prefix(1)).uppercased())
             .foregroundStyle(tab.isOpen ? .primary : .secondary)
@@ -1116,7 +1117,7 @@ struct BrowserWindowView: View {
                         endDrag()
                         hoveredFolder = nil
                         focusedSidebarControl = nil
-                        _ = model.moveFolder(folder.id, toSpace: space.id)
+                        model.perform(.moveFolder(folder.id, toSpace: space.id))
                     }
                     .disabled(space.id == folder.spaceID)
                 }
@@ -1135,7 +1136,7 @@ struct BrowserWindowView: View {
                 endDrag()
                 hoveredFolder = nil
                 focusedSidebarControl = nil
-                model.deleteFolder(folder.id)
+                model.perform(.deleteFolder(folder.id))
             }
             .help("Delete this folder, all subfolders, and all their tabs")
         }
@@ -1538,7 +1539,7 @@ struct BrowserWindowView: View {
         // Only Option-click competes with the button's immediate action. There
         // is no double-click timer; a drag takes priority over renaming.
         reorderGesture(tab).exclusively(before:
-            TapGesture().modifiers(.option).onEnded { model.requestRename(tab.id) }
+            TapGesture().modifiers(.option).onEnded { model.perform(.requestRename(tab.id)) }
         )
     }
 
@@ -1885,7 +1886,7 @@ struct BrowserWindowView: View {
 
     private var newTabButton: some View {
         Button {
-            model.presentCommandBar(.newTab)
+            model.perform(.presentCommandBar(.newTab))
         } label: {
             HStack {
                 Label("New Tab", systemImage: "plus")
@@ -1905,7 +1906,7 @@ struct BrowserWindowView: View {
         HStack(spacing: 6) {
             WindowControls().frame(width: 60, height: 32)
             Button {
-                model.preferences.sidebarAutoHides.toggle()
+                model.perform(.toggleSidebar)
                 sidebarHovered = false
             } label: {
                 Image(systemName: "sidebar.left").frame(width: 32, height: 32)
@@ -1916,15 +1917,15 @@ struct BrowserWindowView: View {
             .accessibilityIdentifier("sidebar.toggle")
             .help("Toggle sidebar auto-hide (Command-Shift-S). Reveal at the left edge.")
             Spacer(minLength: 0)
-            NavigationButton(kind: .back) { model.back() }
+            NavigationButton(kind: .back) { model.perform(.back) }
                 .disabled(model.activePage?.canGoBack != true)
                 .accessibilityLabel("Back").accessibilityIdentifier("navigation.back")
-            NavigationButton(kind: .forward) { model.forward() }
+            NavigationButton(kind: .forward) { model.perform(.forward) }
                 .disabled(model.activePage?.canGoForward != true)
                 .accessibilityLabel("Forward").accessibilityIdentifier("navigation.forward")
             NavigationButton(kind: model.activePage?.isLoading == true ? .stop : .reload) {
-                if model.activePage?.isLoading == true { model.stop() }
-                else { model.reload() }
+                if model.activePage?.isLoading == true { model.perform(.stop) }
+                else { model.perform(.reload) }
             }
             .disabled(model.activePage == nil)
             .accessibilityLabel(model.activePage?.isLoading == true ? "Stop Loading" : "Reload")
@@ -1943,7 +1944,7 @@ struct BrowserWindowView: View {
 
     private var addressBar: some View {
         Button {
-            model.presentCommandBar(.navigateCurrentTab)
+            model.perform(.presentCommandBar(.navigateCurrentTab))
         } label: {
             HStack(spacing: 8) {
                 if currentURL == nil {

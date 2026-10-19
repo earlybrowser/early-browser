@@ -6,47 +6,59 @@ import SwiftUI
 
 struct CommandBarView: View {
     @Bindable var model: BrowserWindowModel
-    var suggestionListHeight: CGFloat = 220
-    @FocusState private var queryIsFocused: Bool
+    var availableHeight: CGFloat = 600
+    @State private var inputHeight: CGFloat = 24
     @State private var hoveredSuggestion: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.colorScheme) private var colorScheme
 
+    private var layout: CommandBarLayout {
+        CommandBarLayout(availableHeight: availableHeight,
+            hasSuggestions: !model.suggestions.results.isEmpty,
+            statusCount: (model.submissionMessage == nil ? 0 : 1) + (model.suggestions.unavailable ? 1 : 0))
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
+        let focusRequest = model.coordinator.commandBarFocusRequest
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                     .frame(width: 16, height: 16)
+                    .frame(height: 24)
                     .accessibilityHidden(true)
-                TextField("Search or enter a URL", text: Binding(
+                CommandBarInput(text: Binding(
                     get: { model.coordinator.commandBar?.query ?? "" },
                     set: {
-                        model.updateQuery($0)
+                        model.updateQuery($0, isComposing: model.commandBarIsComposing)
                     }
-                ))
-                .font(.title3)
-                .textFieldStyle(.plain)
-                .focused($queryIsFocused)
-                .accessibilityLabel("Search or enter a URL")
-                .accessibilityIdentifier("commandBar.query")
-                .onSubmit { model.submit(searchSuggestion: model.suggestions.selectedSuggestion) }
-                .onKeyPress(keys: [.upArrow, .downArrow], phases: [.down, .repeat]) { press in
-                    // Let the input method own candidate navigation during composition.
-                    guard !model.suggestions.isRefreshing, !model.suggestions.results.isEmpty,
-                          (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return .ignored }
-                    model.suggestions.moveSelection(press.key == .downArrow ? 1 : -1)
-                    return .handled
-                }
+                ), focusRequest: focusRequest,
+                    maxHeight: layout.maximumInputHeight,
+                    canFocus: { model.coordinator.commandBar != nil && model.coordinator.commandBarFocusRequest == focusRequest },
+                    onHeightChange: { inputHeight = $0 }, onFocusChange: { _ in },
+                    onCompositionChange: { composing in
+                        model.commandBarIsComposing = composing
+                        if !composing { model.refreshSuggestions() }
+                    },
+                    onSubmit: { model.perform(.submit(searchSuggestion: model.suggestions.selectedSuggestion), source: .commandBar) },
+                    onCancel: { model.perform(.dismissCommandBar(restoreFocus: true), source: .commandBar) },
+                    onMoveSelection: { delta in
+                        guard !model.commandBarIsComposing, !model.suggestions.isRefreshing,
+                              !model.suggestions.results.isEmpty else { return false }
+                        model.suggestions.moveSelection(delta)
+                        return true
+                    })
+                .frame(height: min(inputHeight, layout.maximumInputHeight))
                 Button {
-                    model.dismissCommandBar()
+                    model.perform(.dismissCommandBar(restoreFocus: true), source: .commandBar)
                 } label: {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .frame(height: 24)
                 .accessibilityLabel("Dismiss command bar")
                 .help("Dismiss (Escape)")
             }
@@ -54,6 +66,8 @@ struct CommandBarView: View {
                 Text(message)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .help(message)
                     .accessibilityIdentifier("commandBar.message")
             }
             if !model.suggestions.results.isEmpty {
@@ -66,15 +80,20 @@ struct CommandBarView: View {
             if model.suggestions.unavailable {
                 Text("Suggestions unavailable. Press Return to search.")
                     .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .accessibilityIdentifier("commandBar.suggestionsUnavailable")
                     .transition(.opacity)
             }
         }
         .padding(20)
         .frame(maxWidth: 560)
-        .background(CommandBarCardAnchor(model: model, queryIsFocused: queryIsFocused))
+        .background(CommandBarCardAnchor(model: model))
         .background {
-            if reduceTransparency || contrast == .increased {
+            if model.preferences.spaceThemes, contrast != .increased {
+                BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray,
+                    floating: true, allowsTransparency: model.preferences.translucentChrome)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+            } else if reduceTransparency || !model.preferences.translucentChrome || contrast == .increased {
                 RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .controlBackgroundColor))
             } else {
                 RoundedRectangle(cornerRadius: 16).fill(.thickMaterial)
@@ -82,24 +101,22 @@ struct CommandBarView: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(.primary.opacity(contrast == .increased ? 0.55 : 0.24), lineWidth: 1)
+                .strokeBorder(.primary.opacity(contrast == .increased ? 0.55 : 0.12), lineWidth: 1)
                 .allowsHitTesting(false)
         }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.40 : 0.22), radius: 24, y: 10)
         .shadow(color: .black.opacity(0.16), radius: 3, y: 1)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("commandBar.card")
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.results.count)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.unavailable)
-        .task(id: model.coordinator.commandBarFocusRequest) {
-            model.refreshSuggestions()
-            // Let the sidebar button finish its click/focus transaction before
-            // moving the first responder into the newly presented editor.
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            queryIsFocused = true
-        }
-        .onDisappear { model.suggestions.cancel() }
+        .task(id: model.coordinator.commandBarFocusRequest) { model.refreshSuggestions() }
+        .onDisappear { model.suggestions.cancel(); model.commandBarIsComposing = false }
         .onChange(of: model.suggestions.results) { _, _ in hoveredSuggestion = nil }
-        .onExitCommand { model.dismissCommandBar() }
+        .onExitCommand {
+            guard !model.commandBarIsComposing else { return }
+            model.perform(.dismissCommandBar(restoreFocus: true), source: .commandBar)
+        }
     }
 
     private var suggestionList: some View {
@@ -107,7 +124,7 @@ struct CommandBarView: View {
             ScrollView {
                 VStack(spacing: 2) {
                     ForEach(Array(model.suggestions.results.enumerated()), id: \.offset) { index, suggestion in
-                        Button { model.submit(searchSuggestion: suggestion) } label: {
+                        Button { model.perform(.submit(searchSuggestion: suggestion), source: .commandBar) } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                                 Text(suggestion).lineLimit(1).truncationMode(.tail)
@@ -134,7 +151,7 @@ struct CommandBarView: View {
             .opacity(model.suggestions.isRefreshing ? 0.75 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.isRefreshing)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.results)
-            .frame(height: min(suggestionListHeight, CGFloat(model.suggestions.results.count * 36 - 2)))
+            .frame(height: min(layout.suggestionHeight(inputHeight: inputHeight), CGFloat(model.suggestions.results.count * 36 - 2)))
             .onChange(of: model.suggestions.selectedIndex) { _, index in
                 if let index { proxy.scrollTo(index) }
             }
@@ -145,7 +162,6 @@ struct CommandBarView: View {
 
 private struct CommandBarCardAnchor: NSViewRepresentable {
     let model: BrowserWindowModel
-    let queryIsFocused: Bool
 
     func makeNSView(context: Context) -> AnchorView {
         let view = AnchorView()
@@ -155,11 +171,6 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
 
     func updateNSView(_ view: AnchorView, context: Context) {
         view.model = model
-        if queryIsFocused {
-            // The field editor is attached after SwiftUI's focus transaction.
-            // Color the idle caret too, before the first edit notification.
-            DispatchQueue.main.async { [weak view] in view?.updateFocusedCaret() }
-        }
     }
 
     static func dismantleNSView(_ view: AnchorView, coordinator: ()) {
@@ -169,9 +180,6 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
     final class AnchorView: NSView {
         var model: BrowserWindowModel?
         private var monitor: Any?
-        private weak var editingField: NSTextField?
-        private weak var fieldEditor: NSTextView?
-        private var originalCaretColor: NSColor?
 
         override func hitTest(_ point: NSPoint) -> NSView? {
             nil
@@ -188,10 +196,6 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
 
         func startMonitoring() {
             stopMonitoring()
-            NotificationCenter.default.addObserver(self, selector: #selector(editingBegan(_:)),
-                name: NSControl.textDidBeginEditingNotification, object: nil)
-            NotificationCenter.default.addObserver(self, selector: #selector(editingEnded(_:)),
-                name: NSControl.textDidEndEditingNotification, object: nil)
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
                 guard let self else { return event }
                 guard let model = self.model, model.coordinator.commandBar != nil else {
@@ -210,65 +214,22 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
                     // Let this very click reach its original destination. Do
                     // not queue a web-content focus request that could steal
                     // focus from the sidebar control or page field it selects.
-                    if let editor = self.fieldEditor, window.firstResponder === editor {
+                    if let editor = window.firstResponder as? NSTextView,
+                       editor.window === window, self.bounds.intersects(editor.convert(editor.bounds, to: self)) {
                         window.makeFirstResponder(nil)
                     }
-                    model.dismissCommandBar(restoreFocus: false)
+                    model.perform(.dismissCommandBar(restoreFocus: false), source: .commandBar)
                     return event
                 }
             }
         }
 
         func stopMonitoring() {
-            NotificationCenter.default.removeObserver(self, name: NSControl.textDidBeginEditingNotification, object: nil)
-            NotificationCenter.default.removeObserver(self, name: NSControl.textDidEndEditingNotification, object: nil)
-            restoreCaret()
             if let monitor {
                 NSEvent.removeMonitor(monitor)
                 self.monitor = nil
             }
         }
 
-        @objc private func editingBegan(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            styleCaret(in: field)
-        }
-
-        func updateFocusedCaret() {
-            guard let editor = window?.firstResponder as? NSTextView,
-                  let field = editor.delegate as? NSTextField else { return }
-            styleCaret(in: field)
-        }
-
-        private func styleCaret(in field: NSTextField) {
-            guard monitor != nil, let window, field.window === window,
-                  bounds.intersects(field.convert(field.bounds, to: self)),
-                  let editor = field.currentEditor() as? NSTextView else { return }
-            guard editingField !== field || fieldEditor !== editor else { return }
-            restoreCaret()
-            editingField = field
-            fieldEditor = editor
-            originalCaretColor = editor.insertionPointColor
-            editor.insertionPointColor = .secondaryLabelColor
-        }
-
-        @objc private func editingEnded(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField, field === editingField else { return }
-            restoreCaret()
-        }
-
-        override func viewDidChangeEffectiveAppearance() {
-            super.viewDidChangeEffectiveAppearance()
-            fieldEditor?.insertionPointColor = .secondaryLabelColor
-        }
-
-        private func restoreCaret() {
-            // AppKit shares a field editor across controls in this window.
-            // Do not leak the command bar's caret color into other editors.
-            if let originalCaretColor { fieldEditor?.insertionPointColor = originalCaretColor }
-            originalCaretColor = nil
-            fieldEditor = nil
-            editingField = nil
-        }
     }
 }
