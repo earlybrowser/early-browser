@@ -5,6 +5,17 @@ import EarlyCore
 import EarlyWeb
 import SwiftUI
 
+private struct FolderBounceDisplacementKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+private extension EnvironmentValues {
+    var folderBounceDisplacement: CGFloat {
+        get { self[FolderBounceDisplacementKey.self] }
+        set { self[FolderBounceDisplacementKey.self] = newValue }
+    }
+}
+
 struct BrowserWindowView: View {
     /// Folders and pinned tabs share one island geometry at every sidebar width.
     private enum PinnedIsland {
@@ -54,6 +65,7 @@ struct BrowserWindowView: View {
     @State private var hoveredTab: UUID?
     @State private var hoveredFolder: UUID?
     @State private var hoveredFolderGroups: Set<UUID> = []
+    @State private var folderBounceEvent: FolderBounceEvent?
     @State private var sidebarPointer = SidebarPointer()
     @FocusState private var focusedSidebarControl: SidebarControl?
     private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
@@ -66,7 +78,7 @@ struct BrowserWindowView: View {
         reduceMotion ? nil : .easeInOut(duration: 0.18)
     }
     private var folderExpansionAnimation: Animation? {
-        reduceMotion ? nil : .spring(duration: 0.16, bounce: 0.26)
+        reduceMotion ? nil : .spring(duration: 0.16, bounce: 0.18)
     }
     private var sidebarMotion: Animation? {
         reduceMotion ? nil : .easeInOut(duration: 0.20)
@@ -122,6 +134,11 @@ struct BrowserWindowView: View {
     private struct DragFeedbackTarget: Equatable {
         let container: DragContainer
         let index: Int?
+    }
+
+    private struct FolderBounceEvent: Equatable {
+        let id = UUID()
+        let folders: Set<UUID>
     }
 
     private enum SidebarItem: Identifiable {
@@ -508,17 +525,23 @@ struct BrowserWindowView: View {
         }
         .onChange(of: draggingTab) { _, id in
             if id == nil { endDrag() }
+            else { folderBounceEvent = nil }
         }
         .onChange(of: model.coordinator.activeSpaceID) { _, _ in
             endDrag()
+            folderBounceEvent = nil
             hoveredTab = nil
             hoveredFolder = nil
             hoveredFolderGroups = []
             focusedSidebarControl = nil
         }
+        .onChange(of: reduceMotion) { _, enabled in
+            if enabled { folderBounceEvent = nil }
+        }
         .onDisappear {
             sidebarPointer.location = nil
             hoveredFolderGroups = []
+            folderBounceEvent = nil
             endDrag()
         }
     }
@@ -593,7 +616,7 @@ struct BrowserWindowView: View {
                             // its old space. Only the destination owns a drop slot.
                             .transition(.opacity)
                             .frame(height: vacatesSourceRow(item) ? 0 : nil)
-                            .padding(.bottom, vacatesSourceRow(item) || item.id == items.last?.id ? 0 : 4)
+                            .padding(.bottom, vacatesSourceRow(item) || item.id == items.last?.id ? 0 : SidebarFolderBounce.rowSpacing)
                             .animation(folderDragAnimation, value: vacatesSourceRow(item))
                             .id(item.id)
                         }
@@ -1529,6 +1552,12 @@ struct BrowserWindowView: View {
         #if DEBUG
         if model.isTesting { folderToggleActionCount += 1 }
         #endif
+        let affected = SidebarFolderBounce.affectedFolders(toggling: folder.id,
+            in: model.coordinator.folders, hasChildren: folderHasChildren(folder.id, in: folder.spaceID))
+        // A child changes its ancestors' bounds too. Give the whole affected
+        // branch one pulse; empty toggles only animate the folder icon.
+        folderBounceEvent = reduceMotion || draggingTab != nil || affected.isEmpty
+            ? nil : FolderBounceEvent(folders: affected)
         withAnimation(folderExpansionAnimation) {
             model.coordinator.toggleFolder(folder.id)
         }
@@ -1765,58 +1794,79 @@ struct BrowserWindowView: View {
         }
     }
 
+    private struct FolderPanel: Identifiable {
+        let id: UUID
+        let frame: CGRect
+    }
+
+    private struct FolderBounceDrawing: ViewModifier {
+        @Environment(\.folderBounceDisplacement) private var displacement
+        let frame: CGRect
+        let affected: Bool
+
+        func body(content: Content) -> some View {
+            content
+                .frame(width: frame.width, height: frame.height + (affected ? displacement : 0))
+                .offset(x: frame.minX, y: frame.minY)
+        }
+    }
+
     private func pinnedGroupBackgrounds(anchors: [FolderBoundary: Anchor<CGRect>]) -> some View {
         GeometryReader { geometry in
             let origin = geometry.frame(in: .named("sidebarReordering")).origin
             let visible = Set(pinnedOutline.filter(\.isFolder).map(\.id))
-            ZStack(alignment: .topLeading) {
-                if showsFolderDragTargets && pinnedOutline.isEmpty, let start = dropAreas["pinned"], let end = dropAreas["pinnedEnd"] {
-                    groupPanel(active: destinationSection(at: dragPoint) == .pinned, dashed: true)
-                        .frame(width: geometry.size.width, height: max(0, end.maxY - start.minY))
-                        .offset(x: 0, y: start.minY - origin.y)
-                }
-                ForEach(model.coordinator.folders) { folder in
-                    if visible.contains(folder.id), folder.id != draggingTab,
-                       let anchor = anchors[.header(folder.id)] {
-                        // Resolve both boundaries in this layout pass, including
-                        // their animated transforms. Never join a fresh header
-                        // to a stale end measurement from a different folder layout.
-                        let header = geometry[anchor]
-                        let end = folderPreview(folder).showsPanel ? anchors[.end(folder.id)].map { geometry[$0] } : nil
-                        let bottom = max(header.maxY, end?.maxY ?? header.maxY)
-                        let height = bottom - header.minY
-                        let canRebound = !reduceMotion && draggingTab == nil && folderHasChildren(folder.id)
-                        let rebound: CGFloat = canRebound ? (folder.isExpanded ? 5 : -3) : 0
-                        let highlighted = showsFolderDragTargets || hoveredFolderGroups.contains(folder.id)
-                            || hoveredFolder == folder.id
-                        // Keep the same panel mounted when collapsed so it can
-                        // spring back to the header instead of disappearing.
-                        groupPanel(active: showsFolderDragTargets && isDropAncestor(folder.id), isFolder: true)
-                            .frame(width: header.width, height: height)
-                            // Animate the drawing independently of the changing
-                            // layout anchors. A bounded rebound stays visible for
-                            // short and tall islands without moving their contents
-                            // or changing the measured drag/drop geometry.
-                            .keyframeAnimator(initialValue: CGFloat.zero, trigger: folder.isExpanded) { panel, displacement in
-                                panel.scaleEffect(x: 1, y: 1 + (canRebound ? displacement : 0) / max(1, height), anchor: .top)
-                            } keyframes: { _ in
-                                LinearKeyframe(CGFloat.zero, duration: 0.10)
-                                CubicKeyframe(rebound, duration: 0.06)
-                                CubicKeyframe(-rebound * 0.25, duration: 0.06)
-                                CubicKeyframe(CGFloat.zero, duration: 0.08)
-                            }
-                            .offset(x: header.minX, y: header.minY)
-                            // These anchors already follow the animated rows.
-                            // Re-easing their frame/offset makes ancestor islands
-                            // chase a subfolder instead of resizing alongside it.
-                            // Keyframes above retain their own ending rebound.
-                            .transaction { $0.animation = nil }
-                            .opacity(highlighted ? 1 : 0)
-                            .animation(folderDragAnimation, value: highlighted)
-                    }
-                }
+            let panels = model.coordinator.folders.compactMap { folder -> FolderPanel? in
+                guard visible.contains(folder.id), folder.id != draggingTab,
+                      let anchor = anchors[.header(folder.id)] else { return nil }
+                // Resolve both boundaries in the same layout pass. Backgrounds
+                // follow the animated rows, never a delayed end measurement.
+                let header = geometry[anchor]
+                let end = folderPreview(folder).showsPanel ? anchors[.end(folder.id)].map { geometry[$0] } : nil
+                return FolderPanel(id: folder.id, frame: CGRect(x: header.minX, y: header.minY,
+                    width: header.width, height: max(header.maxY, end?.maxY ?? header.maxY) - header.minY))
+            }
+            let affected: Set<UUID> = reduceMotion || draggingTab != nil ? [] : folderBounceEvent?.folders ?? []
+            let heights = panels.filter { affected.contains($0.id) }.map(\.frame.height)
+            // One clock and one pixel displacement preserve the padding between
+            // nested islands. Independent percentage springs can cross edges.
+            folderPanelBackgrounds(panels, affected: affected, origin: origin, size: geometry.size)
+            .keyframeAnimator(initialValue: CGFloat.zero, trigger: folderBounceEvent) { layer, requested in
+                let displacement = SidebarFolderBounce.displacement(requested, panelHeights: heights,
+                    minimumHeight: PinnedIsland.height)
+                layer.environment(\.folderBounceDisplacement, displacement)
+            } keyframes: { _ in
+                LinearKeyframe(CGFloat.zero, duration: 0.09)
+                CubicKeyframe(SidebarFolderBounce.peakDisplacement, duration: 0.055)
+                CubicKeyframe(CGFloat(-0.5), duration: 0.045)
+                CubicKeyframe(CGFloat.zero, duration: 0.06)
             }
         }.allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    private func folderPanelBackgrounds(_ panels: [FolderPanel], affected: Set<UUID>,
+                                        origin: CGPoint, size: CGSize) -> some View {
+        ZStack(alignment: .topLeading) {
+            if showsFolderDragTargets && pinnedOutline.isEmpty, let start = dropAreas["pinned"], let end = dropAreas["pinnedEnd"] {
+                groupPanel(active: destinationSection(at: dragPoint) == .pinned, dashed: true)
+                    .frame(width: size.width, height: max(0, end.maxY - start.minY))
+                    .offset(x: 0, y: start.minY - origin.y)
+            }
+            ForEach(panels) { panel in
+                let highlighted = showsFolderDragTargets || hoveredFolderGroups.contains(panel.id)
+                    || hoveredFolder == panel.id
+                // Draw only: keep row positions and drag/hit geometry unchanged.
+                // The shared envelope cannot consume the next row's spacing or
+                // shrink any member of the branch below its header height.
+                groupPanel(active: showsFolderDragTargets && isDropAncestor(panel.id), isFolder: true)
+                    .modifier(FolderBounceDrawing(frame: panel.frame, affected: affected.contains(panel.id)))
+                    // Anchor geometry already follows the row animation. A
+                    // second implicit animation would make ancestors lag again.
+                    .transaction { $0.animation = nil }
+                    .opacity(highlighted ? 1 : 0)
+                    .animation(folderDragAnimation, value: highlighted)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
     }
 
     private func previewOffset(_ id: UUID) -> CGSize {
