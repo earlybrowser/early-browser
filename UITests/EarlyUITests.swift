@@ -939,7 +939,12 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(child.waitForExistence(timeout: 3))
         XCTAssertEqual(root.value as? String, "Expanded")
         XCTAssertEqual(child.value as? String, "Collapsed")
-        dragSidebarItem(third, to: child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+        // The foreign pinned-row preview shifts the folder block/child below
+        // the cursor by one 34-point row plus its 4-point gap. XCTest resolves
+        // coordinates before mouse-down, so aim at the displayed drag-time row.
+        let childDrop = child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .withOffset(CGVector(dx: 0, dy: 38))
+        dragSidebarItem(third, to: childDrop)
         XCTAssertTrue(app.buttons[thirdID].waitForExistence(timeout: 3))
         XCTAssertEqual(child.value as? String, "Expanded")
         XCTAssertGreaterThan(app.buttons[thirdID].frame.minY, child.frame.minY)

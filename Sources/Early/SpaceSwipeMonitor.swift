@@ -22,6 +22,13 @@ enum BrowserHaptics {
         guard enabled else { return }
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
     }
+
+    static func navigationSwipe(enabled: Bool = true) {
+        guard enabled else { return }
+        // Only confirmed trackpad history navigation reaches this path. Do not
+        // share the alignment throttle used by sidebar drag/Space feedback.
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+    }
 }
 
 /// Only a phased, precise scroll beginning in this sidebar can become a Space

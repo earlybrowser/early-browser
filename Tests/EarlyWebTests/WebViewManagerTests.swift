@@ -8,6 +8,109 @@ import WebKit
 
 @Suite @MainActor
 struct WebViewManagerTests {
+    @Test func historyFeedbackWaitsForCommitAndNeverFiresForOrdinaryScrollingOrButtons() throws {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        defer { manager.discardAll() }
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Page",
+                             currentURL: URL(string: "https://example.com")!)
+        let view = try #require(manager.prepare(tab).view as? BrowserWebView)
+        var reported: [UUID] = []
+        manager.onHistoryGestureNavigation = { reported.append($0) }
+        func sample(_ phase: HistoryGestureProvenance.Phase, x: CGFloat) {
+            view.updateHistoryGesture(x: x, y: 0, phase: phase, precise: true,
+                canNavigate: true, timestamp: ProcessInfo.processInfo.systemUptime)
+        }
+        manager.back(tab.id)
+        manager.forward(tab.id)
+        manager.webView(view, didCommit: nil)
+        #expect(reported.isEmpty)
+
+        sample(.began, x: 0)
+        sample(.changed, x: 100)
+        sample(.ended, x: 0)
+        // Ordinary horizontal scrolling and unrelated document commits stay silent.
+        manager.webView(view, didCommit: nil)
+        #expect(reported.isEmpty)
+        sample(.began, x: 0)
+        sample(.changed, x: 100)
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+        #expect(reported.isEmpty) // Even an accepted action isn't a committed navigation yet.
+        sample(.ended, x: 0)
+        manager.webView(view, didCommit: nil)
+        #expect(reported == [tab.id])
+        manager.webView(view, didCommit: nil)
+        #expect(reported == [tab.id])
+
+        sample(.began, x: 50)
+        manager.back(tab.id)
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+        manager.webView(view, didCommit: nil)
+        sample(.began, x: 50)
+        manager.forward(tab.id)
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+        manager.webView(view, didCommit: nil)
+        view.historyGesture.reset() // The key monitor also resets provenance for shortcuts.
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+        manager.webView(view, didCommit: nil)
+        #expect(reported == [tab.id])
+        let foreign = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        manager.recordHistoryNavigation(in: foreign, navigationType: .backForward, isMainFrame: true)
+        manager.webView(foreign, didCommit: nil)
+        sample(.began, x: 50)
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+        manager.discardAll()
+        manager.webView(view, didCommit: nil)
+        #expect(reported == [tab.id])
+        #expect(manager.liveViewCount == 0 && manager.creationCount == 1)
+    }
+
+    @Test func cancelledFailedUnrelatedAndSubframeNavigationsDoNotProduceFeedback() throws {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        defer { manager.discardAll() }
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Page",
+                             currentURL: URL(string: "https://example.com")!)
+        let view = try #require(manager.prepare(tab).view as? BrowserWebView)
+        var reported: [UUID] = []
+        manager.onHistoryGestureNavigation = { reported.append($0) }
+        func begin() {
+            view.updateHistoryGesture(x: 50, y: 0, phase: .began, precise: true,
+                canNavigate: true, timestamp: ProcessInfo.processInfo.systemUptime)
+        }
+        for kind in [WKNavigationType.other, .linkActivated, .reload, .formSubmitted] {
+            begin()
+            manager.recordHistoryNavigation(in: view, navigationType: kind, isMainFrame: true)
+            manager.webView(view, didCommit: nil)
+        }
+        begin()
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: false)
+        manager.webView(view, didCommit: nil)
+        for code in [NSURLErrorCancelled, NSURLErrorTimedOut] {
+            begin()
+            manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+            manager.webView(view, didFailProvisionalNavigation: nil,
+                withError: NSError(domain: NSURLErrorDomain, code: code))
+            manager.webView(view, didCommit: nil)
+        }
+        begin()
+        view.updateHistoryGesture(x: 0, y: 0, phase: .cancelled, precise: true,
+            canNavigate: true, timestamp: ProcessInfo.processInfo.systemUptime)
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+        manager.webView(view, didCommit: nil)
+        begin()
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+        manager.stop(tab.id)
+        manager.webView(view, didCommit: nil)
+        begin()
+        manager.recordHistoryNavigation(in: view, navigationType: .backForward, isMainFrame: true)
+        manager.webViewWebContentProcessDidTerminate(view)
+        manager.webView(view, didCommit: nil)
+        #expect(reported.isEmpty)
+    }
+
     @Test func commandClickUsesWebKitButtonMaskRatherThanNSEventButtonIndex() {
         #expect(WebViewManager.isCommandClick(navigationType: .linkActivated, buttonNumber: 1, modifiers: .command))
         #expect(!WebViewManager.isCommandClick(navigationType: .linkActivated, buttonNumber: 1, modifiers: []))

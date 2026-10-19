@@ -25,9 +25,46 @@ struct CommandBarInputTests {
         #expect(control.textView.insertionPointColor == .secondaryLabelColor)
         #expect(!control.textView.isRichText)
         #expect(control.textView.allowsUndo)
+        #expect(control.textView.inlinePredictionType == .no)
+        if #available(macOS 15.0, *) { #expect(control.textView.writingToolsBehavior == .none) }
         #expect(!control.scrollView.hasHorizontalScroller)
         control.updateText("a multiline\naccessible query")
         #expect(control.textView.accessibilityValue() == "a multiline\naccessible query")
+    }
+
+    @Test func wheelRoutingOutsideTheCardFindsOnlyTheUnderlyingNativePage() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800))
+        let page = NSView(frame: NSRect(x: 200, y: 0, width: 800, height: 800))
+        let document = NSView(frame: page.bounds)
+        let card = NSView(frame: NSRect(x: 300, y: 450, width: 560, height: 120))
+        root.addSubview(page)
+        page.addSubview(document)
+        root.addSubview(card)
+
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 900, y: 100), outside: card, in: page) === document)
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 400, y: 500), outside: card, in: page) == nil)
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 100, y: 100), outside: card, in: page) == nil)
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 1100, y: 100), outside: card, in: page) == nil)
+        page.isHidden = true
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 900, y: 100), outside: card, in: page) == nil)
+        page.isHidden = false
+        page.removeFromSuperview()
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 500, y: 100), outside: card, in: page) == nil)
+    }
+
+    @Test func wheelRoutingUsesVisiblePageBoundsAndNeverStealsTheEditorsScroll() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800))
+        let clip = NSView(frame: NSRect(x: 200, y: 0, width: 600, height: 400))
+        clip.clipsToBounds = true
+        let page = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 800))
+        let card = NSView(frame: NSRect(x: 300, y: 150, width: 400, height: 120))
+        root.addSubview(clip)
+        clip.addSubview(page)
+        root.addSubview(card)
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 750, y: 100), outside: card, in: page) === page)
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 900, y: 100), outside: card, in: page) == nil)
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 750, y: 600), outside: card, in: page) == nil)
+        #expect(CommandBarScrollRouting.target(at: NSPoint(x: 500, y: 200), outside: card, in: page) == nil)
     }
 
     @Test func aShortQueryStaysOneLineAndWrappingAdaptsToNarrowerWindows() {

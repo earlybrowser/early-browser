@@ -115,6 +115,10 @@ final class CommandBarInputControl: NSView, NSTextViewDelegate {
         textView.isAutomaticLinkDetectionEnabled = false
         textView.isAutomaticDataDetectionEnabled = false
         textView.isAutomaticTextCompletionEnabled = false
+        textView.inlinePredictionType = .no
+        // A URL/search editor is not a prose-writing surface. Opt out before
+        // first focus so macOS never attaches its floating Siri/Writing Tools UI.
+        if #available(macOS 15.0, *) { textView.writingToolsBehavior = .none }
         textView.setAccessibilityIdentifier("commandBar.query")
         textView.setAccessibilityLabel("Search or enter a URL")
         textView.setAccessibilityPlaceholderValue("Search or enter a URL")

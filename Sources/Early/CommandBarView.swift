@@ -164,6 +164,19 @@ struct CommandBarView: View {
     }
 }
 
+/// A full-window SwiftUI overlay can absorb wheel events even where it draws
+/// nothing. Resolve the underlying native page target without changing focus,
+/// faking a scroll in JavaScript, or forwarding events inside the card.
+@MainActor
+enum CommandBarScrollRouting {
+    static func target(at windowPoint: NSPoint, outside card: NSView, in page: NSView) -> NSView? {
+        guard !card.bounds.contains(card.convert(windowPoint, from: nil)),
+              !page.isHiddenOrHasHiddenAncestor, let parent = page.superview,
+              page.visibleRect.contains(page.convert(windowPoint, from: nil)) else { return nil }
+        return page.hitTest(parent.convert(windowPoint, from: nil))
+    }
+}
+
 private struct CommandBarCardAnchor: NSViewRepresentable {
     let model: BrowserWindowModel
 
@@ -200,7 +213,7 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
 
         func startMonitoring() {
             stopMonitoring()
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
                 guard let self else { return event }
                 guard let model = self.model, model.coordinator.commandBar != nil else {
                     return event
@@ -210,6 +223,18 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
                 }
                 guard !self.bounds.isEmpty else {
                     return event
+                }
+                if event.type == .scrollWheel {
+                    guard window.attachedSheet == nil,
+                          let page = model.activePage?.view, page.window === window,
+                          let target = CommandBarScrollRouting.target(at: event.locationInWindow, outside: self, in: page) else {
+                        return event
+                    }
+                    // Deliver the original event exactly once, preserving its
+                    // phase, momentum and deltas for WebKit's native gestures.
+                    model.webViews.observeHistoryGesture(event, in: page)
+                    target.scrollWheel(with: event)
+                    return nil
                 }
                 let localPoint = self.convert(event.locationInWindow, from: nil)
                 if self.bounds.contains(localPoint) {

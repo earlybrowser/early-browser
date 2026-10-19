@@ -306,7 +306,7 @@ struct BrowserSettingsView: View {
             SettingsCard {
                 SettingsToggle("Swipe between Spaces", detail: "Swipe horizontally over the sidebar. A longer swipe past the last Space creates a new one.", isOn: $preferences.spaceSwipes, identifier: "settings.spaceSwipes")
                 Divider().padding(.vertical, 6)
-                SettingsToggle("Haptic feedback", detail: "Subtle feedback when moving tabs, folders, and Favorites, or changing Spaces. Requires a supported device and enabled system feedback.", isOn: $preferences.haptics, identifier: "settings.haptics")
+                SettingsToggle("Haptic feedback", detail: "Subtle feedback when moving tabs, folders, and Favorites, changing Spaces, or swiping back and forward on the trackpad. Requires a supported device and enabled system feedback.", isOn: $preferences.haptics, identifier: "settings.haptics")
             }
         }
     }
