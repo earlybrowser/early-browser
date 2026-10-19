@@ -478,7 +478,27 @@ struct BrowserActionTests {
         #expect(openedSettings == 1 && model.coordinator.commandBar == nil)
         #expect(model.contentFocusRequest == focusBeforeSettings)
 
-        // 4. Search and switch Space from the command bar -> switches to Personal without creating a tab.
+        // 4. Disabling commandBarActions hides actions, Spaces, and profiles while keeping tab/pin matches.
+        model.commandBarActionsEnabled = false
+        #expect(model.commandSearchCandidates().allSatisfy { $0.kind.isTab })
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("open settings")
+        for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(model.visibleCommandResults.isEmpty)
+        model.commandBarActionsEnabled = true
+
+        // 5. Selecting a tab inside collapsed nested folders expands all ancestor folders and reveals the tab in the sidebar.
+        let parentFolder = try #require(model.coordinator.createFolder(name: "Parent"))
+        let childFolder = try #require(model.coordinator.createFolder(name: "Child", parentID: parentFolder))
+        #expect(model.coordinator.moveTab(active.id, toFolder: childFolder))
+        model.coordinator.setFolderExpanded(parentFolder, expanded: false)
+        model.coordinator.setFolderExpanded(childFolder, expanded: false)
+        #expect(model.perform(.selectTab(active.id), source: .commandBar))
+        #expect(model.coordinator.folders.first(where: { $0.id == parentFolder })?.isExpanded == true)
+        #expect(model.coordinator.folders.first(where: { $0.id == childFolder })?.isExpanded == true)
+        #expect(model.sidebarReveal?.itemID == "tab-\(active.id)")
+
+        // 6. Search and switch Space from the command bar -> switches to Personal without creating a tab.
         #expect(model.perform(.presentCommandBar(.newTab)))
         model.updateQuery("personal")
         for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }

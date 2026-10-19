@@ -73,6 +73,10 @@ final class BrowserWindowModel {
         get { preferences.onlineSuggestions }
         set { preferences.onlineSuggestions = newValue; refreshSuggestions() }
     }
+    var commandBarActionsEnabled: Bool {
+        get { preferences.commandBarActions }
+        set { preferences.commandBarActions = newValue; refreshSuggestions() }
+    }
 
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
@@ -243,9 +247,22 @@ final class BrowserWindowModel {
     }
 
     func selectTab(_ id: UUID) {
+        let wasHiddenInFolder: Bool = {
+            var parent = coordinator.tabStore.tab(id: id)?.folderID
+            var seen = Set<UUID>()
+            while let folderID = parent, seen.insert(folderID).inserted,
+                  let folder = coordinator.folders.first(where: { $0.id == folderID }) {
+                if !folder.isExpanded { return true }
+                parent = folder.parentID
+            }
+            return false
+        }()
         sidebarReveal = nil
         cancelSpaceSwipePresentation()
         guard coordinator.openTab(id) else { return }
+        if wasHiddenInFolder {
+            sidebarReveal = SidebarReveal(spaceID: coordinator.activeSpaceID, itemID: "tab-\(id)")
+        }
         activateSelection()
         save()
     }

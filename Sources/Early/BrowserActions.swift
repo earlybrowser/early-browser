@@ -218,6 +218,7 @@ extension BrowserWindowModel {
                 title: tab.displayTitle, detail: displayURL, terms: terms,
                 isOpen: tab.isOpen, lastUsed: tab.lastActivatedAt, useCount: tab.activationCount))
         }
+        guard commandBarActionsEnabled else { return candidates }
         for space in coordinator.spaces where canPerform(.switchSpace(space.id)) {
             candidates.append(CommandSearchCandidate(
                 id: "space.\(space.id.uuidString)", kind: .space, target: .space(space.id),
@@ -266,9 +267,10 @@ extension BrowserWindowModel {
         return candidates
     }
 
-    /// Ranked tabs, pins, Favorites, Spaces, profiles, and available actions.
+    /// Ranked tabs, pins, Favorites, and (when enabled) Spaces, profiles, and actions.
     var visibleCommandResults: [CommandSearchResult] {
-        commandSearch.results
+        commandBarActionsEnabled ? commandSearch.results
+            : commandSearch.results.filter { $0.candidate.kind.isTab || $0.candidate.kind == .bookmark || $0.candidate.kind == .history }
     }
 
     var selectedCommandResult: CommandSearchResult? {

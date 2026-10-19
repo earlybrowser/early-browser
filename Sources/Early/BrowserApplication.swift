@@ -111,7 +111,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         restoringFocus = !restored.isEmpty
         preferences.onChange = { [weak self] key in
             if key == "browserAppearance" { self?.applyAppearance() }
-            if key == "onlineSearchSuggestions" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
+            if key == "onlineSearchSuggestions" || key == "commandBarActions" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
             if key == "spaceSwipes" { self?.visibleModels.forEach { $0.cancelSpaceSwipePresentation() } }
         }
         applyAppearance()

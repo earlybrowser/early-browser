@@ -321,6 +321,8 @@ struct BrowserSettingsView: View {
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Divider().padding(.vertical, 6)
             SettingsToggle("Online search suggestions", detail: "Send what you type in the command bar to Google for suggestions. Turn this off to keep typed queries local until you search.", isOn: $preferences.onlineSuggestions, identifier: "settings.onlineSuggestions")
+            Divider().padding(.vertical, 6)
+            SettingsToggle("Command bar actions", detail: "Include browser commands, Spaces, and profiles when searching in the command bar. Turn this off to show only matching tabs, pins, Favorites, and web suggestions.", isOn: $preferences.commandBarActions, identifier: "settings.commandBarActions")
         }
     }
 
