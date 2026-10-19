@@ -2623,6 +2623,15 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(app.webViews.staticTexts["Scroll fixture"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5))
         let page = app.webViews.firstMatch
+        // WebKit may expose paragraph text through AXValue rather than AXLabel
+        // (or as a container). Use named, read-only controls with stable roles,
+        // and wait for them before sending a wheel event to the real webpage.
+        let position = page.textFields["Scroll position"]
+        let clicks = page.textFields["Page clicks"]
+        XCTAssertTrue(position.waitForExistence(timeout: 5))
+        XCTAssertTrue(clicks.waitForExistence(timeout: 5))
+        XCTAssertEqual(position.value as? String, "0")
+        XCTAssertEqual(clicks.value as? String, "0")
         app.typeKey("t", modifierFlags: .command)
         XCTAssertTrue(query.waitForExistence(timeout: 3))
         let draft = "keep query while scrolling"
@@ -2634,10 +2643,9 @@ final class EarlyUITests: XCTestCase {
         let point = CGPoint(x: page.frame.minX + page.frame.width * 0.90, y: page.frame.minY + page.frame.height * 0.85)
         XCTAssertFalse(card.frame.contains(point), "The wheel must target the website, not the editor")
         scrollPoint.scroll(byDeltaX: 0, deltaY: -400)
-        let position = page.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Scroll position ")).firstMatch
         let moved = NSPredicate { _, _ in
-            let text = (position.value as? String) ?? position.label
-            return Int(text.replacingOccurrences(of: "Scroll position ", with: "")).map { $0 > 0 } ?? false
+            guard position.exists, let text = position.value as? String else { return false }
+            return Int(text).map { $0 > 0 } ?? false
         }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: moved, object: nil)], timeout: 5), .completed)
         XCTAssertTrue(query.exists)
@@ -2649,7 +2657,8 @@ final class EarlyUITests: XCTestCase {
         XCTAssertFalse(card.frame.contains(CGPoint(x: pageButton.frame.midX, y: pageButton.frame.midY)))
         pageButton.click()
         XCTAssertTrue(query.waitForNonExistence(timeout: 3))
-        XCTAssertTrue(page.staticTexts["Page clicks 1"].waitForExistence(timeout: 5))
+        let clickedOnce = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: clicks)
+        XCTAssertEqual(XCTWaiter.wait(for: [clickedOnce], timeout: 5), .completed)
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 }
