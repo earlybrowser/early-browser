@@ -82,6 +82,7 @@ public final class BrowserCoordinator {
         // Re-selecting the visible tab is not a new use. Restoring a Space's
         // remembered selection does not pass through here either.
         if content != .web(tabID: id) { tabStore.recordActivation(id, at: now()) }
+        tabStore.revealFolderAncestors(of: id)
         selectionBySpace[activeSpaceID] = id
         content = .web(tabID: id)
         dismissCommandBar()

@@ -37,4 +37,6 @@ public enum BrowserAction: Equatable, Sendable {
     case stop
     case toggleSidebar
     case openTabInNewWindow(UUID)
+    case duplicateTab(UUID)
+    case openSettings
 }

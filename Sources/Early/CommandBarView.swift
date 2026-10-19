@@ -9,6 +9,7 @@ struct CommandBarView: View {
     var availableHeight: CGFloat = 600
     @State private var inputHeight: CGFloat = 24
     @State private var hoveredItem: String?
+    @State private var hoverLocation: CGPoint?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -120,8 +121,9 @@ struct CommandBarView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.unavailable)
         .task(id: model.coordinator.commandBarFocusRequest) { model.refreshSuggestions() }
         .onDisappear { model.cancelCommandBarQueries(); model.commandBarIsComposing = false }
-        .onChange(of: model.visibleCommandResults) { _, _ in hoveredItem = nil }
-        .onChange(of: model.suggestions.results) { _, _ in hoveredItem = nil }
+        .onChange(of: model.coordinator.commandBar?.query) { _, _ in hoveredItem = nil; hoverLocation = nil }
+        .onChange(of: model.visibleCommandResults) { _, _ in hoveredItem = nil; hoverLocation = nil }
+        .onChange(of: model.suggestions.results) { _, _ in hoveredItem = nil; hoverLocation = nil }
         .onExitCommand {
             guard !model.commandBarIsComposing else { return }
             model.perform(.dismissCommandBar(restoreFocus: true), source: .commandBar)
@@ -132,6 +134,7 @@ struct CommandBarView: View {
         let local = model.visibleCommandResults
         let suggestions = model.suggestions.results
         let selectedLocalID = model.selectedCommandResult?.id
+        let hasKeyboardSelection = selectedLocalID != nil || model.suggestions.selectedIndex != nil
         return ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 2) {
@@ -155,7 +158,7 @@ struct CommandBarView: View {
                             .padding(.horizontal, 10)
                             .frame(height: 34)
                             .contentShape(Rectangle())
-                            .background(Color.primary.opacity(selected || hoveredItem == rowID ? 0.08 : 0),
+                            .background(Color.primary.opacity(selected || (!hasKeyboardSelection && hoveredItem == rowID) ? 0.08 : 0),
                                         in: RoundedRectangle(cornerRadius: 7))
                         }
                         .buttonStyle(.plain)
@@ -164,7 +167,9 @@ struct CommandBarView: View {
                         .accessibilityLabel(resultAccessibilityLabel(for: result.candidate))
                         .accessibilityIdentifier("commandBar.result.\(index)")
                         .accessibilityAddTraits(selected ? .isSelected : [])
-                        .onHover { hoveredItem = $0 ? rowID : nil }
+                        .onContinuousHover { phase in
+                            updateHover(phase, rowID: rowID)
+                        }
                         .id(rowID)
                     }
                     ForEach(Array(suggestions.enumerated()), id: \.offset) { index, suggestion in
@@ -182,7 +187,7 @@ struct CommandBarView: View {
                             .padding(.horizontal, 10)
                             .frame(height: 34)
                             .contentShape(Rectangle())
-                            .background(Color.primary.opacity(selected || hoveredItem == rowID ? 0.08 : 0),
+                            .background(Color.primary.opacity(selected || (!hasKeyboardSelection && hoveredItem == rowID) ? 0.08 : 0),
                                         in: RoundedRectangle(cornerRadius: 7))
                         }
                         .buttonStyle(.plain)
@@ -191,7 +196,9 @@ struct CommandBarView: View {
                         .accessibilityLabel("Search Google for \(suggestion)")
                         .accessibilityIdentifier("commandBar.suggestion.\(index)")
                         .accessibilityAddTraits(selected ? .isSelected : [])
-                        .onHover { hoveredItem = $0 ? rowID : nil }
+                        .onContinuousHover { phase in
+                            updateHover(phase, rowID: rowID)
+                        }
                         .id(rowID)
                     }
                 }
@@ -202,13 +209,38 @@ struct CommandBarView: View {
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: suggestions)
             .frame(height: min(layout.suggestionHeight(inputHeight: inputHeight), CGFloat(max(0, totalRows * 36 - 2))))
             .onChange(of: selectedLocalID) { _, id in
-                if let id { proxy.scrollTo("result.\(id)") }
+                if let id {
+                    hoveredItem = nil
+                    proxy.scrollTo("result.\(id)")
+                }
             }
             .onChange(of: model.suggestions.selectedIndex) { _, index in
-                if let index { proxy.scrollTo("suggestion.\(index)") }
+                if let index {
+                    hoveredItem = nil
+                    proxy.scrollTo("suggestion.\(index)")
+                }
             }
         }
         .accessibilityIdentifier("commandBar.suggestions")
+    }
+
+    /// Ignore a stationary cursor when results appear under it; only highlight
+    /// a hovered row after the pointer actually moves, and yield to keyboard selection.
+    private func updateHover(_ phase: HoverPhase, rowID: String) {
+        switch phase {
+        case .active(let location):
+            if let previous = hoverLocation {
+                if hypot(location.x - previous.x, location.y - previous.y) >= 1 {
+                    hoverLocation = location
+                    hoveredItem = rowID
+                }
+            } else {
+                hoverLocation = location
+            }
+        case .ended:
+            if hoveredItem == rowID { hoveredItem = nil }
+            hoverLocation = nil
+        }
     }
 
     @ViewBuilder
@@ -218,8 +250,7 @@ struct CommandBarView: View {
             if let iconURL, let image = model.webViews.favicons.image(for: iconURL) {
                 Image(nsImage: image).resizable().scaledToFit()
             } else {
-                Image(systemName: candidate.kind == .favorite ? "star.fill"
-                    : (candidate.kind == .pinnedTab ? "pin" : "globe"))
+                Image(systemName: resultSymbol(for: candidate))
                     .foregroundStyle(.secondary)
             }
         }
@@ -231,22 +262,64 @@ struct CommandBarView: View {
     }
 
     private func resultIconURL(for candidate: CommandSearchCandidate) -> URL? {
+        guard candidate.kind.isTab || candidate.kind == .bookmark || candidate.kind == .history else { return nil }
         if case .tab(let id) = candidate.target, let tab = model.coordinator.tabStore.tab(id: id) {
             return tab.pinnedURL ?? tab.currentURL
         }
         return candidate.detail.flatMap(URL.init(string:))
     }
 
+    private func resultSymbol(for candidate: CommandSearchCandidate) -> String {
+        switch candidate.kind {
+        case .favorite: return "star.fill"
+        case .pinnedTab: return "pin"
+        case .openTab, .history: return "globe"
+        case .bookmark: return "bookmark"
+        case .space: return "square.grid.2x2"
+        case .profile: return "person.crop.circle"
+        case .action:
+            guard case .action(let action) = candidate.target else { return "command" }
+            switch action {
+            case .closeActiveTab, .closeTab: return "xmark"
+            case .reopenLastTab: return "arrow.uturn.backward"
+            case .copyCurrentURL: return "link"
+            case .reload: return "arrow.clockwise"
+            case .stop: return "xmark.octagon"
+            case .back: return "chevron.left"
+            case .forward: return "chevron.right"
+            case .toggleSidebar: return "sidebar.left"
+            case .newSpace: return "plus.square.on.square"
+            case .openSettings: return "gearshape"
+            case .setPinned(_, let pinned): return pinned ? "pin" : "pin.slash"
+            case .setFavorite(_, let favorite): return favorite ? "star" : "star.slash"
+            case .resetPinnedTab: return "arrow.counterclockwise"
+            case .requestRename: return "pencil"
+            case .duplicateTab: return "plus.square.on.square"
+            case .openTabInNewWindow: return "macwindow.badge.plus"
+            case .moveTab: return "arrow.right.square"
+            default: return "command"
+            }
+        }
+    }
+
     private func resultBadge(for candidate: CommandSearchCandidate) -> String {
         switch candidate.kind {
         case .favorite: candidate.isOpen ? "Switch to Tab" : "Open Favorite"
         case .pinnedTab: candidate.isOpen ? "Switch to Tab" : "Open Pin"
-        default: "Switch to Tab"
+        case .openTab: "Switch to Tab"
+        case .space: "Switch Space"
+        case .profile: "Switch Profile"
+        case .action: "Command"
+        case .bookmark: "Open Bookmark"
+        case .history: "Open History"
         }
     }
 
     private func resultAccessibilityLabel(for candidate: CommandSearchCandidate) -> String {
-        "\(resultBadge(for: candidate)): \(candidate.title)"
+        if candidate.kind == .action {
+            return candidate.title
+        }
+        return "\(resultBadge(for: candidate)): \(candidate.title)"
     }
 }
 

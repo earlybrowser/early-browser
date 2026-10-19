@@ -440,6 +440,25 @@ public struct TabStore: Equatable, Sendable {
         tabs[index].recordActivation(at: date)
     }
 
+    /// Expand every ancestor folder of `id` so the tab is visible in the sidebar.
+    /// Returns true if any collapsed ancestor was expanded.
+    @discardableResult
+    public mutating func revealFolderAncestors(of id: UUID) -> Bool {
+        guard let tab = tab(id: id) else { return false }
+        var parent = tab.folderID
+        var seen = Set<UUID>()
+        var expandedAny = false
+        while let folderID = parent, seen.insert(folderID).inserted,
+              let position = folders.firstIndex(where: { $0.id == folderID }) {
+            if !folders[position].isExpanded {
+                folders[position].isExpanded = true
+                expandedAny = true
+            }
+            parent = folders[position].parentID
+        }
+        return expandedAny
+    }
+
     public mutating func reopen(_ id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         tabs[index].isOpen = true

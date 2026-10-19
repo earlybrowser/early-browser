@@ -775,6 +775,7 @@ struct BrowserWindowView: View {
 
     @ViewBuilder
     private func tabActions(_ tab: BrowserTab) -> some View {
+        Button("Duplicate Tab") { model.perform(.duplicateTab(tab.id)) }
         Button("Open Tab in New Window") { model.perform(.openTabInNewWindow(tab.id)) }
         Button("Rename Tab…") { model.perform(.requestRename(tab.id)) }
         if !tab.isFavorite {

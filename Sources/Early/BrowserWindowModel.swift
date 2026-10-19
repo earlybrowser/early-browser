@@ -60,6 +60,7 @@ final class BrowserWindowModel {
     let commandSearch: CommandSearch
     var onSave: ((BrowserWindowModel) -> Void)?
     var onOpenWindow: ((URL, String?) -> Void)?
+    var onOpenSettings: (() -> Void)?
     var sidebarWidth: Double {
         get { preferences.sidebarWidth }
         set { preferences.sidebarWidth = newValue }
@@ -71,6 +72,10 @@ final class BrowserWindowModel {
     var onlineSuggestionsEnabled: Bool {
         get { preferences.onlineSuggestions }
         set { preferences.onlineSuggestions = newValue; refreshSuggestions() }
+    }
+    var commandBarActionsEnabled: Bool {
+        get { preferences.commandBarActions }
+        set { preferences.commandBarActions = newValue; refreshSuggestions() }
     }
 
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
@@ -242,9 +247,22 @@ final class BrowserWindowModel {
     }
 
     func selectTab(_ id: UUID) {
+        let wasHiddenInFolder: Bool = {
+            var parent = coordinator.tabStore.tab(id: id)?.folderID
+            var seen = Set<UUID>()
+            while let folderID = parent, seen.insert(folderID).inserted,
+                  let folder = coordinator.folders.first(where: { $0.id == folderID }) {
+                if !folder.isExpanded { return true }
+                parent = folder.parentID
+            }
+            return false
+        }()
         sidebarReveal = nil
         cancelSpaceSwipePresentation()
         guard coordinator.openTab(id) else { return }
+        if wasHiddenInFolder {
+            sidebarReveal = SidebarReveal(spaceID: coordinator.activeSpaceID, itemID: "tab-\(id)")
+        }
         activateSelection()
         save()
     }
@@ -568,8 +586,24 @@ final class BrowserWindowModel {
     func save() { onSave?(self) }
 
     func openTabInNewWindow(_ id: UUID) {
-        guard let tab = coordinator.tabStore.tab(id: id), (try? input.validate(tab.currentURL)) != nil else { return }
-        onOpenWindow?(tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL), tab.displayTitle)
+        guard let tab = coordinator.tabStore.tab(id: id) else { return }
+        let url = tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL)
+        guard (try? input.validate(url)) != nil else { return }
+        onOpenWindow?(url, tab.displayTitle)
+    }
+
+    @discardableResult
+    func duplicateTab(_ id: UUID) -> UUID? {
+        guard let source = coordinator.tabStore.tab(id: id) else { return nil }
+        let rawURL = source.isOpen ? source.currentURL : (source.pinnedURL ?? source.currentURL)
+        guard let url = try? input.validate(rawURL),
+              let copyID = coordinator.navigate(to: url, target: .newTab(spaceID: coordinator.activeSpaceID)),
+              let copy = coordinator.tabStore.tab(id: copyID) else { return nil }
+        webViews.load(url, in: copy)
+        showNewTabToastIfNeeded()
+        contentFocusRequest += 1
+        save()
+        return copyID
     }
 
     func applyProfileSnapshot(_ session: BrowserSession) {

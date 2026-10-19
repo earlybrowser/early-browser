@@ -28,6 +28,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     var profileError: String?
     var settingsSection: BrowserSettingsSection = .appearance
     @ObservationIgnored var presentWindow: ((UUID) -> Void)?
+    @ObservationIgnored var presentSettingsWindow: (() -> Void)?
     @ObservationIgnored private var windows: [WindowEntry] = []
     @ObservationIgnored private var loading: Task<Loaded, Never>?
     @ObservationIgnored private var repository: SessionRepository?
@@ -110,7 +111,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         restoringFocus = !restored.isEmpty
         preferences.onChange = { [weak self] key in
             if key == "browserAppearance" { self?.applyAppearance() }
-            if key == "onlineSearchSuggestions" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
+            if key == "onlineSearchSuggestions" || key == "commandBarActions" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
             if key == "spaceSwipes" { self?.visibleModels.forEach { $0.cancelSpaceSwipePresentation() } }
         }
         applyAppearance()
@@ -160,6 +161,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             let id = self.addWindow(session: owner.coordinator.session.openingWindow(at: url, title: title))
             self.save(owner)
             self.presentWindow?(id)
+        }
+        owner.onOpenSettings = { [weak self, weak owner] in
+            guard let self, let owner, !self.isTerminating,
+                  self.visibleModels.contains(where: { $0 === owner }) else { return }
+            self.presentSettingsWindow?()
         }
     }
 
@@ -366,6 +372,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         else { primaryWindowIsOpen = false; model = nil }
         closed.onSave = nil
         closed.onOpenWindow = nil
+        closed.onOpenSettings = nil
         closed.application = nil
         closed.cancelCommandBarQueries()
         closed.webViews.discardAll()

@@ -100,6 +100,12 @@ extension BrowserWindowModel {
             guard let tab = accessibleTab(id), onOpenWindow != nil else { return false }
             let url = tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL)
             return (tab.isOpen || tab.pinnedURL != nil) && (try? input.validate(url)) != nil
+        case .duplicateTab(let id):
+            guard let tab = accessibleTab(id) else { return false }
+            let url = tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL)
+            return (tab.isOpen || tab.pinnedURL != nil) && (try? input.validate(url)) != nil
+        case .openSettings:
+            return onOpenSettings != nil
         }
     }
 
@@ -164,6 +170,11 @@ extension BrowserWindowModel {
         case .openTabInNewWindow(let id):
             openTabInNewWindow(id)
             restoreContentFocus = false
+        case .duplicateTab(let id):
+            guard duplicateTab(id) != nil else { return false }
+        case .openSettings:
+            onOpenSettings?()
+            restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
             dismissCommandBar(restoreFocus: restoreContentFocus && contentFocusRequest == previousFocusRequest)
@@ -207,15 +218,16 @@ extension BrowserWindowModel {
                 title: tab.displayTitle, detail: displayURL, terms: terms,
                 isOpen: tab.isOpen, lastUsed: tab.lastActivatedAt, useCount: tab.activationCount))
         }
+        guard commandBarActionsEnabled else { return candidates }
         for space in coordinator.spaces where canPerform(.switchSpace(space.id)) {
             candidates.append(CommandSearchCandidate(
                 id: "space.\(space.id.uuidString)", kind: .space, target: .space(space.id),
-                title: space.name, detail: "Switch Space", terms: ["switch space \(space.name)"]))
+                title: space.name, terms: ["switch space \(space.name)", "space \(space.name)"]))
         }
         for profile in application?.profiles ?? [] where profile.id != coordinator.profileID && canPerform(.openProfile(profile.id)) {
             candidates.append(CommandSearchCandidate(
                 id: "profile.\(profile.id.uuidString)", kind: .profile, target: .profile(profile.id),
-                title: profile.name, detail: "Switch Profile", terms: ["switch profile \(profile.name)"]))
+                title: profile.name, terms: ["switch profile \(profile.name)", "profile \(profile.name)"]))
         }
         func addAction(_ id: String, _ title: String, _ action: BrowserAction, terms: [String]) {
             guard canPerform(action) else { return }
@@ -231,6 +243,7 @@ extension BrowserWindowModel {
         addAction("forward", "Forward", .forward, terms: ["go forward", "next page"])
         addAction("toggleSidebar", "Toggle Sidebar", .toggleSidebar, terms: ["show sidebar", "hide sidebar"])
         addAction("newSpace", "New Space", .newSpace, terms: ["create space", "add space"])
+        addAction("openSettings", "Open Settings", .openSettings, terms: ["settings", "preferences"])
         if let tab = activeTab {
             let pinned = tab.pinnedURL != nil
             addAction("pin.\(tab.id.uuidString)", pinned ? "Unpin Tab" : "Pin Tab",
@@ -242,6 +255,8 @@ extension BrowserWindowModel {
                       terms: ["return to pinned url", "restore pinned address"])
             addAction("rename.\(tab.id.uuidString)", "Rename Tab", .requestRename(tab.id),
                       terms: ["rename current tab", "edit tab title"])
+            addAction("duplicate.\(tab.id.uuidString)", "Duplicate Tab", .duplicateTab(tab.id),
+                      terms: ["duplicate current tab", "clone tab", "copy tab"])
             addAction("newWindow.\(tab.id.uuidString)", "Open Tab in New Window", .openTabInNewWindow(tab.id),
                       terms: ["move tab to new window"])
             for space in coordinator.spaces where space.id != tab.spaceID {
@@ -252,10 +267,10 @@ extension BrowserWindowModel {
         return candidates
     }
 
-    /// PR 2 surfaces ranked tab/pin/Favorite matches above Google suggestions;
-    /// Spaces, profiles and actions are surfaced in PR 3.
+    /// Ranked tabs, pins, Favorites, and (when enabled) Spaces, profiles, and actions.
     var visibleCommandResults: [CommandSearchResult] {
-        commandSearch.results.filter { $0.candidate.kind.isTab }
+        commandBarActionsEnabled ? commandSearch.results
+            : commandSearch.results.filter { $0.candidate.kind.isTab || $0.candidate.kind == .bookmark || $0.candidate.kind == .history }
     }
 
     var selectedCommandResult: CommandSearchResult? {
@@ -270,7 +285,7 @@ extension BrowserWindowModel {
 
     func selectCommandResult(id: String?) {
         guard !commandSearch.isRefreshing, let id,
-              let index = commandSearch.results.firstIndex(where: { $0.id == id && $0.candidate.kind.isTab }) else {
+              let index = commandSearch.results.firstIndex(where: { $0.id == id }) else {
             commandSearch.select(index: nil)
             return
         }
