@@ -57,6 +57,7 @@ final class BrowserWindowModel {
     var renameText = ""
     var contentFocusRequest = 0
     let suggestions: SearchSuggestions
+    let commandSearch: CommandSearch
     var onSave: ((BrowserWindowModel) -> Void)?
     var onOpenWindow: ((URL, String?) -> Void)?
     var sidebarWidth: Double {
@@ -75,7 +76,8 @@ final class BrowserWindowModel {
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
-         preferences: BrowserPreferences? = nil) {
+         preferences: BrowserPreferences? = nil, searchProviders: [any CommandSearchProvider] = [],
+         now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
         self.isTesting = isTesting
         self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
@@ -90,9 +92,10 @@ final class BrowserWindowModel {
             #endif
             return try await service.fetch(query)
         }
+        commandSearch = CommandSearch(providers: searchProviders, now: now)
         coordinator = BrowserCoordinator(startup: startup, activeSpaceID: session.activeSpaceID,
             tabStore: TabStore(tabs: session.tabs, folders: session.folders), selectionBySpace: session.selectionBySpace,
-            profileID: session.profileID, recentlyClosed: session.recentlyClosed, spaces: session.spaces)
+            profileID: session.profileID, recentlyClosed: session.recentlyClosed, spaces: session.spaces, now: now)
         persistence = sharedPersistence ?? SessionAutosaver(repository: repository, disabledReason: restorationError)
         webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
                                  websiteDataStore: websiteDataStore) { configuration in
@@ -144,7 +147,7 @@ final class BrowserWindowModel {
     func presentCommandBar(_ intent: CommandBarIntent) {
         sidebarReveal = nil
         cancelSpaceSwipePresentation()
-        suggestions.cancel()
+        cancelCommandBarQueries()
         submissionMessage = nil
         commandBarIsComposing = false
         coordinator.presentCommandBar(intent)
@@ -175,19 +178,31 @@ final class BrowserWindowModel {
     }
 
     func dismissCommandBar(restoreFocus: Bool = true) {
-        suggestions.cancel()
+        cancelCommandBarQueries()
         commandBarIsComposing = false
         coordinator.dismissCommandBar()
         if restoreFocus { contentFocusRequest += 1 }
     }
 
+    func cancelCommandBarQueries() {
+        commandSearch.cancel()
+        suggestions.cancel()
+    }
+
     func refreshSuggestions() {
-        guard !commandBarIsComposing,
+        guard let bar = coordinator.commandBar, !commandBarIsComposing,
               (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else {
-            suggestions.cancel()
+            cancelCommandBarQueries()
             return
         }
-        suggestions.update(query: coordinator.commandBar?.query ?? "", enabled: onlineSuggestionsEnabled)
+        if bar.intent == .navigateCurrentTab, let url = activeTab?.currentURL.absoluteString, bar.query == url {
+            // An unedited Cmd-L prefill represents the active address, not a
+            // search query that should expand local results beneath the caret.
+            cancelCommandBarQueries()
+            return
+        }
+        commandSearch.update(query: bar.query, candidates: commandSearchCandidates())
+        suggestions.update(query: bar.query, enabled: onlineSuggestionsEnabled)
     }
 
     func updateQuery(_ query: String, isComposing: Bool = false) {
@@ -198,13 +213,20 @@ final class BrowserWindowModel {
     }
 
     @discardableResult
-    func submit(searchSuggestion: String? = nil) -> Bool {
+    func submit(searchSuggestion: String? = nil, targetURL: URL? = nil) -> Bool {
         guard !commandBarIsComposing,
               (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true,
               let request = coordinator.navigationRequest() else { return false }
-        suggestions.cancel()
+        cancelCommandBarQueries()
         do {
-            let url = try searchSuggestion.map { try input.searchURL(for: $0) } ?? input.resolve(request.query)
+            let url: URL
+            if let targetURL {
+                url = try input.validate(targetURL)
+            } else if let searchSuggestion {
+                url = try input.searchURL(for: searchSuggestion)
+            } else {
+                url = try input.resolve(request.query)
+            }
             guard let id = coordinator.navigate(to: url, target: request.target),
                   let tab = coordinator.tabStore.tab(id: id) else { return false }
             submissionMessage = nil
@@ -347,7 +369,7 @@ final class BrowserWindowModel {
         sidebarReveal = nil
         cancelSpaceSwipePresentation()
         guard coordinator.switchSpace(to: id) else { return false }
-        suggestions.cancel()
+        cancelCommandBarQueries()
         submissionMessage = nil
         activateSelection()
         save()
@@ -495,7 +517,7 @@ final class BrowserWindowModel {
         guard let removed = coordinator.deleteSpace(id) else { return false }
         for tabID in removed { webViews.discard(tabID: tabID) }
         if let renamingTabID, removed.contains(renamingTabID) { self.renamingTabID = nil }
-        if coordinator.commandBar == nil { suggestions.cancel() }
+        if coordinator.commandBar == nil { cancelCommandBarQueries() }
         if previous != coordinator.activeTabID || previousSpace != coordinator.activeSpaceID { activateSelection() }
         save()
         return true
@@ -522,7 +544,7 @@ final class BrowserWindowModel {
     }
 
     private func finishSpaceMove(from previousSpace: UUID, previousTab: UUID?, revealing itemID: String) {
-        suggestions.cancel()
+        cancelCommandBarQueries()
         submissionMessage = nil
         if previousTab != coordinator.activeTabID || previousSpace != coordinator.activeSpaceID { activateSelection() }
         sidebarReveal = SidebarReveal(spaceID: coordinator.activeSpaceID, itemID: itemID)
@@ -554,7 +576,7 @@ final class BrowserWindowModel {
         let previous = coordinator.activeTabID
         guard coordinator.applySession(session, using: input) else { return }
         cancelSpaceSwipePresentation()
-        suggestions.cancel()
+        cancelCommandBarQueries()
         let remaining = Set(session.tabs.filter(\.isOpen).map(\.id))
         for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }
         renamingTabID = nil

@@ -435,6 +435,11 @@ public struct TabStore: Equatable, Sendable {
         return true
     }
 
+    public mutating func recordActivation(_ id: UUID, at date: Date) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        tabs[index].recordActivation(at: date)
+    }
+
     public mutating func reopen(_ id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         tabs[index].isOpen = true

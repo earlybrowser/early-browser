@@ -32,7 +32,7 @@ struct BrowserActionTests {
         }
 
         func cleanup() {
-            model.suggestions.cancel()
+            model.cancelCommandBarQueries()
             for id in Array(model.webViews.pages.keys) { model.webViews.discard(tabID: id) }
             defaults.removePersistentDomain(forName: suite)
         }
@@ -337,5 +337,98 @@ struct BrowserActionTests {
         #expect(model.coordinator.activeTabID == last)
         #expect(model.perform(.cycleTab(1)))
         #expect(model.coordinator.activeTabID == first && model.webViews.creationCount == 2)
+    }
+
+
+    @Test func commandSearchSelectionReusesLiveAndClosedPinsWithoutDuplicatesAndKeepsUnselectedReturnNavigating() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let pinned = try fixture.open(firstURL)
+        #expect(model.perform(.setPinned(pinned, true)))
+        #expect(model.coordinator.renameTab(pinned, to: "Pinned Guide"))
+        let current = try fixture.open(secondURL)
+        let pinnedView = try #require(model.webViews.existingView(for: pinned))
+
+        // Unedited Cmd-L prefill does not surface local search rows.
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        #expect(model.visibleCommandResults.isEmpty)
+
+        // Searching and selecting a live pin switches to its existing view.
+        model.updateQuery("pinned")
+        for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(model.visibleCommandResults.map(\.id) == ["tab.\(pinned.uuidString)"])
+        #expect(model.moveCommandBarSelection(1))
+        #expect(model.selectedCommandResult?.id == "tab.\(pinned.uuidString)")
+        #expect(model.performCommandBarSelection())
+        #expect(model.coordinator.activeTabID == pinned && model.coordinator.commandBar == nil)
+        #expect(model.coordinator.tabStore.tabs.count == 2 && model.webViews.creationCount == 2)
+        #expect(model.webViews.existingView(for: pinned) === pinnedView)
+
+        // Close the pin, switch back to the other tab, and select the closed pin from search.
+        #expect(model.perform(.closeTab(pinned)))
+        #expect(model.coordinator.activeTabID == current && model.webViews.liveViewCount == 1)
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("fixture/one")
+        for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(model.visibleCommandResults.map(\.id) == ["tab.\(pinned.uuidString)"])
+        #expect(model.moveCommandBarSelection(1))
+        #expect(model.performCommandBarSelection())
+        #expect(model.coordinator.activeTabID == pinned && model.coordinator.tabStore.tabs.count == 2)
+        #expect(model.coordinator.tabStore.tab(id: pinned)?.isOpen == true)
+        #expect(model.webViews.creationCount == 3 && model.webViews.liveViewCount == 2)
+
+        // Typing matching words without selecting a row still performs the explicit search/navigation.
+        #expect(model.perform(.selectTab(current)))
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("pinned")
+        for _ in 0..<50 where model.commandSearch.isRefreshing { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!model.visibleCommandResults.isEmpty && model.selectedCommandResult == nil)
+        #expect(model.performCommandBarSelection())
+        #expect(model.coordinator.tabStore.tabs.count == 3 && model.coordinator.activeTabID != pinned)
+    }
+
+    @Test func commandSearchCandidatesRespectSpaceProfileAndAvailabilityAndWalkIntoSuggestions() async throws {
+        let profile = UUID(), work = UUID(), personal = UUID()
+        let active = BrowserTab(spaceID: work, profileID: profile, title: "Active Work", currentURL: firstURL)
+        let sibling = BrowserTab(spaceID: work, profileID: profile, title: "Swift Docs", currentURL: secondURL)
+        let otherSpace = BrowserTab(spaceID: personal, profileID: profile, title: "Swift Personal", currentURL: secondURL)
+        let foreign = BrowserTab(spaceID: work, profileID: UUID(), title: "Swift Foreign", currentURL: secondURL)
+        let session = BrowserSession(profileID: profile, activeSpaceID: work,
+            tabs: [active, sibling, otherSpace, foreign], selectionBySpace: [work: active.id],
+            spaces: [BrowserSpace(id: work, profileID: profile, name: "Work"),
+                     BrowserSpace(id: personal, profileID: profile, name: "Personal")])
+        let fixture = Fixture(session: session)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        model.onlineSuggestionsEnabled = true
+
+        let candidates = model.commandSearchCandidates()
+        #expect(candidates.contains { $0.id == "tab.\(sibling.id.uuidString)" })
+        #expect(!candidates.contains { $0.id == "tab.\(active.id.uuidString)" })
+        #expect(!candidates.contains { $0.id == "tab.\(otherSpace.id.uuidString)" })
+        #expect(!candidates.contains { $0.id == "tab.\(foreign.id.uuidString)" })
+        #expect(candidates.contains { $0.id == "space.\(personal.uuidString)" })
+        #expect(!candidates.contains { $0.id == "space.\(work.uuidString)" })
+        #expect(candidates.contains { $0.id == "action.pin.\(active.id.uuidString)" })
+        #expect(!candidates.contains { $0.id == "action.reopenLastTab" })
+
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("swift")
+        for _ in 0..<50 where model.commandSearch.isRefreshing || model.suggestions.isRefreshing {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.visibleCommandResults.map(\.id) == ["tab.\(sibling.id.uuidString)"])
+        #expect(model.suggestions.results.first == "swift guide")
+
+        // Arrow navigation walks local tab rows first, then Google suggestions, then clears.
+        #expect(model.moveCommandBarSelection(1))
+        #expect(model.selectedCommandResult?.id == "tab.\(sibling.id.uuidString)" && model.suggestions.selectedIndex == nil)
+        #expect(model.moveCommandBarSelection(1))
+        #expect(model.selectedCommandResult == nil && model.suggestions.selectedIndex == 0)
+        #expect(model.moveCommandBarSelection(-1))
+        #expect(model.selectedCommandResult?.id == "tab.\(sibling.id.uuidString)" && model.suggestions.selectedIndex == nil)
+        #expect(model.moveCommandBarSelection(-1))
+        #expect(model.selectedCommandResult == nil && model.suggestions.selectedIndex == nil)
     }
 }

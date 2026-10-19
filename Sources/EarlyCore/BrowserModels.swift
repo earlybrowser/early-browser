@@ -18,6 +18,11 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public var pinnedTitle: String?
     public var isFavorite: Bool
     public var isOpen: Bool
+    /// Local command-bar ranking signals for this existing record only. This
+    /// is not browsing history and is removed with the tab.
+    public var lastActivatedAt: Date?
+    public var activationCount: Int
+    public static let maximumActivationCount = 10_000
 
     /// Compare the complete address: a different path, query or fragment is a detour.
     public var hasNavigatedFromPin: Bool {
@@ -39,10 +44,25 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
         self.pinnedTitle = pinnedURL == nil ? nil : (pinnedTitle ?? (currentURL == pinnedURL ? title : nil))
         self.isFavorite = isFavorite
         self.isOpen = isOpen
+        lastActivatedAt = nil
+        activationCount = 0
+    }
+
+    /// Record a user-visible switch to this tab, bounded for persistence.
+    public mutating func recordActivation(at date: Date) {
+        lastActivatedAt = date
+        activationCount = min(Self.maximumActivationCount, activationCount + 1)
+    }
+
+    /// Windows sharing a saved item keep its most recent, most frequent use.
+    public mutating func mergeUsage(from other: BrowserTab) {
+        if let date = other.lastActivatedAt, lastActivatedAt.map({ date > $0 }) ?? true { lastActivatedAt = date }
+        activationCount = max(activationCount, other.activationCount)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, spaceID, profileID, title, customTitle, folderID, sidebarPosition, currentURL, pinnedURL, pinnedTitle, isOpen, isFavorite
+        case lastActivatedAt, activationCount
     }
 
     public init(from decoder: any Decoder) throws {
@@ -59,6 +79,12 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
         pinnedTitle = try values.decodeIfPresent(String.self, forKey: .pinnedTitle)
         isOpen = try values.decode(Bool.self, forKey: .isOpen)
         isFavorite = try values.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        // Ranking signals are optional and advisory: older sessions lack them,
+        // and an unusable value must not prevent restoring the tab.
+        lastActivatedAt = (try? values.decodeIfPresent(Date.self, forKey: .lastActivatedAt))
+            .flatMap { $0 }.flatMap { $0.timeIntervalSinceReferenceDate.isFinite ? $0 : nil }
+        let count = (try? values.decodeIfPresent(Int.self, forKey: .activationCount)).flatMap { $0 } ?? 0
+        activationCount = min(Self.maximumActivationCount, max(0, count))
     }
 
     public func isVisible(in spaceID: UUID) -> Bool {

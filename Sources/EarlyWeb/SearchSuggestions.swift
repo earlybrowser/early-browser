@@ -155,6 +155,14 @@ public final class SearchSuggestions {
         return results[selectedIndex]
     }
 
+    public func select(index: Int?) {
+        guard !isRefreshing, let index, results.indices.contains(index) else {
+            selectedIndex = nil
+            return
+        }
+        selectedIndex = index
+    }
+
     public func moveSelection(_ delta: Int) {
         guard !isRefreshing, !results.isEmpty else { return }
         let next = (selectedIndex ?? (delta > 0 ? -1 : results.count)) + delta
