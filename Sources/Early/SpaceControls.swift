@@ -13,6 +13,31 @@ extension SpaceThemeRGB {
     var color: SwiftUI.Color { Color(.sRGB, red: red, green: green, blue: blue, opacity: 1) }
 }
 
+/// The same Lucide arrow-into-tray artwork used on the website.
+/// Adapted under the ISC license; see THIRD_PARTY_NOTICES.md.
+struct DownloadGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: 21, y: 15))
+        path.addLine(to: CGPoint(x: 21, y: 19))
+        path.addArc(center: CGPoint(x: 19, y: 19), radius: 2,
+                    startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+        path.addLine(to: CGPoint(x: 5, y: 21))
+        path.addArc(center: CGPoint(x: 5, y: 19), radius: 2,
+                    startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+        path.addLine(to: CGPoint(x: 3, y: 15))
+        path.move(to: CGPoint(x: 7, y: 10))
+        path.addLine(to: CGPoint(x: 12, y: 15))
+        path.addLine(to: CGPoint(x: 17, y: 10))
+        path.move(to: CGPoint(x: 12, y: 15))
+        path.addLine(to: CGPoint(x: 12, y: 3))
+        let scale = min(rect.width, rect.height) / 24
+        return path.applying(CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+                                               tx: rect.midX - 12 * scale,
+                                               ty: rect.midY - 12 * scale))
+    }
+}
+
 struct SpaceActions: View {
     let model: BrowserWindowModel
     let space: BrowserSpace
@@ -37,8 +62,10 @@ struct SpaceFooter: View {
     var body: some View {
         HStack(spacing: 8) {
             // Reserved until the real downloads service is implemented.
-            Image(systemName: "arrow.down.circle")
-                .foregroundStyle(.tertiary)
+            DownloadGlyph()
+                .stroke(style: StrokeStyle(lineWidth: 1.75 * 18 / 24, lineCap: .round, lineJoin: .round))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 18)
                 .frame(width: 28, height: 28)
                 .accessibilityLabel("Downloads, not available yet")
                 .help("Downloads (not available yet)")
