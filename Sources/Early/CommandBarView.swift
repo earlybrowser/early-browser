@@ -8,15 +8,23 @@ struct CommandBarView: View {
     @Bindable var model: BrowserWindowModel
     var availableHeight: CGFloat = 600
     @State private var inputHeight: CGFloat = 24
-    @State private var hoveredSuggestion: Int?
+    @State private var hoveredItem: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.colorScheme) private var colorScheme
 
+    private var hasResults: Bool {
+        !model.visibleCommandResults.isEmpty || !model.suggestions.results.isEmpty
+    }
+
+    private var totalRows: Int {
+        model.visibleCommandResults.count + model.suggestions.results.count
+    }
+
     private var layout: CommandBarLayout {
         CommandBarLayout(availableHeight: availableHeight,
-            hasSuggestions: !model.suggestions.results.isEmpty,
+            hasSuggestions: hasResults,
             statusCount: (model.submissionMessage == nil ? 0 : 1) + (model.suggestions.unavailable ? 1 : 0))
     }
 
@@ -42,16 +50,12 @@ struct CommandBarView: View {
                         model.commandBarIsComposing = composing
                         if !composing { model.refreshSuggestions() }
                     },
-                    onSubmit: { model.perform(.submit(searchSuggestion: model.suggestions.selectedSuggestion), source: .commandBar) },
+                    onSubmit: { model.performCommandBarSelection() },
                     onCancel: { model.perform(.dismissCommandBar(restoreFocus: true), source: .commandBar) },
-                    onMoveSelection: { delta in
-                        guard !model.commandBarIsComposing, !model.suggestions.isRefreshing,
-                              !model.suggestions.results.isEmpty else { return false }
-                        model.suggestions.moveSelection(delta)
-                        return true
-                    },
+                    onMoveSelection: { model.moveCommandBarSelection($0) },
                     onCompleteSuggestion: {
-                        guard !model.commandBarIsComposing, model.coordinator.commandBar != nil else { return nil }
+                        guard !model.commandBarIsComposing, model.coordinator.commandBar != nil,
+                              model.selectedCommandResult == nil else { return nil }
                         return model.suggestions.selectedSuggestion
                     })
                 .frame(height: min(inputHeight, layout.maximumInputHeight))
@@ -74,7 +78,7 @@ struct CommandBarView: View {
                     .help(message)
                     .accessibilityIdentifier("commandBar.message")
             }
-            if !model.suggestions.results.isEmpty {
+            if hasResults {
                 VStack(spacing: 12) {
                     Divider()
                     suggestionList
@@ -112,11 +116,12 @@ struct CommandBarView: View {
         .shadow(color: .black.opacity(0.16), radius: 3, y: 1)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("commandBar.card")
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.results.count)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: totalRows)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.unavailable)
         .task(id: model.coordinator.commandBarFocusRequest) { model.refreshSuggestions() }
-        .onDisappear { model.suggestions.cancel(); model.commandBarIsComposing = false }
-        .onChange(of: model.suggestions.results) { _, _ in hoveredSuggestion = nil }
+        .onDisappear { model.cancelCommandBarQueries(); model.commandBarIsComposing = false }
+        .onChange(of: model.visibleCommandResults) { _, _ in hoveredItem = nil }
+        .onChange(of: model.suggestions.results) { _, _ in hoveredItem = nil }
         .onExitCommand {
             guard !model.commandBarIsComposing else { return }
             model.perform(.dismissCommandBar(restoreFocus: true), source: .commandBar)
@@ -124,13 +129,51 @@ struct CommandBarView: View {
     }
 
     private var suggestionList: some View {
-        ScrollViewReader { proxy in
+        let local = model.visibleCommandResults
+        let suggestions = model.suggestions.results
+        let selectedLocalID = model.selectedCommandResult?.id
+        return ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 2) {
-                    ForEach(Array(model.suggestions.results.enumerated()), id: \.offset) { index, suggestion in
+                    ForEach(Array(local.enumerated()), id: \.element.id) { index, result in
+                        let rowID = "result.\(result.id)"
+                        let selected = selectedLocalID == result.id
+                        Button { model.perform(result, source: .commandBar) } label: {
+                            HStack(spacing: 10) {
+                                resultIcon(for: result.candidate)
+                                Text(result.candidate.title).lineLimit(1).truncationMode(.tail)
+                                if let detail = result.candidate.detail {
+                                    Text(CommandSearchText.address(detail))
+                                        .font(.callout).foregroundStyle(.secondary)
+                                        .lineLimit(1).truncationMode(.middle)
+                                }
+                                Spacer(minLength: 0)
+                                Text(resultBadge(for: result.candidate))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            .font(.body)
+                            .padding(.horizontal, 10)
+                            .frame(height: 34)
+                            .contentShape(Rectangle())
+                            .background(Color.primary.opacity(selected || hoveredItem == rowID ? 0.08 : 0),
+                                        in: RoundedRectangle(cornerRadius: 7))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.commandSearch.isRefreshing)
+                        .opacity(model.commandSearch.isRefreshing ? 0.75 : 1)
+                        .accessibilityLabel(resultAccessibilityLabel(for: result.candidate))
+                        .accessibilityIdentifier("commandBar.result.\(index)")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .onHover { hoveredItem = $0 ? rowID : nil }
+                        .id(rowID)
+                    }
+                    ForEach(Array(suggestions.enumerated()), id: \.offset) { index, suggestion in
+                        let rowID = "suggestion.\(index)"
+                        let selected = model.suggestions.selectedIndex == index
                         Button { model.perform(.submit(searchSuggestion: suggestion), source: .commandBar) } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                                    .frame(width: 16, height: 16)
                                 Text(suggestion).lineLimit(1).truncationMode(.tail)
                                     .contentTransition(.opacity)
                                 Spacer(minLength: 0)
@@ -139,28 +182,71 @@ struct CommandBarView: View {
                             .padding(.horizontal, 10)
                             .frame(height: 34)
                             .contentShape(Rectangle())
-                            .background(Color.primary.opacity(model.suggestions.selectedIndex == index || hoveredSuggestion == index ? 0.08 : 0),
+                            .background(Color.primary.opacity(selected || hoveredItem == rowID ? 0.08 : 0),
                                         in: RoundedRectangle(cornerRadius: 7))
                         }
                         .buttonStyle(.plain)
                         .disabled(model.suggestions.isRefreshing)
+                        .opacity(model.suggestions.isRefreshing ? 0.75 : 1)
                         .accessibilityLabel("Search Google for \(suggestion)")
                         .accessibilityIdentifier("commandBar.suggestion.\(index)")
-                        .accessibilityAddTraits(model.suggestions.selectedIndex == index ? .isSelected : [])
-                        .onHover { hoveredSuggestion = $0 ? index : nil }
-                        .id(index)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .onHover { hoveredItem = $0 ? rowID : nil }
+                        .id(rowID)
                     }
                 }
             }
-            .opacity(model.suggestions.isRefreshing ? 0.75 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.commandSearch.isRefreshing)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.isRefreshing)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: model.suggestions.results)
-            .frame(height: min(layout.suggestionHeight(inputHeight: inputHeight), CGFloat(model.suggestions.results.count * 36 - 2)))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: local)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: suggestions)
+            .frame(height: min(layout.suggestionHeight(inputHeight: inputHeight), CGFloat(max(0, totalRows * 36 - 2))))
+            .onChange(of: selectedLocalID) { _, id in
+                if let id { proxy.scrollTo("result.\(id)") }
+            }
             .onChange(of: model.suggestions.selectedIndex) { _, index in
-                if let index { proxy.scrollTo(index) }
+                if let index { proxy.scrollTo("suggestion.\(index)") }
             }
         }
         .accessibilityIdentifier("commandBar.suggestions")
+    }
+
+    @ViewBuilder
+    private func resultIcon(for candidate: CommandSearchCandidate) -> some View {
+        let iconURL = resultIconURL(for: candidate)
+        Group {
+            if let iconURL, let image = model.webViews.favicons.image(for: iconURL) {
+                Image(nsImage: image).resizable().scaledToFit()
+            } else {
+                Image(systemName: candidate.kind == .favorite ? "star.fill"
+                    : (candidate.kind == .pinnedTab ? "pin" : "globe"))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 16, height: 16)
+        .accessibilityHidden(true)
+        .task(id: iconURL) {
+            if let iconURL { model.webViews.favicons.request(iconURL) }
+        }
+    }
+
+    private func resultIconURL(for candidate: CommandSearchCandidate) -> URL? {
+        if case .tab(let id) = candidate.target, let tab = model.coordinator.tabStore.tab(id: id) {
+            return tab.pinnedURL ?? tab.currentURL
+        }
+        return candidate.detail.flatMap(URL.init(string:))
+    }
+
+    private func resultBadge(for candidate: CommandSearchCandidate) -> String {
+        switch candidate.kind {
+        case .favorite: candidate.isOpen ? "Switch to Tab" : "Open Favorite"
+        case .pinnedTab: candidate.isOpen ? "Switch to Tab" : "Open Pin"
+        default: "Switch to Tab"
+        }
+    }
+
+    private func resultAccessibilityLabel(for candidate: CommandSearchCandidate) -> String {
+        "\(resultBadge(for: candidate)): \(candidate.title)"
     }
 }
 

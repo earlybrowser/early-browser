@@ -303,6 +303,7 @@ struct SpaceStateTests {
         let destinationOrder = browser.tabStore.pinnedItems(in: destination, parentID: nil).map(\.id)
         browser.switchSpace(to: source)
         browser.selectOpenTab(live)
+        let selectedLiveRecord = try #require(browser.tabStore.tab(id: live))
         browser.presentCommandBar(.newTab)
 
         #expect(browser.moveFolder(child, toSpace: destination))
@@ -313,8 +314,9 @@ struct SpaceStateTests {
         #expect(movedRoot.name == childRecord.name && movedRoot.isExpanded == childRecord.isExpanded)
         #expect(browser.tabStore.folders.first { $0.id == nested }?.parentID == child)
         #expect(browser.tabStore.folders.first { $0.id == nested }?.spaceID == destination)
-        var expected = liveRecord
+        var expected = selectedLiveRecord
         expected.spaceID = destination
+        #expect(expected.customTitle == liveRecord.customTitle && expected.currentURL == liveRecord.currentURL)
         #expect(browser.tabStore.tab(id: live) == expected)
         #expect(browser.tabStore.tab(id: closed)?.spaceID == destination)
         #expect(browser.tabStore.tab(id: closed)?.folderID == nested)

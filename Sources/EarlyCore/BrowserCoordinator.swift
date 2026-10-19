@@ -15,6 +15,7 @@ public final class BrowserCoordinator {
     public let profileID: UUID
     public private(set) var recentlyClosed: [ClosedTab]
     private var selectionBySpace: [UUID: UUID]
+    @ObservationIgnored private let now: @Sendable () -> Date
 
     public init(
         startup: StartupContext,
@@ -23,8 +24,10 @@ public final class BrowserCoordinator {
         selectionBySpace: [UUID: UUID] = [:],
         profileID: UUID = UUID(),
         recentlyClosed: [ClosedTab] = [],
-        spaces: [BrowserSpace]? = nil
+        spaces: [BrowserSpace]? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.now = now
         self.activeSpaceID = activeSpaceID
         self.tabStore = tabStore
         self.selectionBySpace = selectionBySpace
@@ -76,6 +79,9 @@ public final class BrowserCoordinator {
     public func selectOpenTab(_ id: UUID) {
         guard let tab = tabStore.tab(id: id), tab.isOpen,
               canAccess(tab) else { return }
+        // Re-selecting the visible tab is not a new use. Restoring a Space's
+        // remembered selection does not pass through here either.
+        if content != .web(tabID: id) { tabStore.recordActivation(id, at: now()) }
         selectionBySpace[activeSpaceID] = id
         content = .web(tabID: id)
         dismissCommandBar()
@@ -219,6 +225,7 @@ public final class BrowserCoordinator {
                 tab.currentURL = local.currentURL
                 tab.title = local.title
                 tab.isOpen = local.isOpen
+                tab.mergeUsage(from: local)
             } else {
                 tab.currentURL = record.pinnedURL!
                 tab.title = record.pinnedTitle ?? record.title

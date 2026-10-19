@@ -367,7 +367,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         closed.onSave = nil
         closed.onOpenWindow = nil
         closed.application = nil
-        closed.suggestions.cancel()
+        closed.cancelCommandBarQueries()
         closed.webViews.discardAll()
         if !visibleModels.contains(where: { $0.coordinator.profileID == profileID }),
            let index = workspace?.sessions.firstIndex(where: { $0.profileID == profileID }) {

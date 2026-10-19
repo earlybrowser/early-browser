@@ -170,7 +170,7 @@ extension BrowserWindowModel {
         } else if coordinator.commandBar == nil {
             // Coordinators can dismiss while selecting/reopening a tab. Cancel
             // its asynchronous query too, not only the visible presentation.
-            suggestions.cancel()
+            cancelCommandBarQueries()
             submissionMessage = nil
             commandBarIsComposing = false
         }
@@ -185,5 +185,147 @@ extension BrowserWindowModel {
 
     private func ownsSpace(_ id: UUID) -> Bool {
         coordinator.spaces.contains { $0.id == id && $0.profileID == coordinator.profileID }
+    }
+
+
+    /// Snapshot searchable records and currently available actions on the main
+    /// actor before handing the immutable array to `CommandSearch`.
+    func commandSearchCandidates() -> [CommandSearchCandidate] {
+        var candidates: [CommandSearchCandidate] = []
+        let activeID = coordinator.activeTabID
+        var seenTabs = Set<UUID>()
+        for tab in favorites + pinnedTabs + todayTabs where tab.id != activeID && seenTabs.insert(tab.id).inserted {
+            guard canPerform(.selectTab(tab.id)) else { continue }
+            let kind: CommandSearchCandidate.Kind = tab.isFavorite ? .favorite : (tab.pinnedURL != nil ? .pinnedTab : .openTab)
+            let displayURL = (tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL)).absoluteString
+            var terms = [tab.title, tab.currentURL.absoluteString]
+            if let custom = tab.customTitle { terms.append(custom) }
+            if let pinned = tab.pinnedTitle { terms.append(pinned) }
+            if let pinned = tab.pinnedURL { terms.append(pinned.absoluteString) }
+            candidates.append(CommandSearchCandidate(
+                id: "tab.\(tab.id.uuidString)", kind: kind, target: .tab(tab.id),
+                title: tab.displayTitle, detail: displayURL, terms: terms,
+                isOpen: tab.isOpen, lastUsed: tab.lastActivatedAt, useCount: tab.activationCount))
+        }
+        for space in coordinator.spaces where canPerform(.switchSpace(space.id)) {
+            candidates.append(CommandSearchCandidate(
+                id: "space.\(space.id.uuidString)", kind: .space, target: .space(space.id),
+                title: space.name, detail: "Switch Space", terms: ["switch space \(space.name)"]))
+        }
+        for profile in application?.profiles ?? [] where profile.id != coordinator.profileID && canPerform(.openProfile(profile.id)) {
+            candidates.append(CommandSearchCandidate(
+                id: "profile.\(profile.id.uuidString)", kind: .profile, target: .profile(profile.id),
+                title: profile.name, detail: "Switch Profile", terms: ["switch profile \(profile.name)"]))
+        }
+        func addAction(_ id: String, _ title: String, _ action: BrowserAction, terms: [String]) {
+            guard canPerform(action) else { return }
+            candidates.append(CommandSearchCandidate(
+                id: "action.\(id)", kind: .action, target: .action(action), title: title, terms: terms))
+        }
+        addAction("closeActiveTab", "Close Tab", .closeActiveTab, terms: ["close current tab"])
+        addAction("reopenLastTab", "Reopen Closed Tab", .reopenLastTab, terms: ["restore closed tab", "undo close tab"])
+        addAction("copyCurrentURL", "Copy Current URL", .copyCurrentURL, terms: ["copy link", "copy address"])
+        addAction("reload", "Reload Page", .reload, terms: ["refresh page"])
+        addAction("stop", "Stop Loading", .stop, terms: ["cancel loading"])
+        addAction("back", "Back", .back, terms: ["go back", "previous page"])
+        addAction("forward", "Forward", .forward, terms: ["go forward", "next page"])
+        addAction("toggleSidebar", "Toggle Sidebar", .toggleSidebar, terms: ["show sidebar", "hide sidebar"])
+        addAction("newSpace", "New Space", .newSpace, terms: ["create space", "add space"])
+        if let tab = activeTab {
+            let pinned = tab.pinnedURL != nil
+            addAction("pin.\(tab.id.uuidString)", pinned ? "Unpin Tab" : "Pin Tab",
+                      .setPinned(tab.id, !pinned), terms: [pinned ? "unpin current tab" : "pin current tab"])
+            addAction("favorite.\(tab.id.uuidString)", tab.isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                      .setFavorite(tab.id, !tab.isFavorite),
+                      terms: [tab.isFavorite ? "unfavorite tab" : "favorite current tab"])
+            addAction("resetPin.\(tab.id.uuidString)", "Reset Pinned Tab", .resetPinnedTab(tab.id),
+                      terms: ["return to pinned url", "restore pinned address"])
+            addAction("rename.\(tab.id.uuidString)", "Rename Tab", .requestRename(tab.id),
+                      terms: ["rename current tab", "edit tab title"])
+            addAction("newWindow.\(tab.id.uuidString)", "Open Tab in New Window", .openTabInNewWindow(tab.id),
+                      terms: ["move tab to new window"])
+            for space in coordinator.spaces where space.id != tab.spaceID {
+                addAction("move.\(tab.id.uuidString).\(space.id.uuidString)", "Move Tab to \(space.name)",
+                          .moveTab(tab.id, toSpace: space.id), terms: ["move current tab \(space.name)"])
+            }
+        }
+        return candidates
+    }
+
+    /// PR 2 surfaces ranked tab/pin/Favorite matches above Google suggestions;
+    /// Spaces, profiles and actions are surfaced in PR 3.
+    var visibleCommandResults: [CommandSearchResult] {
+        commandSearch.results.filter { $0.candidate.kind.isTab }
+    }
+
+    var selectedCommandResult: CommandSearchResult? {
+        guard !commandSearch.isRefreshing, let id = commandSearch.selectedID else { return nil }
+        return visibleCommandResults.first { $0.id == id }
+    }
+
+    var selectedCommandResultIndex: Int? {
+        guard !commandSearch.isRefreshing, let id = commandSearch.selectedID else { return nil }
+        return visibleCommandResults.firstIndex { $0.id == id }
+    }
+
+    func selectCommandResult(id: String?) {
+        guard !commandSearch.isRefreshing, let id,
+              let index = commandSearch.results.firstIndex(where: { $0.id == id && $0.candidate.kind.isTab }) else {
+            commandSearch.select(index: nil)
+            return
+        }
+        suggestions.select(index: nil)
+        commandSearch.select(index: index)
+    }
+
+    func moveCommandBarSelection(_ delta: Int) -> Bool {
+        guard !commandBarIsComposing else { return false }
+        let local = commandSearch.isRefreshing ? [] : visibleCommandResults
+        let remote = suggestions.isRefreshing ? [] : suggestions.results
+        let total = local.count + remote.count
+        guard total > 0 else { return false }
+        let current: Int?
+        if let index = selectedCommandResultIndex {
+            current = index
+        } else if let index = suggestions.selectedIndex {
+            current = local.count + index
+        } else {
+            current = nil
+        }
+        let next = (current ?? (delta > 0 ? -1 : total)) + delta
+        commandSearch.select(index: nil)
+        suggestions.select(index: nil)
+        guard (0..<total).contains(next) else { return true }
+        if next < local.count {
+            selectCommandResult(id: local[next].id)
+        } else {
+            suggestions.select(index: next - local.count)
+        }
+        return true
+    }
+
+    @discardableResult
+    func performCommandBarSelection() -> Bool {
+        if let result = selectedCommandResult {
+            return perform(result, source: .commandBar)
+        }
+        return perform(.submit(searchSuggestion: suggestions.selectedSuggestion), source: .commandBar)
+    }
+
+    @discardableResult
+    func perform(_ result: CommandSearchResult, source: BrowserActionSource = .commandBar) -> Bool {
+        switch result.candidate.target {
+        case .tab(let id): return perform(.selectTab(id), source: source)
+        case .space(let id): return perform(.switchSpace(id), source: source)
+        case .profile(let id): return perform(.openProfile(id), source: source)
+        case .action(let action): return perform(action, source: source)
+        case .page(let url, _):
+            guard canPerform(.submit()) else { return false }
+            let ok = submit(targetURL: url)
+            if ok && source == .commandBar && coordinator.commandBar != nil {
+                dismissCommandBar(restoreFocus: true)
+            }
+            return ok
+        }
     }
 }
