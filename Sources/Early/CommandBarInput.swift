@@ -16,6 +16,7 @@ struct CommandBarInput: NSViewRepresentable {
     var onSubmit: () -> Void = {}
     var onCancel: () -> Void = {}
     var onMoveSelection: (Int) -> Bool = { _ in false }
+    var onCompleteSuggestion: () -> String? = { nil }
 
     func makeNSView(context: Context) -> CommandBarInputControl {
         let control = CommandBarInputControl()
@@ -31,6 +32,7 @@ struct CommandBarInput: NSViewRepresentable {
         control.onSubmit = onSubmit
         control.onCancel = onCancel
         control.onMoveSelection = onMoveSelection
+        control.onCompleteSuggestion = onCompleteSuggestion
         control.canFocus = canFocus
         control.maximumHeight = maxHeight
         control.prepareForFocusRequest(focusRequest)
@@ -55,6 +57,7 @@ final class CommandBarInputControl: NSView, NSTextViewDelegate {
     var onSubmit: () -> Void = {}
     var onCancel: () -> Void = {}
     var onMoveSelection: (Int) -> Bool = { _ in false }
+    var onCompleteSuggestion: () -> String? = { nil }
     var canFocus: () -> Bool = { true }
     var maximumHeight: CGFloat = 120 {
         didSet { if maximumHeight != oldValue { needsLayout = true } }
@@ -208,6 +211,16 @@ final class CommandBarInputControl: NSView, NSTextViewDelegate {
         case #selector(NSResponder.moveUp(_:)), #selector(NSResponder.moveDown(_:)):
             guard modifiers.intersection([.shift, .option, .command, .control]).isEmpty else { return false }
             return onMoveSelection(selector == #selector(NSResponder.moveDown(_:)) ? 1 : -1)
+        case #selector(NSResponder.moveRight(_:)):
+            guard modifiers.intersection([.shift, .option, .command, .control]).isEmpty,
+                  let suggestion = onCompleteSuggestion() else { return false }
+            // Completion is an edit, not navigation. Native insertion preserves
+            // undo and puts the caret after the full suggestion, ready to extend.
+            textView.breakUndoCoalescing()
+            textView.insertText(suggestion,
+                replacementRange: NSRange(location: 0, length: (textView.string as NSString).length))
+            textView.breakUndoCoalescing()
+            return true
         default:
             return false
         }
@@ -292,6 +305,7 @@ final class CommandBarInputControl: NSView, NSTextViewDelegate {
         onSubmit = {}
         onCancel = {}
         onMoveSelection = { _ in false }
+        onCompleteSuggestion = { nil }
         canFocus = { false }
     }
 }

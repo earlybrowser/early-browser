@@ -49,6 +49,10 @@ struct CommandBarView: View {
                               !model.suggestions.results.isEmpty else { return false }
                         model.suggestions.moveSelection(delta)
                         return true
+                    },
+                    onCompleteSuggestion: {
+                        guard !model.commandBarIsComposing, model.coordinator.commandBar != nil else { return nil }
+                        return model.suggestions.selectedSuggestion
                     })
                 .frame(height: min(inputHeight, layout.maximumInputHeight))
                 Button {

@@ -228,6 +228,64 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(first.label, "Search Google for swift guide")
     }
 
+    func testRightArrowCompletesTheHighlightedSuggestionWithoutSubmittingOrLosingTheCaret() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep page state")
+        let pageState = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "keep page state"), object: saved)
+        XCTAssertEqual(XCTWaiter.wait(for: [pageState], timeout: 5), .completed)
+        let originalTab = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch.identifier
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        app.typeKey("l", modifierFlags: .command)
+        let query = app.textFields["commandBar.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        app.typeText("swift")
+        let first = app.buttons["commandBar.suggestion.0"]
+        let second = app.buttons["commandBar.suggestion.1"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@ AND enabled == true", "Search Google for swift guide"), object: first)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+        func expectSelected(_ element: XCUIElement, _ selected: Bool) {
+            let value = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == %@", NSNumber(value: selected)), object: element)
+            XCTAssertEqual(XCTWaiter.wait(for: [value], timeout: 3), .completed)
+        }
+        func expectQuery(_ text: String) {
+            let value = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: query)
+            XCTAssertEqual(XCTWaiter.wait(for: [value], timeout: 5), .completed)
+            XCTAssertEqual(query.value as? String, text)
+        }
+        app.typeKey(.downArrow, modifierFlags: [])
+        expectSelected(first, true)
+        app.typeKey(.downArrow, modifierFlags: [])
+        expectSelected(second, true)
+        app.typeKey(.upArrow, modifierFlags: [])
+        expectSelected(first, true)
+        expectSelected(second, false)
+        expectQuery("swift")
+
+        app.typeKey(.rightArrow, modifierFlags: [])
+        expectQuery("swift guide")
+        // Do not click or reposition the cursor: completion must leave focus
+        // in the native editor with its caret after the completed phrase.
+        app.typeText(" edited")
+        expectQuery("swift guide edited")
+        XCTAssertTrue(query.exists)
+        XCTAssertTrue(app.buttons[originalTab].isSelected)
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        // Keep this regression offline. Model/native tests cover Return's
+        // navigation intent; here cancellation proves no submission occurred.
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(query.waitForNonExistence(timeout: 3))
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep page state")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
     private func visibleMenuAction(_ title: String) {
         let items = XCUIApplication().menuItems.matching(identifier: title)
         XCTAssertTrue(items.firstMatch.waitForExistence(timeout: 3))

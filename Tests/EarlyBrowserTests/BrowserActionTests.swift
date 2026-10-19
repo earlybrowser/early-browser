@@ -82,6 +82,39 @@ struct BrowserActionTests {
         #expect(fixture.saves == 3)
     }
 
+    @Test func rightArrowSuggestionCompletionOnlyEditsInputAndKeepsNavigationIntent() throws {
+        let fixture = Fixture()
+        let control = CommandBarInputControl(frame: NSRect(x: 0, y: 0, width: 460, height: 24))
+        defer { control.invalidate(); fixture.cleanup() }
+        let model = fixture.model
+        let active = try fixture.open(firstURL)
+        let view = try #require(model.webViews.existingView(for: active))
+        var focusChanges = 0
+        control.onFocusChange = { _ in focusChanges += 1 }
+        control.onTextChange = { model.updateQuery($0) }
+        control.onCompleteSuggestion = { "early browser" }
+
+        for intent: CommandBarIntent in [.newTab, .navigateCurrentTab] {
+            #expect(model.perform(.presentCommandBar(intent)))
+            model.updateQuery("ear")
+            control.updateText("ear")
+            let before = model.coordinator.session
+            let contentFocus = model.contentFocusRequest
+            let presentationFocus = model.coordinator.commandBarFocusRequest
+            let saves = fixture.saves
+
+            #expect(control.handleCommand(#selector(NSResponder.moveRight(_:))))
+            #expect(model.coordinator.commandBar?.query == "early browser")
+            #expect(model.coordinator.commandBar?.intent == intent)
+            #expect(model.coordinator.session == before)
+            #expect(model.coordinator.activeTabID == active)
+            #expect(model.webViews.creationCount == 1 && model.webViews.existingView(for: active) === view)
+            #expect(model.contentFocusRequest == contentFocus)
+            #expect(model.coordinator.commandBarFocusRequest == presentationFocus)
+            #expect(fixture.saves == saves && focusChanges == 0)
+        }
+    }
+
     @Test func selectingAndResettingAClosedPinReuseItsSavedIdentity() throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }

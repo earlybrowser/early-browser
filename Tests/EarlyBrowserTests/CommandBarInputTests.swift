@@ -184,6 +184,84 @@ struct CommandBarInputTests {
         #expect(deltas == [1, -1])
     }
 
+    @Test func rightArrowFillsTheSelectedSuggestionWithoutSubmittingAndKeepsUndo() {
+        let control = makeControl()
+        defer { control.invalidate() }
+        var publications = [String]()
+        var submits = 0
+        var cancellations = 0
+        var suggestion: String? = "early browser 🦊"
+        control.onTextChange = { publications.append($0); suggestion = nil }
+        control.onCompleteSuggestion = { suggestion }
+        control.onSubmit = { submits += 1 }
+        control.onCancel = { cancellations += 1 }
+        control.updateText("ear")
+        // Explicitly selected results can complete even if the insertion point
+        // was in the middle of the original input rather than at its end.
+        control.textView.setSelectedRange(NSRange(location: 1, length: 0))
+
+        #expect(control.handleCommand(#selector(NSResponder.moveRight(_:)), modifiers: [.function, .numericPad]))
+        #expect(control.textView.string == "early browser 🦊")
+        #expect(control.textView.selectedRange() == NSRange(location: ("early browser 🦊" as NSString).length, length: 0))
+        #expect(publications == ["early browser 🦊"])
+        #expect(submits == 0 && cancellations == 0)
+        #expect(control.textView.undoManager?.canUndo == true)
+        // Completion consumed the selection: subsequent arrows edit normally.
+        #expect(!control.handleCommand(#selector(NSResponder.moveRight(_:))))
+
+        control.textView.undoManager?.undo()
+        #expect(control.textView.string == "ear")
+        control.textView.undoManager?.redo()
+        #expect(control.textView.string == "early browser 🦊")
+        control.textView.insertText(" test", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(control.textView.string == "early browser 🦊 test")
+        #expect(submits == 0 && cancellations == 0)
+    }
+
+    @Test func rightArrowWithoutASelectedSuggestionAndModifiedArrowsStayNative() {
+        let control = makeControl()
+        defer { control.invalidate() }
+        control.updateText("existing text")
+        let selection = NSRange(location: 2, length: 5)
+        control.textView.setSelectedRange(selection)
+        #expect(!control.handleCommand(#selector(NSResponder.moveRight(_:))))
+        #expect(control.textView.selectedRange() == selection)
+
+        var completions = 0
+        control.onCompleteSuggestion = { completions += 1; return "must not replace" }
+        for flags: NSEvent.ModifierFlags in [.shift, .option, .command, .control, [.shift, .option]] {
+            #expect(!control.handleCommand(#selector(NSResponder.moveRight(_:)), modifiers: flags))
+        }
+        #expect(!control.handleCommand(#selector(NSResponder.moveRightAndModifySelection(_:)), modifiers: .shift))
+        #expect(!control.handleCommand(#selector(NSResponder.moveWordRight(_:)), modifiers: .option))
+        #expect(completions == 0)
+        #expect(control.textView.string == "existing text")
+        #expect(control.textView.selectedRange() == selection)
+
+        control.invalidate()
+        #expect(!control.handleCommand(#selector(NSResponder.moveRight(_:))))
+        #expect(completions == 0)
+    }
+
+    @Test func longSuggestionCompletionWrapsAndScrollsWithItsCaretAtTheEnd() throws {
+        let control = makeControl(width: 100, maxHeight: 72)
+        defer { control.invalidate() }
+        control.frame.size.height = 72
+        control.updateText("early")
+        let suggestion = String(repeating: "early browser ", count: 14)
+        control.onCompleteSuggestion = { suggestion }
+        #expect(control.handleCommand(#selector(NSResponder.moveRight(_:))))
+        #expect(control.textView.string == suggestion)
+        #expect(control.measuredHeight == 72)
+        #expect(control.scrollView.hasVerticalScroller)
+        #expect(control.textView.selectedRange() == NSRange(location: (suggestion as NSString).length, length: 0))
+        let manager = try #require(control.textView.layoutManager)
+        let container = try #require(control.textView.textContainer)
+        let lastGlyph = NSRange(location: manager.numberOfGlyphs - 1, length: 1)
+        let bottom = manager.boundingRect(forGlyphRange: lastGlyph, in: container).maxY
+        #expect(control.scrollView.documentVisibleRect.maxY >= bottom - 1)
+    }
+
     @Test func composingTextKeepsCandidateCommandsAndPrecedesQueryPublication() {
         let control = makeControl()
         defer { control.invalidate() }
@@ -194,6 +272,7 @@ struct CommandBarInputTests {
         control.onSubmit = { browserCommands += 1 }
         control.onCancel = { browserCommands += 1 }
         control.onMoveSelection = { _ in browserCommands += 1; return true }
+        control.onCompleteSuggestion = { browserCommands += 1; return "must not replace candidate" }
 
         control.textView.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0),
             replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -203,6 +282,7 @@ struct CommandBarInputTests {
         #expect(!control.handleCommand(#selector(NSResponder.insertNewline(_:))))
         #expect(!control.handleCommand(#selector(NSResponder.cancelOperation(_:))))
         #expect(!control.handleCommand(#selector(NSResponder.moveDown(_:))))
+        #expect(!control.handleCommand(#selector(NSResponder.moveRight(_:))))
         #expect(browserCommands == 0)
 
         control.updateText("an observation echo must not replace the candidate")
