@@ -127,10 +127,6 @@ final class BrowserWindowModel {
         webViews.onClose = { [weak self] in self?.closeTab($0) }
         webViews.onOpenWindowLink = { [weak self] url in self?.onOpenWindow?(url, nil) }
         webViews.onNotice = { [weak self] in self?.notice = $0 }
-        webViews.onHistoryGestureNavigation = { [weak self] id in
-            guard let self, self.coordinator.activeTabID == id else { return }
-            BrowserHaptics.navigationSwipe(enabled: self.preferences.haptics)
-        }
         activateSelection()
         if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
         // The app installs the shared writer before publishing the first snapshot.

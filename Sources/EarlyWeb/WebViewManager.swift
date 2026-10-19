@@ -35,7 +35,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onOpenWindowLink: ((URL) -> Void)?
     public var onClose: ((UUID) -> Void)?
     public var onNotice: ((String) -> Void)?
-    public var onHistoryGestureNavigation: ((UUID) -> Void)?
     private let profileID: UUID
     private let ephemeral: Bool
     private let input: NavigationInput
@@ -138,7 +137,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func load(_ url: URL, in tab: BrowserTab) {
         let page = prepare(tab)
-        (page.view as? BrowserWebView)?.historyGesture.reset()
         page.requestedURL = url
         page.failure = nil
         page.view.load(URLRequest(url: url))
@@ -151,38 +149,19 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func reload(_ id: UUID) {
         guard let page = pages[id] else { return }
-        (page.view as? BrowserWebView)?.historyGesture.reset()
         if page.failure != nil || page.view.url == nil {
             page.failure = nil
             page.view.load(URLRequest(url: page.requestedURL))
         } else { page.view.reload() }
     }
 
-    public func stop(_ id: UUID) {
-        (pages[id]?.view as? BrowserWebView)?.historyGesture.reset()
-        pages[id]?.view.stopLoading()
-        refresh(id)
-    }
-    public func back(_ id: UUID) {
-        (pages[id]?.view as? BrowserWebView)?.historyGesture.reset()
-        pages[id]?.view.goBack()
-    }
-    public func forward(_ id: UUID) {
-        (pages[id]?.view as? BrowserWebView)?.historyGesture.reset()
-        pages[id]?.view.goForward()
-    }
-
-    /// The command-bar monitor forwards wheel events directly to the native
-    /// page. Record them too, regardless of AppKit's local-monitor ordering.
-    public func observeHistoryGesture(_ event: NSEvent, in view: WKWebView) {
-        guard identities[ObjectIdentifier(view)] != nil else { return }
-        (view as? BrowserWebView)?.observeHistoryGesture(event)
-    }
+    public func stop(_ id: UUID) { pages[id]?.view.stopLoading(); refresh(id) }
+    public func back(_ id: UUID) { pages[id]?.view.goBack() }
+    public func forward(_ id: UUID) { pages[id]?.view.goForward() }
 
     public func discard(tabID: UUID) {
         guard let page = pages.removeValue(forKey: tabID) else { return }
         if let view = page.view as? BrowserWebView {
-            view.stopHistoryGestureTracking()
             view.cancelLinkMenu()
             view.onOpenWindowLink = nil
             view.onOpenBackgroundLink = nil
@@ -231,7 +210,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             guard let onOpenBackgroundLink else { return false }
             onOpenBackgroundLink(url)
         } else {
-            (view as? BrowserWebView)?.historyGesture.reset()
             page.requestedURL = url
             page.failure = nil
             view.load(URLRequest(url: url))
@@ -266,11 +244,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                         decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         let mainFrame = action.targetFrame?.isMainFrame ?? true
-        guard let url = action.request.url else {
-            if mainFrame { (webView as? BrowserWebView)?.historyGesture.reset() }
-            decisionHandler(.cancel)
-            return
-        }
+        guard let url = action.request.url else { decisionHandler(.cancel); return }
         if (try? input.validate(url)) != nil {
             if openCommandClickedLink(action, in: webView) {
                 decisionHandler(.cancel)
@@ -278,32 +252,18 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             }
             if mainFrame, action.targetFrame != nil,
                let id = identities[ObjectIdentifier(webView)] { pages[id]?.requestedURL = url }
-            recordHistoryNavigation(in: webView, navigationType: action.navigationType,
-                isMainFrame: action.targetFrame?.isMainFrame == true)
             decisionHandler(.allow)
         } else if !mainFrame, ["about", "blob", "data"].contains(url.scheme?.lowercased() ?? "") {
             decisionHandler(.allow)
         } else {
-            if mainFrame { (webView as? BrowserWebView)?.historyGesture.reset() }
             decisionHandler(.cancel)
             onNotice?("This link uses an unsupported address type (\(url.scheme ?? "unknown")).")
         }
     }
 
-    /// Scroll input alone never requests feedback. Arm it only for WebKit's
-    /// accepted main-frame history action, then wait for didCommit below.
-    func recordHistoryNavigation(in view: WKWebView, navigationType: WKNavigationType,
-                                 isMainFrame: Bool) {
-        guard isMainFrame, let id = identities[ObjectIdentifier(view)], pages[id] != nil,
-              let view = view as? BrowserWebView else { return }
-        view.historyGesture.navigationAllowed(isBackForward: navigationType == .backForward,
-            at: ProcessInfo.processInfo.systemUptime)
-    }
-
     public func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                         decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
         guard response.canShowMIMEType else {
-            if response.isForMainFrame { (webView as? BrowserWebView)?.historyGesture.reset() }
             decisionHandler(.cancel)
             onNotice?("This file needs download support, which is not available yet.")
             return
@@ -321,9 +281,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         guard let id = identities[ObjectIdentifier(webView)] else { return }
         pages[id]?.playingFrames.removeAll()
         pages[id]?.isPlayingMedia = false
-        if let view = webView as? BrowserWebView, view.historyGesture.navigationCommitted() {
-            onHistoryGestureNavigation?(id)
-        }
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)], let page = pages[id],
@@ -350,7 +307,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         failed(webView, error)
     }
     private func failed(_ view: WKWebView, _ error: Error) {
-        (view as? BrowserWebView)?.historyGesture.reset()
         guard (error as NSError).code != NSURLErrorCancelled,
               let id = identities[ObjectIdentifier(view)] else { return }
         pages[id]?.failure = error.localizedDescription
@@ -358,7 +314,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
-        (webView as? BrowserWebView)?.historyGesture.reset()
         pages[id]?.failure = "The web content process stopped. Reload to reopen this page."
         pages[id]?.isLoading = false
         pages[id]?.isPlayingMedia = false

@@ -232,7 +232,6 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
                     }
                     // Deliver the original event exactly once, preserving its
                     // phase, momentum and deltas for WebKit's native gestures.
-                    model.webViews.observeHistoryGesture(event, in: page)
                     target.scrollWheel(with: event)
                     return nil
                 }
