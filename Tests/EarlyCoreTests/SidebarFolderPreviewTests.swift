@@ -5,6 +5,29 @@ import Testing
 @testable import EarlyCore
 
 struct SidebarFolderPreviewTests {
+    @Test func aNestedReceivingSlotIsNotStolenByItsParentAfterTheHeaderMoves() {
+        let header = CGRect(x: 12, y: 100, width: 204, height: 34)
+        let panel = CGRect(x: 12, y: 100, width: 204, height: 76)
+        // The pointer entered the header while a 34+4-point sibling preview
+        // displaced it. After that preview clears it lies in the receiving row.
+        let point = CGPoint(x: 120, y: header.midY + 38)
+        #expect(SidebarFolderPreview.acceptsHeader(point,
+            header: header.offsetBy(dx: 0, dy: 38), retaining: false))
+        #expect(!SidebarFolderPreview.acceptsHeader(point, header: header, retaining: true))
+        for enclosingDepth in [nil, 0, 1] as [Int?] {
+            #expect(SidebarFolderPreview.retainsPanel(point, header: header, panel: panel,
+                currentDepth: 1, enclosingDepth: enclosingDepth))
+        }
+        // Retention must not prevent entering an expanded, deeper descendant.
+        #expect(!SidebarFolderPreview.retainsPanel(point, header: header, panel: panel,
+            currentDepth: 1, enclosingDepth: 2))
+        // Keep the intentional exit paths back to the parent available.
+        #expect(!SidebarFolderPreview.retainsPanel(CGPoint(x: 120, y: 102), header: header, panel: panel,
+            currentDepth: 1, enclosingDepth: 0))
+        #expect(!SidebarFolderPreview.retainsPanel(CGPoint(x: 18, y: 155), header: header, panel: panel,
+            currentDepth: 1, enclosingDepth: 0))
+    }
+
     @Test func dragOutlinesOnlyAppearAboveTheTodayDividerInsideThePinsViewport() {
         let viewport = CGRect(x: 12, y: 100, width: 240, height: 800)
         let divider = CGRect(x: 12, y: 300, width: 240, height: 17)

@@ -27,10 +27,14 @@ public struct SidebarFolderPreview: Equatable, Sendable {
             && point.y >= header.minY + inset && point.y <= header.maxY - inset
     }
 
-    public static func retainsPanel(_ point: CGPoint, header: CGRect, panel: CGRect) -> Bool {
+    public static func retainsPanel(_ point: CGPoint, header: CGRect, panel: CGRect,
+                                    currentDepth: Int = 0, enclosingDepth: Int? = nil) -> Bool {
         // Keep small movements inside the receiving row stable, but leave the
         // upper header edge and leading gutter available for sibling placement.
-        point.x >= header.minX + 12 && point.x <= panel.maxX + 6
+        // An ancestor cannot steal a nested slot as its preview settles, but an
+        // expanded descendant remains a valid, more specific destination.
+        if let enclosingDepth, enclosingDepth > currentDepth { return false }
+        return point.x >= header.minX + 12 && point.x <= panel.maxX + 6
             && point.y >= header.minY + 3 && point.y <= panel.maxY + 8
     }
 }

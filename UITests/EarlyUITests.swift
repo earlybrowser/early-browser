@@ -939,11 +939,9 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(child.waitForExistence(timeout: 3))
         XCTAssertEqual(root.value as? String, "Expanded")
         XCTAssertEqual(child.value as? String, "Collapsed")
-        // The foreign pinned-row preview shifts the folder block/child below
-        // the cursor by one 34-point row plus its 4-point gap. XCTest resolves
-        // coordinates before mouse-down, so aim at the displayed drag-time row.
+        // Aim at the actual header, not a predicted preview offset: entering
+        // the parent changes that preview while the drag is still in flight.
         let childDrop = child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .withOffset(CGVector(dx: 0, dy: 38))
         dragSidebarItem(third, to: childDrop)
         XCTAssertTrue(app.buttons[thirdID].waitForExistence(timeout: 3))
         XCTAssertEqual(child.value as? String, "Expanded")
@@ -2644,8 +2642,16 @@ final class EarlyUITests: XCTestCase {
         let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", draft), object: query)
         XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed)
         let card = app.descendants(matching: .any).matching(identifier: "commandBar.card").firstMatch
-        let scrollPoint = page.coordinate(withNormalizedOffset: CGVector(dx: 0.90, dy: 0.85))
-        let point = CGPoint(x: page.frame.minX + page.frame.width * 0.90, y: page.frame.minY + page.frame.height * 0.85)
+        // WebKit's AX WebView frame can cover the entire 3000-point document,
+        // not just the viewport. Anchor the real wheel event to the visible
+        // native content host, clipped to this window, so it stays on-screen.
+        let window = app.windows["browser"]
+        let viewport = content.frame.intersection(window.frame)
+        XCTAssertFalse(viewport.isEmpty)
+        let point = CGPoint(x: viewport.minX + viewport.width * 0.90, y: viewport.minY + viewport.height * 0.85)
+        XCTAssertTrue(window.frame.contains(point), "The wheel must target the visible browser window")
+        let scrollPoint = window.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: point.x - window.frame.minX, dy: point.y - window.frame.minY))
         XCTAssertFalse(card.frame.contains(point), "The wheel must target the website, not the editor")
         scrollPoint.scroll(byDeltaX: 0, deltaY: -400)
         let moved = NSPredicate { _, _ in

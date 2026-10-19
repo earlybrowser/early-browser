@@ -521,6 +521,9 @@ struct BrowserWindowView: View {
             // Rebuild hit testing only after ALL measurements from this layout
             // pass agree; cross-folder moves change headers and ends together.
             frozenFrames = frames
+            // Insertion previews can move a header underneath a stationary
+            // pointer. Re-resolve its folder before rebuilding sibling order.
+            updateFolderHover(at: dragPoint)
             refreshCurrentDrag()
         }
         .onChange(of: draggingTab) { _, id in
@@ -1475,17 +1478,19 @@ struct BrowserWindowView: View {
         }
         let target = nestTarget(at: hitPoint)
         let container = target ?? containerFolder(at: hitPoint)
+        // A nested receiving row belongs to its current folder even if an
+        // ancestor's stale panel measurement also contains it. Explicit
+        // headers and deeper containers still take priority; the leading
+        // gutter and upper edge remain available for moving out one level.
+        if target == nil, retainsFolderNearBoundary(at: hitPoint, enclosing: container) {
+            pendingFolder = nil
+            return
+        }
         if container == dropFolder {
             pendingFolder = target
             return
         }
-        if let container {
-            settleFolderHover(container)
-        } else if retainsFolderNearBoundary(at: hitPoint) {
-            pendingFolder = nil
-        } else {
-            settleFolderHover(nil)
-        }
+        settleFolderHover(container)
     }
 
     private func settleFolderHover(_ target: UUID?) {
@@ -1494,11 +1499,16 @@ struct BrowserWindowView: View {
         updateFolderDropSlot(target)
     }
 
-    private func retainsFolderNearBoundary(at point: CGPoint) -> Bool {
+    private func retainsFolderNearBoundary(at point: CGPoint, enclosing: UUID?) -> Bool {
         guard let current = dropFolder, let header = folderHitFrames[current],
+              let folder = model.coordinator.folders.first(where: { $0.id == current }),
               let baseline = itemFrame(current), let group = folderGroupFrame(current) else { return false }
         let displayed = group.offsetBy(dx: header.minX - baseline.minX, dy: header.minY - baseline.minY)
-        return SidebarFolderPreview.retainsPanel(point, header: header, panel: displayed)
+        let enclosingDepth = enclosing.flatMap { id in
+            model.coordinator.folders.first(where: { $0.id == id }).map { depth(of: $0) }
+        }
+        return SidebarFolderPreview.retainsPanel(point, header: header, panel: displayed,
+            currentDepth: depth(of: folder), enclosingDepth: enclosingDepth)
     }
 
     private func updateFolderDropSlot(_ target: UUID?) {
