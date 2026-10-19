@@ -5,6 +5,52 @@ import Testing
 @testable import EarlyCore
 
 struct SidebarFolderPreviewTests {
+    @Test func nestingUsesTheSameLayoutSnapshotAsInsertionInsteadOfChasingItsPreview() {
+        // Exact geometry of the failing CI drag: Work's center is y=248,
+        // Mails is y=286, and a foreign pin previews insertion before Mails.
+        let parent = UUID(), child = UUID(), source = UUID()
+        let parentHeader = CGRect(x: 8, y: 231, width: 236, height: 34)
+        let childHeader = CGRect(x: 20, y: 269, width: 220, height: 34)
+        let point = CGPoint(x: 145, y: 286)
+        let headers = [(id: parent, frame: parentHeader), (id: child, frame: childHeader)]
+        let receiving = CGRect(x: 8, y: 231, width: 236, height: 120)
+        let siblings = SidebarReorderLayout(source: source, slots: [
+            .init(id: child, frame: childHeader),
+            .init(id: source, frame: childHeader.offsetBy(dx: 0, dy: 38))
+        ], bounds: receiving, grid: false, foreign: true, retainedIndex: 0)
+        let offset = siblings.offset(for: child, at: point)
+        #expect(offset.height == 38)
+        let displayedChild = childHeader.offsetBy(dx: 0, dy: offset.height)
+        // The old live-frame lookup misses the child and leaves the pin in
+        // Work's newly inserted row. Waiting cannot resolve this fixed point.
+        #expect(SidebarFolderPreview.nestingTarget(at: point,
+            headers: [(parent, parentHeader), (child, displayedChild)], retaining: [parent]) == nil)
+        #expect(SidebarFolderPreview.nestingTarget(at: point, headers: headers, retaining: [parent]) == child)
+        // Entering the child removes its sibling displacement. Its one receiving
+        // row and subsequent geometry/hold/release samples must keep ownership.
+        for _ in 0..<20 {
+            #expect(SidebarFolderPreview.nestingTarget(at: point, headers: headers, retaining: [child]) == child)
+        }
+        #expect(SidebarFolderPreview.nestingTarget(at: point, headers: headers, retaining: []) == child)
+        // A leading gutter or top edge still permits ordering instead of nesting.
+        #expect(SidebarFolderPreview.nestingTarget(at: CGPoint(x: 25, y: 286),
+            headers: headers, retaining: [parent]) == nil)
+        #expect(SidebarFolderPreview.nestingTarget(at: CGPoint(x: 145, y: 271),
+            headers: headers, retaining: [child]) == nil)
+    }
+
+    @Test func nestingTargetRetainsItsSmallHeaderMarginButRejectsUnavailableHeaders() {
+        let folder = UUID()
+        let header = CGRect(x: 12, y: 100, width: 204, height: 34)
+        let margin = CGPoint(x: 100, y: 104)
+        #expect(SidebarFolderPreview.nestingTarget(at: margin,
+            headers: [(folder, header)], retaining: []) == nil)
+        #expect(SidebarFolderPreview.nestingTarget(at: margin,
+            headers: [(folder, header)], retaining: [folder]) == folder)
+        // Visibility/cycle checks filter the supplied headers in the view.
+        #expect(SidebarFolderPreview.nestingTarget(at: margin, headers: [], retaining: [folder]) == nil)
+    }
+
     @Test func aNestedReceivingSlotIsNotStolenByItsParentAfterTheHeaderMoves() {
         let header = CGRect(x: 12, y: 100, width: 204, height: 34)
         let panel = CGRect(x: 12, y: 100, width: 204, height: 76)

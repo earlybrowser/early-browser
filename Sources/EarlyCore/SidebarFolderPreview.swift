@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import CoreGraphics
+import Foundation
 
 /// Drag placement does not navigate the folder tree. Only explicit expansion
 /// reveals children; a receiving folder gets one temporary row instead.
@@ -25,6 +26,18 @@ public struct SidebarFolderPreview: Equatable, Sendable {
         let inset: CGFloat = retaining ? 3 : 5
         return point.x >= header.minX + 12 && point.x <= header.maxX
             && point.y >= header.minY + inset && point.y <= header.maxY - inset
+    }
+
+    /// Use unoffset layout headers, just like sibling insertion. Feeding drawing
+    /// offsets back into this decision lets a preview push its own target away.
+    public static func nestingTarget(at point: CGPoint, headers: [(id: UUID, frame: CGRect)],
+                                     retaining: [UUID]) -> UUID? {
+        for id in retaining {
+            if let header = headers.first(where: { $0.id == id }),
+               acceptsHeader(point, header: header.frame, retaining: true) { return id }
+        }
+        return headers.filter { acceptsHeader(point, header: $0.frame, retaining: false) }
+            .min { $0.frame.height < $1.frame.height }?.id
     }
 
     public static func retainsPanel(_ point: CGPoint, header: CGRect, panel: CGRect,

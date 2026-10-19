@@ -1416,25 +1416,19 @@ struct BrowserWindowView: View {
     }
 
     private func nestTarget(at point: CGPoint) -> UUID? {
-        // Retain the current header through small edge movements.
-        for id in [pendingFolder, dropFolder].compactMap({ $0 }) {
-            if folderHeaderAccepts(point, folderID: id, retaining: true) { return id }
-        }
-        let folders = model.coordinator.folders.compactMap { folder -> (UUID, CGRect)? in
-            guard folderHeaderAccepts(point, folderID: folder.id, retaining: false),
-                  let frame = folderHitFrames[folder.id] else { return nil }
+        guard sectionFrames[false]?.contains(point) == true else { return nil }
+        let visible = Set(pinnedOutline.filter(\.isFolder).map(\.id))
+        let headers = model.coordinator.folders.compactMap { folder -> (id: UUID, frame: CGRect)? in
+            // These are the same unoffset frames used by sibling insertion,
+            // not folderHitFrames, which follow the animated preview. Otherwise
+            // inserting before a child moves its hit target away and can keep
+            // the drop trapped in its parent forever, even during a long hold.
+            guard visible.contains(folder.id), validFolderTarget(folder.id),
+                  let frame = itemFrame(folder.id) else { return nil }
             return (folder.id, frame)
         }
-        guard let match = folders.min(by: { $0.1.height < $1.1.height }) else { return nil }
-        return match.0
-    }
-
-    private func folderHeaderAccepts(_ point: CGPoint, folderID: UUID, retaining: Bool) -> Bool {
-        guard validFolderTarget(folderID), pinnedOutline.contains(where: { $0.id == folderID && $0.isFolder }),
-              let frame = folderHitFrames[folderID] else { return false }
-        guard sectionFrames[false]?.contains(point) == true else { return false }
-        // The leading gutter always permits lifting an item out one level.
-        return SidebarFolderPreview.acceptsHeader(point, header: frame, retaining: retaining)
+        return SidebarFolderPreview.nestingTarget(at: point, headers: headers,
+            retaining: [pendingFolder, dropFolder].compactMap { $0 })
     }
 
     private func validFolderTarget(_ id: UUID) -> Bool {
