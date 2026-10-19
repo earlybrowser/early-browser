@@ -51,6 +51,92 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(query.value as? String, "")
     }
 
+    func testLongCommandBarInputWrapsInCompactWindowAndKeepsNavigationIntent() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        app.menuBarItems["Test Window"].click()
+        visibleMenuAction("Compact Test Window")
+        let window = app.windows["browser"]
+        XCTAssertEqual(window.frame.width, 800, accuracy: 1)
+        app.typeKey("t", modifierFlags: .command)
+        let query = app.textFields["commandBar.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textFields.matching(identifier: "commandBar.query").count, 1)
+        XCTAssertEqual(query.value as? String, "")
+        let card = app.descendants(matching: .any).matching(identifier: "commandBar.card").firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 3))
+        let initialInputHeight = query.frame.height
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(query.exists, "An empty Return must not create a tab")
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+
+        // Exercise normal paste instead of synthesizing thousands of key events.
+        // Restore every original clipboard type only after all paste waits finish.
+        let pasteboard = NSPasteboard.general
+        let originalClipboard = (pasteboard.pasteboardItems ?? []).map { item in
+            Dictionary(uniqueKeysWithValues: item.types.compactMap { type in
+                item.data(forType: type).map { (type, $0) }
+            })
+        }
+        defer {
+            let items = originalClipboard.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            }
+            pasteboard.clearContents()
+            if !items.isEmpty { pasteboard.writeObjects(items) }
+        }
+        func pasteQuery(_ text: String) {
+            pasteboard.clearContents()
+            XCTAssertTrue(pasteboard.setString(text, forType: .string))
+            app.typeKey("v", modifierFlags: .command)
+            let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: query)
+            XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed)
+            XCTAssertEqual(query.value as? String, text)
+        }
+        let longURL = "early-test://fixture/one?payload=" + String(repeating: "wrapped-input-", count: 180)
+        pasteQuery(longURL)
+        let wrapped = NSPredicate { _, _ in query.frame.height > initialInputHeight + 5 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: wrapped, object: nil)], timeout: 3), .completed)
+        XCTAssertLessThanOrEqual(query.frame.height, 120.5, "Long input must scroll inside a bounded editor")
+        XCTAssertGreaterThan(query.frame.width, 100)
+        XCTAssertGreaterThanOrEqual(query.frame.minX, card.frame.minX)
+        XCTAssertLessThanOrEqual(query.frame.maxX, card.frame.maxX)
+        XCTAssertGreaterThanOrEqual(query.frame.minY, card.frame.minY)
+        XCTAssertLessThanOrEqual(query.frame.maxY, card.frame.maxY)
+        XCTAssertGreaterThanOrEqual(card.frame.minX, window.frame.minX + 6)
+        XCTAssertLessThanOrEqual(card.frame.maxX, window.frame.maxX - 6)
+        XCTAssertLessThanOrEqual(card.frame.maxY, window.frame.maxY - 6)
+        XCTAssertEqual(app.webViews.count, 0)
+        app.typeKey(.return, modifierFlags: [])
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        app.typeKey("l", modifierFlags: .command)
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        XCTAssertEqual(query.value as? String, longURL)
+        // No explicit Select All: Open Location must select the entire long URL.
+        pasteQuery("early-test://fixture/two")
+        app.typeKey(.return, modifierFlags: [])
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        app.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        XCTAssertEqual(query.value as? String, "")
+        pasteQuery("early-test://fixture/one")
+        app.typeKey(.escape, modifierFlags: [])
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        app.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        pasteQuery("early-test://fixture/one")
+        app.typeKey(.return, modifierFlags: [])
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+    }
+
     func testTranslucentChromePreservesNavigationInBothAppearances() {
         for appearance in ["dark", "light"] {
             let app = launchFreshApp(appearance: appearance)
@@ -76,6 +162,30 @@ final class EarlyUITests: XCTestCase {
             XCTAssertEqual(saved.value as? String, "preserve page through chrome changes")
             expectRuntime(app, tabs: 1, views: 1, created: 1)
             capture("loaded website")
+            app.typeKey("l", modifierFlags: .command)
+            let query = app.textFields["commandBar.query"]
+            XCTAssertTrue(query.waitForExistence(timeout: 3))
+            XCTAssertEqual(app.textFields.matching(identifier: "commandBar.query").count, 1)
+            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "commandBar.card").firstMatch.exists)
+            capture("command bar with Space theme")
+            app.typeKey(.escape, modifierFlags: [])
+            openSettings(app, section: "appearance")
+            let themes = app.descendants(matching: .any).matching(identifier: "settings.spaceThemes").firstMatch
+            XCTAssertTrue(themes.waitForExistence(timeout: 3))
+            themes.click()
+            let off = NSPredicate { _, _ in
+                if let value = themes.value as? NSNumber { return !value.boolValue }
+                return ["0", "off", "false"].contains((themes.value as? String)?.lowercased() ?? "")
+            }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: off, object: nil)], timeout: 3), .completed)
+            app.typeKey("w", modifierFlags: .command)
+            app.typeKey("l", modifierFlags: .command)
+            XCTAssertTrue(query.waitForExistence(timeout: 3))
+            XCTAssertEqual(query.value as? String, "early-test://fixture/one")
+            capture("command bar without Space theme")
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertEqual(saved.value as? String, "preserve page through chrome changes")
+            expectRuntime(app, tabs: 1, views: 1, created: 1)
             app.terminate()
         }
     }
@@ -116,6 +226,64 @@ final class EarlyUITests: XCTestCase {
         query.typeText("swift")
         XCTAssertTrue(first.waitForExistence(timeout: 3))
         XCTAssertEqual(first.label, "Search Google for swift guide")
+    }
+
+    func testRightArrowCompletesTheHighlightedSuggestionWithoutSubmittingOrLosingTheCaret() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let saved = app.webViews.textFields["Saved text"]
+        saved.click()
+        saved.typeText("keep page state")
+        let pageState = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "keep page state"), object: saved)
+        XCTAssertEqual(XCTWaiter.wait(for: [pageState], timeout: 5), .completed)
+        let originalTab = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tab.")).firstMatch.identifier
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        app.typeKey("l", modifierFlags: .command)
+        let query = app.textFields["commandBar.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        app.typeText("swift")
+        let first = app.buttons["commandBar.suggestion.0"]
+        let second = app.buttons["commandBar.suggestion.1"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@ AND enabled == true", "Search Google for swift guide"), object: first)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+        func expectSelected(_ element: XCUIElement, _ selected: Bool) {
+            let value = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == %@", NSNumber(value: selected)), object: element)
+            XCTAssertEqual(XCTWaiter.wait(for: [value], timeout: 3), .completed)
+        }
+        func expectQuery(_ text: String) {
+            let value = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: query)
+            XCTAssertEqual(XCTWaiter.wait(for: [value], timeout: 5), .completed)
+            XCTAssertEqual(query.value as? String, text)
+        }
+        app.typeKey(.downArrow, modifierFlags: [])
+        expectSelected(first, true)
+        app.typeKey(.downArrow, modifierFlags: [])
+        expectSelected(second, true)
+        app.typeKey(.upArrow, modifierFlags: [])
+        expectSelected(first, true)
+        expectSelected(second, false)
+        expectQuery("swift")
+
+        app.typeKey(.rightArrow, modifierFlags: [])
+        expectQuery("swift guide")
+        // Do not click or reposition the cursor: completion must leave focus
+        // in the native editor with its caret after the completed phrase.
+        app.typeText(" edited")
+        expectQuery("swift guide edited")
+        XCTAssertTrue(query.exists)
+        XCTAssertTrue(app.buttons[originalTab].isSelected)
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        // Keep this regression offline. Model/native tests cover Return's
+        // navigation intent; here cancellation proves no submission occurred.
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(query.waitForNonExistence(timeout: 3))
+        expectPage(app, "One")
+        XCTAssertEqual(saved.value as? String, "keep page state")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
     private func visibleMenuAction(_ title: String) {
@@ -771,7 +939,10 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(child.waitForExistence(timeout: 3))
         XCTAssertEqual(root.value as? String, "Expanded")
         XCTAssertEqual(child.value as? String, "Collapsed")
-        dragSidebarItem(third, to: child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+        // Aim at the actual header, not a predicted preview offset: entering
+        // the parent changes that preview while the drag is still in flight.
+        let childDrop = child.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        dragSidebarItem(third, to: childDrop)
         XCTAssertTrue(app.buttons[thirdID].waitForExistence(timeout: 3))
         XCTAssertEqual(child.value as? String, "Expanded")
         XCTAssertGreaterThan(app.buttons[thirdID].frame.minY, child.frame.minY)
@@ -2448,5 +2619,57 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(query.exists)
         app.typeText("testing")
         XCTAssertEqual(query.value as? String, "testing")
+
+        // A loaded page must keep receiving wheel events outside the card.
+        app.typeKey(.escape, modifierFlags: [])
+        navigate(app, to: "early-test://fixture/scroll")
+        XCTAssertTrue(app.webViews.staticTexts["Scroll fixture"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5))
+        let page = app.webViews.firstMatch
+        // WebKit may expose paragraph text through AXValue rather than AXLabel
+        // (or as a container). Use named, read-only controls with stable roles,
+        // and wait for them before sending a wheel event to the real webpage.
+        let position = page.textFields["Scroll position"]
+        let clicks = page.textFields["Page clicks"]
+        XCTAssertTrue(position.waitForExistence(timeout: 5))
+        XCTAssertTrue(clicks.waitForExistence(timeout: 5))
+        XCTAssertEqual(position.value as? String, "0")
+        XCTAssertEqual(clicks.value as? String, "0")
+        app.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(query.waitForExistence(timeout: 3))
+        let draft = "keep query while scrolling"
+        query.typeText(draft)
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", draft), object: query)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed)
+        let card = app.descendants(matching: .any).matching(identifier: "commandBar.card").firstMatch
+        // WebKit's AX WebView frame can cover the entire 3000-point document,
+        // not just the viewport. Anchor the real wheel event to the visible
+        // native content host, clipped to this window, so it stays on-screen.
+        let window = app.windows["browser"]
+        let viewport = content.frame.intersection(window.frame)
+        XCTAssertFalse(viewport.isEmpty)
+        let point = CGPoint(x: viewport.minX + viewport.width * 0.90, y: viewport.minY + viewport.height * 0.85)
+        XCTAssertTrue(window.frame.contains(point), "The wheel must target the visible browser window")
+        let scrollPoint = window.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: point.x - window.frame.minX, dy: point.y - window.frame.minY))
+        XCTAssertFalse(card.frame.contains(point), "The wheel must target the website, not the editor")
+        scrollPoint.scroll(byDeltaX: 0, deltaY: -400)
+        let moved = NSPredicate { _, _ in
+            guard position.exists, let text = position.value as? String else { return false }
+            return Int(text).map { $0 > 0 } ?? false
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: moved, object: nil)], timeout: 5), .completed)
+        XCTAssertTrue(query.exists)
+        XCTAssertEqual(query.value as? String, draft)
+
+        // One physical click must both dismiss the card and activate its target.
+        let pageButton = page.buttons["Count page click"]
+        XCTAssertTrue(pageButton.isHittable)
+        XCTAssertFalse(card.frame.contains(CGPoint(x: pageButton.frame.midX, y: pageButton.frame.midY)))
+        pageButton.click()
+        XCTAssertTrue(query.waitForNonExistence(timeout: 3))
+        let clickedOnce = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: clicks)
+        XCTAssertEqual(XCTWaiter.wait(for: [clickedOnce], timeout: 5), .completed)
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 }

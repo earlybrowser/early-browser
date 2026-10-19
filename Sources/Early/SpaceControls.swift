@@ -18,9 +18,9 @@ struct SpaceActions: View {
     let space: BrowserSpace
 
     var body: some View {
-        Button("Edit Space…") { model.requestEditSpace(space.id) }
-        Button("Duplicate Space") { model.duplicateAndSelectSpace(space.id) }
-        Button("Delete Space…", role: .destructive) { model.requestDeleteSpace(space.id) }
+        Button("Edit Space…") { model.perform(.editSpace(space.id)) }
+        Button("Duplicate Space") { model.perform(.duplicateSpace(space.id)) }
+        Button("Delete Space…", role: .destructive) { model.perform(.deleteSpace(space.id)) }
             .disabled(model.coordinator.spaces.count <= 1)
     }
 }
@@ -43,7 +43,7 @@ struct SpaceFooter: View {
                 .accessibilityLabel("Downloads, not available yet")
                 .help("Downloads (not available yet)")
             indicatorStrip
-            Button { model.requestNewSpace() } label: {
+            Button { model.perform(.newSpace) } label: {
                 Image(systemName: "plus").frame(width: 28, height: 28)
                     .overlay {
                         if model.spaceSwipeCreationProgress > 0 {
@@ -182,7 +182,7 @@ struct SpaceFooter: View {
             count: model.coordinator.spaces.count, progress: reduceMotion ? 0 : model.spaceSwipeProgress)
         return Button {
             guard spaceDrag == nil else { return }
-            _ = model.switchSpace(to: space.id)
+            model.perform(.switchSpace(space.id))
         } label: {
             SpaceIconView(icon: space.icon)
                 .opacity((contrast == .increased ? 0.65 : 0.35) + (contrast == .increased ? 0.35 : 0.65) * fill)
@@ -208,7 +208,7 @@ struct SpaceFooter: View {
         .contextMenu {
             SpaceActions(model: model, space: space)
             Divider()
-            Button("New Space…") { model.requestNewSpace() }
+            Button("New Space…") { model.perform(.newSpace) }
         }
     }
 

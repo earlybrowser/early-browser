@@ -48,6 +48,29 @@ final class TestPages: NSObject, WKURLSchemeHandler {
             """)
             return
         }
+        if url.path == "/scroll" {
+            respond(to: task, url: url, html: """
+            <!doctype html><html><head><title>Scroll fixture</title>
+            <style>
+              body{font:18px -apple-system;margin:0;padding:32px;min-height:3000px}
+              #controls{position:fixed;left:24px;bottom:24px;background:white;color:black;padding:12px;border:1px solid #aaa}
+              #controls label{display:block;margin-top:8px} #controls input{width:5em}
+            </style></head><body>
+            <h1>Scroll fixture</h1><p>Scroll the page while the command bar remains open.</p>
+            <div id="controls">
+              <button onclick="document.getElementById('clicks').value=String(++clicks)">Count page click</button>
+              <label>Page clicks <input id="clicks" aria-label="Page clicks" value="0" readonly></label>
+              <label>Scroll position <input id="position" aria-label="Scroll position" value="0" readonly></label>
+            </div>
+            <script>
+              let clicks=0;
+              addEventListener('scroll',()=>{
+                document.getElementById('position').value=String(Math.round(scrollY));
+              },{passive:true});
+            </script></body></html>
+            """)
+            return
+        }
         if url.path == "/slow" { return } // Stop/close cancels this deliberate pending load.
         if url.path == "/failure" {
             task.didFailWithError(URLError(.notConnectedToInternet))

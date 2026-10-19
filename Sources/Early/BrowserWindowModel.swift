@@ -39,6 +39,7 @@ final class BrowserWindowModel {
     weak var application: EarlyAppDelegate?
     let isTesting: Bool
     var submissionMessage: String?
+    var commandBarIsComposing = false
     var notice: String?
     var toast: Toast?
     var sidebarIsHidden = false
@@ -145,6 +146,7 @@ final class BrowserWindowModel {
         cancelSpaceSwipePresentation()
         suggestions.cancel()
         submissionMessage = nil
+        commandBarIsComposing = false
         coordinator.presentCommandBar(intent)
     }
 
@@ -174,37 +176,47 @@ final class BrowserWindowModel {
 
     func dismissCommandBar(restoreFocus: Bool = true) {
         suggestions.cancel()
+        commandBarIsComposing = false
         coordinator.dismissCommandBar()
         if restoreFocus { contentFocusRequest += 1 }
     }
 
     func refreshSuggestions() {
-        guard (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else {
+        guard !commandBarIsComposing,
+              (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else {
             suggestions.cancel()
             return
         }
         suggestions.update(query: coordinator.commandBar?.query ?? "", enabled: onlineSuggestionsEnabled)
     }
 
-    func updateQuery(_ query: String) {
+    func updateQuery(_ query: String, isComposing: Bool = false) {
+        commandBarIsComposing = isComposing
         coordinator.updateQuery(query)
         submissionMessage = nil
         refreshSuggestions()
     }
 
-    func submit(searchSuggestion: String? = nil) {
-        guard let request = coordinator.navigationRequest() else { return }
+    @discardableResult
+    func submit(searchSuggestion: String? = nil) -> Bool {
+        guard !commandBarIsComposing,
+              (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true,
+              let request = coordinator.navigationRequest() else { return false }
         suggestions.cancel()
         do {
             let url = try searchSuggestion.map { try input.searchURL(for: $0) } ?? input.resolve(request.query)
             guard let id = coordinator.navigate(to: url, target: request.target),
-                  let tab = coordinator.tabStore.tab(id: id) else { return }
+                  let tab = coordinator.tabStore.tab(id: id) else { return false }
             submissionMessage = nil
             notice = nil
             webViews.load(url, in: tab)
             contentFocusRequest += 1
             save()
-        } catch { submissionMessage = error.localizedDescription }
+            return true
+        } catch {
+            submissionMessage = error.localizedDescription
+            return false
+        }
     }
 
     func selectTab(_ id: UUID) {
@@ -286,9 +298,10 @@ final class BrowserWindowModel {
     }
 
     func closeTab(_ id: UUID) {
+        let previousActive = coordinator.activeTabID
         guard coordinator.closeTab(id) != nil else { return }
         webViews.discard(tabID: id)
-        activateSelection()
+        if previousActive != coordinator.activeTabID { activateSelection() }
         save()
     }
 

@@ -150,6 +150,27 @@ struct SidebarReorderLayoutTests {
         #expect(layout.insertion(at: CGPoint(x: 20, y: 195))?.before == nil)
     }
 
+    @Test func incomingFavoritePreviewShiftsANestedHeaderByOnePinnedRow() {
+        let child = UUID(), source = UUID()
+        let header = CGRect(x: 12, y: 38, width: 204, height: 34)
+        let layout = SidebarReorderLayout(source: source, slots: [
+            .init(id: child, frame: header),
+            .init(id: source, frame: CGRect(x: 12, y: 76, width: 204, height: 34))
+        ], bounds: CGRect(x: 0, y: 0, width: 220, height: 140), grid: false,
+            foreign: true, retainedIndex: 0)
+        let originalTarget = CGPoint(x: header.midX, y: header.midY)
+        let offset = layout.offset(for: child, at: originalTarget)
+        #expect(offset.height == 38)
+        let dragTarget = CGPoint(x: originalTarget.x, y: originalTarget.y + offset.height)
+        #expect(SidebarFolderPreview.acceptsHeader(dragTarget,
+            header: header.offsetBy(dx: 0, dy: offset.height), retaining: false))
+        // Entering the child clears the sibling preview but creates its one
+        // receiving slot. The same physical pointer must remain inside it.
+        let receiving = CGRect(x: header.minX, y: header.minY, width: header.width,
+            height: header.height + 4 + SidebarFolderPreview.dropSlotHeight)
+        #expect(SidebarFolderPreview.retainsPanel(dragTarget, header: header, panel: receiving))
+    }
+
     @Test func previewShiftsBothDirectionsAndAcceptsGapsAndEmptySpace() {
         let ids = (0..<3).map { _ in UUID() }
         let slots = ids.enumerated().map { SidebarReorderLayout.Slot(id: $0.element,
