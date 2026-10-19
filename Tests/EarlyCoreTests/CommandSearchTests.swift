@@ -27,6 +27,11 @@ struct CommandSearchTests {
             title: "Swift Package Index", terms: ["https://swiftpackageindex.com/apple/swift-testing"])
         let tokenResults = try CommandSearchRanker.rank("swift test", candidates: [token], now: now)
         #expect(tokenResults.map(\.match) == [.tokens])
+
+        // Secondary helper terms must not fuzzy-match across words (e.g. "pin" in "switch profile 2nd one").
+        let profile = CommandSearchCandidate(id: "profile.2", kind: .profile, target: .profile(UUID()),
+            title: "2nd one", terms: ["switch profile 2nd one", "profile 2nd one"])
+        #expect(try CommandSearchRanker.rank("pin", candidates: [profile], now: now).isEmpty)
     }
 
     @Test func pinsEvaluateCustomTitlesSavedURLsAndLiveURLsWhileRecencyAndFrequencyBreakSimilarMatches() throws {

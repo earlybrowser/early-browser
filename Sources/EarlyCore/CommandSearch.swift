@@ -223,8 +223,9 @@ public enum CommandSearchRanker {
             let field = CommandSearchText.address(term)
             words += Self.words(field)
             for text in texts {
-                // Secondary fields count slightly less than the visible name.
-                consider(match(text, in: field).map { ($0.0, $0.1 - $0.1 / 10) })
+                // Secondary fields count slightly less than the visible name
+                // and do not allow subsequence fuzzy leaps across URLs/keywords.
+                consider(match(text, in: field, allowFuzzy: false).map { ($0.0, $0.1 - $0.1 / 10) })
             }
         }
         if query.tokens.count > 1, query.tokens.allSatisfy({ token in words.contains { $0.hasPrefix(token) } }) {
@@ -233,7 +234,7 @@ public enum CommandSearchRanker {
         return best
     }
 
-    static func match(_ query: String, in field: String) -> (CommandSearchResult.Match, Int)? {
+    static func match(_ query: String, in field: String, allowFuzzy: Bool = true) -> (CommandSearchResult.Match, Int)? {
         guard !query.isEmpty, !field.isEmpty else { return nil }
         if field == query { return (.exact, base(.exact)) }
         if field.hasPrefix(query) { return (.prefix, base(.prefix)) }
@@ -249,7 +250,7 @@ public enum CommandSearchRanker {
         }
         let length = query.count
         if foundSubstring, length >= 2 { return (.substring, base(.substring)) }
-        guard length >= 3, !query.contains(" "), let penalty = fuzzyPenalty(query, in: field) else { return nil }
+        guard allowFuzzy, length >= 3, !query.contains(" "), let penalty = fuzzyPenalty(query, in: field) else { return nil }
         return (.fuzzy, max(150, base(.fuzzy) - penalty))
     }
 
