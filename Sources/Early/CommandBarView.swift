@@ -213,9 +213,9 @@ struct CommandBarView: View {
 
     @ViewBuilder
     private func resultIcon(for candidate: CommandSearchCandidate) -> some View {
+        let iconURL = resultIconURL(for: candidate)
         Group {
-            if let detail = candidate.detail, let url = URL(string: detail),
-               let image = model.webViews.favicons.image(for: url) {
+            if let iconURL, let image = model.webViews.favicons.image(for: iconURL) {
                 Image(nsImage: image).resizable().scaledToFit()
             } else {
                 Image(systemName: candidate.kind == .favorite ? "star.fill"
@@ -225,6 +225,16 @@ struct CommandBarView: View {
         }
         .frame(width: 16, height: 16)
         .accessibilityHidden(true)
+        .task(id: iconURL) {
+            if let iconURL { model.webViews.favicons.request(iconURL) }
+        }
+    }
+
+    private func resultIconURL(for candidate: CommandSearchCandidate) -> URL? {
+        if case .tab(let id) = candidate.target, let tab = model.coordinator.tabStore.tab(id: id) {
+            return tab.pinnedURL ?? tab.currentURL
+        }
+        return candidate.detail.flatMap(URL.init(string:))
     }
 
     private func resultBadge(for candidate: CommandSearchCandidate) -> String {
