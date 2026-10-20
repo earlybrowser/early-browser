@@ -18,7 +18,7 @@ struct BrowserIdentityIntegrationTests {
         let base = URL(string: "http://127.0.0.1:\(port)")!
         _ = try NavigationInput().validate(base)
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true) {
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false) {
             // This fixture opens its popup programmatically; production policy
             // still requires a user gesture (also covered by the native UI test).
             $0.preferences.javaScriptCanOpenWindowsAutomatically = true

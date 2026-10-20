@@ -10,7 +10,7 @@ struct SpaceLifecycleTests {
     @Test func movingFolderKeepsLiveViewsAndDoesNotLoadItsClosedPins() throws {
         _ = NSApplication.shared
         let browser = BrowserCoordinator(startup: .returningSession)
-        let manager = WebViewManager(profileID: browser.profileID, ephemeral: true)
+        let manager = WebViewManager(profileID: browser.profileID, ephemeral: true, observesMemoryPressure: false)
         defer { manager.discardAll() }
         let folder = try #require(browser.createFolder(name: "Move"))
         let nested = try #require(browser.createFolder(name: "Nested", parentID: folder))
@@ -36,7 +36,7 @@ struct SpaceLifecycleTests {
     @Test func spacesDoNotAllocateViewsAndMovingPinKeepsTheSameLiveView() throws {
         _ = NSApplication.shared
         let browser = BrowserCoordinator(startup: .returningSession)
-        let manager = WebViewManager(profileID: browser.profileID, ephemeral: true)
+        let manager = WebViewManager(profileID: browser.profileID, ephemeral: true, observesMemoryPressure: false)
         defer { manager.discardAll() }
         let original = browser.activeSpaceID
         let empty = try #require(browser.createSpace(name: "Empty"))

@@ -12,7 +12,7 @@ struct RuntimeLifecycleTests {
         _ = NSApplication.shared
         return WebViewManager(profileID: profile, ephemeral: true,
             input: NavigationInput(allowedSchemes: ["early-runtime"]),
-            faviconStore: FaviconStore { _, _, _ in nil }) {
+            faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false) {
             $0.setURLSchemeHandler(RuntimePages(), forURLScheme: "early-runtime")
         }
     }

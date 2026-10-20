@@ -11,9 +11,10 @@ struct ProfileIsolationTests {
     @Test func profileWindowsShareCookiesButOtherProfilesAndTheirPopupsDoNot() async throws {
         _ = NSApplication.shared
         let personalID = UUID(), workID = UUID()
-        let personal = WebViewManager(profileID: personalID, ephemeral: true)
-        let sibling = WebViewManager(profileID: personalID, ephemeral: true, websiteDataStore: personal.websiteDataStore)
-        let work = WebViewManager(profileID: workID, ephemeral: true)
+        let personal = WebViewManager(profileID: personalID, ephemeral: true, observesMemoryPressure: false)
+        let sibling = WebViewManager(profileID: personalID, ephemeral: true, websiteDataStore: personal.websiteDataStore,
+                                     observesMemoryPressure: false)
+        let work = WebViewManager(profileID: workID, ephemeral: true, observesMemoryPressure: false)
         defer { personal.discardAll(); sibling.discardAll(); work.discardAll() }
         let cookie = try #require(HTTPCookie(properties: [.domain: "example.com", .path: "/", .name: "login", .value: "personal"]))
         await personal.websiteDataStore.httpCookieStore.setCookie(cookie)

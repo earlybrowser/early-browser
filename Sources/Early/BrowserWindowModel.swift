@@ -106,8 +106,11 @@ final class BrowserWindowModel {
             profileID: session.profileID, recentlyClosed: session.recentlyClosed, spaces: session.spaces,
             splitGroups: session.splitGroups, focusedPaneByGroupID: session.focusedPaneByGroupID, now: now)
         persistence = sharedPersistence ?? SessionAutosaver(repository: repository, disabledReason: restorationError)
+        // Tests drive pressure explicitly; host resource usage must not change
+        // which fixture pages survive while assertions are running.
         webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
-                                 websiteDataStore: websiteDataStore) { configuration in
+                                 websiteDataStore: websiteDataStore,
+                                 observesMemoryPressure: !isTesting) { configuration in
             if let configureWebView {
                 configureWebView(configuration)
                 return

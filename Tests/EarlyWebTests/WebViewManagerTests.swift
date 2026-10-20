@@ -22,7 +22,7 @@ struct WebViewManagerTests {
     @Test func nativeHistoryGesturesAndMagnificationSurviveReuseForNormalAndPopupViews() {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         defer { manager.discardAll() }
         let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Page",
                              currentURL: URL(string: "https://example.com")!)
@@ -51,8 +51,9 @@ struct WebViewManagerTests {
     @Test func fullscreenAndProfileStoreAreSharedWithoutAlteringSuppliedConfiguration() {
         _ = NSApplication.shared
         let profile = UUID()
-        let first = WebViewManager(profileID: profile, ephemeral: true)
-        let second = WebViewManager(profileID: profile, ephemeral: true, websiteDataStore: first.websiteDataStore)
+        let first = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
+        let second = WebViewManager(profileID: profile, ephemeral: true, websiteDataStore: first.websiteDataStore,
+                                    observesMemoryPressure: false)
         func tab() -> BrowserTab {
             BrowserTab(spaceID: UUID(), profileID: profile, title: "Page", currentURL: URL(string: "https://example.com")!)
         }
@@ -71,7 +72,7 @@ struct WebViewManagerTests {
     @Test func mediaActivityAggregatesFramesAndResetsOnNavigationAndProcessExit() {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Media",
                              currentURL: URL(string: "https://example.com")!)
         let page = manager.prepare(tab)
@@ -97,7 +98,7 @@ struct WebViewManagerTests {
     @Test func tabMutingSurvivesNavigationButNeverLeaksIntoOtherTabsOrReopenedPages() {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         defer { manager.discardAll() }
         let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Media",
                              currentURL: URL(string: "https://example.com")!)
@@ -127,7 +128,7 @@ struct WebViewManagerTests {
     @Test func departingFramesStopContributingMediaActivity() {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         defer { manager.discardAll() }
         let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Media",
                              currentURL: URL(string: "https://example.com")!)
@@ -141,7 +142,7 @@ struct WebViewManagerTests {
     @Test func viewsAreLazyReusedAndExplicitlyReleased() {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Example", currentURL: URL(string: "https://example.com")!)
         #expect(manager.liveViewCount == 0)
         let page = manager.prepare(tab)
@@ -160,7 +161,7 @@ struct WebViewManagerTests {
     @Test func tabsShareOneProfileStoreAndSuppliedConfigurationIsHonored() {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         func tab() -> BrowserTab {
             BrowserTab(spaceID: UUID(), profileID: profile, title: "Example", currentURL: URL(string: "https://example.com")!)
         }
@@ -187,7 +188,7 @@ struct WebViewManagerTests {
     @Test func repeatedOpenCloseRemovesAllOwnedViewsAndDelegates() {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         for _ in 0..<20 {
             autoreleasepool {
                 let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Example", currentURL: URL(string: "https://example.com")!)

@@ -87,7 +87,7 @@ open Early.xcodeproj
 ### Run core, WebKit, and application integration tests
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --no-parallel
 ```
 
 ### Run native UI tests

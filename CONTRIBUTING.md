@@ -15,7 +15,8 @@ Reduce Motion support intact.
 
 ## Testing and pull requests
 
-Run `swift test` for core, WebKit, and application-controller changes. Run
+Run `swift test --no-parallel` for core, WebKit, and application-controller changes;
+native fixtures share AppKit/WebKit process and run-loop resources. Run
 relevant UI tests for interface changes, and describe any manual checks.
 UI tests control the mouse and keyboard:
 keep your Mac unlocked, allow Xcode's requested automation permissions, and close

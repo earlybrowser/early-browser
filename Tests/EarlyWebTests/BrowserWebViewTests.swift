@@ -56,7 +56,7 @@ struct BrowserWebViewTests {
     @Test func bridgeAcceptsOnlyValidatedURLsFromOwnedViews() {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         let source = URL(string: "https://example.com/source")!
         let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Source", currentURL: source)
         let page = manager.prepare(tab)
@@ -98,7 +98,7 @@ struct BrowserWebViewTests {
     @Test func isolatedBridgeIsInstalledOnceAlongsideMediaAndCallbacksAreReleased() throws {
         _ = NSApplication.shared
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, observesMemoryPressure: false)
         let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Source",
                              currentURL: URL(string: "https://example.com/source")!)
         let page = manager.prepare(tab)
