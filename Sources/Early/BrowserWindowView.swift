@@ -913,8 +913,30 @@ struct BrowserWindowView: View {
             .background {
                 if preview.showsOutline { groupPanel(active: preview.isActive, dashed: true) }
             }
+            .modifier(SavedSectionTargetEntrance())
             .accessibilityIdentifier(identifier)
             .allowsHitTesting(false)
+    }
+
+    /// Fade the drawing, not the layout or drag gesture. Reserve the final
+    /// target geometry immediately so insertion hit testing stays stable.
+    private struct SavedSectionTargetEntrance: ViewModifier {
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var isVisible = false
+
+        func body(content: Content) -> some View {
+            content
+                .opacity(reduceMotion || isVisible ? 1 : 0)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isVisible)
+                .task {
+                    // Give a newly inserted target its initial transparent frame;
+                    // cancellation must not reveal a stale target on a later drag.
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    isVisible = true
+                }
+                .onDisappear { isVisible = false }
+        }
     }
 
     private var favoritesSection: some View {
