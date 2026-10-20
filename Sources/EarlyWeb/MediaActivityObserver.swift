@@ -101,7 +101,7 @@ final class MediaActivityObserver: NSObject, WKScriptMessageHandlerWithReply {
     """
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
-                               replyHandler: @escaping (Any?, String?) -> Void) {
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard message.world === WKContentWorld.defaultClient,
               let view = message.webView, let body = message.body as? [String: Any],
               let token = body["token"] as? String, token.count <= 64,
