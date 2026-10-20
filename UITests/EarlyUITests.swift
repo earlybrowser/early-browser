@@ -1765,7 +1765,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(app.buttons[id].value as? String, "Pinned, closed")
     }
 
-    func testSpeakerControlUnmutesBackgroundTodayPinAndFavoriteWithoutSelectingOrRenaming() {
+    func testLeadingSpeakerControlsAndMenuOnlyFavoritesPreserveBackgroundSelection() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
@@ -1773,15 +1773,15 @@ final class EarlyUITests: XCTestCase {
         let id = String(first.dropFirst("tab.".count))
         navigate(app, to: "early-test://fixture/two", newTab: true)
         expectPage(app, "Two")
-        for kind in ["Today", "Pin", "Favorite"] {
+        for kind in ["Today", "Pin"] {
             if kind == "Pin" { pinAction("Pin Tab", on: app.buttons[first]) }
-            if kind == "Favorite" { pinAction("Add to Favorites", on: app.buttons[first]) }
-            let row = app.buttons[kind == "Favorite" ? "favorite.\(id)" : first]
+            let row = app.buttons[first]
             XCTAssertTrue(row.waitForExistence(timeout: 5))
             pinAction("Mute Tab", on: row)
             let speaker = app.buttons["tabMute.\(id)"]
             XCTAssertTrue(speaker.waitForExistence(timeout: 5))
             XCTAssertEqual(speaker.value as? String, "Muted")
+            XCTAssertLessThan(speaker.frame.maxX, row.frame.midX, "The speaker belongs next to the leading icon, not the close button")
             XCTAssertFalse(row.isSelected)
             expectPage(app, "Two")
             optionClick(speaker)
@@ -1791,6 +1791,22 @@ final class EarlyUITests: XCTestCase {
             expectPage(app, "Two")
             expectRuntime(app, tabs: 2, views: 2, created: 2)
         }
+        pinAction("Add to Favorites", on: app.buttons[first])
+        let favorite = app.buttons["favorite.\(id)"]
+        XCTAssertTrue(favorite.waitForExistence(timeout: 5))
+        pinAction("Mute Tab", on: favorite)
+        let muted = NSPredicate(format: "value CONTAINS %@", "muted")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: muted, object: favorite)], timeout: 5), .completed)
+        XCTAssertFalse(app.buttons["tabMute.\(id)"].exists, "Favorite cards must not show a speaker badge")
+        XCTAssertFalse(favorite.isSelected)
+        expectPage(app, "Two")
+        pinAction("Unmute Tab", on: favorite)
+        let unmuted = NSPredicate(format: "NOT (value CONTAINS %@)", "muted")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: unmuted, object: favorite)], timeout: 5), .completed)
+        XCTAssertFalse(app.buttons["tabMute.\(id)"].exists)
+        XCTAssertFalse(favorite.isSelected)
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
     }
 
     private func navigate(_ app: XCUIApplication, to address: String, newTab: Bool = false) {

@@ -692,12 +692,16 @@ struct BrowserWindowView: View {
             if tab.pinnedURL != nil {
                 PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
                               reset: { model.perform(.resetPinnedTab(tab.id)) }, requestsArtwork: requestsArtwork)
+                if showsMediaControl(tab) { tabMediaButton(tab) }
             }
             Button { model.perform(.selectTab(tab.id)) } label: {
                 HStack(spacing: tab.hasNavigatedFromPin ? 3 : 8) {
                     if tab.pinnedURL == nil {
                         TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
                                    size: 16, requestsArtwork: requestsArtwork)
+                        if showsMediaControl(tab) {
+                            Color.clear.frame(width: 24, height: 16).accessibilityHidden(true)
+                        }
                     }
                     if tab.hasNavigatedFromPin {
                         Text("/").foregroundStyle(.tertiary).accessibilityHidden(true)
@@ -719,6 +723,13 @@ struct BrowserWindowView: View {
             .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
                   ?? tab.currentURL.absoluteString)
             .highPriorityGesture(tabClickGesture(tab))
+            .overlay(alignment: .leading) {
+                if tab.pinnedURL == nil && showsMediaControl(tab) {
+                    // Beside the favicon, but outside the select/rename/drag
+                    // control. Reserving width above preserves the row height.
+                    tabMediaButton(tab).offset(x: 24)
+                }
+            }
             if tab.isOpen && hoveredTab == tab.id {
                 Button { model.perform(.closeTab(tab.id)) } label: {
                     Image(systemName: "xmark").font(.caption)
@@ -733,9 +744,6 @@ struct BrowserWindowView: View {
                     .accessibilityLabel("Close \(tab.displayTitle)")
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
             }
-            // Keep the speaker at the trailing edge when the hover-only close
-            // button appears, so approaching it never moves its hit target.
-            if showsMediaControl(tab) { tabMediaButton(tab) }
         }
         .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
         .padding(.trailing, 8)
@@ -764,19 +772,17 @@ struct BrowserWindowView: View {
     }
 
     private func showsMediaControl(_ tab: BrowserTab) -> Bool {
-        guard tab.isOpen, let page = model.webViews.pages[tab.id] else { return false }
+        guard !tab.isFavorite, tab.isOpen, let page = model.webViews.pages[tab.id] else { return false }
         return page.isPlayingMedia || page.isMuted
     }
 
-    private func tabMediaButton(_ tab: BrowserTab, compact: Bool = false) -> some View {
+    private func tabMediaButton(_ tab: BrowserTab) -> some View {
         let muted = model.webViews.pages[tab.id]?.isMuted == true
         return Button { model.perform(.setMuted(tab.id, !muted)) } label: {
             Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: compact ? 10 : 12))
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-                .frame(width: compact ? 20 : 24, height: compact ? 20 : 24)
-                .background(Color(nsColor: .controlBackgroundColor).opacity(compact ? 0.95 : 0),
-                            in: RoundedRectangle(cornerRadius: 6))
+                .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
         .buttonStyle(SidebarButtonStyle())
@@ -966,8 +972,7 @@ struct BrowserWindowView: View {
         .focused($focusedSidebarControl, equals: .favorite(tab.id))
         .overlay {
             RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(focusedSidebarControl == .favorite(tab.id) || focusedSidebarControl == .media(tab.id)
-                    ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
+                .strokeBorder(focusedSidebarControl == .favorite(tab.id) ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
                 .allowsHitTesting(false)
         }
         .onHover { updateTabHover(tab.id, hovering: $0) }
@@ -978,9 +983,6 @@ struct BrowserWindowView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
         .highPriorityGesture(tabClickGesture(tab))
-        .overlay(alignment: .bottomTrailing) {
-            if showsMediaControl(tab) { tabMediaButton(tab, compact: true).padding(2) }
-        }
         .opacity(draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
         .contextMenu { tabActions(tab) }

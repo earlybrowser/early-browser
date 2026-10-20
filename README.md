@@ -26,7 +26,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Quick renaming | Option-click a tab, Favorite, or folder to rename without opening it. Ordinary clicks open/toggle immediately; dragging still reorders items. | Implemented. |
 | Trackpad zoom | Native pinch-to-zoom and two-finger double-tap Smart Zoom. | Implemented. |
 | Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. Copy the current page URL with `⌘⇧C`. | Implemented. |
-| Tab media controls | Click a tab’s speaker to mute/unmute HTML audio or video without selecting it, including background tabs and Favorites. Muting is also available in tab menus and the command bar. | Implemented. |
+| Tab media controls | Click the speaker beside a tab’s icon to mute/unmute HTML audio or video without selecting it. Favorites keep their clean cards; use their context menu instead. Muting is also available in the command bar. | Implemented. |
 | Website fullscreen | Let compatible website players enter and exit fullscreen. | Implemented. |
 | Spaces and profiles | Named Spaces with icons and adaptive themes, plus separate profiles for cookies, logins, website data, and Favorites. | Implemented. |
 | Haptic feedback | Subtle native feedback for sidebar dragging and Space changes on supported devices, respecting macOS preferences. | Implemented. |
@@ -39,7 +39,6 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | State portability | Export/import supported settings, windows, tabs, folders, pins, Favorites, and workspace metadata; exclude credentials and private sessions. | Planned. |
 | Developer tools | Inspect pages through supported WebKit developer facilities. | Planned. |
 | History, bookmarks, and privacy | Search browsing history and bookmarks, use private sessions, manage permissions, and clear site data. | Planned. |
-| Site media policies | Persistent per-site muting and broader media coverage. | Planned. |
 | GitHub live folders | Automatically collect pull requests and review requests in a folder linked to your GitHub account. | Planned. |
 | Picture in Picture | Watch compatible videos in a floating window, with an on/off preference. | Planned. |
 | Settings and customization | Native Settings for profiles, Space assignment, appearance, sidebar behavior, search suggestions, command-bar actions, and local session restoration. More customization is planned. | Partial. |
