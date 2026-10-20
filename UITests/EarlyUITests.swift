@@ -1000,7 +1000,9 @@ final class EarlyUITests: XCTestCase {
             // incoming row. Compare settled ordering, not an in-flight AX frame.
             let settled = NSPredicate { _, _ in
                 guard item.exists, next.exists else { return false }
-                return horizontally ? item.frame.minX < next.frame.minX : item.frame.minY < next.frame.minY
+                let first = item.frame, second = next.frame
+                guard self.isVisibleSidebarFrame(first), self.isVisibleSidebarFrame(second) else { return false }
+                return horizontally ? first.minX < second.minX : first.minY < second.minY
             }
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: app)], timeout: 3),
                            .completed, "Items should settle into the expected order", file: file, line: line)
@@ -1142,7 +1144,11 @@ final class EarlyUITests: XCTestCase {
         let third = rows.allElementsBoundByIndex.first { ![first, second].contains($0.identifier) }!.identifier
         func expectOrder(_ ids: [String], file: StaticString = #filePath, line: UInt = #line) {
             let settled = NSPredicate { _, _ in
-                let positions = ids.map { app.buttons[$0].frame.minY }
+                let rows = ids.map { app.buttons[$0] }
+                guard rows.allSatisfy(\.exists) else { return false }
+                let frames = rows.map(\.frame)
+                guard frames.allSatisfy(self.isVisibleSidebarFrame) else { return false }
+                let positions = frames.map(\.minY)
                 return zip(positions, positions.dropFirst()).allSatisfy { $0 < $1 }
             }
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: app)], timeout: 3),
@@ -1186,6 +1192,20 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "Two")
         let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
         let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        func expectOrder(_ ids: [String], file: StaticString = #filePath, line: UInt = #line) {
+            // Release starts an asynchronous landing animation. A transparent
+            // real row can temporarily report CGRect.null through AX; neither
+            // infinity nor that intermediate state establishes a valid order.
+            let settled = NSPredicate { _, _ in
+                let rows = ids.map { app.buttons[$0] }
+                guard rows.allSatisfy(\.exists) else { return false }
+                let frames = rows.map(\.frame)
+                guard frames.allSatisfy(self.isVisibleSidebarFrame) else { return false }
+                return zip(frames, frames.dropFirst()).allSatisfy { $0.minY < $1.minY }
+            }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: app)], timeout: 3),
+                           .completed, "Rows should finish landing in the expected order: \(ids)", file: file, line: line)
+        }
         let saved = app.webViews.textFields["Saved text"]
         saved.click()
         saved.typeText("keep during move")
@@ -1195,7 +1215,7 @@ final class EarlyUITests: XCTestCase {
         source.click(forDuration: 0.3, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertFalse(app.textFields["rename.name"].exists, "Dragging must not open the rename editor")
         XCTAssertFalse(app.textFields["folder.name"].exists)
-        XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+        expectOrder([secondID, firstID])
         XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
         XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
         XCTAssertEqual(saved.value as? String, "keep during move")
@@ -1203,7 +1223,7 @@ final class EarlyUITests: XCTestCase {
         app.typeKey("1", modifierFlags: .command)
         expectPage(app, "Two")
         pinAction("Move Down", on: app.buttons[secondID])
-        XCTAssertLessThan(app.buttons[firstID].frame.minY, app.buttons[secondID].frame.minY)
+        expectOrder([firstID, secondID])
         app.typeKey("1", modifierFlags: .command)
         expectPage(app, "One")
         // Normal clicks must still select; a drop outside the rows must not reorder.
@@ -1212,15 +1232,21 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(saved.value as? String, "keep during move")
         let outside = app.webViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.7))
         source.click(forDuration: 0.2, thenDragTo: outside)
-        XCTAssertLessThan(app.buttons[firstID].frame.minY, app.buttons[secondID].frame.minY)
+        expectOrder([firstID, secondID])
         // A second real drag, then relaunch, checks that the saved order is used.
         source.click(forDuration: 0.2, thenDragTo: destination)
-        XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+        expectOrder([secondID, firstID])
         app.typeKey("q", modifierFlags: .command)
         XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
         app.launch()
         XCTAssertTrue(app.buttons[secondID].waitForExistence(timeout: 8))
-        XCTAssertLessThan(app.buttons[secondID].frame.minY, app.buttons[firstID].frame.minY)
+        expectOrder([secondID, firstID])
+    }
+
+    private func isVisibleSidebarFrame(_ frame: CGRect) -> Bool {
+        !frame.isNull && !frame.isInfinite && !frame.isEmpty
+            && frame.minX.isFinite && frame.minY.isFinite
+            && frame.maxX.isFinite && frame.maxY.isFinite
     }
 
     private func optionClick(_ element: XCUIElement) {

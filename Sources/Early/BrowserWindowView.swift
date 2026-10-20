@@ -21,6 +21,8 @@ struct BrowserWindowView: View {
     private enum PinnedIsland {
         static let height: CGFloat = 34
         static let cornerRadius: CGFloat = 10
+        static let iconControlWidth: CGFloat = 24
+        static let leadingInset: CGFloat = 4
     }
 
     @Bindable var model: BrowserWindowModel
@@ -845,7 +847,7 @@ struct BrowserWindowView: View {
         // The 24-point reset control adds four points around its 16-point
         // artwork. Together with this inset, both sections put the artwork
         // at x=8 and the title at x=32 (or x=60 with a media control).
-        .padding(.leading, tab.pinnedURL == nil ? 8 : 4)
+        .padding(.leading, tab.pinnedURL == nil ? 8 : PinnedIsland.leadingInset)
         .padding(.trailing, 8)
     }
 
@@ -1192,7 +1194,7 @@ struct BrowserWindowView: View {
                 }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(tab.isOpen ? .primary : .secondary)
-                    .frame(width: 24, height: PinnedIsland.height)
+                    .frame(width: PinnedIsland.iconControlWidth, height: PinnedIsland.height)
                     .contentShape(Rectangle())
             }
             .buttonStyle(SidebarButtonStyle())
@@ -1290,7 +1292,7 @@ struct BrowserWindowView: View {
                 FolderIcon(isOpen: isFolderOpen(folder), themeColor: folderTheme(folder))
                     .frame(width: 19, height: 20)
                     .animation(folderExpansionAnimation, value: isFolderOpen(folder))
-                    .frame(width: PinnedIsland.height, height: PinnedIsland.height)
+                    .frame(width: PinnedIsland.iconControlWidth, height: PinnedIsland.height)
                     .contentShape(Rectangle())
                     .accessibilityHidden(true)
             }
@@ -1318,6 +1320,7 @@ struct BrowserWindowView: View {
             .accessibilityHint("Click to expand or collapse. Option-click to rename.")
             .highPriorityGesture(folderClickGesture(folder))
         }
+        .padding(.leading, PinnedIsland.leadingInset)
         .padding(.trailing, 8)
         return header
         .help(folderPath(folder))
@@ -2013,11 +2016,11 @@ struct BrowserWindowView: View {
             HStack(spacing: 4) {
                 FolderIcon(isOpen: false, themeColor: folderTheme(folder))
                     .frame(width: 19, height: 20)
-                    .frame(width: PinnedIsland.height, height: PinnedIsland.height)
+                    .frame(width: PinnedIsland.iconControlWidth, height: PinnedIsland.height)
                 Text(folder.name).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
             }
-            .font(.callout).padding(.trailing, 8)
+            .font(.callout).padding(.leading, PinnedIsland.leadingInset).padding(.trailing, 8)
             .frame(width: size.width, height: size.height)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PinnedIsland.cornerRadius))
             .shadow(radius: lifted ? 5 : 0, y: lifted ? 2 : 0)
