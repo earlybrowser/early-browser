@@ -1765,6 +1765,34 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(app.buttons[id].value as? String, "Pinned, closed")
     }
 
+    func testSpeakerControlUnmutesBackgroundTodayPinAndFavoriteWithoutSelectingOrRenaming() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let first = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let id = String(first.dropFirst("tab.".count))
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        for kind in ["Today", "Pin", "Favorite"] {
+            if kind == "Pin" { pinAction("Pin Tab", on: app.buttons[first]) }
+            if kind == "Favorite" { pinAction("Add to Favorites", on: app.buttons[first]) }
+            let row = app.buttons[kind == "Favorite" ? "favorite.\(id)" : first]
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            pinAction("Mute Tab", on: row)
+            let speaker = app.buttons["tabMute.\(id)"]
+            XCTAssertTrue(speaker.waitForExistence(timeout: 5))
+            XCTAssertEqual(speaker.value as? String, "Muted")
+            XCTAssertFalse(row.isSelected)
+            expectPage(app, "Two")
+            optionClick(speaker)
+            XCTAssertTrue(speaker.waitForNonExistence(timeout: 5))
+            XCTAssertFalse(row.isSelected)
+            XCTAssertFalse(app.textFields["rename.name"].exists)
+            expectPage(app, "Two")
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+        }
+    }
+
     private func navigate(_ app: XCUIApplication, to address: String, newTab: Bool = false) {
         app.typeKey(newTab ? "t" : "l", modifierFlags: .command)
         let query = app.textFields["commandBar.query"]

@@ -53,6 +53,9 @@ extension BrowserWindowModel {
         case .setFavorite(let id, let favorite):
             guard let tab = accessibleTab(id), tab.isFavorite != favorite else { return false }
             return !favorite || tab.pinnedURL != nil || tab.isOpen
+        case .setMuted(let id, let muted):
+            guard accessibleTab(id)?.isOpen == true, let page = webViews.pages[id] else { return false }
+            return page.isMuted != muted
         case .resetPinnedTab(let id):
             return accessibleTab(id)?.pinnedURL != nil
         case .requestRename(let id):
@@ -134,6 +137,8 @@ extension BrowserWindowModel {
         case .reopenLastTab: reopenLastTab()
         case .setPinned(let id, let pinned): setPinned(id, pinned: pinned)
         case .setFavorite(let id, let favorite): setFavorite(id, favorite: favorite)
+        case .setMuted(let id, let muted):
+            guard webViews.setMuted(muted, for: id) else { return false }
         case .resetPinnedTab(let id): resetPinnedTab(id)
         case .requestRename(let id):
             requestRename(id)
@@ -245,6 +250,9 @@ extension BrowserWindowModel {
         addAction("newSpace", "New Space", .newSpace, terms: ["create space", "add space"])
         addAction("openSettings", "Open Settings", .openSettings, terms: ["settings", "preferences"])
         if let tab = activeTab {
+            let muted = webViews.pages[tab.id]?.isMuted == true
+            addAction("mute.\(tab.id.uuidString)", muted ? "Unmute Tab" : "Mute Tab",
+                      .setMuted(tab.id, !muted), terms: [muted ? "unmute audio" : "mute audio", "tab sound"])
             let pinned = tab.pinnedURL != nil
             addAction("pin.\(tab.id.uuidString)", pinned ? "Unpin Tab" : "Pin Tab",
                       .setPinned(tab.id, !pinned), terms: [pinned ? "unpin current tab" : "pin current tab"])

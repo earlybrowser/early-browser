@@ -16,6 +16,7 @@ public enum BrowserAction: Equatable, Sendable {
     case reopenLastTab
     case setPinned(UUID, Bool)
     case setFavorite(UUID, Bool)
+    case setMuted(UUID, Bool)
     case resetPinnedTab(UUID)
     case requestRename(UUID)
     case moveTabBy(UUID, Int)

@@ -247,6 +247,45 @@ struct BrowserActionTests {
         #expect(model.coordinator.commandBar == nil && fixture.saves == 1)
     }
 
+    @Test func muteActionsDoNotSelectBackgroundTabsOrChangeTheirOrganization() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let background = try fixture.open(firstURL)
+        let foreground = try fixture.open(secondURL)
+        let page = try #require(model.webViews.pages[background])
+        let before = model.coordinator.session
+        let focus = model.contentFocusRequest
+        let saves = fixture.saves
+        #expect(model.canPerform(.setMuted(background, true)))
+        #expect(model.perform(.setMuted(background, true)))
+        #expect(page.isMuted && model.coordinator.activeTabID == foreground)
+        #expect(model.coordinator.session == before && model.contentFocusRequest == focus)
+        #expect(fixture.saves == saves && model.webViews.creationCount == 2)
+        #expect(!model.canPerform(.setMuted(background, true)))
+        #expect(model.perform(.setMuted(background, false)))
+        #expect(!page.isMuted && model.coordinator.activeTabID == foreground)
+        #expect(!model.perform(.setMuted(UUID(), true)))
+        #expect(model.perform(.closeTab(background)))
+        #expect(!model.canPerform(.setMuted(background, true)))
+    }
+
+    @Test func muteCommandCandidatesFollowCurrentStateAndRejectStaleResults() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let id = try fixture.open(firstURL)
+        let mute = try #require(model.commandSearchCandidates().first { $0.title == "Mute Tab" })
+        #expect(mute.target == .action(.setMuted(id, true)))
+        #expect(model.perform(.setMuted(id, true)))
+        #expect(!model.canPerform(.setMuted(id, true)))
+        #expect(model.commandSearchCandidates().allSatisfy { $0.title != "Mute Tab" })
+        let unmute = try #require(model.commandSearchCandidates().first { $0.title == "Unmute Tab" })
+        #expect(unmute.target == .action(.setMuted(id, false)))
+        #expect(model.perform(.setMuted(id, false), source: .commandBar))
+        #expect(model.activePage?.isMuted == false)
+    }
+
     @Test func interactionLocksDisableActionsButDismissalRemainsSafe() throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
@@ -255,7 +294,7 @@ struct BrowserActionTests {
         #expect(model.perform(.presentCommandBar(.newTab)))
         let before = model.coordinator.session
         model.sidebarInteractionInProgress = true
-        for action: BrowserAction in [.closeActiveTab, .setPinned(id, true), .newSpace, .toggleSidebar,
+        for action: BrowserAction in [.closeActiveTab, .setPinned(id, true), .setMuted(id, true), .newSpace, .toggleSidebar,
                                        .presentCommandBar(.navigateCurrentTab), .selectTab(id)] {
             #expect(!model.canPerform(action) && !model.perform(action))
         }

@@ -123,7 +123,7 @@ struct BrowserWindowView: View {
     }
 
     private enum SidebarControl: Hashable {
-        case tab(UUID), close(UUID), favorite(UUID), folder(UUID), folderToggle(UUID)
+        case tab(UUID), close(UUID), media(UUID), favorite(UUID), folder(UUID), folderToggle(UUID)
     }
 
     private struct DragContainer: Equatable {
@@ -686,6 +686,7 @@ struct BrowserWindowView: View {
 
     private func tabRow(_ tab: BrowserTab, selected: Bool, requestsArtwork: Bool) -> some View {
         let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
+            || focusedSidebarControl == .media(tab.id)
         let cornerRadius: CGFloat = tab.pinnedURL == nil ? 7 : PinnedIsland.cornerRadius
         return HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
             if tab.pinnedURL != nil {
@@ -700,11 +701,6 @@ struct BrowserWindowView: View {
                     }
                     if tab.hasNavigatedFromPin {
                         Text("/").foregroundStyle(.tertiary).accessibilityHidden(true)
-                    }
-                    if model.webViews.pages[tab.id]?.isPlayingMedia == true {
-                        Image(systemName: "speaker.wave.2.fill")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .accessibilityLabel("Media playing")
                     }
                     Text(tab.displayTitle).lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 0)
@@ -737,6 +733,9 @@ struct BrowserWindowView: View {
                     .accessibilityLabel("Close \(tab.displayTitle)")
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
             }
+            // Keep the speaker at the trailing edge when the hover-only close
+            // button appears, so approaching it never moves its hit target.
+            if showsMediaControl(tab) { tabMediaButton(tab) }
         }
         .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
         .padding(.trailing, 8)
@@ -764,13 +763,40 @@ struct BrowserWindowView: View {
         else if hoveredTab == id { hoveredTab = nil }
     }
 
+    private func showsMediaControl(_ tab: BrowserTab) -> Bool {
+        guard tab.isOpen, let page = model.webViews.pages[tab.id] else { return false }
+        return page.isPlayingMedia || page.isMuted
+    }
+
+    private func tabMediaButton(_ tab: BrowserTab, compact: Bool = false) -> some View {
+        let muted = model.webViews.pages[tab.id]?.isMuted == true
+        return Button { model.perform(.setMuted(tab.id, !muted)) } label: {
+            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: compact ? 10 : 12))
+                .foregroundStyle(.secondary)
+                .frame(width: compact ? 20 : 24, height: compact ? 20 : 24)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(compact ? 0.95 : 0),
+                            in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(SidebarButtonStyle())
+        .focused($focusedSidebarControl, equals: .media(tab.id))
+        .accessibilityIdentifier("tabMute.\(tab.id)")
+        .accessibilityLabel("\(muted ? "Unmute" : "Mute") \(tab.displayTitle)")
+        .accessibilityValue(muted ? "Muted" : "Media playing")
+        .accessibilityHint("Changes this tab’s sound without selecting it.")
+        .help(muted ? "Unmute tab" : "Mute tab")
+        .disabled(!model.canPerform(.setMuted(tab.id, !muted)))
+    }
+
     private func tabAccessibilityValue(_ tab: BrowserTab) -> String {
         let section = tab.isFavorite ? "Favorite" : "Pinned"
         let base = tab.pinnedURL == nil ? "Today" : "\(section), \(tab.isOpen ? "open" : "closed")"
         guard let page = model.webViews.pages[tab.id] else { return base }
-        if page.isLoading { return base + ", loading" }
-        if page.failure != nil { return base + ", load failed" }
-        return base
+        let media = page.isMuted ? ", muted" : (page.isPlayingMedia ? ", media playing" : "")
+        if page.isLoading { return base + media + ", loading" }
+        if page.failure != nil { return base + media + ", load failed" }
+        return base + media
     }
 
     @ViewBuilder
@@ -778,6 +804,12 @@ struct BrowserWindowView: View {
         Button("Duplicate Tab") { model.perform(.duplicateTab(tab.id)) }
         Button("Open Tab in New Window") { model.perform(.openTabInNewWindow(tab.id)) }
         Button("Rename Tab…") { model.perform(.requestRename(tab.id)) }
+        if let page = model.webViews.pages[tab.id] {
+            Button(page.isMuted ? "Unmute Tab" : "Mute Tab") {
+                model.perform(.setMuted(tab.id, !page.isMuted))
+            }
+            .disabled(!model.canPerform(.setMuted(tab.id, !page.isMuted)))
+        }
         if !tab.isFavorite {
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
@@ -934,7 +966,8 @@ struct BrowserWindowView: View {
         .focused($focusedSidebarControl, equals: .favorite(tab.id))
         .overlay {
             RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(focusedSidebarControl == .favorite(tab.id) ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
+                .strokeBorder(focusedSidebarControl == .favorite(tab.id) || focusedSidebarControl == .media(tab.id)
+                    ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
                 .allowsHitTesting(false)
         }
         .onHover { updateTabHover(tab.id, hovering: $0) }
@@ -945,6 +978,9 @@ struct BrowserWindowView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
         .highPriorityGesture(tabClickGesture(tab))
+        .overlay(alignment: .bottomTrailing) {
+            if showsMediaControl(tab) { tabMediaButton(tab, compact: true).padding(2) }
+        }
         .opacity(draggingTab == tab.id ? 0 : 1)
         .zIndex(draggingTab == tab.id ? 1 : 0)
         .contextMenu { tabActions(tab) }
