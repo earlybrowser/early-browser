@@ -148,6 +148,7 @@ public struct BrowserWorkspace: Codable, Equatable, Sendable {
             }
             window.selectionBySpace.removeValue(forKey: id)
             if window.activeSpaceID == id { window.activeSpaceID = remainingSpaces[0].id }
+            window.pruneSplitMetadata()
         }
         removeSpace(from: &source)
         for index in source.additionalWindows.indices { removeSpace(from: &source.additionalWindows[index]) }

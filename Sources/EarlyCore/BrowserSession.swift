@@ -16,13 +16,17 @@ public struct BrowserSession: Codable, Equatable, Sendable {
     public var recentlyClosed: [ClosedTab]
     public var folders: [BrowserFolder]
     public var spaces: [BrowserSpace]
+    public var splitGroups: [BrowserSplitGroup]
+    /// Per-window group -> pane identity. Never synchronized as a saved item.
+    public var focusedPaneByGroupID: [UUID: UUID]
     /// Only the root snapshot contains additional windows. Each window owns its
     /// Today tabs and selection; saved items are synchronized before persistence.
     public var additionalWindows: [BrowserSession] = []
 
     public init(profileID: UUID = UUID(), activeSpaceID: UUID = UUID(),
                 tabs: [BrowserTab] = [], selectionBySpace: [UUID: UUID] = [:],
-                recentlyClosed: [ClosedTab] = [], folders: [BrowserFolder] = [], spaces: [BrowserSpace]? = nil) {
+                recentlyClosed: [ClosedTab] = [], folders: [BrowserFolder] = [], spaces: [BrowserSpace]? = nil,
+                splitGroups: [BrowserSplitGroup] = [], focusedPaneByGroupID: [UUID: UUID] = [:]) {
         self.profileID = profileID
         self.activeSpaceID = activeSpaceID
         self.tabs = tabs
@@ -31,10 +35,13 @@ public struct BrowserSession: Codable, Equatable, Sendable {
         self.folders = folders
         self.spaces = spaces ?? BrowserSpace.migrated(profileID: profileID, activeID: activeSpaceID,
             tabs: tabs, folders: folders, selection: selectionBySpace, closed: recentlyClosed)
+        self.splitGroups = splitGroups
+        self.focusedPaneByGroupID = focusedPaneByGroupID
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, profileID, activeSpaceID, tabs, selectionBySpace, recentlyClosed, folders, spaces, additionalWindows
+        case splitGroups, focusedPaneByGroupID
     }
 
     public init(from decoder: any Decoder) throws {
@@ -48,6 +55,10 @@ public struct BrowserSession: Codable, Equatable, Sendable {
         recentlyClosed = try values.decode([ClosedTab].self, forKey: .recentlyClosed)
         folders = try values.decodeIfPresent([BrowserFolder].self, forKey: .folders) ?? []
         additionalWindows = try values.decodeIfPresent([BrowserSession].self, forKey: .additionalWindows) ?? []
+        // Additive, optional v2 metadata: a malformed layout must not prevent
+        // restoration of otherwise valid tabs, Spaces, or saved organization.
+        splitGroups = (try? values.decode([BrowserSplitGroup].self, forKey: .splitGroups)) ?? []
+        focusedPaneByGroupID = (try? values.decode([UUID: UUID].self, forKey: .focusedPaneByGroupID)) ?? [:]
         if storedVersion == 1 {
             spaces = BrowserSpace.migrated(profileID: profileID, activeID: activeSpaceID,
                 tabs: tabs, folders: folders, selection: selectionBySpace, closed: recentlyClosed)
@@ -67,6 +78,7 @@ public struct BrowserSession: Codable, Equatable, Sendable {
         } else {
             spaces = try values.decode([BrowserSpace].self, forKey: .spaces)
         }
+        pruneSplitMetadata()
     }
 
     public func validate(using input: NavigationInput = NavigationInput()) throws {
@@ -96,6 +108,10 @@ public struct BrowserSession: Codable, Equatable, Sendable {
             if let url = tab.pinnedURL { _ = try input.validate(url) }
             guard tab.profileID == profileID else { throw SessionError.invalidData }
         }
+        guard BrowserSplitGroup.pruned(splitGroups, tabs: tabs, spaces: spaces, profileID: profileID) == splitGroups,
+              focusedPaneByGroupID.allSatisfy({ groupID, paneID in
+                  splitGroups.contains { $0.id == groupID && $0.panes.contains { $0.id == paneID } }
+              }) else { throw SessionError.invalidData }
     }
 
     private mutating func pruneSelections() {
