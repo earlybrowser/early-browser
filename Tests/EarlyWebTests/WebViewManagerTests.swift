@@ -94,6 +94,50 @@ struct WebViewManagerTests {
         #expect(manager.liveViewCount == 0)
     }
 
+    @Test func tabMutingSurvivesNavigationButNeverLeaksIntoOtherTabsOrReopenedPages() {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        defer { manager.discardAll() }
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Media",
+                             currentURL: URL(string: "https://example.com")!)
+        let other = BrowserTab(spaceID: tab.spaceID, profileID: profile, title: "Other", currentURL: tab.currentURL)
+        let page = manager.prepare(tab)
+        let background = manager.prepare(other)
+        #expect(!page.isMuted && !background.isMuted)
+        #expect(manager.setMuted(true, for: tab.id))
+        #expect(page.isMuted && !background.isMuted)
+        let state = manager.updateMediaActivity(in: page.view, token: "frame", playing: false)
+        #expect(state?["muted"] as? Bool == true)
+        #expect(state?["revision"] as? Int == 1)
+        manager.webView(page.view, didCommit: nil)
+        #expect(page.isMuted && !page.isPlayingMedia)
+        manager.webViewWebContentProcessDidTerminate(page.view)
+        #expect(page.isMuted && !page.isPlayingMedia)
+        #expect(manager.setMuted(false, for: tab.id))
+        #expect(!page.isMuted && !background.isMuted)
+        #expect(manager.setMuted(true, for: tab.id))
+        manager.discard(tabID: tab.id)
+        #expect(!manager.setMuted(true, for: tab.id))
+        #expect(manager.updateMediaActivity(in: page.view, token: "late", playing: true) == nil)
+        #expect(!manager.prepare(tab).isMuted)
+        #expect(manager.creationCount == 3)
+    }
+
+    @Test func departingFramesStopContributingMediaActivity() {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let manager = WebViewManager(profileID: profile, ephemeral: true)
+        defer { manager.discardAll() }
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Media",
+                             currentURL: URL(string: "https://example.com")!)
+        let page = manager.prepare(tab)
+        manager.updateMediaActivity(in: page.view, token: "frame", playing: true)
+        #expect(page.isPlayingMedia)
+        manager.updateMediaActivity(in: page.view, token: "frame", playing: true, removed: true)
+        #expect(!page.isPlayingMedia)
+    }
+
     @Test func viewsAreLazyReusedAndExplicitlyReleased() {
         _ = NSApplication.shared
         let profile = UUID()

@@ -10,7 +10,10 @@ public final class BrowserPage {
     public let view: WKWebView
     public var isLoading = false
     public var isPlayingMedia = false
+    public fileprivate(set) var isMuted = false
     fileprivate var playingFrames: Set<String> = []
+    fileprivate var mediaFrames: [String: WKFrameInfo] = [:]
+    fileprivate var muteRevision = 0
     public var progress = 0.0
     public var canGoBack = false
     public var canGoForward = false
@@ -85,7 +88,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let mediaObserver = MediaActivityObserver()
         mediaObserver.owner = self
         controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
-        controller.add(mediaObserver, contentWorld: .defaultClient, name: MediaActivityObserver.name)
+        controller.addScriptMessageHandler(mediaObserver, contentWorld: .defaultClient, name: MediaActivityObserver.name)
         if !controller.userScripts.contains(where: { $0.source == MediaActivityObserver.script }) {
             controller.addUserScript(WKUserScript(source: MediaActivityObserver.script,
                 injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
@@ -159,8 +162,29 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public func back(_ id: UUID) { pages[id]?.view.goBack() }
     public func forward(_ id: UUID) { pages[id]?.view.goForward() }
 
+    /// Temporary, page-owned HTML audio/video muting. It survives navigation
+    /// in this live tab, but is deliberately not a persisted site preference.
+    @discardableResult
+    public func setMuted(_ muted: Bool, for id: UUID) -> Bool {
+        guard let page = pages[id] else { return false }
+        guard page.isMuted != muted else { return true }
+        page.isMuted = muted
+        page.muteRevision += 1
+        let script = "globalThis.__earlyMediaControl?.applyState({muted:\(muted),revision:\(page.muteRevision)})"
+        // Each document registers its own frame, including cross-origin embeds.
+        // Newly loaded documents receive the latest state in their bridge reply.
+        page.view.evaluateJavaScript(script, in: nil, in: .defaultClient) { _ in }
+        for frame in page.mediaFrames.values where !frame.isMainFrame {
+            page.view.evaluateJavaScript(script, in: frame, in: .defaultClient) { _ in }
+        }
+        return true
+    }
+
     public func discard(tabID: UUID) {
         guard let page = pages.removeValue(forKey: tabID) else { return }
+        page.mediaFrames.removeAll()
+        page.playingFrames.removeAll()
+        page.isPlayingMedia = false
         if let view = page.view as? BrowserWebView {
             view.cancelLinkMenu()
             view.onOpenWindowLink = nil
@@ -217,12 +241,20 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         return true
     }
 
-    func updateMediaActivity(in view: WKWebView, token: String, playing: Bool) {
-        guard let id = identities[ObjectIdentifier(view)], let page = pages[id] else { return }
-        if playing {
-            if page.playingFrames.count < 128 { page.playingFrames.insert(token) }
-        } else { page.playingFrames.remove(token) }
+    @discardableResult
+    func updateMediaActivity(in view: WKWebView, token: String, playing: Bool,
+                             frame: WKFrameInfo? = nil, removed: Bool = false) -> [String: Any]? {
+        guard let id = identities[ObjectIdentifier(view)], let page = pages[id] else { return nil }
+        if removed {
+            page.mediaFrames.removeValue(forKey: token)
+            page.playingFrames.remove(token)
+        } else {
+            if let frame { page.mediaFrames[token] = frame }
+            if playing { page.playingFrames.insert(token) }
+            else { page.playingFrames.remove(token) }
+        }
         page.isPlayingMedia = !page.playingFrames.isEmpty
+        return ["muted": page.isMuted, "revision": page.muteRevision]
     }
 
     private func refresh(_ id: UUID) {
@@ -280,6 +312,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
         pages[id]?.playingFrames.removeAll()
+        pages[id]?.mediaFrames.removeAll()
         pages[id]?.isPlayingMedia = false
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -318,6 +351,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.isLoading = false
         pages[id]?.isPlayingMedia = false
         pages[id]?.playingFrames.removeAll()
+        pages[id]?.mediaFrames.removeAll()
     }
 
     public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,

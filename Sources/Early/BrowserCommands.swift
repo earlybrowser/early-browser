@@ -54,6 +54,12 @@ struct BrowserCommands: Commands {
                 if let id = model?.activeTab?.id { model?.perform(.requestRename(id)) }
             }
             .disabled(model?.activeTab.map { model?.canPerform(.requestRename($0.id)) == true } != true)
+            Button(model?.activePage?.isMuted == true ? "Unmute Tab" : "Mute Tab") {
+                if let tab = model?.activeTab {
+                    model?.perform(.setMuted(tab.id, model?.activePage?.isMuted != true))
+                }
+            }
+            .disabled(model?.activeTab.map { model?.canPerform(.setMuted($0.id, model?.activePage?.isMuted != true)) == true } != true)
             Button(model?.activeTab?.isFavorite == true ? "Remove from Favorites" : "Add to Favorites") {
                 if let tab = model?.activeTab { model?.perform(.setFavorite(tab.id, !tab.isFavorite)) }
             }

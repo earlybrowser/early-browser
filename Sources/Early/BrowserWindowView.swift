@@ -63,6 +63,7 @@ struct BrowserWindowView: View {
     }
     #endif
     @State private var hoveredTab: UUID?
+    @State private var hoveredMedia: UUID?
     @State private var hoveredFolder: UUID?
     @State private var hoveredFolderGroups: Set<UUID> = []
     @State private var folderBounceEvent: FolderBounceEvent?
@@ -123,7 +124,7 @@ struct BrowserWindowView: View {
     }
 
     private enum SidebarControl: Hashable {
-        case tab(UUID), close(UUID), favorite(UUID), folder(UUID), folderToggle(UUID)
+        case tab(UUID), close(UUID), media(UUID), favorite(UUID), folder(UUID), folderToggle(UUID)
     }
 
     private struct DragContainer: Equatable {
@@ -686,25 +687,30 @@ struct BrowserWindowView: View {
 
     private func tabRow(_ tab: BrowserTab, selected: Bool, requestsArtwork: Bool) -> some View {
         let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
+            || focusedSidebarControl == .media(tab.id)
         let cornerRadius: CGFloat = tab.pinnedURL == nil ? 7 : PinnedIsland.cornerRadius
+        let hasMedia = showsMediaControl(tab)
+        let hasLeadingMedia = tab.pinnedURL == nil && hasMedia
         return HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
             if tab.pinnedURL != nil {
-                PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
-                              reset: { model.perform(.resetPinnedTab(tab.id)) }, requestsArtwork: requestsArtwork)
+                HStack(spacing: hasMedia ? (tab.hasNavigatedFromPin ? 1 : 4) : 0) {
+                    PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
+                                  reset: { model.perform(.resetPinnedTab(tab.id)) }, requestsArtwork: requestsArtwork)
+                    tabMediaSlot(tab, visible: hasMedia)
+                }
             }
             Button { model.perform(.selectTab(tab.id)) } label: {
-                HStack(spacing: tab.hasNavigatedFromPin ? 3 : 8) {
+                HStack(spacing: tab.hasNavigatedFromPin ? 3 : (hasLeadingMedia ? 4 : 8)) {
                     if tab.pinnedURL == nil {
-                        TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
-                                   size: 16, requestsArtwork: requestsArtwork)
+                        HStack(spacing: hasLeadingMedia ? 8 : 0) {
+                            TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
+                                       size: 16, requestsArtwork: requestsArtwork)
+                            Color.clear.frame(width: hasLeadingMedia ? 24 : 0, height: 16)
+                                .accessibilityHidden(true)
+                        }
                     }
                     if tab.hasNavigatedFromPin {
                         Text("/").foregroundStyle(.tertiary).accessibilityHidden(true)
-                    }
-                    if model.webViews.pages[tab.id]?.isPlayingMedia == true {
-                        Image(systemName: "speaker.wave.2.fill")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .accessibilityLabel("Media playing")
                     }
                     Text(tab.displayTitle).lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 0)
@@ -723,13 +729,16 @@ struct BrowserWindowView: View {
             .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
                   ?? tab.currentURL.absoluteString)
             .highPriorityGesture(tabClickGesture(tab))
+            .overlay(alignment: .leading) {
+                if tab.pinnedURL == nil {
+                    // Beside the favicon, but outside the select/rename/drag
+                    // control. Reserving width above preserves the row height.
+                    tabMediaSlot(tab, visible: hasLeadingMedia).offset(x: 24)
+                }
+            }
             if tab.isOpen && hoveredTab == tab.id {
                 Button { model.perform(.closeTab(tab.id)) } label: {
-                    Image(systemName: "xmark").font(.caption)
-                        .frame(width: 24, height: 24)
-                        .background(Color.primary.opacity(hoveredTab == tab.id ? 0.12 : 0.07),
-                                    in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
+                    tabControlLabel("xmark", highlighted: true)
                 }
                     .buttonStyle(SidebarButtonStyle())
                     .focused($focusedSidebarControl, equals: .close(tab.id))
@@ -738,6 +747,7 @@ struct BrowserWindowView: View {
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
             }
         }
+        .animation(reduceMotion || draggingTab != nil ? nil : .easeInOut(duration: 0.18), value: hasMedia)
         .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
         .padding(.trailing, 8)
         .background(Color.primary.opacity(selected ? 0.08 : (hoveredTab == tab.id ? 0.04 : 0)))
@@ -764,13 +774,66 @@ struct BrowserWindowView: View {
         else if hoveredTab == id { hoveredTab = nil }
     }
 
+    private func showsMediaControl(_ tab: BrowserTab) -> Bool {
+        guard !tab.isFavorite, tab.isOpen, let page = model.webViews.pages[tab.id] else { return false }
+        return page.isPlayingMedia || page.isMuted
+    }
+
+    private func tabControlLabel(_ symbol: String, highlighted: Bool) -> some View {
+        Image(systemName: symbol).font(.caption)
+            .frame(width: 24, height: 24)
+            .background(Color.primary.opacity(highlighted ? 0.12 : 0),
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+            .contentTransition(.opacity)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: symbol)
+    }
+
+    private func tabMediaSlot(_ tab: BrowserTab, visible: Bool) -> some View {
+        // Animate the reserved width and glyph together, clipping the control
+        // to its growing/shrinking slot so it never overlaps the sliding title.
+        tabMediaButton(tab)
+            .frame(width: visible ? 24 : 0, alignment: .leading)
+            .opacity(visible ? 1 : 0)
+            .clipped()
+            .contentShape(Rectangle())
+            .allowsHitTesting(visible)
+            .disabled(!visible)
+            .accessibilityHidden(!visible)
+            .onChange(of: visible) { _, visible in
+                if !visible && hoveredMedia == tab.id { hoveredMedia = nil }
+            }
+    }
+
+    private func tabMediaButton(_ tab: BrowserTab) -> some View {
+        let muted = model.webViews.pages[tab.id]?.isMuted == true
+        let hovered = hoveredMedia == tab.id
+        return Button { model.perform(.setMuted(tab.id, !muted)) } label: {
+            tabControlLabel(muted ? "speaker.slash.fill" : "speaker.wave.3.fill", highlighted: hovered)
+        }
+        .buttonStyle(SidebarButtonStyle())
+        .focused($focusedSidebarControl, equals: .media(tab.id))
+        .onHover { inside in
+            if inside { hoveredMedia = tab.id }
+            else if hoveredMedia == tab.id { hoveredMedia = nil }
+        }
+        .onDisappear { if hoveredMedia == tab.id { hoveredMedia = nil } }
+        .accessibilityIdentifier("tabMute.\(tab.id)")
+        .accessibilityLabel("\(muted ? "Unmute" : "Mute") \(tab.displayTitle)")
+        .accessibilityValue(muted ? "Muted" : "Media playing")
+        .accessibilityHint("Changes this tab’s sound without selecting it.")
+        .help(muted ? "Unmute tab" : "Mute tab")
+        .disabled(!model.canPerform(.setMuted(tab.id, !muted)))
+    }
+
     private func tabAccessibilityValue(_ tab: BrowserTab) -> String {
         let section = tab.isFavorite ? "Favorite" : "Pinned"
         let base = tab.pinnedURL == nil ? "Today" : "\(section), \(tab.isOpen ? "open" : "closed")"
         guard let page = model.webViews.pages[tab.id] else { return base }
-        if page.isLoading { return base + ", loading" }
-        if page.failure != nil { return base + ", load failed" }
-        return base
+        let media = page.isMuted ? ", muted" : (page.isPlayingMedia ? ", media playing" : "")
+        if page.isLoading { return base + media + ", loading" }
+        if page.failure != nil { return base + media + ", load failed" }
+        return base + media
     }
 
     @ViewBuilder
@@ -778,6 +841,12 @@ struct BrowserWindowView: View {
         Button("Duplicate Tab") { model.perform(.duplicateTab(tab.id)) }
         Button("Open Tab in New Window") { model.perform(.openTabInNewWindow(tab.id)) }
         Button("Rename Tab…") { model.perform(.requestRename(tab.id)) }
+        if let page = model.webViews.pages[tab.id] {
+            Button(page.isMuted ? "Unmute Tab" : "Mute Tab") {
+                model.perform(.setMuted(tab.id, !page.isMuted))
+            }
+            .disabled(!model.canPerform(.setMuted(tab.id, !page.isMuted)))
+        }
         if !tab.isFavorite {
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in

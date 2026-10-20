@@ -292,6 +292,7 @@ struct CommandBarView: View {
             case .openSettings: return "gearshape"
             case .setPinned(_, let pinned): return pinned ? "pin" : "pin.slash"
             case .setFavorite(_, let favorite): return favorite ? "star" : "star.slash"
+            case .setMuted(_, let muted): return muted ? "speaker.slash.fill" : "speaker.wave.3.fill"
             case .resetPinnedTab: return "arrow.counterclockwise"
             case .requestRename: return "pencil"
             case .duplicateTab: return "plus.square.on.square"
