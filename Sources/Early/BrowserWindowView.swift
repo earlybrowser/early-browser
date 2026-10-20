@@ -644,24 +644,32 @@ struct BrowserWindowView: View {
                 ScrollView {
                     // Pins and Today share a scroll region: many persistent pins
                     // must not push Today or New Tab outside the reachable sidebar.
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    // These rows include animated zero-height drop targets.
+                    // Measure the complete stack: lazy visibility estimates can
+                    // skip the leading collapsed rows and the controls after
+                    // them, and leave stale destination geometry during a drop.
+                    VStack(alignment: .leading, spacing: 0) {
                         // One identity domain: moving the same UUID between two
                         // sibling ForEach collections can retain a stale lazy row.
                         ForEach(items) { item in
                             let retainsSourceSlot = pinPreview.sourceSlotID != nil && pinPreview.sourceSlotID == item.draggableID
                             let vacatesRow = !retainsSourceSlot && vacatesSourceRow(item)
                             let hidesBoundary = !showsPins && item.isPinsBoundary
-                            Group {
+                            // Keep one layout container per item while its
+                            // reserved height changes during dragging.
+                            VStack(alignment: .leading, spacing: 0) {
                             switch item {
                             case .pinnedStart:
-                                Color.clear
-                                    .frame(height: showsPins ? (pinPreview.showsEmptyTarget && pinPreview.sourceSlotID == nil ? pinPreview.height : 4) : 0)
-                                    .overlay {
-                                        if pinPreview.showsEmptyTarget && pinPreview.sourceSlotID == nil {
-                                            emptySavedSectionTarget("Pins", preview: pinPreview,
-                                                identifier: "sidebar.pinned.dropTarget")
-                                        }
+                                VStack(spacing: 0) {
+                                    if pinPreview.showsEmptyTarget && pinPreview.sourceSlotID == nil {
+                                        emptySavedSectionTarget("Pins", preview: pinPreview,
+                                            identifier: "sidebar.pinned.dropTarget")
+                                    } else {
+                                        Color.clear.frame(height: 4)
                                     }
+                                }
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: showsPins ? (pinPreview.showsEmptyTarget && pinPreview.sourceSlotID == nil ? pinPreview.height : 4) : 0, alignment: .top)
                                     .clipped()
                                     .background(dropArea("pinned"))
                                     .accessibilityHidden(!showsPins)
@@ -674,6 +682,7 @@ struct BrowserWindowView: View {
                                     .background(dropArea("divider"))
                             case .newTab:
                                 newTabButton
+                                    .fixedSize(horizontal: false, vertical: true)
                                     .background(dropArea("regular"))
                             case .tab(let tab, let depth):
                                 tabRow(tab, selected: tab.id == selection, requestsArtwork: active)
@@ -695,6 +704,7 @@ struct BrowserWindowView: View {
                                     .accessibilityHidden(true)
                             }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .overlay {
                                 if retainsSourceSlot {
                                     // The last lifted pin/folder leaves its existing
@@ -712,6 +722,7 @@ struct BrowserWindowView: View {
                             .id(item.id)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                     .backgroundPreferenceValue(FolderBoundaries.self) { anchors in
                         pinnedGroupBackgrounds(anchors: anchors)
                     }
@@ -721,7 +732,7 @@ struct BrowserWindowView: View {
                 .background(sectionFrame(favorites: false))
                 .task(id: active ? model.sidebarReveal?.id : nil) {
                     guard let request = model.sidebarReveal, request.spaceID == space.id else { return }
-                    // Let the moved row enter the destination's lazy layout first.
+                    // Let the moved row enter the destination layout first.
                     await Task.yield()
                     guard !Task.isCancelled, model.coordinator.activeSpaceID == space.id,
                           model.sidebarReveal?.id == request.id else { return }
@@ -772,10 +783,7 @@ struct BrowserWindowView: View {
         SpaceFooter(model: model)
     }
 
-    private func tabRow(_ tab: BrowserTab, selected: Bool, requestsArtwork: Bool) -> some View {
-        let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
-            || focusedSidebarControl == .media(tab.id)
-        let cornerRadius: CGFloat = tab.pinnedURL == nil ? 7 : PinnedIsland.cornerRadius
+    private func tabRowContent(_ tab: BrowserTab, selected: Bool, requestsArtwork: Bool) -> some View {
         let hasMedia = showsMediaControl(tab)
         let hasLeadingMedia = tab.pinnedURL == nil && hasMedia
         return HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
@@ -799,7 +807,7 @@ struct BrowserWindowView: View {
                     if tab.hasNavigatedFromPin {
                         Text("/").foregroundStyle(.tertiary).accessibilityHidden(true)
                     }
-                    Text(tab.displayTitle).lineLimit(1).truncationMode(.tail)
+                    sidebarTabTitle(tab)
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(tab.isOpen ? .primary : .secondary)
@@ -834,9 +842,20 @@ struct BrowserWindowView: View {
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
             }
         }
-        .animation(reduceMotion || draggingTab != nil ? nil : .easeInOut(duration: 0.18), value: hasMedia)
-        .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
+        // The 24-point reset control adds four points around its 16-point
+        // artwork. Together with this inset, both sections put the artwork
+        // at x=8 and the title at x=32 (or x=60 with a media control).
+        .padding(.leading, tab.pinnedURL == nil ? 8 : 4)
         .padding(.trailing, 8)
+    }
+
+    private func tabRow(_ tab: BrowserTab, selected: Bool, requestsArtwork: Bool) -> some View {
+        let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
+            || focusedSidebarControl == .media(tab.id)
+        let cornerRadius: CGFloat = tab.pinnedURL == nil ? 7 : PinnedIsland.cornerRadius
+        let hasMedia = showsMediaControl(tab)
+        return tabRowContent(tab, selected: selected, requestsArtwork: requestsArtwork)
+        .animation(reduceMotion || draggingTab != nil ? nil : .easeInOut(duration: 0.18), value: hasMedia)
         .background(Color.primary.opacity(selected ? 0.08 : (hoveredTab == tab.id ? 0.04 : 0)))
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .overlay {
@@ -860,6 +879,17 @@ struct BrowserWindowView: View {
     private func updateTabHover(_ id: UUID, hovering: Bool) {
         if hovering { hoveredTab = id }
         else if hoveredTab == id { hoveredTab = nil }
+    }
+
+    // Use the same typography in the live row, drag proxy, and landing proxy.
+    // A callout font in the proxy makes the title shrink on pickup and grow
+    // again when the real row becomes visible.
+    private func sidebarTabTitle(_ tab: BrowserTab) -> some View {
+        Text(tab.displayTitle)
+            .font(.body)
+            .foregroundStyle(tab.isOpen ? .primary : .secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 
     private func showsMediaControl(_ tab: BrowserTab) -> Bool {
@@ -1162,9 +1192,7 @@ struct BrowserWindowView: View {
                 }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(tab.isOpen ? .primary : .secondary)
-                    .frame(width: PinnedIsland.height, height: PinnedIsland.height)
-                    .background(Color.primary.opacity(canReset && (hovered || focused) ? 0.16 : 0),
-                                in: RoundedRectangle(cornerRadius: 7))
+                    .frame(width: 24, height: PinnedIsland.height)
                     .contentShape(Rectangle())
             }
             .buttonStyle(SidebarButtonStyle())
@@ -1954,17 +1982,18 @@ struct BrowserWindowView: View {
         switch item {
         case .tab(let tab):
             let name = tab.customTitle ?? tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
-            HStack(spacing: 8) {
-                TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
-                           size: overFavorites ? 18 : 16,
-                           monogram: overFavorites ? String(name.prefix(1)).uppercased() : nil)
-                if !overFavorites {
-                    Text(tab.displayTitle).truncationMode(.tail)
-                    Spacer(minLength: 0)
+            Group {
+                if overFavorites {
+                    TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
+                               size: 18, monogram: String(name.prefix(1)).uppercased())
+                        .padding(.horizontal, 8)
+                } else {
+                    // Reuse the actual row's icon, media slot, separator and
+                    // title layout so pickup cannot change their spacing.
+                    tabRowContent(tab, selected: model.coordinator.activeTabID == tab.id, requestsArtwork: false)
                 }
             }
-                .font(.callout).lineLimit(1)
-                .padding(.horizontal, 8)
+                .font(.body).lineLimit(1)
                 .frame(width: size.width, height: size.height)
                 .background {
                     if overFavorites, model.coordinator.activeTabID == tab.id, let tint = favoriteTint(tab) {
