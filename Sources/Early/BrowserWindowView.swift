@@ -159,6 +159,14 @@ struct BrowserWindowView: View {
             case .folderEnd(let folder, _): "folder-end-\(folder.id)"
             }
         }
+
+        var draggableID: UUID? {
+            switch self {
+            case .tab(let tab, _): tab.id
+            case .folder(let folder, _): folder.id
+            default: nil
+            }
+        }
     }
 
     private var sidebarItems: [SidebarItem] {
@@ -553,7 +561,9 @@ struct BrowserWindowView: View {
     private func spaceContents(for space: BrowserSpace) -> some View {
         let active = space.id == model.coordinator.activeSpaceID
         let items = sidebarItems(in: space.id)
-        let hasPins = !model.coordinator.tabStore.pinnedItems(in: space.id, parentID: nil).isEmpty
+        let pinIDs = model.coordinator.tabStore.pinnedItems(in: space.id, parentID: nil).map(\.id)
+        let pinPreview = SidebarSavedSectionPreview(section: .pinned, itemIDs: pinIDs,
+            draggingItemID: active ? draggingTab : nil, isTargeted: destinationSection(at: dragPoint) == .pinned)
         let selection = model.coordinator.session.selectionBySpace[space.id]
         return VStack(alignment: .leading, spacing: 16) {
             Text(space.name)
@@ -573,12 +583,14 @@ struct BrowserWindowView: View {
                         // One identity domain: moving the same UUID between two
                         // sibling ForEach collections can retain a stale lazy row.
                         ForEach(items) { item in
+                            let retainsSourceSlot = pinPreview.sourceSlotID != nil && pinPreview.sourceSlotID == item.draggableID
+                            let vacatesRow = !retainsSourceSlot && vacatesSourceRow(item)
                             Group {
                             switch item {
                             case .pinnedStart:
                                 Group {
-                                    if !hasPins {
-                                        emptySavedSectionTarget("Pins", section: .pinned, hasItems: hasPins,
+                                    if pinPreview.showsEmptyTarget && pinPreview.sourceSlotID == nil {
+                                        emptySavedSectionTarget("Pins", preview: pinPreview,
                                             identifier: "sidebar.pinned.dropTarget")
                                     } else {
                                         Color.clear.frame(height: 4).accessibilityHidden(true)
@@ -586,7 +598,7 @@ struct BrowserWindowView: View {
                                 }
                                     .background(dropArea("pinned"))
                             case .pinnedEnd:
-                                Color.clear.frame(height: active && hasPins && needsPinInsertionSpace(in: nil) ? 38 : 4)
+                                Color.clear.frame(height: active && !pinIDs.isEmpty && needsPinInsertionSpace(in: nil) ? 38 : 4)
                                     .background(dropArea("pinnedEnd"))
                                     .accessibilityHidden(true)
                             case .divider:
@@ -615,12 +627,20 @@ struct BrowserWindowView: View {
                                     .accessibilityHidden(true)
                             }
                             }
+                            .overlay {
+                                if retainsSourceSlot {
+                                    // The last lifted pin/folder leaves its existing
+                                    // row as the target, even after leaving Pins.
+                                    emptySavedSectionTarget("Pins", preview: pinPreview,
+                                        identifier: "sidebar.pinned.dropTarget")
+                                }
+                            }
                             // Keep the gesture mounted while neighboring rows fill
-                            // its old space. Only the destination owns a drop slot.
+                            // its old space. An emptied section retains one target.
                             .transition(.opacity)
-                            .frame(height: vacatesSourceRow(item) ? 0 : nil)
-                            .padding(.bottom, vacatesSourceRow(item) || item.id == items.last?.id ? 0 : SidebarFolderBounce.rowSpacing)
-                            .animation(folderDragAnimation, value: vacatesSourceRow(item))
+                            .frame(height: retainsSourceSlot ? pinPreview.height : (vacatesRow ? 0 : nil))
+                            .padding(.bottom, vacatesRow || item.id == items.last?.id ? 0 : SidebarFolderBounce.rowSpacing)
+                            .animation(folderDragAnimation, value: vacatesRow)
                             .id(item.id)
                         }
                     }
@@ -886,19 +906,20 @@ struct BrowserWindowView: View {
             .disabled(!tab.isOpen)
     }
 
-    private func emptySavedSectionTarget(_ title: String, section: TabStore.Section,
-                                         hasItems: Bool, identifier: String) -> some View {
-        let preview = SidebarSavedSectionPreview(section: section, isDragging: draggingTab != nil,
-            hasItems: hasItems, isTargeted: destinationSection(at: dragPoint) == section)
-        return Text(title).font(.callout).foregroundStyle(.secondary)
+    private func emptySavedSectionTarget(_ title: String, preview: SidebarSavedSectionPreview,
+                                         identifier: String) -> some View {
+        Text(title).font(.callout).foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, minHeight: preview.height, maxHeight: preview.height, alignment: .center)
             .background {
                 if preview.showsOutline { groupPanel(active: preview.isActive, dashed: true) }
             }
             .accessibilityIdentifier(identifier)
+            .allowsHitTesting(false)
     }
 
     private var favoritesSection: some View {
+        let preview = SidebarSavedSectionPreview(section: .favorites, itemIDs: model.favorites.map(\.id),
+            draggingItemID: draggingTab, isTargeted: destinationSection(at: dragPoint) == .favorites)
         let count = model.favorites.count + (receivingFavorite ? 1 : 0)
         let height = max(SidebarReorderLayout.favoriteHeight,
                          CGFloat((count + 3) / 4) * SidebarReorderLayout.favoriteRowStride - 6)
@@ -912,8 +933,8 @@ struct BrowserWindowView: View {
                             .position(x: frame.midX, y: frame.midY)
                             .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: frame)
                     }
-                    if model.favorites.isEmpty {
-                        emptySavedSectionTarget("Favorites", section: .favorites, hasItems: !model.favorites.isEmpty,
+                    if preview.showsEmptyTarget {
+                        emptySavedSectionTarget("Favorites", preview: preview,
                             identifier: "sidebar.favorites.dropTarget")
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
