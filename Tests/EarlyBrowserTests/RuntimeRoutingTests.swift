@@ -142,6 +142,48 @@ struct RuntimeRoutingTests {
         #expect(secondPage.view.navigationDelegate == nil && secondPage.view.uiDelegate == nil)
     }
 
+    @Test func favoritePromotionAndSelectionPreserveDOMStateAndClosedTilesReopenOnce() async throws {
+        let profile = UUID(), space = UUID()
+        let tab = BrowserTab(spaceID: space, profileID: profile, title: "Page One",
+                             currentURL: URL(string: "early-test://fixture/one")!)
+        let session = BrowserSession(profileID: profile, activeSpaceID: space, tabs: [tab],
+                                     selectionBySpace: [space: tab.id])
+        let fixture = Fixture(session: session)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let page = try #require(model.activePage)
+        try await waitUntil("favorite fixture") {
+            !page.isLoading && !page.view.isLoading && page.view.title == "Page One"
+        }
+        _ = try await page.view.evaluateJavaScript("document.getElementById('saved').value = 'keep favorite state';")
+        #expect(try await page.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep favorite state")
+
+        for action: BrowserAction in [.setFavorite(tab.id, true), .selectTab(tab.id),
+                                      .setFavorite(tab.id, false), .setFavorite(tab.id, true), .selectTab(tab.id)] {
+            #expect(model.perform(action))
+            #expect(model.activePage === page && model.webViews.creationCount == 1)
+            #expect(try await page.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep favorite state")
+        }
+
+        #expect(model.perform(.closeTab(tab.id)))
+        #expect(model.coordinator.tabStore.tab(id: tab.id)?.isOpen == false)
+        #expect(model.webViews.liveViewCount == 0)
+        // Changing a closed saved tile's section must not load or select it.
+        #expect(model.perform(.setFavorite(tab.id, false)))
+        #expect(model.perform(.setFavorite(tab.id, true)))
+        #expect(model.activePage == nil && model.webViews.creationCount == 1)
+        #expect(model.perform(.selectTab(tab.id)))
+        let reopened = try #require(model.activePage)
+        #expect(reopened !== page && model.webViews.creationCount == 2)
+        try await waitUntil("reopened favorite fixture") {
+            !reopened.isLoading && !reopened.view.isLoading && reopened.view.title == "Page One"
+        }
+        #expect(try await reopened.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "")
+        #expect(model.perform(.selectTab(tab.id)))
+        #expect(model.activePage === reopened && model.webViews.creationCount == 2)
+        #expect(model.coordinator.tabStore.tabs.count == 1 && model.favorites.map(\.id) == [tab.id])
+    }
+
     @Test func windowLocalPaneFocusDoesNotShareLiveViewsOrSelection() throws {
         let session = splitSession(), first = Fixture(session: session), second = Fixture(session: session)
         defer { first.cleanup(); second.cleanup() }
@@ -230,7 +272,7 @@ struct RuntimeRoutingTests {
             return
         }
         let title = url.path == "/two" ? "Page Two" : "Page One"
-        let data = Data("<!doctype html><title>\(title)</title><p>Local routing fixture</p>".utf8)
+        let data = Data("<!doctype html><title>\(title)</title><p>Local routing fixture</p><input id='saved' aria-label='Saved text'>".utf8)
         task.didReceive(URLResponse(url: url, mimeType: "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
         task.didReceive(data)
         task.didFinish()

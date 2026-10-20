@@ -801,6 +801,37 @@ final class EarlyUITests: XCTestCase {
         visibleMenuAction(title)
     }
 
+    /// Establish fixture state through native paste, without depending on a
+    /// long synthetic key sequence. Preserve every original clipboard type and
+    /// wait for the exact value before the action under test can begin.
+    private func pasteText(_ text: String, into field: XCUIElement, in app: XCUIApplication,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        let pasteboard = NSPasteboard.general
+        let original = (pasteboard.pasteboardItems ?? []).map { item in
+            Dictionary(uniqueKeysWithValues: item.types.compactMap { type in
+                item.data(forType: type).map { (type, $0) }
+            })
+        }
+        defer {
+            let items = original.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            }
+            pasteboard.clearContents()
+            if !items.isEmpty { pasteboard.writeObjects(items) }
+        }
+        field.click()
+        app.typeKey("a", modifierFlags: .command)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString(text, forType: .string), file: file, line: line)
+        app.typeKey("v", modifierFlags: .command)
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: field)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed,
+                       "Native paste must establish the exact fixture text before testing preservation",
+                       file: file, line: line)
+    }
+
     func testEmptyFolderIconTogglesWithoutAddingBlankContent() {
         let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])
@@ -1460,8 +1491,7 @@ final class EarlyUITests: XCTestCase {
         let firstID = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
         let firstFavorite = app.buttons["favorite.\(firstID.dropFirst(4))"]
         let saved = app.webViews.textFields["Saved text"]
-        saved.click()
-        saved.typeText("keep favorite state")
+        pasteText("keep favorite state", into: saved, in: app)
         pinAction("Add to Favorites", on: app.buttons[firstID])
         XCTAssertTrue(firstFavorite.waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons[firstID].exists)

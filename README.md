@@ -102,6 +102,18 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   test
 ```
 
+### Measure page lifecycle
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer bash Scripts/measure-lifecycle.sh
+```
+
+This opt-in Release benchmark uses local pages for 0/1/10/50/100 tabs and emits
+JSON timing, resource-count, idle CPU and host-memory samples. It opens no windows;
+rendered launch, real-site performance and separate WebKit-process memory require
+additional profiling. Normal package tests enforce deterministic resource/work
+limits rather than machine-dependent timing thresholds.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and review workflow.

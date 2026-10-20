@@ -68,6 +68,13 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     @ObservationIgnored private var recoveryTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var memoryMonitor: PageMemoryPressureMonitor?
     private var pressure: PageRetentionPolicy.Pressure = .normal
+    // Diagnostic work counts do not trigger SwiftUI observation or record URLs.
+    struct WorkMetrics {
+        var retentionPasses = 0
+        var inspectedPages = 0
+        var presentationVisits = 0
+    }
+    @ObservationIgnored private(set) var workMetrics = WorkMetrics()
 
     public init(profileID: UUID, ephemeral: Bool = false,
                 input: NavigationInput = NavigationInput(),
@@ -131,12 +138,21 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public func setPresentation(visibleTabIDs: Set<UUID>, focusedTabID: UUID?) -> Bool {
         guard visibleTabIDs.allSatisfy({ lifecycles[$0] != nil }),
               focusedTabID.map({ visibleTabIDs.contains($0) }) ?? visibleTabIDs.isEmpty else { return false }
+        let affected = self.visibleTabIDs.union(visibleTabIDs)
+        let unchanged = self.visibleTabIDs == visibleTabIDs && self.focusedTabID == focusedTabID
+        if unchanged {
+            for id in visibleTabIDs where pages[id]?.processTerminated == true { recoverIfNeeded(id) }
+            return true
+        }
         for id in self.visibleTabIDs.subtracting(visibleTabIDs) { captureSnapshot(id) }
         for id in visibleTabIDs.subtracting(self.visibleTabIDs) { retentionPolicy.recordUse(of: id) }
         if let focusedTabID, focusedTabID != self.focusedTabID { retentionPolicy.recordUse(of: focusedTabID) }
         if self.visibleTabIDs != visibleTabIDs { self.visibleTabIDs = visibleTabIDs }
         if self.focusedTabID != focusedTabID { self.focusedTabID = focusedTabID }
-        for id in Array(lifecycles.keys) {
+        // Only the previous/new visible members can change presentation. A
+        // metadata catalog with hundreds of unloaded tabs needs no full scan.
+        for id in affected where lifecycles[id] != nil {
+            workMetrics.presentationVisits += 1
             var runtime = lifecycles[id]!
             runtime.setPresentation(visible: visibleTabIDs.contains(id), focused: id == focusedTabID)
             if lifecycles[id] != runtime { lifecycles[id] = runtime }
@@ -160,7 +176,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     @discardableResult
     public func enforceRetention() -> [UUID] {
+        workMetrics.retentionPasses += 1
         guard !interactionInProgress else { return [] }
+        // Below the allowance, protections cannot change the eviction result.
+        // Count lightweight identities before querying native media/capture UI.
+        let inactiveCount = pages.keys.lazy.filter { !self.visibleTabIDs.contains($0) }.count
+        guard inactiveCount > retentionPolicy.inactiveAllowance(for: pressure) else { return [] }
         let candidates = pages.map { id, page in
             PageRetentionPolicy.Page(id: id, lifecycle: lifecycle(for: id), protections: retentionProtections(page, id: id))
         }
@@ -182,6 +203,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     private func retentionProtections(_ page: BrowserPage, id: UUID) -> PageRetentionPolicy.Protection {
+        workMetrics.inspectedPages += 1
         var protected: PageRetentionPolicy.Protection = []
         if page.isLoading || page.view.isLoading { protected.insert(.interaction) }
         if page.isPlayingMedia || page.view.fullscreenState != .notInFullscreen
