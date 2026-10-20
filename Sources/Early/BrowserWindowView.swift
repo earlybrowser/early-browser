@@ -689,22 +689,24 @@ struct BrowserWindowView: View {
         let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
             || focusedSidebarControl == .media(tab.id)
         let cornerRadius: CGFloat = tab.pinnedURL == nil ? 7 : PinnedIsland.cornerRadius
-        let hasLeadingMedia = tab.pinnedURL == nil && showsMediaControl(tab)
+        let hasMedia = showsMediaControl(tab)
+        let hasLeadingMedia = tab.pinnedURL == nil && hasMedia
         return HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
             if tab.pinnedURL != nil {
-                PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
-                              reset: { model.perform(.resetPinnedTab(tab.id)) }, requestsArtwork: requestsArtwork)
-                if showsMediaControl(tab) { tabMediaButton(tab) }
+                HStack(spacing: hasMedia ? (tab.hasNavigatedFromPin ? 1 : 4) : 0) {
+                    PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
+                                  reset: { model.perform(.resetPinnedTab(tab.id)) }, requestsArtwork: requestsArtwork)
+                    tabMediaSlot(tab, visible: hasMedia)
+                }
             }
             Button { model.perform(.selectTab(tab.id)) } label: {
                 HStack(spacing: tab.hasNavigatedFromPin ? 3 : (hasLeadingMedia ? 4 : 8)) {
                     if tab.pinnedURL == nil {
-                        HStack(spacing: 8) {
+                        HStack(spacing: hasLeadingMedia ? 8 : 0) {
                             TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
                                        size: 16, requestsArtwork: requestsArtwork)
-                            if hasLeadingMedia {
-                                Color.clear.frame(width: 24, height: 16).accessibilityHidden(true)
-                            }
+                            Color.clear.frame(width: hasLeadingMedia ? 24 : 0, height: 16)
+                                .accessibilityHidden(true)
                         }
                     }
                     if tab.hasNavigatedFromPin {
@@ -728,19 +730,15 @@ struct BrowserWindowView: View {
                   ?? tab.currentURL.absoluteString)
             .highPriorityGesture(tabClickGesture(tab))
             .overlay(alignment: .leading) {
-                if hasLeadingMedia {
+                if tab.pinnedURL == nil {
                     // Beside the favicon, but outside the select/rename/drag
                     // control. Reserving width above preserves the row height.
-                    tabMediaButton(tab).offset(x: 24)
+                    tabMediaSlot(tab, visible: hasLeadingMedia).offset(x: 24)
                 }
             }
             if tab.isOpen && hoveredTab == tab.id {
                 Button { model.perform(.closeTab(tab.id)) } label: {
-                    Image(systemName: "xmark").font(.caption)
-                        .frame(width: 24, height: 24)
-                        .background(Color.primary.opacity(hoveredTab == tab.id ? 0.12 : 0.07),
-                                    in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
+                    tabControlLabel("xmark", highlighted: true)
                 }
                     .buttonStyle(SidebarButtonStyle())
                     .focused($focusedSidebarControl, equals: .close(tab.id))
@@ -749,6 +747,7 @@ struct BrowserWindowView: View {
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
             }
         }
+        .animation(reduceMotion || draggingTab != nil ? nil : .easeInOut(duration: 0.18), value: hasMedia)
         .padding(.leading, tab.pinnedURL == nil ? 8 : 0)
         .padding(.trailing, 8)
         .background(Color.primary.opacity(selected ? 0.08 : (hoveredTab == tab.id ? 0.04 : 0)))
@@ -780,22 +779,37 @@ struct BrowserWindowView: View {
         return page.isPlayingMedia || page.isMuted
     }
 
+    private func tabControlLabel(_ symbol: String, highlighted: Bool) -> some View {
+        Image(systemName: symbol).font(.caption)
+            .frame(width: 24, height: 24)
+            .background(Color.primary.opacity(highlighted ? 0.12 : 0),
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+            .contentTransition(.opacity)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: symbol)
+    }
+
+    private func tabMediaSlot(_ tab: BrowserTab, visible: Bool) -> some View {
+        // Animate the reserved width and glyph together, clipping the control
+        // to its growing/shrinking slot so it never overlaps the sliding title.
+        tabMediaButton(tab)
+            .frame(width: visible ? 24 : 0, alignment: .leading)
+            .opacity(visible ? 1 : 0)
+            .clipped()
+            .contentShape(Rectangle())
+            .allowsHitTesting(visible)
+            .disabled(!visible)
+            .accessibilityHidden(!visible)
+            .onChange(of: visible) { _, visible in
+                if !visible && hoveredMedia == tab.id { hoveredMedia = nil }
+            }
+    }
+
     private func tabMediaButton(_ tab: BrowserTab) -> some View {
         let muted = model.webViews.pages[tab.id]?.isMuted == true
         let hovered = hoveredMedia == tab.id
         return Button { model.perform(.setMuted(tab.id, !muted)) } label: {
-            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.3.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
-                .background(Color.primary.opacity(hovered ? (colorScheme == .dark ? 0.07 : 0.04) : 0),
-                            in: RoundedRectangle(cornerRadius: 6))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.primary.opacity(hovered ? (contrast == .increased ? 0.35 : 0.12) : 0), lineWidth: 1)
-                        .allowsHitTesting(false)
-                }
-                .contentShape(Rectangle())
+            tabControlLabel(muted ? "speaker.slash.fill" : "speaker.wave.3.fill", highlighted: hovered)
         }
         .buttonStyle(SidebarButtonStyle())
         .focused($focusedSidebarControl, equals: .media(tab.id))
