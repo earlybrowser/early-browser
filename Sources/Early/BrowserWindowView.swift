@@ -578,9 +578,8 @@ struct BrowserWindowView: View {
                             case .pinnedStart:
                                 Group {
                                     if !hasPins {
-                                        Text("Pins").font(.callout).foregroundStyle(.secondary)
-                                            .frame(maxWidth: .infinity).frame(height: 34)
-                                            .accessibilityIdentifier("sidebar.pinned.dropTarget")
+                                        emptySavedSectionTarget("Pins", section: .pinned, hasItems: hasPins,
+                                            identifier: "sidebar.pinned.dropTarget")
                                     } else {
                                         Color.clear.frame(height: 4).accessibilityHidden(true)
                                     }
@@ -887,6 +886,18 @@ struct BrowserWindowView: View {
             .disabled(!tab.isOpen)
     }
 
+    private func emptySavedSectionTarget(_ title: String, section: TabStore.Section,
+                                         hasItems: Bool, identifier: String) -> some View {
+        let preview = SidebarSavedSectionPreview(section: section, isDragging: draggingTab != nil,
+            hasItems: hasItems, isTargeted: destinationSection(at: dragPoint) == section)
+        return Text(title).font(.callout).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: preview.height, maxHeight: preview.height, alignment: .center)
+            .background {
+                if preview.showsOutline { groupPanel(active: preview.isActive, dashed: true) }
+            }
+            .accessibilityIdentifier(identifier)
+    }
+
     private var favoritesSection: some View {
         let count = model.favorites.count + (receivingFavorite ? 1 : 0)
         let height = max(SidebarReorderLayout.favoriteHeight,
@@ -902,9 +913,8 @@ struct BrowserWindowView: View {
                             .animation(draggingTab == tab.id || reduceMotion ? nil : .easeInOut(duration: 0.16), value: frame)
                     }
                     if model.favorites.isEmpty {
-                        Text("Favorites").font(.callout).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity).frame(height: SidebarReorderLayout.favoriteHeight)
-                            .accessibilityIdentifier("sidebar.favorites.dropTarget")
+                        emptySavedSectionTarget("Favorites", section: .favorites, hasItems: !model.favorites.isEmpty,
+                            identifier: "sidebar.favorites.dropTarget")
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
@@ -912,11 +922,6 @@ struct BrowserWindowView: View {
             .background(dropArea("favoriteContent"))
         }
         .frame(height: min(height, SidebarReorderLayout.favoriteRowStride * 3 - 6))
-        .background {
-            if draggingTab != nil && model.favorites.isEmpty {
-                groupPanel(active: destinationSection(at: dragPoint) == .favorites, dashed: true)
-            }
-        }
         .accessibilityIdentifier("sidebar.favorites")
         .background(sectionFrame(favorites: true))
         .background(dropArea("favorites"))
@@ -1887,7 +1892,6 @@ struct BrowserWindowView: View {
 
     private func pinnedGroupBackgrounds(anchors: [FolderBoundary: Anchor<CGRect>]) -> some View {
         GeometryReader { geometry in
-            let origin = geometry.frame(in: .named("sidebarReordering")).origin
             let visible = Set(pinnedOutline.filter(\.isFolder).map(\.id))
             let panels = model.coordinator.folders.compactMap { folder -> FolderPanel? in
                 guard visible.contains(folder.id), folder.id != draggingTab,
@@ -1903,7 +1907,7 @@ struct BrowserWindowView: View {
             let heights = panels.filter { affected.contains($0.id) }.map(\.frame.height)
             // One clock and one pixel displacement preserve the padding between
             // nested islands. Independent percentage springs can cross edges.
-            folderPanelBackgrounds(panels, affected: affected, origin: origin, size: geometry.size)
+            folderPanelBackgrounds(panels, affected: affected, size: geometry.size)
             .keyframeAnimator(initialValue: CGFloat.zero, trigger: folderBounceEvent) { layer, requested in
                 let displacement = SidebarFolderBounce.displacement(requested, panelHeights: heights,
                     minimumHeight: PinnedIsland.height)
@@ -1918,13 +1922,8 @@ struct BrowserWindowView: View {
     }
 
     private func folderPanelBackgrounds(_ panels: [FolderPanel], affected: Set<UUID>,
-                                        origin: CGPoint, size: CGSize) -> some View {
+                                        size: CGSize) -> some View {
         ZStack(alignment: .topLeading) {
-            if showsFolderDragTargets && pinnedOutline.isEmpty, let start = dropAreas["pinned"], let end = dropAreas["pinnedEnd"] {
-                groupPanel(active: destinationSection(at: dragPoint) == .pinned, dashed: true)
-                    .frame(width: size.width, height: max(0, end.maxY - start.minY))
-                    .offset(x: 0, y: start.minY - origin.y)
-            }
             ForEach(panels) { panel in
                 let highlighted = showsFolderDragTargets || hoveredFolderGroups.contains(panel.id)
                     || hoveredFolder == panel.id

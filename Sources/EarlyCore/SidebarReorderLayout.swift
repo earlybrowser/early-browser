@@ -3,6 +3,21 @@
 import CoreGraphics
 import Foundation
 
+/// Empty saved sections advertise their drop targets for the entire drag.
+/// Hover changes emphasis, not visibility; populated folders keep their own
+/// pointer-scoped feedback instead of an extra empty-section outline.
+public struct SidebarSavedSectionPreview: Equatable, Sendable {
+    public let showsOutline: Bool
+    public let isActive: Bool
+    public let height: CGFloat
+
+    public init(section: TabStore.Section, isDragging: Bool, hasItems: Bool, isTargeted: Bool) {
+        showsOutline = isDragging && !hasItems && section != .regular
+        isActive = showsOutline && isTargeted
+        height = section == .favorites ? SidebarReorderLayout.favoriteHeight : 34
+    }
+}
+
 /// A frozen layout for one drag. Preview offsets never feed back into hit testing,
 /// and durable tab order is changed only when the user releases inside the section.
 public struct SidebarReorderLayout {
