@@ -69,6 +69,84 @@ struct MediaControlTests {
         try await waitForState([false, true, false], in: view)
     }
 
+    @Test func playIntentIsNotActivityUntilPlaybackProgressesEvenInAnUnselectedView() async throws {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let fixture = MediaPages()
+        let manager = WebViewManager(profileID: profile, ephemeral: true,
+            input: NavigationInput(allowedSchemes: ["early-media"]),
+            faviconStore: FaviconStore { _, _, _ in nil }) {
+            $0.setURLSchemeHandler(fixture, forURLScheme: "early-media")
+        }
+        defer { manager.discardAll() }
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Media",
+            currentURL: URL(string: "early-media://main/one")!)
+        manager.load(tab.currentURL, in: tab)
+        let page = try #require(manager.pages[tab.id])
+        let view = page.view
+        try await waitForState([false, true, false], in: view)
+        #expect(view.window == nil) // Never selected or attached to a visible page host.
+
+        // Control only this fixture's isolated-world DOM wrapper. No real sound,
+        // playback-policy changes, UI events, or remote streaming site is needed.
+        try await mediaEvent("""
+            globalThis.mediaFixture = {paused:false, ended:false, seeking:false, readyState:0, currentTime:0};
+            const player = document.getElementById('normal');
+            for (const key of Object.keys(mediaFixture))
+                Object.defineProperty(player, key, {configurable:true, get:() => mediaFixture[key]});
+            globalThis.emitMedia = name => player.dispatchEvent(new Event(name));
+            emitMedia('play');
+            """, in: view)
+        #expect(!page.isPlayingMedia)
+        try await mediaEvent("mediaFixture.readyState = 4; emitMedia('volumechange');", in: view)
+        #expect(!page.isPlayingMedia, "An unpaused, loaded player may still be waiting for foreground/autoplay permission")
+        try await mediaEvent("emitMedia('playing'); emitMedia('timeupdate');", in: view)
+        #expect(!page.isPlayingMedia, "Playback intent with a stationary playhead must not show the speaker")
+        try await mediaEvent("mediaFixture.currentTime = 0.2; emitMedia('timeupdate');", in: view)
+        #expect(page.isPlayingMedia, "Real progress must still count for background tabs")
+
+        manager.setMuted(true, for: tab.id)
+        try await mediaEvent("", in: view)
+        #expect(page.isMuted && page.isPlayingMedia)
+        manager.setMuted(false, for: tab.id)
+        try await mediaEvent("", in: view)
+        #expect(!page.isMuted && page.isPlayingMedia)
+
+        try await mediaEvent("emitMedia('waiting');", in: view)
+        #expect(!page.isPlayingMedia)
+        try await mediaEvent("mediaFixture.currentTime = 1; emitMedia('timeupdate');", in: view)
+        #expect(!page.isPlayingMedia, "A buffered/seek position is not a resumed playing event")
+        try await mediaEvent("emitMedia('playing'); mediaFixture.currentTime = 1.2; emitMedia('timeupdate');", in: view)
+        #expect(page.isPlayingMedia)
+        try await mediaEvent("mediaFixture.seeking = true; emitMedia('seeking');", in: view)
+        #expect(!page.isPlayingMedia)
+        try await mediaEvent("mediaFixture.seeking = false; mediaFixture.currentTime = 10; emitMedia('seeked'); emitMedia('timeupdate');", in: view)
+        #expect(!page.isPlayingMedia)
+        try await mediaEvent("emitMedia('playing'); mediaFixture.currentTime = 10.2; emitMedia('timeupdate');", in: view)
+        #expect(page.isPlayingMedia)
+        try await mediaEvent("document.getElementById('normal').volume = 0; emitMedia('volumechange');", in: view)
+        #expect(!page.isPlayingMedia)
+        try await mediaEvent("document.getElementById('normal').volume = 0.35; emitMedia('volumechange');", in: view)
+        #expect(page.isPlayingMedia)
+        try await mediaEvent("mediaFixture.paused = true; emitMedia('pause');", in: view)
+        #expect(!page.isPlayingMedia)
+    }
+
+    private func mediaEvent(_ script: String, in view: WKWebView) async throws {
+        // Wait behind the observer's queued update and native message, rather
+        // than assuming a sleep was long enough for a false-state assertion.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            view.callAsyncJavaScript("""
+                \(script)
+                await Promise.resolve();
+                await window.webkit.messageHandlers.earlyMediaActivity.postMessage({token:'fixture-barrier', playing:false});
+                return true;
+                """, arguments: [:], in: nil, in: .defaultClient) { result in
+                continuation.resume(with: result.map { _ in () })
+            }
+        }
+    }
+
     private func waitForState(_ expected: [Bool], in view: WKWebView) async throws {
         try await waitUntil {
             let result = try? await view.evaluateJavaScript("""

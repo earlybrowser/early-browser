@@ -63,6 +63,7 @@ struct BrowserWindowView: View {
     }
     #endif
     @State private var hoveredTab: UUID?
+    @State private var hoveredMedia: UUID?
     @State private var hoveredFolder: UUID?
     @State private var hoveredFolderGroups: Set<UUID> = []
     @State private var folderBounceEvent: FolderBounceEvent?
@@ -781,22 +782,28 @@ struct BrowserWindowView: View {
 
     private func tabMediaButton(_ tab: BrowserTab) -> some View {
         let muted = model.webViews.pages[tab.id]?.isMuted == true
+        let hovered = hoveredMedia == tab.id
         return Button { model.perform(.setMuted(tab.id, !muted)) } label: {
             Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.3.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .frame(width: 24, height: 24)
-                .background(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.04),
+                .background(Color.primary.opacity(hovered ? (colorScheme == .dark ? 0.07 : 0.04) : 0),
                             in: RoundedRectangle(cornerRadius: 6))
                 .overlay {
                     RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.12), lineWidth: 1)
+                        .strokeBorder(Color.primary.opacity(hovered ? (contrast == .increased ? 0.35 : 0.12) : 0), lineWidth: 1)
                         .allowsHitTesting(false)
                 }
                 .contentShape(Rectangle())
         }
         .buttonStyle(SidebarButtonStyle())
         .focused($focusedSidebarControl, equals: .media(tab.id))
+        .onHover { inside in
+            if inside { hoveredMedia = tab.id }
+            else if hoveredMedia == tab.id { hoveredMedia = nil }
+        }
+        .onDisappear { if hoveredMedia == tab.id { hoveredMedia = nil } }
         .accessibilityIdentifier("tabMute.\(tab.id)")
         .accessibilityLabel("\(muted ? "Unmute" : "Mute") \(tab.displayTitle)")
         .accessibilityValue(muted ? "Muted" : "Media playing")

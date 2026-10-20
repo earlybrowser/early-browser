@@ -15,7 +15,12 @@ final class MediaActivityObserver: NSObject, WKScriptMessageHandlerWithReply {
             : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
         let last = null, queued = false, hidden = false, muted = false, revision = -1;
         const elements = new Set();
-        const observed = new WeakSet(), previousMute = new Map();
+        const playback = new WeakMap(), previousMute = new Map();
+        const isAdvancing = el => {
+            const state = playback.get(el);
+            return state?.advancing && !el.paused && !el.ended && !el.seeking
+                && el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA && el.playbackRate !== 0;
+        };
         const enforceMute = el => {
             if (!muted) return;
             if (!previousMute.has(el)) previousMute.set(el, el.muted);
@@ -57,16 +62,35 @@ final class MediaActivityObserver: NSObject, WKScriptMessageHandlerWithReply {
                 }
                 // Keep playback activity independent of Early's mute so the
                 // speaker does not blink out and back in when unmuting.
-                send(Array.from(elements).some(el => !el.paused && !el.ended && el.volume > 0
+                send(Array.from(elements).some(el => isAdvancing(el) && el.volume > 0
                     && (muted ? previousMute.get(el) === false : !el.muted)));
             });
         };
-        const events = ['play', 'playing', 'pause', 'ended', 'volumechange', 'emptied'];
+        const events = ['play', 'playing', 'timeupdate', 'pause', 'ended', 'volumechange',
+            'waiting', 'seeking', 'seeked', 'emptied', 'error', 'ratechange'];
         const track = el => {
             elements.add(el);
-            if (!observed.has(el)) {
-                observed.add(el);
+            if (!playback.has(el)) {
+                const state = {running: false, advancing: false, time: el.currentTime};
+                playback.set(el, state);
                 for (const event of events) el.addEventListener(event, () => {
+                    if (event === 'playing') {
+                        state.running = true;
+                        state.advancing = false;
+                        state.time = el.currentTime;
+                    } else if (event === 'timeupdate') {
+                        // A play request, metadata, or an autoplay-blocked
+                        // background video is not evidence of real playback.
+                        state.advancing = state.running && Math.abs(el.currentTime - state.time) > 0.001;
+                        state.time = el.currentTime;
+                    } else if (['play', 'pause', 'ended', 'waiting', 'seeking', 'emptied', 'error'].includes(event)) {
+                        state.running = false;
+                        state.advancing = false;
+                        state.time = el.currentTime;
+                    } else if (event === 'ratechange') {
+                        state.advancing = false;
+                        state.time = el.currentTime;
+                    }
                     if (!el.isConnected && (el.paused || el.ended)) {
                         restoreMute(el);
                         elements.delete(el);
