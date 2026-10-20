@@ -19,17 +19,11 @@ struct DownloadGlyph: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
         path.addEllipse(in: CGRect(x: 3, y: 3, width: 18, height: 18))
-        path.move(to: CGPoint(x: 12, y: 7.25))
-        path.addLine(to: CGPoint(x: 12, y: 13.5))
-        path.move(to: CGPoint(x: 9.25, y: 10.75))
-        path.addLine(to: CGPoint(x: 12, y: 13.5))
-        path.addLine(to: CGPoint(x: 14.75, y: 10.75))
-        path.move(to: CGPoint(x: 8, y: 14.25))
-        path.addLine(to: CGPoint(x: 8, y: 15.5))
-        path.addQuadCurve(to: CGPoint(x: 9.75, y: 17.25), control: CGPoint(x: 8, y: 17.25))
-        path.addLine(to: CGPoint(x: 14.25, y: 17.25))
-        path.addQuadCurve(to: CGPoint(x: 16, y: 15.5), control: CGPoint(x: 16, y: 17.25))
-        path.addLine(to: CGPoint(x: 16, y: 14.25))
+        path.move(to: CGPoint(x: 12, y: 7.75))
+        path.addLine(to: CGPoint(x: 12, y: 15.5))
+        path.move(to: CGPoint(x: 8.5, y: 12))
+        path.addLine(to: CGPoint(x: 12, y: 15.5))
+        path.addLine(to: CGPoint(x: 15.5, y: 12))
         let scale = min(rect.width, rect.height) / 24
         return path.applying(CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
                                                tx: rect.midX - 12 * scale,
