@@ -12,7 +12,7 @@ struct RuntimeLifecycleTests {
         _ = NSApplication.shared
         return WebViewManager(profileID: profile, ephemeral: true,
             input: NavigationInput(allowedSchemes: ["early-runtime"]),
-            faviconStore: FaviconStore { _, _, _ in nil }) {
+            faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false) {
             $0.setURLSchemeHandler(RuntimePages(), forURLScheme: "early-runtime")
         }
     }
@@ -106,7 +106,11 @@ struct RuntimeLifecycleTests {
         #expect(manager.updateMediaActivity(in: retired.view, token: "late", playing: true) == nil)
         manager.webViewWebContentProcessDidTerminate(retired.view)
         manager.webView(retired.view, didFail: nil, withError: URLError(.notConnectedToInternet))
-        try await waitUntil { manager.lifecycle(for: tab.id).state == .background }
+        // Loading and title KVO are asynchronous independent notifications.
+        // Wait for the document whose metadata this assertion actually checks.
+        try await waitUntil {
+            manager.lifecycle(for: tab.id).state == .background && replacement.view.title == "Runtime fixture"
+        }
         #expect(replacement.failure == nil && !replacement.isPlayingMedia)
         #expect(replacement.view.title == "Runtime fixture")
         #expect(manager.creationCount == 2)
@@ -138,6 +142,15 @@ struct RuntimeLifecycleTests {
             }
         }
         #expect(popup.isPlayingMedia && popup.view.navigationDelegate === manager)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            popup.view.callAsyncJavaScript("""
+                window.webkit.messageHandlers.earlyPageInteraction.postMessage({token:'popup-edit',removed:false});
+                return true;
+                """, arguments: [:], in: nil, in: .defaultClient) { result in
+                continuation.resume(with: result.map { _ in () })
+            }
+        }
+        try await waitUntil { popup.hasUnsavedInput }
         manager.discard(tabID: second.id)
         #expect(manager.registeredControllerCount == 0 && manager.liveViewCount == 0)
     }

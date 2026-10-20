@@ -45,6 +45,69 @@ struct BrowserActionTests {
         }
     }
 
+    @Test func dragPlacementAcrossSectionsAndFoldersKeepsTheLivePageAndFocus() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let id = try fixture.open(firstURL)
+        let page = try #require(model.webViews.pages[id])
+        let created = model.webViews.creationCount
+        let focus = model.contentFocusRequest
+        let folder = try #require(model.coordinator.createFolder(name: "Drop folder"))
+        for section in [TabStore.Section.pinned, .favorites, .regular, .favorites, .pinned, .regular] {
+            #expect(model.placeTab(id, in: section))
+            #expect(model.webViews.pages[id] === page && model.webViews.creationCount == created)
+            #expect(model.coordinator.activeTabID == id && model.contentFocusRequest == focus)
+        }
+        #expect(model.placeTab(id, in: .pinned, folderID: folder))
+        #expect(model.coordinator.tabStore.tab(id: id)?.folderID == folder)
+        #expect(model.placeTab(id, in: .regular))
+        #expect(model.coordinator.tabStore.tab(id: id)?.folderID == nil)
+        #expect(model.webViews.pages[id] === page && model.webViews.creationCount == created)
+        #expect(model.coordinator.activeTabID == id && model.contentFocusRequest == focus)
+        #expect(model.coordinator.tabStore.tabs.count == 1 && model.coordinator.commandBar == nil)
+    }
+
+    @Test func restoringASplitActivatesEveryVisibleMemberAndResumesAnEvictedPaneWithoutChangingFocus() throws {
+        let profile = UUID(), space = UUID()
+        let tabs = ["left", "right", "background"].map { side in
+            BrowserTab(spaceID: space, profileID: profile, title: side,
+                       currentURL: URL(string: "early-test://fixture/one?pane=\(side)")!)
+        }
+        var closed = BrowserTab(spaceID: space, profileID: profile, title: "Closed saved page",
+                               currentURL: firstURL, pinnedURL: firstURL, isOpen: false)
+        closed.sidebarPosition = 5
+        let group = BrowserSplitGroup(spaceID: space,
+            panes: tabs.prefix(2).map { BrowserSplitPane(tabID: $0.id) })
+        let session = BrowserSession(profileID: profile, activeSpaceID: space, tabs: tabs + [closed],
+            selectionBySpace: [space: tabs[0].id], splitGroups: [group],
+            focusedPaneByGroupID: [group.id: group.panes[0].id])
+        let fixture = Fixture(session: session)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let left = try #require(model.webViews.pages[tabs[0].id])
+        let right = try #require(model.webViews.pages[tabs[1].id])
+        #expect(model.activePage === left && model.coordinator.focusedTabID == tabs[0].id)
+        #expect(model.webViews.creationCount == 2 && model.webViews.liveViewCount == 2)
+        #expect(model.webViews.pages[tabs[2].id] == nil && model.webViews.pages[closed.id] == nil)
+        #expect(model.webViews.visibleTabIDs == [tabs[0].id, tabs[1].id])
+        model.webViews.handleMemoryPressure(.critical)
+        #expect(model.webViews.pages[tabs[0].id] === left && model.webViews.pages[tabs[1].id] === right)
+        #expect(model.webViews.creationCount == 2)
+
+        model.webViews.discard(tabID: tabs[1].id)
+        #expect(model.webViews.pages[tabs[1].id] == nil)
+        model.activateSelection()
+        let resumed = try #require(model.webViews.pages[tabs[1].id])
+        #expect(resumed !== right && model.webViews.pages[tabs[0].id] === left)
+        #expect(model.webViews.creationCount == 3 && model.webViews.liveViewCount == 2)
+        #expect(model.coordinator.focusedTabID == tabs[0].id && model.activePage === left)
+        #expect(model.webViews.visibleTabIDs == [tabs[0].id, tabs[1].id])
+        #expect(model.coordinator.splitGroups == [group] && model.coordinator.commandBar == nil)
+        #expect(model.coordinator.tabStore.tabs.map(\.id) == session.tabs.map(\.id))
+        #expect(model.webViews.pages[tabs[2].id] == nil && model.webViews.pages[closed.id] == nil)
+    }
+
     @Test func presentingAndCancellingExplicitIntentsNeverCreatePlaceholderTabs() {
         let fixture = Fixture()
         defer { fixture.cleanup() }

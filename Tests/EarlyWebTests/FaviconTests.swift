@@ -94,7 +94,8 @@ private let iconPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAA
         let probe = DiscoveryProbe()
         let icons = FaviconStore { _, candidates, _ in await probe.record(candidates); return iconPNG }
         let profile = UUID()
-        let manager = WebViewManager(profileID: profile, ephemeral: true, faviconStore: icons)
+        let manager = WebViewManager(profileID: profile, ephemeral: true, faviconStore: icons,
+                                     observesMemoryPressure: false)
         defer { manager.discardAll() }
         let url = URL(string: "https://fixture.invalid/page")!
         let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Fixture", currentURL: url)

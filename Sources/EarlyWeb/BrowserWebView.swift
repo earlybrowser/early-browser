@@ -17,6 +17,8 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
     }
     private var shownLinkMenu: NSMenu?
+    var onInteractionEnded: (() -> Void)?
+    var hasActiveInteraction: Bool { shownLinkMenu != nil || sharingPicker != nil }
 
     func makeLinkMenu(for url: URL) -> NSMenu {
         let menu = NSMenu()
@@ -45,7 +47,10 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         let menu = makeLinkMenu(for: url)
         shownLinkMenu?.cancelTrackingWithoutAnimation()
         shownLinkMenu = menu
-        defer { if shownLinkMenu === menu { shownLinkMenu = nil } }
+        defer {
+            if shownLinkMenu === menu { shownLinkMenu = nil }
+            onInteractionEnded?()
+        }
         // Do not use popUpContextMenu: that is the system insertion path which
         // bypassed the proposed-menu filters. This still displays a native NSMenu.
         menu.popUp(positioning: nil, at: point, in: self)
@@ -56,6 +61,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         shownLinkMenu = nil
         sharingPicker?.close()
         sharingPicker = nil
+        onInteractionEnded?()
     }
 
     @objc private func openWindowLink(_ sender: NSMenuItem) {
@@ -94,5 +100,6 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         // AppKit delivers picker UI callbacks on the main thread; its legacy
         // Objective-C delegate protocol does not express actor isolation.
         if sharingPicker === picker { sharingPicker = nil }
+        onInteractionEnded?()
     }
 }

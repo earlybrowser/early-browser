@@ -31,7 +31,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Spaces and profiles | Named Spaces with icons and adaptive themes, plus separate profiles for cookies, logins, website data, and Favorites. | Implemented. |
 | Haptic feedback | Subtle native feedback for sidebar dragging and Space changes on supported devices, respecting macOS preferences. | Implemented. |
 | Split views and tab previews | Side-by-side pages with shared controls following the focused pane; thumbnail tab switcher. | Planned. |
-| Page lifecycle | Explicit runtime states, on-demand page creation, live-page reuse, and cleanup when closed. Automatic memory policies and advanced recovery are planned. | Partial. |
+| Page lifecycle | Keep recent pages live, limit retained background pages, and reload released pages on selection. Protect visible panes, media, and editing; recover from page-process crashes with a bounded retry. | Implemented. |
 | Downloads and page tools | Manage downloads, upload files, print, view PDFs, find text, and adjust zoom. | Planned. |
 | Reading tools | Reader Mode for supported articles and page translation. | Planned. |
 | Credentials and autofill | Integrate supported password managers, autofill, and passkeys through public platform facilities. | Planned. |
@@ -46,7 +46,11 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 
 Early uses a Safari-compatible browser identity to improve website compatibility.
 
-Tab mute choices survive reloads/navigation until the live tab closes; they are
+Released pages restore their saved address and organization, not live forms,
+JavaScript state, or exact back/forward history. Profile-local tab thumbnails
+are bounded and kept only in memory for the future tab switcher.
+
+Tab mute choices survive reloads/navigation and memory eviction until the tab closes; they are
 not site preferences or restored session state. Public HTML media APIs cover
 page elements and embedded frames, not Web Audio-only output, inaccessible
 shadow-tree players, or audio elements never attached to a document. Player
@@ -83,7 +87,7 @@ open Early.xcodeproj
 ### Run core, WebKit, and application integration tests
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --no-parallel
 ```
 
 ### Run native UI tests

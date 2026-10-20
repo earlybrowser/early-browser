@@ -8,13 +8,15 @@ import WebKit
 
 @Suite @MainActor
 struct MediaControlTests {
+    // These deliberately unselected pages must not be retired by the test
+    // runner's real memory pressure. Dedicated retention tests inject pressure.
     @Test func htmlMediaAndCrossOriginFramesMuteWithoutChangingVolumeOrPlayerMutePreferences() async throws {
         _ = NSApplication.shared
         let profile = UUID()
         let input = NavigationInput(allowedSchemes: ["http", "https", "early-media"])
         let fixture = MediaPages()
         let manager = WebViewManager(profileID: profile, ephemeral: true, input: input,
-            faviconStore: FaviconStore { _, _, _ in nil }) {
+            faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false) {
             $0.setURLSchemeHandler(fixture, forURLScheme: "early-media")
         }
         defer { manager.discardAll() }
@@ -190,7 +192,7 @@ struct MediaControlTests {
         let fixture = MediaPages()
         let manager = WebViewManager(profileID: profile, ephemeral: true,
             input: NavigationInput(allowedSchemes: ["early-media"]),
-            faviconStore: FaviconStore { _, _, _ in nil }) {
+            faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false) {
             $0.setURLSchemeHandler(fixture, forURLScheme: "early-media")
         }
         defer { manager.discardAll() }

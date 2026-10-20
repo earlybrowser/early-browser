@@ -54,18 +54,20 @@ struct RuntimeRoutingTests {
             focusedPaneByGroupID: [group.id: group.panes[0].id])
     }
 
-    @Test func restorationAndPaneFocusAllocateOnlyOnDemandAndReuseLivePages() async throws {
+    @Test func restorationPreparesVisibleMembersAndPaneFocusReusesTheirLivePages() async throws {
         let session = splitSession(), fixture = Fixture(session: session)
         defer { fixture.cleanup() }
         let model = fixture.model, first = session.tabs[0].id, second = session.tabs[1].id
         let group = try #require(model.coordinator.activeSplitGroup)
         let firstView = try #require(model.activePage?.view)
-        #expect(model.webViews.creationCount == 1 && model.webViews.existingView(for: second) == nil)
-        #expect(model.webViews.lifecycle(for: second).state == .unloaded)
+        let restoredSecondView = try #require(model.webViews.existingView(for: second))
+        #expect(model.webViews.creationCount == 2)
+        #expect(model.webViews.lifecycle(for: second).ownsView)
         #expect(model.webViews.visibleTabIDs == [first, second] && model.webViews.focusedTabID == first)
 
         #expect(model.focusPane(group.panes[1].id))
         let secondView = try #require(model.activePage?.view)
+        #expect(secondView === restoredSecondView)
         #expect(model.coordinator.focusedTabID == second && model.webViews.creationCount == 2)
         #expect(model.perform(.selectTab(first)))
         #expect(model.activePage?.view === firstView)
@@ -149,7 +151,7 @@ struct RuntimeRoutingTests {
         #expect(first.model.coordinator.focusedTabID == session.tabs[0].id)
         #expect(second.model.coordinator.focusedTabID == session.tabs[1].id)
         #expect(second.model.webViews.existingView(for: session.tabs[0].id) !== firstView)
-        #expect(first.model.webViews.creationCount == 1 && second.model.webViews.creationCount == 2)
+        #expect(first.model.webViews.creationCount == 2 && second.model.webViews.creationCount == 2)
     }
 
     @Test func paneFocusUsesTheSharedEditorAndDialogAvailabilityRules() throws {
@@ -158,6 +160,7 @@ struct RuntimeRoutingTests {
         let model = fixture.model
         let group = try #require(model.coordinator.activeSplitGroup)
         let page = try #require(model.activePage)
+        let otherPage = try #require(model.webViews.pages[session.tabs[1].id])
         let before = model.coordinator.session, focusRequest = model.contentFocusRequest
         model.folderEditorIsPresented = true
         #expect(!model.focusPane(group.panes[1].id))
@@ -166,7 +169,7 @@ struct RuntimeRoutingTests {
         #expect(!model.focusPane(group.panes[1].id))
         page.hasDialog = false
         #expect(model.coordinator.session == before && model.contentFocusRequest == focusRequest)
-        #expect(model.webViews.creationCount == 1 && model.webViews.existingView(for: session.tabs[1].id) == nil)
+        #expect(model.webViews.creationCount == 2 && model.webViews.pages[session.tabs[1].id] === otherPage)
         #expect(model.focusPane(group.panes[1].id))
         #expect(model.coordinator.focusedTabID == session.tabs[1].id)
     }
@@ -203,7 +206,7 @@ struct RuntimeRoutingTests {
         #expect(view.superview == nil && second.hosted == nil)
         #expect(!second.display(view))
         #expect(first.display(view))
-        #expect(fixture.model.webViews.creationCount == 1)
+        #expect(fixture.model.webViews.creationCount == 2)
     }
 
     private func waitUntil(_ description: @autoclosure () -> String = "page loading", _ condition: () -> Bool) async throws {
