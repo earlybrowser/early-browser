@@ -688,6 +688,7 @@ struct BrowserWindowView: View {
         let focused = focusedSidebarControl == .tab(tab.id) || focusedSidebarControl == .close(tab.id)
             || focusedSidebarControl == .media(tab.id)
         let cornerRadius: CGFloat = tab.pinnedURL == nil ? 7 : PinnedIsland.cornerRadius
+        let hasLeadingMedia = tab.pinnedURL == nil && showsMediaControl(tab)
         return HStack(spacing: tab.hasNavigatedFromPin ? 1 : 4) {
             if tab.pinnedURL != nil {
                 PinnedTabIcon(tab: tab, favicons: model.webViews.favicons, page: model.webViews.pages[tab.id],
@@ -695,12 +696,14 @@ struct BrowserWindowView: View {
                 if showsMediaControl(tab) { tabMediaButton(tab) }
             }
             Button { model.perform(.selectTab(tab.id)) } label: {
-                HStack(spacing: tab.hasNavigatedFromPin ? 3 : 8) {
+                HStack(spacing: tab.hasNavigatedFromPin ? 3 : (hasLeadingMedia ? 4 : 8)) {
                     if tab.pinnedURL == nil {
-                        TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
-                                   size: 16, requestsArtwork: requestsArtwork)
-                        if showsMediaControl(tab) {
-                            Color.clear.frame(width: 24, height: 16).accessibilityHidden(true)
+                        HStack(spacing: 8) {
+                            TabArtwork(tab: tab, store: model.webViews.favicons, page: model.webViews.pages[tab.id],
+                                       size: 16, requestsArtwork: requestsArtwork)
+                            if hasLeadingMedia {
+                                Color.clear.frame(width: 24, height: 16).accessibilityHidden(true)
+                            }
                         }
                     }
                     if tab.hasNavigatedFromPin {
@@ -724,7 +727,7 @@ struct BrowserWindowView: View {
                   ?? tab.currentURL.absoluteString)
             .highPriorityGesture(tabClickGesture(tab))
             .overlay(alignment: .leading) {
-                if tab.pinnedURL == nil && showsMediaControl(tab) {
+                if hasLeadingMedia {
                     // Beside the favicon, but outside the select/rename/drag
                     // control. Reserving width above preserves the row height.
                     tabMediaButton(tab).offset(x: 24)
@@ -779,10 +782,17 @@ struct BrowserWindowView: View {
     private func tabMediaButton(_ tab: BrowserTab) -> some View {
         let muted = model.webViews.pages[tab.id]?.isMuted == true
         return Button { model.perform(.setMuted(tab.id, !muted)) } label: {
-            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.3.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .frame(width: 24, height: 24)
+                .background(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.04),
+                            in: RoundedRectangle(cornerRadius: 6))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.12), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(SidebarButtonStyle())
