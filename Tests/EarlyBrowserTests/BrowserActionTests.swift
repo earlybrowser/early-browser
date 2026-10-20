@@ -45,6 +45,29 @@ struct BrowserActionTests {
         }
     }
 
+    @Test func dragPlacementAcrossSectionsAndFoldersKeepsTheLivePageAndFocus() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let id = try fixture.open(firstURL)
+        let page = try #require(model.webViews.pages[id])
+        let created = model.webViews.creationCount
+        let focus = model.contentFocusRequest
+        let folder = try #require(model.coordinator.createFolder(name: "Drop folder"))
+        for section in [TabStore.Section.pinned, .favorites, .regular, .favorites, .pinned, .regular] {
+            #expect(model.placeTab(id, in: section))
+            #expect(model.webViews.pages[id] === page && model.webViews.creationCount == created)
+            #expect(model.coordinator.activeTabID == id && model.contentFocusRequest == focus)
+        }
+        #expect(model.placeTab(id, in: .pinned, folderID: folder))
+        #expect(model.coordinator.tabStore.tab(id: id)?.folderID == folder)
+        #expect(model.placeTab(id, in: .regular))
+        #expect(model.coordinator.tabStore.tab(id: id)?.folderID == nil)
+        #expect(model.webViews.pages[id] === page && model.webViews.creationCount == created)
+        #expect(model.coordinator.activeTabID == id && model.contentFocusRequest == focus)
+        #expect(model.coordinator.tabStore.tabs.count == 1 && model.coordinator.commandBar == nil)
+    }
+
     @Test func presentingAndCancellingExplicitIntentsNeverCreatePlaceholderTabs() {
         let fixture = Fixture()
         defer { fixture.cleanup() }
