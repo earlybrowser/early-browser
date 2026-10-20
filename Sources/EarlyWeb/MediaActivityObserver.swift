@@ -16,11 +16,9 @@ final class MediaActivityObserver: NSObject, WKScriptMessageHandlerWithReply {
         let last = null, queued = false, hidden = false, muted = false, revision = -1;
         const elements = new Set();
         const playback = new WeakMap(), previousMute = new Map();
-        const isAdvancing = el => {
-            const state = playback.get(el);
-            return state?.advancing && !el.paused && !el.ended && !el.seeking
-                && el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA && el.playbackRate !== 0;
-        };
+        const canAdvance = el => !el.paused && !el.ended && !el.seeking
+            && el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA && el.playbackRate !== 0;
+        const isAdvancing = el => playback.get(el)?.advancing && canAdvance(el);
         const enforceMute = el => {
             if (!muted) return;
             if (!previousMute.has(el)) previousMute.set(el, el.muted);
@@ -71,25 +69,35 @@ final class MediaActivityObserver: NSObject, WKScriptMessageHandlerWithReply {
         const track = el => {
             elements.add(el);
             if (!playback.has(el)) {
-                const state = {running: false, advancing: false, time: el.currentTime};
+                const state = {started: false, advancing: false, time: null};
                 playback.set(el, state);
                 for (const event of events) el.addEventListener(event, () => {
                     if (event === 'playing') {
-                        state.running = true;
+                        state.started = true;
                         state.advancing = false;
-                        state.time = el.currentTime;
+                        state.time = canAdvance(el) ? el.currentTime : null;
                     } else if (event === 'timeupdate') {
                         // A play request, metadata, or an autoplay-blocked
                         // background video is not evidence of real playback.
-                        state.advancing = state.running && Math.abs(el.currentTime - state.time) > 0.001;
-                        state.time = el.currentTime;
-                    } else if (['play', 'pause', 'ended', 'waiting', 'seeking', 'emptied', 'error'].includes(event)) {
-                        state.running = false;
+                        const ready = canAdvance(el);
+                        state.advancing = state.started && ready && state.time !== null
+                            && Math.abs(el.currentTime - state.time) > 0.001;
+                        state.time = ready ? el.currentTime : null;
+                    } else if (['play', 'pause', 'ended', 'emptied', 'error'].includes(event)) {
+                        state.started = false;
                         state.advancing = false;
-                        state.time = el.currentTime;
-                    } else if (event === 'ratechange') {
+                        state.time = null;
+                    } else if (event === 'waiting' || event === 'seeking') {
+                        // Temporary interruptions need not emit `playing`
+                        // again. Preserve the start, but discard the old clock
+                        // sample so buffering/seek jumps never count as audio.
                         state.advancing = false;
-                        state.time = el.currentTime;
+                        state.time = null;
+                    } else if (event === 'seeked' || event === 'ratechange') {
+                        // Only later progress from this new baseline can
+                        // restore activity; completing a seek alone cannot.
+                        state.advancing = false;
+                        state.time = canAdvance(el) ? el.currentTime : null;
                     }
                     if (!el.isConnected && (el.paused || el.ended)) {
                         restoreMute(el);
