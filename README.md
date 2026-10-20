@@ -31,7 +31,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Spaces and profiles | Named Spaces with icons and adaptive themes, plus separate profiles for cookies, logins, website data, and Favorites. | Implemented. |
 | Haptic feedback | Subtle native feedback for sidebar dragging and Space changes on supported devices, respecting macOS preferences. | Implemented. |
 | Split views and tab previews | Side-by-side pages with shared controls following the focused pane; thumbnail tab switcher. | Planned. |
-| Page lifecycle | Create pages on demand and release them when closed. Automatic suspension and recovery are planned. | Partial. |
+| Page lifecycle | Explicit runtime states, on-demand page creation, live-page reuse, and cleanup when closed. Automatic memory policies and advanced recovery are planned. | Partial. |
 | Downloads and page tools | Manage downloads, upload files, print, view PDFs, find text, and adjust zoom. | Planned. |
 | Reading tools | Reader Mode for supported articles and page translation. | Planned. |
 | Credentials and autofill | Integrate supported password managers, autofill, and passkeys through public platform facilities. | Planned. |

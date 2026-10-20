@@ -31,6 +31,9 @@ public final class BrowserPage {
 public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate {
     public private(set) var pages: [UUID: BrowserPage] = [:]
     public private(set) var creationCount = 0
+    public private(set) var lifecycles: [UUID: PageLifecycle] = [:]
+    public private(set) var visibleTabIDs: Set<UUID> = []
+    public private(set) var focusedTabID: UUID?
     public let favicons: FaviconStore
     public var onMetadata: ((UUID, URL?, String?) -> Void)?
     public var onNewWindow: ((URL, WKWebViewConfiguration) -> WKWebView?)?
@@ -45,6 +48,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     private var store: WKWebsiteDataStore?
     private var identities: [ObjectIdentifier: UUID] = [:]
     private var dialogs: [UUID: PendingDialog] = [:]
+    private var controllerOwners: [ObjectIdentifier: Set<UUID>] = [:]
 
     public init(profileID: UUID, ephemeral: Bool = false,
                 input: NavigationInput = NavigationInput(),
@@ -66,12 +70,52 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         return store!
     }
     public func existingView(for id: UUID) -> WKWebView? { pages[id]?.view }
+    public func lifecycle(for id: UUID) -> PageLifecycle { lifecycles[id] ?? PageLifecycle() }
+    var registeredControllerCount: Int { controllerOwners.count }
+
+    /// Register/prune lightweight runtime identities without preparing any view.
+    /// Closed pins remain metadata only; deleted tabs leave no runtime tombstone.
+    @discardableResult
+    public func reconcile(tabs: [BrowserTab]) -> Bool {
+        guard tabs.allSatisfy({ $0.profileID == profileID }), Set(tabs.map(\.id)).count == tabs.count else { return false }
+        let all = Set(tabs.map(\.id)), open = Set(tabs.filter(\.isOpen).map(\.id))
+        for id in Array(pages.keys) where !open.contains(id) { discard(tabID: id) }
+        for id in Array(lifecycles.keys) where !all.contains(id) { lifecycles[id] = nil }
+        for id in all where lifecycles[id] == nil { lifecycles[id] = PageLifecycle() }
+        if let focusedTabID, open.contains(focusedTabID) {
+            _ = setPresentation(visibleTabIDs: visibleTabIDs.intersection(open), focusedTabID: focusedTabID)
+        } else {
+            _ = setPresentation(visibleTabIDs: [], focusedTabID: nil)
+        }
+        return true
+    }
+
+    /// Visibility/focus are window-local and do not load, navigate or allocate.
+    /// All selected split members are visible/protected, not just its focus.
+    @discardableResult
+    public func setPresentation(visibleTabIDs: Set<UUID>, focusedTabID: UUID?) -> Bool {
+        guard visibleTabIDs.allSatisfy({ lifecycles[$0] != nil }),
+              focusedTabID.map({ visibleTabIDs.contains($0) }) ?? visibleTabIDs.isEmpty else { return false }
+        if self.visibleTabIDs != visibleTabIDs { self.visibleTabIDs = visibleTabIDs }
+        if self.focusedTabID != focusedTabID { self.focusedTabID = focusedTabID }
+        for id in Array(lifecycles.keys) {
+            var runtime = lifecycles[id]!
+            runtime.setPresentation(visible: visibleTabIDs.contains(id), focused: id == focusedTabID)
+            if lifecycles[id] != runtime { lifecycles[id] = runtime }
+        }
+        return true
+    }
+
+    private func transition(_ id: UUID, _ event: PageLifecycle.Event) {
+        var runtime = lifecycle(for: id)
+        if runtime.transition(event) { lifecycles[id] = runtime }
+    }
 
     /// Called by accepted navigation/selection, never by SwiftUI rendering.
     @discardableResult
     public func prepare(_ tab: BrowserTab, configuration supplied: WKWebViewConfiguration? = nil) -> BrowserPage {
-        if let page = pages[tab.id] { return page }
         precondition(tab.profileID == profileID, "A manager owns exactly one profile")
+        if let page = pages[tab.id] { return page }
         let configuration: WKWebViewConfiguration
         if let supplied {
             // WebKit requires the exact supplied configuration for window.open.
@@ -85,22 +129,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             configuration.applicationNameForUserAgent = BrowserUserAgent.applicationName
         }
         let controller = configuration.userContentController
-        let mediaObserver = MediaActivityObserver()
-        mediaObserver.owner = self
-        controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
-        controller.addScriptMessageHandler(mediaObserver, contentWorld: .defaultClient, name: MediaActivityObserver.name)
-        if !controller.userScripts.contains(where: { $0.source == MediaActivityObserver.script }) {
-            controller.addUserScript(WKUserScript(source: MediaActivityObserver.script,
-                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
-        }
-        let linkObserver = LinkContextMenuObserver()
-        linkObserver.owner = self
-        controller.removeScriptMessageHandler(forName: LinkContextMenuObserver.name, contentWorld: LinkContextMenuObserver.world)
-        controller.add(linkObserver, contentWorld: LinkContextMenuObserver.world, name: LinkContextMenuObserver.name)
-        if !controller.userScripts.contains(where: { $0.source == LinkContextMenuObserver.script }) {
-            controller.addUserScript(WKUserScript(source: LinkContextMenuObserver.script,
-                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: LinkContextMenuObserver.world))
-        }
+        registerHandlers(controller, for: tab.id)
         let view = BrowserWebView(frame: .zero, configuration: configuration)
         // WebKit generates the base identity and inherits the opener's suffix
         // in popup configurations. Do not overwrite a supplied configuration.
@@ -120,12 +149,16 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let page = BrowserPage(view: view, url: tab.currentURL)
         pages[tab.id] = page
         identities[ObjectIdentifier(view)] = tab.id
+        transition(tab.id, .allocate)
         creationCount += 1
-        // KVO has a nonisolated signature. Coalesce its burst of property changes
-        // into at most one queued MainActor refresh per view, without retaining it.
+        // A queued refresh must still belong to this exact page, not a later
+        // replacement reusing the same durable tab identity.
         let gate = RefreshGate()
-        let changed: @Sendable () -> Void = { [weak self] in
-            gate.schedule { [weak self] in self?.refresh(tab.id) }
+        let changed: @Sendable () -> Void = { [weak self, weak page] in
+            gate.schedule { [weak self, weak page] in
+                guard let self, let page, self.pages[tab.id] === page else { return }
+                self.refresh(tab.id)
+            }
         }
         page.observations = [
             view.observe(\.title) { _, _ in changed() },
@@ -138,10 +171,55 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         return page
     }
 
+    private func registerHandlers(_ controller: WKUserContentController, for id: UUID) {
+        let identity = ObjectIdentifier(controller)
+        if controllerOwners[identity] != nil {
+            controllerOwners[identity]?.insert(id)
+            return
+        }
+        controllerOwners[identity] = [id]
+        let mediaObserver = MediaActivityObserver()
+        mediaObserver.owner = self
+        controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
+        controller.addScriptMessageHandler(mediaObserver, contentWorld: .defaultClient, name: MediaActivityObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == MediaActivityObserver.script }) {
+            controller.addUserScript(WKUserScript(source: MediaActivityObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
+        }
+        let linkObserver = LinkContextMenuObserver()
+        linkObserver.owner = self
+        controller.removeScriptMessageHandler(forName: LinkContextMenuObserver.name, contentWorld: LinkContextMenuObserver.world)
+        controller.add(linkObserver, contentWorld: LinkContextMenuObserver.world, name: LinkContextMenuObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == LinkContextMenuObserver.script }) {
+            controller.addUserScript(WKUserScript(source: LinkContextMenuObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: LinkContextMenuObserver.world))
+        }
+    }
+
+    private func unregisterHandlers(_ controller: WKUserContentController, for id: UUID) {
+        let identity = ObjectIdentifier(controller)
+        controllerOwners[identity]?.remove(id)
+        // Opener/popups can share a content controller. Closing one must not
+        // detach bridges still owned by another live page.
+        guard controllerOwners[identity]?.isEmpty == true else { return }
+        controllerOwners[identity] = nil
+        controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
+        controller.removeScriptMessageHandler(forName: LinkContextMenuObserver.name, contentWorld: LinkContextMenuObserver.world)
+    }
+
+    private func beginLoading(_ id: UUID) {
+        guard let page = pages[id] else { return }
+        page.failure = nil
+        page.isLoading = true
+        page.progress = 0
+        page.navigationGeneration = UUID()
+        transition(id, .startLoading)
+    }
+
     public func load(_ url: URL, in tab: BrowserTab) {
         let page = prepare(tab)
         page.requestedURL = url
-        page.failure = nil
+        beginLoading(tab.id)
         page.view.load(URLRequest(url: url))
     }
 
@@ -152,15 +230,30 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func reload(_ id: UUID) {
         guard let page = pages[id] else { return }
-        if page.failure != nil || page.view.url == nil {
-            page.failure = nil
+        let needsRequest = page.failure != nil || page.view.url == nil
+        beginLoading(id)
+        if needsRequest {
             page.view.load(URLRequest(url: page.requestedURL))
         } else { page.view.reload() }
     }
 
-    public func stop(_ id: UUID) { pages[id]?.view.stopLoading(); refresh(id) }
-    public func back(_ id: UUID) { pages[id]?.view.goBack() }
-    public func forward(_ id: UUID) { pages[id]?.view.goForward() }
+    public func stop(_ id: UUID) {
+        pages[id]?.view.stopLoading()
+        transition(id, .stopLoading)
+        refresh(id)
+    }
+    public func back(_ id: UUID) { navigateHistory(id, forward: false) }
+    public func forward(_ id: UUID) { navigateHistory(id, forward: true) }
+
+    private func navigateHistory(_ id: UUID, forward: Bool) {
+        guard let page = pages[id], forward ? page.view.canGoForward : page.view.canGoBack else { return }
+        beginLoading(id)
+        let navigation = forward ? page.view.goForward() : page.view.goBack()
+        if navigation == nil {
+            transition(id, .stopLoading)
+            refresh(id)
+        }
+    }
 
     /// Temporary, page-owned HTML audio/video muting. It survives navigation
     /// in this live tab, but is deliberately not a persisted site preference.
@@ -180,18 +273,24 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         return true
     }
 
+    /// Explicit close/delete/shutdown release, not an inactive-page policy.
+    /// Future eviction must protect visible panes and important interactions.
     public func discard(tabID: UUID) {
-        guard let page = pages.removeValue(forKey: tabID) else { return }
+        if lifecycles[tabID] != nil { transition(tabID, .discard) }
+        guard let page = pages[tabID] else { return }
+        identities.removeValue(forKey: ObjectIdentifier(page.view))
+        cancelDialog(tabID)
+        pages.removeValue(forKey: tabID)
+        unregisterHandlers(page.view.configuration.userContentController, for: tabID)
         page.mediaFrames.removeAll()
         page.playingFrames.removeAll()
         page.isPlayingMedia = false
+        page.isLoading = false
         if let view = page.view as? BrowserWebView {
             view.cancelLinkMenu()
             view.onOpenWindowLink = nil
             view.onOpenBackgroundLink = nil
         }
-        identities.removeValue(forKey: ObjectIdentifier(page.view))
-        cancelDialog(tabID)
         page.observations.forEach { $0.invalidate() }
         page.observations.removeAll()
         page.view.stopLoading()
@@ -205,7 +304,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         }
     }
 
-    public func discardAll() { for id in Array(pages.keys) { discard(tabID: id) } }
+    public func discardAll() {
+        for id in Array(pages.keys) { discard(tabID: id) }
+        _ = setPresentation(visibleTabIDs: [], focusedTabID: nil)
+    }
 
     func contextLinkURL(href: String, in view: WKWebView) -> URL? {
         guard identities[ObjectIdentifier(view)] != nil, href.utf8.count <= 16384,
@@ -235,7 +337,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             onOpenBackgroundLink(url)
         } else {
             page.requestedURL = url
-            page.failure = nil
+            beginLoading(id)
             view.load(URLRequest(url: url))
         }
         return true
@@ -264,6 +366,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.progress = view.estimatedProgress
         page.canGoBack = view.canGoBack
         page.canGoForward = view.canGoForward
+        if view.isLoading && page.failure == nil { transition(id, .startLoading) }
+        else if !view.isLoading { transition(id, .stopLoading) }
         let url = view.url.flatMap { try? input.validate($0) }
         let title = view.title
         if url != page.reportedURL || title != page.reportedTitle {
@@ -305,8 +409,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
-        pages[id]?.failure = nil
-        pages[id]?.navigationGeneration = UUID()
+        beginLoading(id)
         refresh(id)
     }
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -316,9 +419,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.isPlayingMedia = false
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard let id = identities[ObjectIdentifier(webView)], let page = pages[id],
-              let url = webView.url else { return }
+        guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
+        transition(id, .finishLoading)
         refresh(id)
+        guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected
         // observers, external discovery service, or off-screen page loads.
@@ -343,6 +447,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         guard (error as NSError).code != NSURLErrorCancelled,
               let id = identities[ObjectIdentifier(view)] else { return }
         pages[id]?.failure = error.localizedDescription
+        transition(id, .fail)
         refresh(id)
     }
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -352,6 +457,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.isPlayingMedia = false
         pages[id]?.playingFrames.removeAll()
         pages[id]?.mediaFrames.removeAll()
+        transition(id, .fail)
     }
 
     public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,

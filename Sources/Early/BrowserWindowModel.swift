@@ -82,6 +82,7 @@ final class BrowserWindowModel {
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
          preferences: BrowserPreferences? = nil, searchProviders: [any CommandSearchProvider] = [],
+         configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
         self.isTesting = isTesting
@@ -100,10 +101,15 @@ final class BrowserWindowModel {
         commandSearch = CommandSearch(providers: searchProviders, now: now)
         coordinator = BrowserCoordinator(startup: startup, activeSpaceID: session.activeSpaceID,
             tabStore: TabStore(tabs: session.tabs, folders: session.folders), selectionBySpace: session.selectionBySpace,
-            profileID: session.profileID, recentlyClosed: session.recentlyClosed, spaces: session.spaces, now: now)
+            profileID: session.profileID, recentlyClosed: session.recentlyClosed, spaces: session.spaces,
+            splitGroups: session.splitGroups, focusedPaneByGroupID: session.focusedPaneByGroupID, now: now)
         persistence = sharedPersistence ?? SessionAutosaver(repository: repository, disabledReason: restorationError)
         webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
                                  websiteDataStore: websiteDataStore) { configuration in
+            if let configureWebView {
+                configureWebView(configuration)
+                return
+            }
             #if DEBUG
             if isTesting { configuration.setURLSchemeHandler(TestPages(), forURLScheme: "early-test") }
             #endif
@@ -140,8 +146,8 @@ final class BrowserWindowModel {
         // The app installs the shared writer before publishing the first snapshot.
     }
 
-    var activePage: BrowserPage? { coordinator.activeTabID.flatMap { webViews.pages[$0] } }
-    var activeTab: BrowserTab? { coordinator.activeTabID.flatMap { coordinator.tabStore.tab(id: $0) } }
+    var activePage: BrowserPage? { coordinator.focusedTabID.flatMap { webViews.pages[$0] } }
+    var activeTab: BrowserTab? { coordinator.focusedTabID.flatMap { coordinator.tabStore.tab(id: $0) } }
     var openTabs: [BrowserTab] {
         coordinator.tabStore.openTabs(in: coordinator.activeSpaceID)
     }
@@ -573,17 +579,35 @@ final class BrowserWindowModel {
     }
 
     func activateSelection() {
-        if let id = coordinator.activeTabID, let tab = coordinator.tabStore.tab(id: id) {
+        reconcileRuntimePresentation()
+        if let id = coordinator.focusedTabID, let tab = coordinator.tabStore.tab(id: id) {
             webViews.activate(tab)
         }
         contentFocusRequest += 1
     }
 
-    func reload() { if let id = coordinator.activeTabID { webViews.reload(id) } }
-    func stop() { if let id = coordinator.activeTabID { webViews.stop(id) } }
-    func back() { if let id = coordinator.activeTabID { webViews.back(id) } }
-    func forward() { if let id = coordinator.activeTabID { webViews.forward(id) } }
-    func save() { onSave?(self) }
+    /// Called by a future pane host, not exposed as an unfinished menu command.
+    @discardableResult
+    func focusPane(_ id: UUID) -> Bool {
+        guard let group = coordinator.splitGroups.first(where: {
+            $0.spaceID == coordinator.activeSpaceID && $0.panes.contains { $0.id == id }
+        }), let pane = group.panes.first(where: { $0.id == id }) else { return false }
+        return perform(.selectTab(pane.tabID))
+    }
+
+    private func reconcileRuntimePresentation() {
+        guard webViews.reconcile(tabs: coordinator.tabStore.tabs) else { return }
+        _ = webViews.setPresentation(visibleTabIDs: coordinator.visibleTabIDs, focusedTabID: coordinator.focusedTabID)
+    }
+
+    func reload() { if let id = coordinator.focusedTabID { webViews.reload(id) } }
+    func stop() { if let id = coordinator.focusedTabID { webViews.stop(id) } }
+    func back() { if let id = coordinator.focusedTabID { webViews.back(id) } }
+    func forward() { if let id = coordinator.focusedTabID { webViews.forward(id) } }
+    func save() {
+        reconcileRuntimePresentation()
+        onSave?(self)
+    }
 
     func openTabInNewWindow(_ id: UUID) {
         guard let tab = coordinator.tabStore.tab(id: id) else { return }
@@ -616,6 +640,7 @@ final class BrowserWindowModel {
         renamingTabID = nil
         spaceEditor = nil
         spaceDeletionID = nil
+        reconcileRuntimePresentation()
         if previous != coordinator.activeTabID { activateSelection() }
     }
 
@@ -629,6 +654,7 @@ final class BrowserWindowModel {
         if let renamingTabID, !remaining.contains(renamingTabID) { self.renamingTabID = nil }
         if case .edit(let id, _) = spaceEditor, !coordinator.spaces.contains(where: { $0.id == id }) { spaceEditor = nil }
         if let spaceDeletionID, !coordinator.spaces.contains(where: { $0.id == spaceDeletionID }) { self.spaceDeletionID = nil }
+        reconcileRuntimePresentation()
         if previous != coordinator.activeTabID { activateSelection() }
     }
 }

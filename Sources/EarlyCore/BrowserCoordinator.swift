@@ -14,6 +14,8 @@ public final class BrowserCoordinator {
     public private(set) var commandBarFocusRequest = 0
     public let profileID: UUID
     public private(set) var recentlyClosed: [ClosedTab]
+    public private(set) var splitGroups: [BrowserSplitGroup]
+    public private(set) var focusedPaneByGroupID: [UUID: UUID]
     private var selectionBySpace: [UUID: UUID]
     @ObservationIgnored private let now: @Sendable () -> Date
 
@@ -25,6 +27,8 @@ public final class BrowserCoordinator {
         profileID: UUID = UUID(),
         recentlyClosed: [ClosedTab] = [],
         spaces: [BrowserSpace]? = nil,
+        splitGroups: [BrowserSplitGroup] = [],
+        focusedPaneByGroupID: [UUID: UUID] = [:],
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.now = now
@@ -33,6 +37,8 @@ public final class BrowserCoordinator {
         self.selectionBySpace = selectionBySpace
         self.profileID = profileID
         self.recentlyClosed = Array(recentlyClosed.suffix(20))
+        self.splitGroups = splitGroups
+        self.focusedPaneByGroupID = focusedPaneByGroupID
         self.spaces = spaces ?? BrowserSpace.migrated(profileID: profileID, activeID: activeSpaceID,
             tabs: tabStore.tabs, folders: tabStore.folders, selection: selectionBySpace, closed: recentlyClosed)
         for folder in tabStore.folders {
@@ -84,6 +90,10 @@ public final class BrowserCoordinator {
         if content != .web(tabID: id) { tabStore.recordActivation(id, at: now()) }
         tabStore.revealFolderAncestors(of: id)
         selectionBySpace[activeSpaceID] = id
+        if let group = splitGroups.first(where: { $0.spaceID == activeSpaceID && $0.panes.contains { $0.tabID == id } }),
+           let pane = group.panes.first(where: { $0.tabID == id }) {
+            focusedPaneByGroupID[group.id] = pane.id
+        }
         content = .web(tabID: id)
         dismissCommandBar()
     }
@@ -138,6 +148,7 @@ public final class BrowserCoordinator {
                 selectionBySpace[space] = nil
             }
         }
+        pruneSelections()
         return true
     }
 
@@ -164,10 +175,67 @@ public final class BrowserCoordinator {
         return nil
     }
 
+    /// There is one command target per window. `content` remains the focused
+    /// page until the split renderer is introduced, never a duplicate tab ID.
+    public var focusedTabID: UUID? { activeTabID }
+
+    public var activeSplitGroup: BrowserSplitGroup? {
+        guard let id = activeTabID else { return nil }
+        return splitGroups.first { $0.spaceID == activeSpaceID && $0.panes.contains { $0.tabID == id } }
+    }
+
+    /// All group members are protected from future inactive-page eviction,
+    /// even when only one pane currently owns keyboard focus.
+    public var visibleTabIDs: Set<UUID> {
+        if let group = activeSplitGroup { return Set(group.panes.map(\.tabID)) }
+        return Set(activeTabID.map { [$0] } ?? [])
+    }
+
+    @discardableResult
+    public func createSplit(between first: UUID, and second: UUID, leadingFraction: Double = 0.5) -> UUID? {
+        let group = BrowserSplitGroup(spaceID: activeSpaceID,
+            panes: [BrowserSplitPane(tabID: first), BrowserSplitPane(tabID: second)], leadingFraction: leadingFraction)
+        let proposed = splitGroups + [group]
+        guard BrowserSplitGroup.pruned(proposed, tabs: tabStore.tabs, spaces: spaces, profileID: profileID) == proposed else { return nil }
+        splitGroups = proposed
+        let selected = activeTabID == second ? second : first
+        focusedPaneByGroupID[group.id] = group.panes.first { $0.tabID == selected }?.id
+        selectOpenTab(selected)
+        return group.id
+    }
+
+    @discardableResult
+    public func focusPane(_ paneID: UUID) -> Bool {
+        guard let group = splitGroups.first(where: { $0.spaceID == activeSpaceID && $0.panes.contains { $0.id == paneID } }),
+              let pane = group.panes.first(where: { $0.id == paneID }),
+              let tab = tabStore.tab(id: pane.tabID), tab.isOpen, canAccess(tab) else { return false }
+        selectOpenTab(pane.tabID)
+        return true
+    }
+
+    @discardableResult
+    public func resizeSplit(_ id: UUID, leadingFraction: Double) -> Bool {
+        guard leadingFraction.isFinite, BrowserSplitGroup.fractionRange.contains(leadingFraction),
+              let index = splitGroups.firstIndex(where: { $0.id == id && $0.spaceID == activeSpaceID }),
+              splitGroups[index].leadingFraction != leadingFraction else { return false }
+        splitGroups[index].leadingFraction = leadingFraction
+        return true
+    }
+
+    /// Removing layout is not closing either of its tabs or releasing a view.
+    @discardableResult
+    public func exitSplit(_ id: UUID) -> Bool {
+        guard splitGroups.contains(where: { $0.id == id && $0.spaceID == activeSpaceID }) else { return false }
+        splitGroups.removeAll { $0.id == id }
+        focusedPaneByGroupID[id] = nil
+        return true
+    }
+
     public var session: BrowserSession {
         BrowserSession(profileID: profileID, activeSpaceID: activeSpaceID,
                        tabs: tabStore.tabs, selectionBySpace: selectionBySpace,
-                       recentlyClosed: recentlyClosed, folders: tabStore.folders, spaces: spaces)
+                       recentlyClosed: recentlyClosed, folders: tabStore.folders, spaces: spaces,
+                       splitGroups: splitGroups, focusedPaneByGroupID: focusedPaneByGroupID)
     }
 
     public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
@@ -182,6 +250,8 @@ public final class BrowserCoordinator {
         activeSpaceID = session.activeSpaceID
         selectionBySpace = session.selectionBySpace
         recentlyClosed = session.recentlyClosed
+        splitGroups = session.splitGroups
+        focusedPaneByGroupID = session.focusedPaneByGroupID
         pruneSelections()
         restoreSelection()
         dismissCommandBar()
@@ -268,6 +338,7 @@ public final class BrowserCoordinator {
                 selectionBySpace[space] = nil
             }
         }
+        pruneSelections()
         return true
     }
 
@@ -281,6 +352,7 @@ public final class BrowserCoordinator {
                 selectionBySpace[space] = nil
             }
         }
+        pruneSelections()
         return true
     }
 
@@ -299,6 +371,7 @@ public final class BrowserCoordinator {
     public func deleteFolder(_ id: UUID) -> Set<UUID>? {
         guard folders.contains(where: { $0.id == id }) else { return nil }
         let previousActive = activeTabID
+        let previousSplit = activeSplitGroup
         let previousOrder = tabStore.openTabs(in: activeSpaceID).map(\.id)
         guard let removed = tabStore.deleteFolder(id) else { return nil }
         // Reopen Closed Tab must not resurrect deleted folder records or keep
@@ -314,12 +387,15 @@ public final class BrowserCoordinator {
         }
         if let previousActive, removed.tabIDs.contains(previousActive) {
             let index = previousOrder.firstIndex(of: previousActive) ?? 0
-            let next = previousOrder.dropFirst(index + 1).first { !removed.tabIDs.contains($0) }
+            let next = previousSplit?.panes.first { !removed.tabIDs.contains($0.tabID) }?.tabID
+                ?? previousOrder.dropFirst(index + 1).first { !removed.tabIDs.contains($0) }
                 ?? previousOrder.prefix(index).last { !removed.tabIDs.contains($0) }
             selectionBySpace[activeSpaceID] = next
             content = next.map { .web(tabID: $0) } ?? .empty
             dismissCommandBar()
         }
+        pruneSelections()
+        restoreSelection()
         return removed.tabIDs
     }
 
@@ -349,6 +425,7 @@ public final class BrowserCoordinator {
     public func moveTab(_ id: UUID, toFolder folderID: UUID?) -> Bool {
         guard let tab = tabStore.tab(id: id), canAccess(tab), tabStore.moveTab(id, toFolder: folderID) else { return false }
         recentlyClosed.removeAll { $0.tab.id == id }
+        pruneSelections()
         return true
     }
 
@@ -392,7 +469,10 @@ public final class BrowserCoordinator {
     public func closeTab(_ id: UUID) -> UUID? {
         guard let index = tabStore.tabs.firstIndex(where: { $0.id == id && $0.isOpen }) else { return nil }
         let tab = tabStore.tabs[index]
-        let nextID = tabStore.close(id: id, in: tab.isFavorite ? activeSpaceID : tab.spaceID)
+        let closeSpace = tab.isFavorite ? activeSpaceID : tab.spaceID
+        let sibling = splitGroups.first { $0.spaceID == closeSpace && $0.panes.contains { $0.tabID == id } }?.panes.first { $0.tabID != id }?.tabID
+        let fallback = tabStore.close(id: id, in: closeSpace)
+        let nextID = sibling ?? fallback
         recentlyClosed.removeAll { $0.tab.id == id }
         // History must use the reset pin too, including persisted reopen paths.
         recentlyClosed.append(ClosedTab(tab: tabStore.tab(id: id) ?? tab, position: index))
@@ -404,6 +484,8 @@ public final class BrowserCoordinator {
             content = nextID.map { .web(tabID: $0) } ?? .empty
             dismissCommandBar()
         }
+        pruneSelections()
+        restoreSelection()
         return id
     }
 
@@ -569,6 +651,11 @@ public final class BrowserCoordinator {
                 $0.id == id && $0.profileID == profileID && $0.isOpen && $0.isVisible(in: space)
             }
         }
+        var snapshot = session
+        snapshot.pruneSplitMetadata()
+        splitGroups = snapshot.splitGroups
+        focusedPaneByGroupID = snapshot.focusedPaneByGroupID
+        selectionBySpace = snapshot.selectionBySpace
     }
 
     private func restoreSelection() {
