@@ -51,6 +51,14 @@ public struct PageRetentionPolicy: Sendable {
         self.maximumInactivePages = max(0, maximumInactivePages)
     }
 
+    public func inactiveAllowance(for pressure: Pressure) -> Int {
+        switch pressure {
+        case .normal: maximumInactivePages
+        case .warning: maximumInactivePages / 2
+        case .critical: 0
+        }
+    }
+
     /// Called on accepted page use or allocation, never by rendering or polling.
     public mutating func recordUse(of id: UUID) {
         if accessSequence == .max {
@@ -76,12 +84,7 @@ public struct PageRetentionPolicy: Sendable {
     /// All pressure levels preserve visibility, loading, and protection rules.
     /// Returned identities are unique and ordered from least recently used.
     public func discardCandidates(from pages: [Page], pressure: Pressure = .normal) -> [UUID] {
-        let allowance: Int
-        switch pressure {
-        case .normal: allowance = maximumInactivePages
-        case .warning: allowance = maximumInactivePages / 2
-        case .critical: allowance = 0
-        }
+        let allowance = inactiveAllowance(for: pressure)
         let inactiveIDs = Set(pages.filter(\.isInactive).map(\.id))
         let excess = max(0, inactiveIDs.count - allowance)
         guard excess > 0 else { return [] }
