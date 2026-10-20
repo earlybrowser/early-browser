@@ -51,7 +51,9 @@ final class BrowserWindowModel {
     var spaceSwipeIsSettling = false
     @ObservationIgnored private var spaceSwipeSettleTask: Task<Void, Never>?
     @ObservationIgnored private var spaceSwipeRevision = UUID()
-    var sidebarInteractionInProgress = false
+    var sidebarInteractionInProgress = false {
+        didSet { webViews.interactionInProgress = sidebarInteractionInProgress }
+    }
     var folderEditorIsPresented = false
     var renamingTabID: UUID?
     var renameText = ""
@@ -580,7 +582,8 @@ final class BrowserWindowModel {
 
     func activateSelection() {
         reconcileRuntimePresentation()
-        if let id = coordinator.focusedTabID, let tab = coordinator.tabStore.tab(id: id) {
+        for id in coordinator.visibleTabIDs {
+            guard let tab = coordinator.tabStore.tab(id: id) else { continue }
             webViews.activate(tab)
         }
         contentFocusRequest += 1
