@@ -648,6 +648,7 @@ struct WebContentView: NSViewRepresentable {
     let hasDialog: Bool
 
     func makeNSView(context: Context) -> HostView { HostView() }
+    static func dismantleNSView(_ host: HostView, coordinator: ()) { host.invalidate() }
     func updateNSView(_ host: HostView, context: Context) {
         host.display(view)
         host.canFocus = canFocus
@@ -664,34 +665,65 @@ struct WebContentView: NSViewRepresentable {
     }
 
     final class HostView: NSView {
+        // Weak ownership includes element-fullscreen reparenting. A second
+        // pane cannot silently steal the same live view from its first host.
+        private static let owners = NSMapTable<WKWebView, HostView>.weakToWeakObjects()
         weak var hosted: WKWebView?
         private weak var desired: WKWebView?
         private var leavingFullscreen = false
+        private var invalidated = false
 
-        func display(_ view: WKWebView?) {
+        @discardableResult
+        func display(_ view: WKWebView?) -> Bool {
+            guard !invalidated, canOwn(view) else { return false }
             desired = view
-            guard !leavingFullscreen, hosted !== view else { return }
+            guard !leavingFullscreen, hosted !== view else { return true }
             if let previous = hosted, previous.fullscreenState != .notInFullscreen {
                 leavingFullscreen = true
                 previous.closeAllMediaPresentations { [weak self] in
-                    guard let self else { return }
+                    guard let self, !self.invalidated else { return }
                     self.leavingFullscreen = false
-                    self.install(self.desired)
+                    _ = self.install(self.desired)
                 }
-                return
+                return true
             }
-            install(view)
+            return install(view)
         }
 
-        private func install(_ view: WKWebView?) {
-            hosted?.removeFromSuperview()
+        private func canOwn(_ view: WKWebView?) -> Bool {
+            guard let view, let owner = Self.owners.object(forKey: view) else { return true }
+            return owner === self
+        }
+
+        func invalidate() {
+            invalidated = true
+            canFocus = false
+            focusRequest = -1
+            desired = nil
+            releaseHostedView()
+        }
+
+        private func releaseHostedView() {
+            if let hosted {
+                if Self.owners.object(forKey: hosted) === self { Self.owners.removeObject(forKey: hosted) }
+                if hosted.superview === self { hosted.removeFromSuperview() }
+            }
+            hosted = nil
+        }
+
+        @discardableResult
+        private func install(_ view: WKWebView?) -> Bool {
+            guard canOwn(view) else { return false }
+            releaseHostedView()
             hosted = view
             if let view {
+                Self.owners.setObject(self, forKey: view)
                 view.removeFromSuperview()
                 view.frame = bounds
                 view.autoresizingMask = [.width, .height]
                 addSubview(view)
             }
+            return true
         }
         var focusRequest = -1
         var canFocus = false
