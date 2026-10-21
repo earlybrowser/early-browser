@@ -127,18 +127,39 @@ struct BrowserGlassTests {
         #expect(FavoriteCardPalette.fillOpacity(isDark: false) < 0.5)
     }
 
-    @Test func themeHintIsVerySmallAndOnlyInDarkColoredBackings() {
-        for isDark in [false, true] {
-            for theme in BrowserSpace.Color.allCases {
-                let opacity = BrowserSurfacePalette.backingThemeOpacity(spaceColor: theme, isDark: isDark)
-                #expect(opacity == (isDark && theme != .gray ? 0.02 : 0))
+    @Test func themeHintUsesOneVerySmallAppearanceIndependentValue() {
+        for theme in BrowserSpace.Color.allCases {
+            #expect(BrowserSurfacePalette.backingThemeOpacity(spaceColor: theme) == (theme != .gray ? 0.02 : 0))
+        }
+        #expect(BrowserSurfacePalette.backingThemeOpacity(spaceColor: nil) == 0)
+    }
+
+    @Test func glassBackingHasEquivalentTransparencyInBothAppearances() throws {
+        _ = NSApplication.shared
+        for role in BrowserGlassRole.allCases {
+            for theme in [BrowserSpace.Color?.none, .yellow, .blue] {
+                var alpha: [UInt8] = []
+                for scheme in [ColorScheme.light, .dark] {
+                    let renderer = ImageRenderer(content: BrowserGlassBacking(shape: RoundedRectangle(cornerRadius: 9), role: role)
+                        .frame(width: 80, height: 44).environment(\.browserSpaceColor, theme)
+                        .environment(\.colorScheme, scheme))
+                    let center = try pixel(in: #require(renderer.cgImage), x: 40, y: 22)
+                    alpha.append(center[3])
+                    let backing = BrowserSurfacePalette.backingOpacity(role: role)
+                    let tint = BrowserSurfacePalette.backingThemeOpacity(spaceColor: theme)
+                    let expected = Int(((backing + tint * (1 - backing)) * 255).rounded())
+                    #expect(abs(Int(center[3]) - expected) <= 1)
+                }
+                #expect(alpha[0] == alpha[1])
             }
-            #expect(BrowserSurfacePalette.backingThemeOpacity(spaceColor: nil, isDark: isDark) == 0)
         }
     }
 
     @Test func backingHasAMutedUniformHintNotAColoredPerimeter() throws {
         _ = NSApplication.shared
+        let neutralRenderer = ImageRenderer(content: BrowserGlassBacking(shape: RoundedRectangle(cornerRadius: 9), spaceColor: .gray)
+            .frame(width: 80, height: 44).environment(\.colorScheme, .dark))
+        let neutral = try pixel(in: #require(neutralRenderer.cgImage), x: 40, y: 22)
         for theme in [BrowserSpace.Color.yellow, .blue] {
             let renderer = ImageRenderer(content: BrowserGlassBacking(shape: RoundedRectangle(cornerRadius: 9))
                 .frame(width: 80, height: 44).environment(\.browserSpaceColor, theme)
@@ -147,10 +168,11 @@ struct BrowserGlassTests {
             let center = try pixel(in: backing, x: 40, y: 22)
             let edge = try pixel(in: backing, x: 2, y: 22)
             #expect(center == edge)
-            #expect(theme == .yellow ? center[0] > center[2] : center[2] > center[0])
+            let hue = Int(center[0]) - Int(center[2]) - (Int(neutral[0]) - Int(neutral[2]))
+            #expect(theme == .yellow ? hue > 0 : hue < 0)
             #expect(center[3] > 0)
-            // Premultiplied color can contribute at most about 2% of a channel.
-            #expect(center.prefix(3).allSatisfy { $0 <= 6 })
+            // The hint can change the adaptive backing by only about 2%.
+            #expect(zip(center.prefix(3), neutral.prefix(3)).allSatisfy { abs(Int($0.0) - Int($0.1)) <= 6 })
 
             let island = ImageRenderer(content: BrowserIslandBackground(cornerRadius: 9,
                 fillOpacity: 0.08, allowsTransparency: true).frame(width: 80, height: 44)
@@ -187,7 +209,7 @@ struct BrowserGlassTests {
         }
     }
 
-    @Test func lightNeutralAndDisabledGlassDoNotReceiveAThemeHint() throws {
+    @Test func neutralAndDisabledGlassDoNotReceiveAThemeHint() throws {
         _ = NSApplication.shared
         for scheme in [ColorScheme.light, .dark] {
             let reference = ImageRenderer(content: Color(white: 0.5).frame(width: 80, height: 44))
@@ -209,12 +231,6 @@ struct BrowserGlassTests {
                 // produce no CGImage when rendered entirely on its own.
                 let disabledImage = try #require(disabled.cgImage)
                 #expect(try pixel(in: disabledImage, x: 40, y: 22) == referencePixel)
-                if scheme == .light {
-                    let light = ImageRenderer(content: BrowserGlassBacking(shape: RoundedRectangle(cornerRadius: 9))
-                        .frame(width: 80, height: 44).environment(\.browserSpaceColor, theme)
-                        .environment(\.colorScheme, scheme))
-                    #expect(try pixel(in: #require(light.cgImage), x: 40, y: 22) == neutralColors[0])
-                }
             }
         }
     }
@@ -240,10 +256,8 @@ struct BrowserGlassTests {
 
     @Test func backingContrastKeepsDarkSurfacesAndLightSelectionsLegible() {
         for role in BrowserGlassRole.allCases {
-            let dark = BrowserSurfacePalette.backingOpacity(isDark: true, role: role)
-            let light = BrowserSurfacePalette.backingOpacity(isDark: false, role: role)
-            #expect(dark > light && dark >= 0.48 && dark < 0.75)
-            #expect(light >= 0 && light < 0.05)
+            let opacity = BrowserSurfacePalette.backingOpacity(role: role)
+            #expect(opacity >= 0.48 && opacity < 0.75)
         }
         #expect(BrowserSurfacePalette.fillOpacity(0, isDark: false) == 0)
         #expect(BrowserSurfacePalette.fillOpacity(0.08, isDark: false) > 0.08)

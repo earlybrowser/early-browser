@@ -32,8 +32,9 @@ enum BrowserGlassRole: CaseIterable {
 /// Contrast belongs in the backing surface, not over native glass highlights.
 /// Selection fills remain separate so they cannot wash out in light appearance.
 enum BrowserSurfacePalette {
-    static func backingOpacity(isDark: Bool, role: BrowserGlassRole) -> Double {
-        if !isDark { return role == .chrome ? 0 : 0.025 }
+    // One profile for both appearances. The semantic backing color and native
+    // glass adapt their tone; strength and theme contribution do not change.
+    static func backingOpacity(role: BrowserGlassRole) -> Double {
         switch role {
         case .chrome: return 0.62
         case .island, .floating: return 0.58
@@ -48,10 +49,8 @@ enum BrowserSurfacePalette {
 
     static func borderOpacity(isDark: Bool) -> Double { isDark ? 0.07 : 0.14 }
 
-    static func backingThemeOpacity(spaceColor: BrowserSpace.Color?, isDark: Bool) -> Double {
-        // Light mode already picks up enough of the underlying Space. Dark
-        // surfaces get only a two-percent hint, below the native clear effect.
-        isDark && spaceColor != nil && spaceColor != .gray ? 0.02 : 0
+    static func backingThemeOpacity(spaceColor: BrowserSpace.Color?) -> Double {
+        spaceColor != nil && spaceColor != .gray ? 0.02 : 0
     }
 }
 
@@ -62,7 +61,6 @@ struct BrowserGlassBacking: View {
     var spaceColor: BrowserSpace.Color? = nil
     var role: BrowserGlassRole = .island
     @Environment(\.browserSpaceColor) private var inheritedSpaceColor
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -72,18 +70,17 @@ struct BrowserGlassBacking: View {
             if contrast == .increased {
                 shape.fill(Color(nsColor: .controlBackgroundColor))
             } else {
-                shape.fill(Color.black.opacity(BrowserSurfacePalette.backingOpacity(
-                    isDark: colorScheme == .dark, role: role)))
+                shape.fill(Color(nsColor: .windowBackgroundColor)
+                    .opacity(BrowserSurfacePalette.backingOpacity(role: role)))
                     .overlay {
                         if let theme {
                             shape.fill(theme.tint.opacity(BrowserSurfacePalette.backingThemeOpacity(
-                                spaceColor: theme, isDark: colorScheme == .dark)))
+                                spaceColor: theme)))
                         }
                     }
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: theme)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: colorScheme)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
