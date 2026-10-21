@@ -127,100 +127,95 @@ struct BrowserGlassTests {
         #expect(FavoriteCardPalette.fillOpacity(isDark: false) < 0.5)
     }
 
-    @Test func decorativeEdgePaletteFollowsEverySpaceInBothAppearances() throws {
+    @Test func themeHintIsVerySmallAndOnlyInDarkColoredBackings() {
         for isDark in [false, true] {
             for theme in BrowserSpace.Color.allCases {
-                let style = try #require(BrowserSurfaceEdgeStyle(spaceColor: theme,
-                    isDark: isDark, increasedContrast: false))
-                #expect(style.color == (theme == .gray ? .primary : theme.tint))
-                #expect(style.opacity > 0 && style.opacity < 0.5)
-                #expect(style.lineWidth <= 1)
-                if theme != .gray {
-                    let other = try #require(BrowserSurfaceEdgeStyle(spaceColor: theme,
-                        isDark: !isDark, increasedContrast: false))
-                    #expect(style.opacity != other.opacity)
-                }
+                let opacity = BrowserSurfacePalette.backingThemeOpacity(spaceColor: theme, isDark: isDark)
+                #expect(opacity == (isDark && theme != .gray ? 0.02 : 0))
             }
+            #expect(BrowserSurfacePalette.backingThemeOpacity(spaceColor: nil, isDark: isDark) == 0)
         }
     }
 
-    @Test func siteEdgesAndAccessibilityTakePriorityOverSpaceColor() throws {
-        for isDark in [false, true] {
-            for theme in BrowserSpace.Color.allCases {
-                for increased in [false, true] {
-                    let site = try #require(BrowserSurfaceEdgeStyle(spaceColor: theme,
-                        siteColor: .red, isDark: isDark, increasedContrast: increased))
-                    #expect(site.color == .red && site.lineWidth == 1)
-                    #expect(site.opacity == (increased ? 0.80 : 0.65))
-                }
-                let accessible = try #require(BrowserSurfaceEdgeStyle(spaceColor: theme,
-                    isDark: isDark, increasedContrast: true))
-                #expect(accessible.color == .primary && accessible.opacity == 0.40)
-                #expect(BrowserSurfaceEdgeStyle(spaceColor: theme, isDark: isDark,
-                    increasedContrast: true, drawsNeutralEdge: false) == nil)
-            }
+    @Test func backingHasAMutedUniformHintNotAColoredPerimeter() throws {
+        _ = NSApplication.shared
+        for theme in [BrowserSpace.Color.yellow, .blue] {
+            let renderer = ImageRenderer(content: BrowserGlassBacking(shape: RoundedRectangle(cornerRadius: 9))
+                .frame(width: 80, height: 44).environment(\.browserSpaceColor, theme)
+                .environment(\.colorScheme, .dark))
+            let backing = try #require(renderer.cgImage)
+            let center = try pixel(in: backing, x: 40, y: 22)
+            let edge = try pixel(in: backing, x: 2, y: 22)
+            #expect(center == edge)
+            #expect(theme == .yellow ? center[0] > center[2] : center[2] > center[0])
+            #expect(center[3] > 0)
+            // Premultiplied color can contribute at most about 2% of a channel.
+            #expect(center.prefix(3).allSatisfy { $0 <= 6 })
+
+            let island = ImageRenderer(content: BrowserIslandBackground(cornerRadius: 9,
+                fillOpacity: 0.08, allowsTransparency: true).frame(width: 80, height: 44)
+                .background(Color(white: 0.08)).environment(\.browserSpaceColor, theme)
+                .environment(\.colorScheme, .dark))
+            let surface = try #require(island.cgImage)
+            let surfaceCenter = try pixel(in: surface, x: 40, y: 22)
+            let surfaceEdge = try pixel(in: surface, x: 0, y: 22)
+            let centerHue = Int(surfaceCenter[0]) - Int(surfaceCenter[2])
+            let edgeHue = Int(surfaceEdge[0]) - Int(surfaceEdge[2])
+            #expect(abs(edgeHue - centerHue) <= 2)
         }
     }
 
-    @Test func spaceChangesOnlyRecolorPerimetersAndKeepFavoriteSiteEdges() throws {
+    @Test func siteEdgesAndExplicitPopupBackingsKeepTheirOwnColor() throws {
         _ = NSApplication.shared
         for scheme in [ColorScheme.light, .dark] {
-            var centers: [[UInt8]] = [], siteEdges: [[UInt8]] = []
+            var popupColors: [[UInt8]] = []
             for theme in [BrowserSpace.Color.yellow, .blue] {
-                let edgeRenderer = ImageRenderer(content: BrowserSurfaceEdge(shape: RoundedRectangle(cornerRadius: 9))
+                let renderer = ImageRenderer(content: BrowserGlassBacking(shape: RoundedRectangle(cornerRadius: 9),
+                    spaceColor: .red)
                     .frame(width: 80, height: 44).environment(\.browserSpaceColor, theme)
                     .environment(\.colorScheme, scheme))
-                let edge = try #require(edgeRenderer.cgImage)
-                let rim = try pixel(in: edge, x: 0, y: 22)
-                #expect(theme == .yellow ? rim[0] > rim[2] : rim[2] > rim[0])
-                #expect(try pixel(in: edge, x: 40, y: 22)[3] == 0)
-
-                let island = ImageRenderer(content: BrowserIslandBackground(cornerRadius: 9,
-                    fillOpacity: 0.08, allowsTransparency: true).frame(width: 80, height: 44)
-                    .background(Color(white: 0.5)).environment(\.browserSpaceColor, theme)
-                    .environment(\.colorScheme, scheme))
-                let surface = try #require(island.cgImage)
-                centers.append(try pixel(in: surface, x: 40, y: 22))
-                let surfaceRim = try pixel(in: surface, x: 0, y: 22)
-                #expect(theme == .yellow ? surfaceRim[0] > surfaceRim[2] : surfaceRim[2] > surfaceRim[0])
-
-                // An explicitly themed popup must not pick up another Space's
-                // inherited edge color. Settings has no inherited Space at all.
-                let popup = ImageRenderer(content: BrowserFloatingBackground(spaceColor: .red,
-                    cornerRadius: 9, allowsTransparency: true).frame(width: 80, height: 44)
-                    .environment(\.browserSpaceColor, theme).environment(\.colorScheme, scheme))
-                let popupRim = try pixel(in: #require(popup.cgImage), x: 0, y: 22)
-                #expect(popupRim[0] > popupRim[2])
+                popupColors.append(try pixel(in: #require(renderer.cgImage), x: 40, y: 22))
 
                 let favorite = ImageRenderer(content: FavoriteCardBackground(selected: true, hovered: false,
                     tint: .red, allowsTransparency: true).frame(width: 80, height: 44)
                     .background(Color(white: 0.5)).environment(\.browserSpaceColor, theme)
                     .environment(\.colorScheme, scheme))
-                siteEdges.append(try pixel(in: #require(favorite.cgImage), x: 0, y: 22))
+                let siteEdge = try pixel(in: #require(favorite.cgImage), x: 0, y: 22)
+                #expect(Int(siteEdge[0]) - Int(siteEdge[2]) > 100)
             }
-            #expect(centers[0] == centers[1])
-            #expect(siteEdges[0] == siteEdges[1])
+            #expect(popupColors[0] == popupColors[1])
         }
     }
 
-    @Test func disabledAndGrayThemesStayNeutralAndControlsKeepNoOutline() throws {
+    @Test func lightNeutralAndDisabledGlassDoNotReceiveAThemeHint() throws {
         _ = NSApplication.shared
         for scheme in [ColorScheme.light, .dark] {
-            let neutral = BrowserSurfaceEdgeStyle(spaceColor: nil,
-                isDark: scheme == .dark, increasedContrast: false)
-            #expect(neutral == BrowserSurfaceEdgeStyle(spaceColor: .gray,
-                isDark: scheme == .dark, increasedContrast: false))
-            #expect(BrowserSurfaceEdgeStyle(spaceColor: nil, isDark: scheme == .dark,
-                increasedContrast: false, drawsNeutralEdge: false) == nil)
-            var controls: [[UInt8]] = []
-            for theme in [BrowserSpace.Color.yellow, .blue] {
-                let renderer = ImageRenderer(content: BrowserControlBackground(highlighted: true)
-                    .frame(width: 24, height: 24).environment(\.browserSpaceColor, theme)
+            let reference = ImageRenderer(content: Color(white: 0.5).frame(width: 80, height: 44))
+            let referencePixel = try pixel(in: #require(reference.cgImage), x: 40, y: 22)
+            var neutralColors: [[UInt8]] = []
+            for theme in [BrowserSpace.Color?.none, .gray] {
+                let renderer = ImageRenderer(content: BrowserGlassBacking(shape: RoundedRectangle(cornerRadius: 9))
+                    .frame(width: 80, height: 44).environment(\.browserSpaceColor, theme)
                     .environment(\.colorScheme, scheme))
-                let image = try #require(renderer.cgImage)
-                controls.append(try pixel(in: image, x: 0, y: 12))
+                neutralColors.append(try pixel(in: #require(renderer.cgImage), x: 40, y: 22))
             }
-            #expect(controls[0] == controls[1])
+            #expect(neutralColors[0] == neutralColors[1])
+            for theme in BrowserSpace.Color.allCases {
+                let disabled = ImageRenderer(content: BrowserGlassBackground(shape: RoundedRectangle(cornerRadius: 9),
+                    allowsTransparency: false).frame(width: 80, height: 44)
+                    .background(Color(white: 0.5))
+                    .environment(\.browserSpaceColor, theme).environment(\.colorScheme, scheme))
+                // Render over a known canvas: a no-drawing clear Group may
+                // produce no CGImage when rendered entirely on its own.
+                let disabledImage = try #require(disabled.cgImage)
+                #expect(try pixel(in: disabledImage, x: 40, y: 22) == referencePixel)
+                if scheme == .light {
+                    let light = ImageRenderer(content: BrowserGlassBacking(shape: RoundedRectangle(cornerRadius: 9))
+                        .frame(width: 80, height: 44).environment(\.browserSpaceColor, theme)
+                        .environment(\.colorScheme, scheme))
+                    #expect(try pixel(in: #require(light.cgImage), x: 40, y: 22) == neutralColors[0])
+                }
+            }
         }
     }
 
@@ -243,10 +238,10 @@ struct BrowserGlassTests {
         }
     }
 
-    @Test func appearancePolicyDarkensGlassAndStrengthensLightSelections() {
+    @Test func backingContrastKeepsDarkSurfacesAndLightSelectionsLegible() {
         for role in BrowserGlassRole.allCases {
-            let dark = BrowserSurfacePalette.darkeningOpacity(isDark: true, role: role)
-            let light = BrowserSurfacePalette.darkeningOpacity(isDark: false, role: role)
+            let dark = BrowserSurfacePalette.backingOpacity(isDark: true, role: role)
+            let light = BrowserSurfacePalette.backingOpacity(isDark: false, role: role)
             #expect(dark > light && dark >= 0.48 && dark < 0.75)
             #expect(light >= 0 && light < 0.05)
         }

@@ -67,13 +67,15 @@ public extension BrowserSpace.Color {
     func chromeTop(isDark: Bool) -> SpaceThemeRGB {
         let neutral = isDark ? SpaceThemeRGB(red: 0.018, green: 0.018, blue: 0.018)
             : SpaceThemeRGB(red: 0.99, green: 0.965, blue: 0.91)
-        return swatch.blended(with: neutral, amount: isDark ? 0.14 : 0.34)
+        // Put the identity in the dark backing, not in a bright glass outline.
+        // Keep the approved light palette and neutral gray appearance intact.
+        return swatch.blended(with: neutral, amount: isDark ? (self == .gray ? 0.14 : 0.24) : 0.34)
     }
 
     func chromeBottom(isDark: Bool) -> SpaceThemeRGB {
         let neutral = isDark ? SpaceThemeRGB(red: 0.010, green: 0.010, blue: 0.010)
             : SpaceThemeRGB(red: 0.975, green: 0.947, blue: 0.88)
-        return swatch.blended(with: neutral, amount: isDark ? 0.09 : 0.25)
+        return swatch.blended(with: neutral, amount: isDark ? (self == .gray ? 0.09 : 0.16) : 0.25)
     }
 
     /// Muted layers keep folder artwork at home in its Space without tinting
