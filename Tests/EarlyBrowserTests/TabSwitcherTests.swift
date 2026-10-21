@@ -183,21 +183,79 @@ struct TabSwitcherTests {
         #expect(second.model.webViews.snapshots.image(for: first.tabs[1].id) == nil)
     }
 
-    @Test func zeroAndSingleTabsKeepTheQuietEmptyAndFirstLaunchContracts() {
-        for count in [0, 1] {
-            let fixture = Fixture(count: count)
+    @Test func zeroTabsKeepTheQuietEmptyAndFirstLaunchContracts() {
+        let fixture = Fixture(count: 0)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(!model.canPresentTabSwitcher)
+        #expect(!model.advanceTabSwitcher(1) && model.tabSwitcher == nil)
+        #expect(model.coordinator.commandBar?.intent == .newTab)
+        #expect(model.perform(.dismissCommandBar(restoreFocus: false)))
+        #expect(!model.canPresentTabSwitcher)
+        #expect(!model.advanceTabSwitcher(-1) && model.tabSwitcher == nil)
+        #expect(model.coordinator.commandBar == nil && model.coordinator.content == .empty)
+        #expect(model.webViews.creationCount == 0 && model.webViews.liveViewCount == 0)
+    }
+
+    @Test func singleTabPreviewsInBothDirectionsWithoutChangingSessionOrAllocatingPages() throws {
+        for delta in [-1, 1] {
+            let fixture = Fixture(count: 1)
             defer { fixture.cleanup() }
             let model = fixture.model
-            #expect(!model.advanceTabSwitcher(1) && model.tabSwitcher == nil)
-            if count == 0 {
-                #expect(model.coordinator.commandBar?.intent == .newTab)
-                #expect(model.perform(.dismissCommandBar(restoreFocus: false)))
-                #expect(model.coordinator.commandBar == nil && model.coordinator.content == .empty)
-                #expect(model.webViews.creationCount == 0 && model.webViews.liveViewCount == 0)
-            } else {
-                #expect(model.webViews.creationCount == 1)
+            let tabID = fixture.tabs[0].id
+            let initial = model.coordinator.session
+            let page = try #require(model.activePage)
+            let focus = model.contentFocusRequest
+            let work = model.webViews.workMetrics
+            var saves = 0
+            model.onSave = { _ in saves += 1 }
+
+            #expect(model.canPresentTabSwitcher)
+            #expect(model.advanceTabSwitcher(delta, commitsOnControlRelease: true))
+            #expect(model.tabSwitcher?.tabIDs == [tabID])
+            #expect(model.tabSwitcher?.selectedTabID == tabID)
+            #expect(model.tabSwitcher?.commitAction == nil)
+            #expect(model.tabSwitcherCommitsOnControlRelease)
+            for direction in [delta, -delta, delta, -delta] {
+                #expect(model.advanceTabSwitcher(direction, commitsOnControlRelease: true))
+                #expect(model.tabSwitcher?.selectedTabID == tabID)
             }
+            #expect(model.contentFocusRequest == focus)
+            #expect(model.webViews.snapshots.pendingCount == 0)
+            #expect(model.webViews.workMetrics.retentionPasses == work.retentionPasses)
+            #expect(model.webViews.workMetrics.presentationVisits == work.presentationVisits)
+            #expect(model.webViews.workMetrics.inspectedPages == work.inspectedPages)
+
+            // Clicking the card or committing with Return/Control release only
+            // dismisses the preview and restores focus to the existing page.
+            #expect(model.commitTabSwitcher(selecting: tabID))
+            #expect(model.tabSwitcher == nil && !model.tabSwitcherCommitsOnControlRelease)
+            #expect(model.contentFocusRequest == focus + 1)
+            #expect(model.advanceTabSwitcher(delta, commitsOnControlRelease: true))
+            #expect(model.commitTabSwitcher())
+            #expect(model.tabSwitcher == nil && !model.tabSwitcherCommitsOnControlRelease)
+            #expect(model.contentFocusRequest == focus + 2)
+            #expect(model.advanceTabSwitcher(delta, commitsOnControlRelease: true))
+            model.cancelTabSwitcher()
+            #expect(model.tabSwitcher == nil && !model.tabSwitcherCommitsOnControlRelease)
+            #expect(!model.commitTabSwitcher())
+            #expect(model.contentFocusRequest == focus + 3)
+            #expect(model.coordinator.session == initial && model.activePage === page)
+            #expect(model.webViews.creationCount == 1 && model.webViews.liveViewCount == 1)
+            #expect(saves == 0)
         }
+    }
+
+    @Test func closingTheOnlyTabDismissesItsPreviewAndLeavesEmptyContent() {
+        let fixture = Fixture(count: 1)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.advanceTabSwitcher(1, commitsOnControlRelease: true))
+        #expect(model.perform(.closeActiveTab))
+        #expect(!model.canPresentTabSwitcher && model.tabSwitcher == nil)
+        #expect(!model.tabSwitcherCommitsOnControlRelease && !model.commitTabSwitcher())
+        #expect(model.coordinator.commandBar == nil && model.coordinator.content == .empty)
+        #expect(model.webViews.liveViewCount == 0)
     }
 
     @Test func unselectedCatalogStartsAtFirstOrLastAndClosedItemsAreExcluded() throws {

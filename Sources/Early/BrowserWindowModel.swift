@@ -357,7 +357,7 @@ final class BrowserWindowModel {
     }
 
     var canPresentTabSwitcher: Bool {
-        coordinator.commandBar == nil && openTabs.count > 1 && canPerform(.cycleTab(1))
+        coordinator.commandBar == nil && !openTabs.isEmpty && canPerform(.cycleTab(1))
     }
 
     /// Preview is metadata/cache-only. Freeze MRU order until commit or cancel;

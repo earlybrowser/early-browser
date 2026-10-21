@@ -31,6 +31,8 @@ enum BrowserSettingsSection: String, CaseIterable, Identifiable {
 }
 
 struct BrowserSettingsView: View {
+    private static let navigationWidth: CGFloat = 190
+
     @Bindable var application: EarlyAppDelegate
     @Bindable var preferences: BrowserPreferences
     @Environment(\.openWindow) private var openWindow
@@ -44,6 +46,7 @@ struct BrowserSettingsView: View {
         HStack(spacing: 0) {
             navigation
             Divider()
+                .ignoresSafeArea(.container, edges: .top)
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -60,9 +63,18 @@ struct BrowserSettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .accessibilityIdentifier("settings.content")
-            .background(Color(nsColor: .windowBackgroundColor))
         }
         .frame(minWidth: 760, minHeight: 560)
+        .background {
+            // Extend one continuous surface behind the native title bar. Only
+            // the decoration ignores the safe area; controls stay below it.
+            HStack(spacing: 0) {
+                Rectangle().fill(.regularMaterial).frame(width: Self.navigationWidth)
+                Color(nsColor: .windowBackgroundColor)
+            }
+            .ignoresSafeArea(.container, edges: .top)
+        }
+        .background(BrowserSettingsWindowAppearance())
         // Scope this ID to a real group. On macOS a bare container ID replaces
         // the navigation buttons' IDs instead of identifying the container.
         .accessibilityElement(children: .contain)
@@ -122,8 +134,7 @@ struct BrowserSettingsView: View {
             }
             .foregroundStyle(.secondary).padding(12)
         }
-        .padding(.horizontal, 12).padding(.bottom, 10).frame(width: 190)
-        .background(.regularMaterial)
+        .padding(.horizontal, 12).padding(.bottom, 10).frame(width: Self.navigationWidth)
     }
 
     @ViewBuilder private var sectionContent: some View {
@@ -358,6 +369,37 @@ struct BrowserSettingsView: View {
                 if let sessionMessage { Text(sessionMessage).font(.caption).foregroundStyle(.secondary) }
             }
         }
+    }
+}
+
+/// Hide only the visible Settings title, retaining the title for accessibility
+/// and the Window menu, and preserving native traffic lights and their layout.
+struct BrowserSettingsWindowAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> AppearanceView { AppearanceView() }
+
+    func updateNSView(_ view: AppearanceView, context: Context) { view.configureWindow() }
+
+    static func configure(_ window: NSWindow) {
+        if !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
+        if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
+        if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
+        if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
+    }
+
+    final class AppearanceView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            configureWindow()
+        }
+
+        func configureWindow() {
+            if let window { BrowserSettingsWindowAppearance.configure(window) }
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
     }
 }
 
