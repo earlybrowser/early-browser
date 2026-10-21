@@ -40,7 +40,9 @@ struct SplitContentView: View {
                         .transition(reduceMotion ? .identity : .opacity)
                 }
                 if let group {
-                    SplitDivider(model: model, group: group, layout: layout)
+                    SplitDivider(model: model, group: group, layout: layout,
+                        enabled: model.splitResize?.groupID == group.id || model.canPerform(.resizeSplit(group.id, layout.fraction)),
+                        resizing: model.splitResize?.groupID == group.id)
                         // A slim visual grip with a forgiving, invisible hit area.
                         .frame(width: min(12, geometry.size.width), height: layout.divider.height)
                         .position(x: layout.divider.midX, y: layout.divider.midY)
@@ -164,25 +166,9 @@ struct SplitContentView: View {
                 let proposal = model.coordinator.splitPlacement(for: sourceID, on: side)
                 let reuses = proposal?.reusesExistingPane == true
                 let name = side == .leading ? "left" : "right"
-                ZStack {
-                    RoundedRectangle(cornerRadius: 18)
-                        .fill(reduceTransparency || contrast == .increased ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.regularMaterial))
-                    RoundedRectangle(cornerRadius: 18)
-                        .fill(Color.accentColor.opacity(highlighted ? 0.13 : 0))
-                    RoundedRectangle(cornerRadius: 18)
-                        .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.5 : 0.10), lineWidth: 1)
-                    RoundedRectangle(cornerRadius: 12).inset(by: 9)
-                        .strokeBorder(highlighted ? Color.accentColor : Color.primary.opacity(contrast == .increased ? 0.6 : 0.24),
-                                      style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
-                    VStack(spacing: frame.height < 180 ? 8 : 12) {
-                        Image(systemName: side == .leading ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled")
-                            .font(frame.width < 130 ? .title3 : .title2)
-                        Text(reuses ? "Focus existing pane" : "\(model.coordinator.activeSplitGroup == nil ? "Add" : "Replace") \(name) split")
-                            .font(frame.width < 130 ? .callout : .headline).multilineTextAlignment(.center)
-                    }
-                    .foregroundStyle(highlighted ? Color.primary : Color.secondary)
-                    .padding(frame.width < 130 ? 10 : 18)
-                }
+                SplitDropCard(theme: model.splitDropTheme, side: side, highlighted: highlighted,
+                    title: reuses ? "Focus existing pane" : "\(model.coordinator.activeSplitGroup == nil ? "Add" : "Replace") \(name) split",
+                    size: frame.size, allowsTransparency: model.preferences.translucentChrome)
                 .frame(width: frame.width, height: frame.height)
                 .position(x: frame.midX, y: frame.midY)
                 .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.10), radius: 12, y: 4)
@@ -195,14 +181,56 @@ struct SplitContentView: View {
     }
 }
 
+/// Both borders keep the same radius. Padding the dashed shape (rather than
+/// insetting its path) avoids subtracting the inset from its corner radius.
+struct SplitDropCard: View {
+    static let cornerRadius: CGFloat = 18
+    static let borderInset: CGFloat = 9
+    static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: cornerRadius, style: .continuous) }
+    let theme: BrowserSpace.Color
+    let side: BrowserSplitSide
+    let highlighted: Bool
+    let title: String
+    let size: CGSize
+    let allowsTransparency: Bool
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        ZStack {
+            BrowserChromeBackground(spaceColor: theme, floating: true, allowsTransparency: allowsTransparency)
+                .clipShape(Self.shape)
+            Self.shape.fill(theme.tint.opacity(highlighted ? 0.16 : 0.06))
+            Self.shape.strokeBorder(theme.tint.opacity(contrast == .increased ? 0.8 : (highlighted ? 0.5 : 0.25)), lineWidth: 1)
+            Self.shape
+                .strokeBorder(theme.tint.opacity(contrast == .increased || highlighted ? 1 : 0.55),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [6, 6]))
+                .padding(Self.borderInset)
+            VStack(spacing: size.height < 180 ? 8 : 12) {
+                Image(systemName: side == .leading ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled")
+                    .font(size.width < 130 ? .title3 : .title2)
+                Text(title).font(size.width < 130 ? .callout : .headline).multilineTextAlignment(.center)
+            }
+            .foregroundStyle(highlighted ? Color.primary : Color.secondary)
+            .padding(size.width < 130 ? 10 : 18)
+        }
+    }
+}
+
 struct SplitDivider: NSViewRepresentable {
     @Bindable var model: BrowserWindowModel
     let group: BrowserSplitGroup
     let layout: BrowserSplitLayout
+    // Read in the SwiftUI body, not only inside updateNSView. Finishing a
+    // sidebar drag must invalidate this native bridge even if layout is equal.
+    let enabled: Bool
+    let resizing: Bool
     @Environment(\.colorSchemeContrast) private var contrast
 
     func makeNSView(context: Context) -> SplitDividerView { SplitDividerView() }
     func updateNSView(_ view: SplitDividerView, context: Context) {
+        view.canInteract = {
+            model.splitResize?.groupID == group.id || model.canPerform(.resizeSplit(group.id, layout.fraction))
+        }
         view.onBegin = {
             model.beginSplitResize(group.id)
             return model.splitResize?.groupID == group.id
@@ -216,8 +244,7 @@ struct SplitDivider: NSViewRepresentable {
             return model.perform(.resizeSplit(group.id, next))
         }
         view.configure(groupID: group.id, layout: layout,
-            enabled: model.splitResize?.groupID == group.id || model.canPerform(.resizeSplit(group.id, layout.fraction)),
-            resizing: model.splitResize?.groupID == group.id, increasedContrast: contrast == .increased)
+            enabled: enabled, resizing: resizing, increasedContrast: contrast == .increased)
     }
     static func dismantleNSView(_ view: SplitDividerView, coordinator: ()) { view.invalidate() }
 }
@@ -225,6 +252,7 @@ struct SplitDivider: NSViewRepresentable {
 /// Owns the small native hit/cursor region, rather than racing WebKit's cursor
 /// with SwiftUI onHover. No event monitor, tracking loop or global cursor change.
 final class SplitDividerView: NSView {
+    var canInteract: (() -> Bool)?
     var onBegin: (() -> Bool)?
     var onResize: ((Double) -> Void)?
     var onEnd: ((Bool) -> Void)?
@@ -242,6 +270,10 @@ final class SplitDividerView: NSView {
     private var hovered = false
     private var invalidated = false
     private(set) var resizeCursorRect: CGRect?
+
+    /// Native events can arrive before SwiftUI delivers a render update. Read
+    /// the current window gate instead of trusting the last disabled snapshot.
+    private var isInteractive: Bool { !invalidated && (canInteract?() ?? enabled) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -268,7 +300,7 @@ final class SplitDividerView: NSView {
     override func resetCursorRects() {
         super.resetCursorRects()
         let region = bounds.intersection(visibleRect)
-        resizeCursorRect = enabled && !region.isEmpty ? region : nil
+        resizeCursorRect = isInteractive && !region.isEmpty ? region : nil
         if let resizeCursorRect { addCursorRect(resizeCursorRect, cursor: .resizeLeftRight) }
     }
     override func updateTrackingAreas() {
@@ -297,7 +329,7 @@ final class SplitDividerView: NSView {
         // once its actual native hit area is known, without a swap/reconfigure.
         window?.invalidateCursorRects(for: self)
     }
-    override func cursorUpdate(with event: NSEvent) { if enabled { NSCursor.resizeLeftRight.set() } }
+    override func cursorUpdate(with event: NSEvent) { if isInteractive { NSCursor.resizeLeftRight.set() } }
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
@@ -306,7 +338,7 @@ final class SplitDividerView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let active = enabled && (hovered || dragAnchor != nil || keyboardFocused)
+        let active = isInteractive && (hovered || dragAnchor != nil || keyboardFocused)
         NSColor.labelColor.withAlphaComponent(increasedContrast ? 0.45 : (active ? 0.22 : 0.10)).setFill()
         NSBezierPath(roundedRect: CGRect(x: bounds.midX - 0.5, y: bounds.minY + 8,
             width: 1, height: max(0, bounds.height - 16)), xRadius: 0.5, yRadius: 0.5).fill()
@@ -317,16 +349,16 @@ final class SplitDividerView: NSView {
             width: width, height: height), xRadius: width / 2, yRadius: width / 2).fill()
     }
 
-    override var acceptsFirstResponder: Bool { enabled }
+    override var acceptsFirstResponder: Bool { isInteractive }
     override func becomeFirstResponder() -> Bool {
-        guard enabled else { return false }
+        guard isInteractive else { return false }
         keyboardFocused = !takingPointerFocus
         needsDisplay = true
         return true
     }
     override func resignFirstResponder() -> Bool { keyboardFocused = false; needsDisplay = true; return true }
     override func mouseDown(with event: NSEvent) {
-        guard enabled else { return }
+        guard isInteractive else { return }
         keyboardFocused = false
         takingPointerFocus = true
         window?.makeFirstResponder(self)
@@ -345,7 +377,7 @@ final class SplitDividerView: NSView {
     }
 
     func beginResize(atWindowX x: CGFloat) {
-        guard enabled, x.isFinite, usableWidth > 0, dragAnchor == nil, onBegin?() == true else { return }
+        guard isInteractive, x.isFinite, usableWidth > 0, dragAnchor == nil, onBegin?() == true else { return }
         dragAnchor = (x, fraction)
         needsDisplay = true
     }
@@ -365,7 +397,7 @@ final class SplitDividerView: NSView {
         return keyCode == 123 ? -0.05 : (keyCode == 124 ? 0.05 : nil)
     }
     override func keyDown(with event: NSEvent) {
-        if enabled, let amount = Self.adjustment(for: event.keyCode, modifiers: event.modifierFlags) {
+        if isInteractive, let amount = Self.adjustment(for: event.keyCode, modifiers: event.modifierFlags) {
             keyboardFocused = true
             _ = onAdjust?(amount)
             needsDisplay = true
@@ -380,9 +412,9 @@ final class SplitDividerView: NSView {
     override func accessibilityIdentifier() -> String { "split.divider" }
     override func accessibilityValue() -> Any? { "\(Int(fraction * 100)) percent left pane" }
     override func accessibilityOrientation() -> NSAccessibilityOrientation { .vertical }
-    override func isAccessibilityEnabled() -> Bool { enabled }
-    override func accessibilityPerformIncrement() -> Bool { enabled && onAdjust?(0.05) == true }
-    override func accessibilityPerformDecrement() -> Bool { enabled && onAdjust?(-0.05) == true }
+    override func isAccessibilityEnabled() -> Bool { isInteractive }
+    override func accessibilityPerformIncrement() -> Bool { isInteractive && onAdjust?(0.05) == true }
+    override func accessibilityPerformDecrement() -> Bool { isInteractive && onAdjust?(-0.05) == true }
 
     func invalidate() {
         invalidated = true
@@ -392,6 +424,7 @@ final class SplitDividerView: NSView {
         discardCursorRects()
         resizeCursorRect = nil
         enabled = false
+        canInteract = nil
         onBegin = nil; onResize = nil; onEnd = nil; onAdjust = nil
     }
 }

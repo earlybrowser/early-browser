@@ -715,6 +715,10 @@ final class BrowserWindowModel {
             && spaceDeletionID == nil && !hasVisibleDialog
     }
 
+    var splitDropTheme: BrowserSpace.Color {
+        preferences.spaceThemes ? (coordinator.activeSpace?.color ?? .gray) : .gray
+    }
+
     func updateSplitPreview(for tabID: UUID, at point: CGPoint, in bounds: CGRect, leadingInset: CGFloat = 0) {
         guard canPreviewSplit, point.x.isFinite, point.y.isFinite,
               let targets = BrowserSplitDropTargets(in: bounds, leadingInset: leadingInset), targets.content.contains(point),

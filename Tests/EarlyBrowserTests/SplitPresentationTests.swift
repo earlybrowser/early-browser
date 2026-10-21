@@ -6,10 +6,22 @@ import EarlyCore
 @testable import EarlyWeb
 import Testing
 import SwiftUI
+import WebKit
 
 /// Controller and unshown native-host checks only. No app launch/input synthesis.
 @Suite(.serialized) @MainActor
 struct SplitPresentationTests {
+    @MainActor private final class ReadyPages: NSObject, WKURLSchemeHandler {
+        func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
+            guard let url = task.request.url else { return }
+            let data = Data("<html><head><title>Ready</title></head><body>Ready</body></html>".utf8)
+            task.didReceive(URLResponse(url: url, mimeType: "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
+            task.didReceive(data)
+            task.didFinish()
+        }
+        func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {}
+    }
+
     @MainActor private final class Fixture {
         let suite = "local.early.tests.split.\(UUID())"
         let defaults: UserDefaults
@@ -17,7 +29,7 @@ struct SplitPresentationTests {
         let tabs: [BrowserTab]
         var saves = 0
         var feedback = 0
-        init() {
+        init(servePages: Bool = false) {
             _ = NSApplication.shared
             let profile = UUID(), space = UUID()
             tabs = (0..<4).map { BrowserTab(spaceID: space, profileID: profile, title: "Page \($0)",
@@ -27,9 +39,11 @@ struct SplitPresentationTests {
             defaults.set(false, forKey: "haptics")
             let input = NavigationInput(allowedSchemes: ["http", "https", "early-test"])
             let repository = SessionRepository(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("EarlySplit-\(UUID()).sqlite"), input: input)
+            let pages = ReadyPages()
             model = BrowserWindowModel(startup: .returningSession,
                 session: BrowserSession(profileID: profile, activeSpaceID: space, tabs: tabs, selectionBySpace: [space: tabs[0].id]),
-                repository: repository, input: input, isTesting: true, restorationError: nil, defaults: defaults)
+                repository: repository, input: input, isTesting: true, restorationError: nil, defaults: defaults,
+                configureWebView: servePages ? { $0.setURLSchemeHandler(pages, forURLScheme: "early-test") } : nil)
             model.onSave = { [weak self] _ in self?.saves += 1 }
             model.onSplitPreviewFeedback = { [weak self] in self?.feedback += 1 }
         }
@@ -381,6 +395,128 @@ struct SplitPresentationTests {
         divider.frame.size.height = 400
         let resized = area.options.contains(.inVisibleRect) ? divider.bounds.intersection(divider.visibleRect) : area.rect
         #expect(resized.height == 400)
+    }
+
+    @Test func successfulPagesRefreshDividerAvailabilityWithoutNavigationOrLayoutNudges() async throws {
+        let fixture = Fixture(servePages: true), model = fixture.model
+        #expect(model.perform(.selectTab(fixture.tabs[1].id)))
+        let loadDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while model.webViews.pages.values.contains(where: { $0.isLoading || $0.view.title != "Ready" }), ContinuousClock.now < loadDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(model.webViews.pages.count == 2 && model.webViews.pages.values.allSatisfy { $0.view.title == "Ready" && $0.failure == nil })
+        #expect(model.perform(.selectTab(fixture.tabs[0].id)))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: AnyView(SplitContentView(model: model).transaction { $0.disablesAnimations = true }))
+        window.contentView = hosting
+        hosting.frame.size = CGSize(width: 800, height: 600)
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            fixture.cleanup()
+        }
+        func divider(in view: NSView) -> SplitDividerView? {
+            (view as? SplitDividerView) ?? view.subviews.lazy.compactMap { divider(in: $0) }.first
+        }
+        hosting.layoutSubtreeIfNeeded()
+        model.sidebarInteractionInProgress = true
+        model.updateSplitPreview(for: fixture.tabs[1].id, at: right, in: bounds)
+        #expect(model.commitSplitPreview())
+        hosting.layoutSubtreeIfNeeded()
+        let native = try #require(divider(in: hosting))
+        #expect(!native.isAccessibilityEnabled())
+        model.sidebarInteractionInProgress = false
+        // Do not set needsLayout, swap or select a tab to force a refresh. The
+        // native representable's observed inputs must invalidate it themselves.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !native.isAccessibilityEnabled(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            hosting.layoutSubtreeIfNeeded()
+        }
+        try #require(native.isAccessibilityEnabled(), "Successful pages must not leave the freshly mounted divider disabled")
+        native.beginResize(atWindowX: 400)
+        try #require(model.splitResize != nil)
+        native.endResize(commit: false)
+        #expect(model.webViews.creationCount == 2 && !window.isVisible)
+    }
+
+    @Test func nativeDividerUsesCurrentWindowGateBeforeAnyRenderOrNavigationRefresh() throws {
+        let fixture = Fixture(), model = fixture.model
+        defer { fixture.cleanup() }
+        #expect(model.perform(.splitTab(fixture.tabs[1].id, .trailing)))
+        let group = try #require(model.coordinator.activeSplitGroup)
+        let native = SplitDividerView(frame: CGRect(x: 0, y: 0, width: 12, height: 600))
+        defer { native.invalidate() }
+        let layout = BrowserSplitLayout(size: CGSize(width: 800, height: 600), leadingFraction: 0.5)
+        model.sidebarInteractionInProgress = true
+        native.configure(groupID: group.id, layout: layout, enabled: false, resizing: false, increasedContrast: false)
+        native.canInteract = { model.splitResize?.groupID == group.id || model.canPerform(.resizeSplit(group.id, 0.5)) }
+        native.onBegin = { model.beginSplitResize(group.id); return model.splitResize?.groupID == group.id }
+        native.onResize = { model.updateSplitResize($0) }
+        native.onEnd = { model.finishSplitResize(commit: $0) }
+        #expect(!native.acceptsFirstResponder && !native.isAccessibilityEnabled())
+        // No configure/layout/tab-switch call between clearing the drag and
+        // interacting: the native control still holds its disabled snapshot.
+        model.sidebarInteractionInProgress = false
+        #expect(native.acceptsFirstResponder && native.isAccessibilityEnabled())
+        native.beginResize(atWindowX: 400)
+        try #require(model.splitResize?.groupID == group.id)
+        native.updateResize(atWindowX: 450)
+        #expect((model.splitResize?.fraction ?? 0) > 0.5)
+        native.endResize(commit: false)
+        #expect(model.splitResize == nil)
+        // The inverse matters too: an outdated enabled snapshot must not allow
+        // resizing through a modal editor or after leaving this split.
+        native.configure(groupID: group.id, layout: layout, enabled: true, resizing: false, increasedContrast: false)
+        model.folderEditorIsPresented = true
+        #expect(!native.acceptsFirstResponder)
+        native.beginResize(atWindowX: 400)
+        #expect(model.splitResize == nil)
+        model.folderEditorIsPresented = false
+        #expect(model.perform(.selectTab(fixture.tabs[2].id)))
+        #expect(!native.isAccessibilityEnabled())
+        #expect(model.perform(.selectTab(fixture.tabs[0].id)))
+        #expect(native.isAccessibilityEnabled())
+    }
+
+    @Test func splitCardsFollowActiveThemeAndKeepRoundedInsetBorders() throws {
+        let fixture = Fixture(), model = fixture.model
+        defer { fixture.cleanup() }
+        for theme in BrowserSpace.Color.allCases {
+            #expect(model.editSpace(model.coordinator.activeSpaceID, name: "Theme", color: theme, icon: nil))
+            #expect(model.splitDropTheme == theme)
+        }
+        model.preferences.spaceThemes = false
+        #expect(model.splitDropTheme == .gray)
+        model.preferences.spaceThemes = true
+        #expect(model.splitDropTheme == .green)
+        #expect(SplitDropCard.shape.cornerSize == CGSize(width: 18, height: 18))
+        let inner = CGRect(x: 0, y: 0, width: 224, height: 420).insetBy(dx: SplitDropCard.borderInset, dy: SplitDropCard.borderInset)
+        let path = SplitDropCard.shape.path(in: inner)
+        #expect(!path.contains(CGPoint(x: inner.minX + 3, y: inner.minY + 3)))
+        #expect(path.contains(CGPoint(x: inner.midX, y: inner.minY + 2)))
+        #expect(path.contains(CGPoint(x: inner.midX, y: inner.midY)))
+    }
+
+    @Test(arguments: [ColorScheme.light, .dark])
+    func splitCardBackgroundActuallyRendersItsThemeInBothAppearances(_ scheme: ColorScheme) throws {
+        _ = NSApplication.shared
+        func sample(_ theme: BrowserSpace.Color) throws -> NSColor {
+            let card = SplitDropCard(theme: theme, side: .leading, highlighted: true, title: "Add left split",
+                                     size: CGSize(width: 224, height: 420), allowsTransparency: false)
+                .frame(width: 224, height: 420).environment(\.colorScheme, scheme)
+            let renderer = ImageRenderer(content: card)
+            renderer.scale = 1
+            let data = try #require(renderer.nsImage?.tiffRepresentation)
+            let pixels = try #require(NSBitmapImageRep(data: data))
+            #expect((pixels.colorAt(x: 0, y: 0)?.alphaComponent ?? 1) < 0.01, "Outer card corners stay rounded")
+            return try #require(pixels.colorAt(x: 35, y: 60)?.usingColorSpace(.deviceRGB))
+        }
+        let red = try sample(.red), blue = try sample(.blue)
+        #expect(red.redComponent > red.blueComponent + 0.04)
+        #expect(blue.blueComponent > blue.redComponent + 0.04)
     }
 
     @Test func eitherVisibleDialogBlocksSplitFocusAndPreviewAndForeignWindowStaysUntouched() throws {
