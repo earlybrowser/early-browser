@@ -35,6 +35,7 @@ struct SpaceIconPicker: View {
     @Binding var selection: SpaceIcon?
     let dismiss: () -> Void
     private let columns = Array(repeating: GridItem(.fixed(32), spacing: 6), count: 8)
+    @Environment(\.browserAllowsTransparency) private var allowsTransparency
 
     var body: some View {
         VStack(spacing: 14) {
@@ -65,6 +66,9 @@ struct SpaceIconPicker: View {
         }
         .padding(18)
         .frame(width: 334)
+        .background {
+            BrowserFloatingBackground(spaceColor: nil, cornerRadius: 0, allowsTransparency: allowsTransparency)
+        }
     }
 
     private func choice(_ icon: SpaceIcon, identifier: String) -> some View {
@@ -88,8 +92,7 @@ struct SpaceIconPicker: View {
 
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
-                .background(.primary.opacity(selected ? 0.14 : (configuration.isPressed ? 0.08 : 0)),
-                            in: RoundedRectangle(cornerRadius: 7))
+                .background { BrowserControlBackground(highlighted: selected || configuration.isPressed, cornerRadius: 7) }
                 .overlay {
                     if selected { RoundedRectangle(cornerRadius: 7).strokeBorder(.primary.opacity(0.25)) }
                 }

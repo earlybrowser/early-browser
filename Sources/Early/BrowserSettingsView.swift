@@ -50,6 +50,12 @@ struct BrowserSettingsView: View {
                         Text(application.settingsSection.rawValue).font(.system(size: 27, weight: .semibold, design: .rounded))
                         Text(application.settingsSection.subtitle).font(.callout).foregroundStyle(.secondary)
                     }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        BrowserFloatingBackground(spaceColor: nil, cornerRadius: 14,
+                            allowsTransparency: preferences.translucentChrome)
+                    }
                     .padding(.bottom, 4)
                     if application.workspace == nil { ProgressView("Loading your settings…") }
                     else { sectionContent }
@@ -92,6 +98,7 @@ struct BrowserSettingsView: View {
         )) {
             Button("OK") { application.profileError = nil }
         } message: { Text(application.profileError ?? "") }
+        .environment(\.browserAllowsTransparency, preferences.translucentChrome)
     }
 
     private var navigation: some View {
@@ -106,7 +113,8 @@ struct BrowserSettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 11)
                         .background {
                             if application.settingsSection == section {
-                                RoundedRectangle(cornerRadius: 9).fill(.primary.opacity(colorScheme == .dark ? 0.10 : 0.065))
+                                BrowserIslandBackground(cornerRadius: 9, fillOpacity: colorScheme == .dark ? 0.10 : 0.065,
+                                    allowsTransparency: preferences.translucentChrome)
                             }
                         }
                         .contentShape(RoundedRectangle(cornerRadius: 9))
@@ -123,7 +131,10 @@ struct BrowserSettingsView: View {
             .foregroundStyle(.secondary).padding(12)
         }
         .padding(.horizontal, 12).padding(.bottom, 10).frame(width: 190)
-        .background(.regularMaterial)
+        .background {
+            BrowserFloatingBackground(spaceColor: nil, cornerRadius: 0,
+                allowsTransparency: preferences.translucentChrome, role: .chrome)
+        }
     }
 
     @ViewBuilder private var sectionContent: some View {
@@ -473,6 +484,7 @@ private struct ProfileEditorSheet: View {
             }
         }
         .padding(26).frame(width: 370)
+        .browserEditorPanel()
         .task { await Task.yield(); nameFocused = true }
     }
 

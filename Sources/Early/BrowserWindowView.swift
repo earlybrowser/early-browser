@@ -296,14 +296,20 @@ struct BrowserWindowView: View {
                     }
                     .padding(24)
                     .frame(maxWidth: 440)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .background {
+                        BrowserFloatingBackground(spaceColor: nil, cornerRadius: 12,
+                            allowsTransparency: model.preferences.translucentChrome)
+                    }
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("browser.error")
                 }
                 VStack {
                     if let error = model.persistence.error {
                         Text(error).font(.callout).padding(12)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .background {
+                                BrowserFloatingBackground(spaceColor: nil, cornerRadius: 10,
+                                    allowsTransparency: model.preferences.translucentChrome)
+                            }
                             .accessibilityIdentifier("browser.persistenceError")
                     }
                     if let notice = model.notice {
@@ -311,7 +317,10 @@ struct BrowserWindowView: View {
                             Text(notice)
                             Button("Dismiss") { model.notice = nil }
                         }.font(.callout).padding(12)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .background {
+                                BrowserFloatingBackground(spaceColor: nil, cornerRadius: 10,
+                                    allowsTransparency: model.preferences.translucentChrome)
+                            }
                     }
                     Spacer()
                 }
@@ -332,7 +341,7 @@ struct BrowserWindowView: View {
                     if sidebarAutoHides {
                         // Floating chrome must stay legible over web content.
                         BrowserFloatingBackground(spaceColor: model.preferences.spaceThemes ? model.coordinator.activeSpace?.color : nil,
-                            cornerRadius: sidebarCornerRadius, allowsTransparency: model.preferences.translucentChrome)
+                            cornerRadius: sidebarCornerRadius, allowsTransparency: model.preferences.translucentChrome, role: .chrome)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: sidebarCornerRadius))
@@ -385,10 +394,8 @@ struct BrowserWindowView: View {
             BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
                 allowsTransparency: model.preferences.translucentChrome)
                 .overlay {
-                    let chrome = BrowserChromeGlassShape(contentLeadingInset: sidebarAutoHides ? 6 : model.sidebarWidth + 12,
-                        windowCornerRadius: Self.windowCornerRadius)
-                    BrowserGlassBackground(shape: chrome, allowsTransparency: model.preferences.translucentChrome)
-                        .clipShape(chrome)
+                    BrowserFrameGlassBackground(contentLeadingInset: sidebarAutoHides ? 6 : model.sidebarWidth + 12,
+                        windowCornerRadius: Self.windowCornerRadius, allowsTransparency: model.preferences.translucentChrome)
                         .animation(sidebarMotion, value: sidebarAutoHides)
                 }
         }
@@ -400,11 +407,8 @@ struct BrowserWindowView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background {
-                        if reduceTransparency || contrast == .increased {
-                            RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
-                        } else {
-                            RoundedRectangle(cornerRadius: 12).fill(.thickMaterial)
-                        }
+                        BrowserFloatingBackground(spaceColor: nil, cornerRadius: 12,
+                            allowsTransparency: model.preferences.translucentChrome)
                     }
                     .overlay {
                         RoundedRectangle(cornerRadius: 12)
@@ -493,7 +497,7 @@ struct BrowserWindowView: View {
             .keyboardShortcut(.defaultAction)
             .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-          }.padding(24).frame(width: 340)
+          }.padding(24).frame(width: 340).browserEditorPanel()
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
         .onDisappear {
@@ -504,6 +508,7 @@ struct BrowserWindowView: View {
             model.save()
             model.webViews.discardAll()
         }
+        .environment(\.browserAllowsTransparency, model.preferences.translucentChrome)
     }
 
     private var sidebar: some View {
@@ -931,8 +936,7 @@ struct BrowserWindowView: View {
     private func tabControlLabel(_ symbol: String, highlighted: Bool) -> some View {
         Image(systemName: symbol).font(.caption)
             .frame(width: 24, height: 24)
-            .background(Color.primary.opacity(highlighted ? 0.12 : 0),
-                        in: RoundedRectangle(cornerRadius: 6))
+            .background { BrowserControlBackground(highlighted: highlighted) }
             .contentShape(Rectangle())
             .contentTransition(.opacity)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: symbol)
@@ -2295,6 +2299,7 @@ struct BrowserWindowView: View {
                 }
             }
             .padding(24).frame(width: 380)
+            .browserEditorPanel()
             .onAppear { focused = true }
         }
     }
@@ -2326,6 +2331,7 @@ struct BrowserWindowView: View {
             } label: {
                 Image(systemName: "sidebar.left").frame(width: 32, height: 32)
             }
+            .buttonStyle(BrowserToolbarButtonStyle())
             .accessibilityLabel(sidebarAutoHides ? "Keep sidebar visible" : "Auto-hide sidebar")
             .accessibilityValue(sidebarAutoHides ? "Auto-hide enabled" : "Always visible")
             .keyboardShortcut("s", modifiers: [.command, .shift])
@@ -2546,8 +2552,7 @@ private struct NavigationControlStyle: ButtonStyle {
             }
             .scaleEffect((kind == .back || kind == .forward) && pressed && !reduceMotion ? 0.88 : 1)
             .frame(width: 32, height: 32)
-            .background(Color.primary.opacity(pressed ? 0.13 : (highlighted ? 0.075 : 0)),
-                        in: RoundedRectangle(cornerRadius: 8))
+            .background { BrowserControlBackground(highlighted: pressed || highlighted, cornerRadius: 8) }
             .opacity(isEnabled ? 1 : 0.35)
             .contentShape(RoundedRectangle(cornerRadius: 8))
             .onHover { hovered = $0 }

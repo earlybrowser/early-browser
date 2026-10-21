@@ -3,6 +3,42 @@
 import EarlyCore
 import SwiftUI
 
+private struct BrowserTransparencyKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var browserAllowsTransparency: Bool {
+        get { self[BrowserTransparencyKey.self] }
+        set { self[BrowserTransparencyKey.self] = newValue }
+    }
+}
+
+enum BrowserGlassRole: CaseIterable {
+    case chrome, island, floating, control
+}
+
+/// Final contrast treatment, not a glass tint. Native refraction can lift a dark
+/// surface or wash out a light selection, so these colors draw above the effect
+/// and below foreground content. The values remain local to the surface.
+enum BrowserSurfacePalette {
+    static func darkeningOpacity(isDark: Bool, role: BrowserGlassRole) -> Double {
+        if !isDark { return role == .chrome ? 0 : 0.025 }
+        switch role {
+        case .chrome: return 0.62
+        case .island, .floating: return 0.58
+        case .control: return 0.48
+        }
+    }
+
+    static func fillOpacity(_ requested: Double, isDark: Bool) -> Double {
+        guard requested > 0 else { return 0 }
+        return isDark ? min(1, requested) : min(0.30, requested * 1.5 + 0.012)
+    }
+
+    static func borderOpacity(isDark: Bool) -> Double { isDark ? 0.07 : 0.14 }
+}
+
 struct BrowserGlassPolicy: Equatable {
     var supportsLiquidGlass: Bool
     var allowsTransparency: Bool
@@ -20,9 +56,13 @@ struct BrowserGlassPolicy: Equatable {
 
 /// An untinted decorative layer over an existing, legible base. Foreground
 /// artwork stays outside it. No shared glass container, filters or deformation.
-struct BrowserGlassBackground<Surface: Shape>: View {
-    var shape: Surface
+struct BrowserGlassBackground: View {
+    // Restrict native glass to convex rounded surfaces. Page cutouts belong to
+    // a later mask, so the narrow concave inner edge is never refracted.
+    var shape: RoundedRectangle
     var allowsTransparency: Bool
+    var role: BrowserGlassRole = .island
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -32,7 +72,12 @@ struct BrowserGlassBackground<Surface: Shape>: View {
             increasedContrast: contrast == .increased)
         Group {
             if #available(macOS 26.0, *), policy.usesGlass {
-                shape.fill(.clear).glassEffect(.clear.interactive(false), in: shape)
+                shape.fill(.clear)
+                    .glassEffect(.clear.interactive(false), in: shape)
+                    .overlay {
+                        shape.fill(Color.black.opacity(BrowserSurfacePalette.darkeningOpacity(
+                            isDark: colorScheme == .dark, role: role)))
+                    }
             } else {
                 Color.clear
             }
@@ -48,22 +93,31 @@ struct BrowserIslandBackground: View {
     var color: Color? = nil
     var colorOpacity: Double = 0
     var allowsTransparency: Bool
+    var role: BrowserGlassRole = .island
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius)
-        ZStack {
-            shape.fill(Color.primary.opacity(fillOpacity))
-            if let color { shape.fill(color.opacity(colorOpacity)) }
+        shape.fill(.clear)
+        .overlay { BrowserGlassBackground(shape: shape, allowsTransparency: allowsTransparency, role: role) }
+        .overlay {
+            shape.fill(Color.primary.opacity(BrowserSurfacePalette.fillOpacity(fillOpacity, isDark: colorScheme == .dark)))
         }
-        .overlay { BrowserGlassBackground(shape: shape, allowsTransparency: allowsTransparency) }
+        .overlay { if let color { shape.fill(color.opacity(colorOpacity)) } }
+        .overlay {
+            if role != .control {
+                shape.strokeBorder(Color.primary.opacity(contrast == .increased ? 0.40
+                    : BrowserSurfacePalette.borderOpacity(isDark: colorScheme == .dark)), lineWidth: 0.5)
+            }
+        }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 }
 
-/// One connected sidebar/rim with a genuine hole for the page. Reflection
+/// Alpha mask only, never the native glass's refracting shape. Reflection
 /// reverses the inner contour's winding without changing its rounded bounds.
-/// The same path clips the effect, so glass cannot spread onto the page canvas.
 struct BrowserChromeGlassShape: Shape {
     var contentLeadingInset: CGFloat
     var windowCornerRadius: CGFloat
@@ -96,6 +150,25 @@ struct BrowserChromeGlassShape: Shape {
     }
 }
 
+struct BrowserFrameGlassBackground: View {
+    var contentLeadingInset: CGFloat
+    var windowCornerRadius: CGFloat
+    var allowsTransparency: Bool
+
+    var maskShape: BrowserChromeGlassShape {
+        BrowserChromeGlassShape(contentLeadingInset: contentLeadingInset, windowCornerRadius: windowCornerRadius)
+    }
+
+    var body: some View {
+        BrowserGlassBackground(shape: RoundedRectangle(cornerRadius: windowCornerRadius),
+            allowsTransparency: allowsTransparency, role: .chrome)
+            .compositingGroup()
+            .mask { maskShape.fill(.white) }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 /// Floating cards keep their previous themed/material base underneath the same
 /// clear effect as the islands; the effect itself never receives a color tint.
 struct BrowserFloatingBackground: View {
@@ -104,6 +177,7 @@ struct BrowserFloatingBackground: View {
     var allowsTransparency: Bool
     var color: Color? = nil
     var colorOpacity: Double = 0
+    var role: BrowserGlassRole = .floating
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -120,10 +194,59 @@ struct BrowserFloatingBackground: View {
             }
         }
         .clipShape(shape)
+        .overlay { BrowserGlassBackground(shape: shape, allowsTransparency: allowsTransparency, role: role) }
         .overlay { if let color { shape.fill(color.opacity(colorOpacity)) } }
-        .overlay { BrowserGlassBackground(shape: shape, allowsTransparency: allowsTransparency) }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+struct BrowserControlBackground: View {
+    var highlighted: Bool
+    var cornerRadius: CGFloat = 6
+    @Environment(\.browserAllowsTransparency) private var allowsTransparency
+
+    var body: some View {
+        if highlighted {
+            BrowserIslandBackground(cornerRadius: cornerRadius, fillOpacity: 0.12,
+                allowsTransparency: allowsTransparency, role: .control)
+        }
+    }
+}
+
+private struct BrowserEditorPanel: ViewModifier {
+    @Environment(\.browserAllowsTransparency) private var allowsTransparency
+
+    func body(content: Content) -> some View {
+        // Keep the native sheet host/focus/alerts. macOS sheets are opaque;
+        // style their presentation surface without pretending to see through it.
+        content.presentationBackground {
+            BrowserFloatingBackground(spaceColor: nil, cornerRadius: 0,
+                allowsTransparency: allowsTransparency)
+        }
+    }
+}
+
+extension View {
+    func browserEditorPanel() -> some View { modifier(BrowserEditorPanel()) }
+}
+
+struct BrowserToolbarButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { Appearance(configuration: configuration) }
+
+    private struct Appearance: View {
+        let configuration: ButtonStyleConfiguration
+        @State private var hovered = false
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .background {
+                    BrowserControlBackground(highlighted: isEnabled && (hovered || configuration.isPressed), cornerRadius: 8)
+                }
+                .opacity(configuration.isPressed ? 0.8 : 1)
+                .onHover { hovered = $0 }
+        }
     }
 }
 
