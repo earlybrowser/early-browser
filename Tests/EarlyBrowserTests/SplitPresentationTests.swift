@@ -199,6 +199,104 @@ struct SplitPresentationTests {
         #expect(model.coordinator.tabStore.tabs.allSatisfy { $0.isOpen })
     }
 
+    @Test func swapSavesOnceWithoutReloadingPagesMovingFocusOrOfferingMemberPlacement() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.perform(.splitTab(fixture.tabs[1].id, .trailing)))
+        let group = try #require(model.coordinator.activeSplitGroup)
+        let original = model.coordinator.session, focus = model.contentFocusRequest, saves = fixture.saves
+        let pages = model.webViews.pages
+        #expect(model.perform(.swapSplit(group.id)))
+        #expect(model.coordinator.activeSplitGroup?.panes == Array(group.panes.reversed()))
+        #expect(model.coordinator.focusedPaneByGroupID == original.focusedPaneByGroupID)
+        #expect(model.coordinator.session.tabs == original.tabs && model.coordinator.focusedTabID == fixture.tabs[1].id)
+        #expect(model.contentFocusRequest == focus && fixture.saves == saves + 1)
+        #expect(model.webViews.creationCount == 2 && model.webViews.focusedTabID == fixture.tabs[1].id)
+        for (id, page) in pages { #expect(model.webViews.pages[id] === page) }
+        for pane in group.panes {
+            #expect(model.splitGroup(containing: pane.tabID)?.id == group.id)
+            for side in BrowserSplitSide.allCases {
+                #expect(!model.canPerform(.splitTab(pane.tabID, side)))
+                #expect(!model.perform(.splitTab(pane.tabID, side)))
+            }
+        }
+        #expect(model.splitGroup(containing: fixture.tabs[2].id) == nil)
+        #expect(model.canPerform(.splitTab(fixture.tabs[2].id, .leading)))
+        #expect(!model.perform(.swapSplit(UUID())) && fixture.saves == saves + 1)
+        model.folderEditorIsPresented = true
+        #expect(!model.perform(.swapSplit(group.id)))
+        model.folderEditorIsPresented = false
+        #expect(model.perform(.presentCommandBar(.commandSearch)))
+        model.updateQuery("split")
+        let commands = model.commandSearchCandidates()
+        #expect(commands.contains { $0.target == .action(.swapSplit(group.id)) })
+        #expect(!commands.contains { $0.target == .action(.splitTab(fixture.tabs[1].id, .trailing)) })
+        #expect(model.perform(.swapSplit(group.id), source: .commandBar))
+        #expect(model.coordinator.commandBar == nil && model.coordinator.activeSplitGroup == group)
+    }
+
+    @Test func nativeDividerRegistersCursorBeforeClickAndRetainsAccessibleKeyboardResize() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let divider = SplitDividerView(frame: CGRect(x: 390, y: 0, width: 12, height: 600))
+        try #require(window.contentView).addSubview(divider)
+        defer { divider.invalidate(); window.close() }
+        let groupID = UUID(), layout = BrowserSplitLayout(size: CGSize(width: 800, height: 600), leadingFraction: 0.5)
+        divider.configure(groupID: groupID, layout: layout, enabled: true, resizing: false, increasedContrast: false)
+        divider.resetCursorRects()
+        #expect(divider.clipsToBounds && divider.resizeCursorRect == divider.bounds.intersection(divider.visibleRect))
+        let cursorRect = try #require(divider.resizeCursorRect)
+        #expect(abs(cursorRect.width - 12) < 0.001, "Native cursor region: \(cursorRect)")
+        #expect(divider.focusRingType == .none && !divider.keyboardFocused)
+        #expect(divider.becomeFirstResponder() && divider.keyboardFocused)
+        #expect(divider.resignFirstResponder() && !divider.keyboardFocused)
+        #expect(divider.accessibilityRole() == .splitter && divider.accessibilityIdentifier() == "split.divider")
+        #expect(divider.accessibilityValue() as? String == "50 percent left pane")
+        var adjustments: [Double] = [], fractions: [Double] = [], commits: [Bool] = []
+        divider.onAdjust = { adjustments.append($0); return true }
+        #expect(divider.accessibilityPerformIncrement() && divider.accessibilityPerformDecrement())
+        #expect(adjustments == [0.05, -0.05])
+        #expect(SplitDividerView.adjustment(for: 123, modifiers: []) == -0.05)
+        #expect(SplitDividerView.adjustment(for: 124, modifiers: [.shift]) == 0.05)
+        for modifiers: NSEvent.ModifierFlags in [[.command], [.control], [.option], [.control, .option]] {
+            #expect(SplitDividerView.adjustment(for: 123, modifiers: modifiers) == nil)
+        }
+        #expect(SplitDividerView.adjustment(for: 17, modifiers: []) == nil)
+        divider.onBegin = { true }
+        divider.onResize = { fractions.append($0) }
+        divider.onEnd = { commits.append($0) }
+        divider.beginResize(atWindowX: 400)
+        divider.updateResize(atWindowX: 479.2)
+        #expect(abs(try #require(fractions.last) - 0.6) < 0.00001)
+        divider.endResize(commit: true)
+        #expect(commits == [true])
+        divider.beginResize(atWindowX: 400)
+        divider.invalidate()
+        #expect(commits == [true, false] && divider.resizeCursorRect == nil)
+        #expect(!divider.acceptsFirstResponder && !divider.accessibilityPerformIncrement() && !window.isVisible)
+    }
+
+    @Test func inactiveSplitMemberActionsManageTheirOwnGroupNotTheVisiblePair() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.perform(.splitTab(fixture.tabs[1].id, .trailing)))
+        let first = try #require(model.coordinator.activeSplitGroup)
+        #expect(model.perform(.selectTab(fixture.tabs[2].id)))
+        #expect(model.perform(.splitTab(fixture.tabs[3].id, .trailing)))
+        let visible = try #require(model.coordinator.activeSplitGroup), focus = model.coordinator.focusedTabID
+        #expect(model.splitGroup(containing: fixture.tabs[0].id) == first)
+        #expect(!model.canPerform(.splitTab(fixture.tabs[0].id, .leading)))
+        #expect(model.perform(.swapSplit(first.id)))
+        #expect(model.coordinator.activeSplitGroup == visible && model.coordinator.focusedTabID == focus)
+        #expect(model.splitGroup(containing: fixture.tabs[0].id)?.panes == Array(first.panes.reversed()))
+        #expect(model.perform(.exitSplit(first.id)))
+        #expect(model.coordinator.activeSplitGroup == visible && model.coordinator.focusedTabID == focus)
+        #expect(model.coordinator.splitGroups.count == 1 && model.webViews.creationCount == 4)
+    }
+
     @Test func eitherVisibleDialogBlocksSplitFocusAndPreviewAndForeignWindowStaysUntouched() throws {
         let first = Fixture(), second = Fixture()
         defer { first.cleanup(); second.cleanup() }
@@ -319,6 +417,11 @@ struct SplitPresentationTests {
         _ = hosts()
         #expect(hosts().contains { $0 === originalHost && $0.hosted === originalView })
         let created = model.webViews.creationCount
+        #expect(model.perform(.swapSplit(group.id)))
+        _ = hosts()
+        #expect(hosts().contains { $0 === originalHost && $0.hosted === originalView })
+        let otherHost = try #require(hosts().first { $0 !== originalHost })
+        #expect(hosting.convert(originalHost.bounds, from: originalHost).midX > hosting.convert(otherHost.bounds, from: otherHost).midX)
         let splitFrames = Dictionary(uniqueKeysWithValues: hosts().map { (ObjectIdentifier($0), hosting.convert($0.bounds, from: $0)) })
         model.sidebarInteractionInProgress = true
         model.updateSplitPreview(for: fixture.tabs[2].id, at: right, in: bounds)

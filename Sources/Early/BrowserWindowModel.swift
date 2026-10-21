@@ -751,9 +751,24 @@ final class BrowserWindowModel {
 
     @discardableResult
     func splitTab(_ id: UUID, on side: BrowserSplitSide) -> Bool {
-        guard let proposal = coordinator.splitPlacement(for: id, on: side), coordinator.applySplit(proposal) else { return false }
+        guard splitGroup(containing: id) == nil,
+              let proposal = coordinator.splitPlacement(for: id, on: side), coordinator.applySplit(proposal) else { return false }
         cancelSplitPreview()
         activateSelection()
+        save()
+        return true
+    }
+
+    func splitGroup(containing tabID: UUID) -> BrowserSplitGroup? {
+        coordinator.splitGroups.first { $0.spaceID == coordinator.activeSpaceID && $0.panes.contains { $0.tabID == tabID } }
+    }
+
+    @discardableResult
+    func swapSplit(_ id: UUID) -> Bool {
+        guard coordinator.swapSplit(id) else { return false }
+        cancelSplitPreview()
+        // Both pages remain presented and the same tab/input owns focus. A swap
+        // is metadata only: do not activate, navigate or recreate either page.
         save()
         return true
     }

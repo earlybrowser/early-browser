@@ -1023,13 +1023,16 @@ struct BrowserWindowView: View {
         Button("Open Tab in New Window") { model.perform(.openTabInNewWindow(tab.id)) }
         Button("Rename Tab…") { model.perform(.requestRename(tab.id)) }
         Menu("Split View") {
-            Button("Place on Left") { model.perform(.splitTab(tab.id, .leading)) }
-                .disabled(!model.canPerform(.splitTab(tab.id, .leading)))
-            Button("Place on Right") { model.perform(.splitTab(tab.id, .trailing)) }
-                .disabled(!model.canPerform(.splitTab(tab.id, .trailing)))
-            if let group = model.coordinator.activeSplitGroup {
+            if let group = model.splitGroup(containing: tab.id) {
+                Button("Swap Sides") { model.perform(.swapSplit(group.id)) }
+                    .disabled(!model.canPerform(.swapSplit(group.id)))
                 Button("Exit Split View") { model.perform(.exitSplit(group.id)) }
                     .disabled(!model.canPerform(.exitSplit(group.id)))
+            } else {
+                Button("Place on Left") { model.perform(.splitTab(tab.id, .leading)) }
+                    .disabled(!model.canPerform(.splitTab(tab.id, .leading)))
+                Button("Place on Right") { model.perform(.splitTab(tab.id, .trailing)) }
+                    .disabled(!model.canPerform(.splitTab(tab.id, .trailing)))
             }
         }
         if let page = model.webViews.pages[tab.id] {

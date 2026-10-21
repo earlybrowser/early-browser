@@ -277,6 +277,12 @@ struct RuntimeRoutingTests {
         for fraction in [0.3, 0.7, 0.5] { #expect(model.perform(.resizeSplit(group.id, fraction))) }
         #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
         #expect(try await secondPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep right")
+        let focus = model.coordinator.focusedTabID
+        #expect(model.perform(.swapSplit(group.id)))
+        #expect(model.coordinator.activeSplitGroup?.panes.map(\.tabID) == [second, first])
+        #expect(model.coordinator.focusedTabID == focus && model.webViews.creationCount == 2)
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
+        #expect(try await secondPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep right")
         #expect(model.perform(.focusSplitPane(group.panes[1].id)))
         #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
         model.updateQuery("early-test://fixture/one?right=navigated")

@@ -50,7 +50,7 @@ struct BrowserCommands: Commands {
         CommandMenu("Tab") {
             Menu("Split with Tab") {
                 if let model {
-                    ForEach(model.openTabs) { tab in
+                    ForEach(model.openTabs.filter { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) }) { tab in
                         Menu(tab.displayTitle) {
                             Button("Place on Left") { model.perform(.splitTab(tab.id, .leading)) }
                                 .disabled(!model.canPerform(.splitTab(tab.id, .leading)))
@@ -60,8 +60,10 @@ struct BrowserCommands: Commands {
                     }
                 }
             }
-            .disabled((model?.openTabs.count ?? 0) < 2)
+            .disabled(model.map { model in !model.openTabs.contains { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) } } ?? true)
             if let model, let group = model.coordinator.activeSplitGroup {
+                Button("Swap Sides") { model.perform(.swapSplit(group.id)) }
+                    .disabled(!model.canPerform(.swapSplit(group.id)))
                 Button("Focus Left Pane") { model.perform(.focusSplitPane(group.panes[0].id)) }
                     .disabled(!model.canPerform(.focusSplitPane(group.panes[0].id)))
                 Button("Focus Right Pane") { model.perform(.focusSplitPane(group.panes[1].id)) }

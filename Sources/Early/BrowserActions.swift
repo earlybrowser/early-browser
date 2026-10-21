@@ -40,14 +40,14 @@ extension BrowserWindowModel {
             let current = tabs.firstIndex { $0.id == coordinator.activeTabID } ?? 0
             return accessibleTab(tabs[(current + direction + tabs.count) % tabs.count].id) != nil
         case .splitTab(let id, let side):
-            return coordinator.splitPlacement(for: id, on: side) != nil
+            return splitGroup(containing: id) == nil && coordinator.splitPlacement(for: id, on: side) != nil
         case .focusSplitPane(let id), .removeSplitPane(let id):
             return coordinator.activeSplitGroup?.panes.contains { $0.id == id } == true
         case .resizeSplit(let id, let fraction):
             return coordinator.activeSplitGroup?.id == id && fraction.isFinite
                 && BrowserSplitGroup.fractionRange.contains(fraction)
-        case .exitSplit(let id):
-            return coordinator.activeSplitGroup?.id == id
+        case .swapSplit(let id), .exitSplit(let id):
+            return coordinator.splitGroups.contains { $0.id == id && $0.spaceID == coordinator.activeSpaceID }
         case .closeTab(let id):
             return accessibleTab(id)?.isOpen == true
         case .closeActiveTab:
@@ -153,6 +153,8 @@ extension BrowserWindowModel {
         case .resizeSplit(let id, let fraction):
             guard resizeSplit(id, fraction: fraction) else { return false }
             restoreContentFocus = false
+        case .swapSplit(let id):
+            guard swapSplit(id) else { return false }
         case .exitSplit(let id):
             guard exitSplit(id) else { return false }
         case .closeTab(let id): closeTab(id)
@@ -276,6 +278,7 @@ extension BrowserWindowModel {
         addAction("openSettings", "Open Settings", .openSettings, terms: ["settings", "preferences"])
         addAction("newWindow", "New Window", .newWindow, terms: ["open browser window"])
         if let group = coordinator.activeSplitGroup {
+            addAction("swapSplit", "Swap Sides", .swapSplit(group.id), terms: ["swap split panes", "swap left and right"])
             addAction("exitSplit", "Exit Split View", .exitSplit(group.id), terms: ["unsplit", "single pane"])
             for (index, pane) in group.panes.enumerated() {
                 addAction("focusPane.\(pane.id)", index == 0 ? "Focus Left Pane" : "Focus Right Pane",

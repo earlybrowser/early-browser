@@ -226,6 +226,16 @@ public final class BrowserCoordinator {
         return true
     }
 
+    /// Swap the panes, not their identities, selection, widths or tab ordering.
+    /// The focused pane follows its page to the other side without an MRU use.
+    @discardableResult
+    public func swapSplit(_ id: UUID) -> Bool {
+        guard let index = splitGroups.firstIndex(where: { $0.id == id && $0.spaceID == activeSpaceID }),
+              splitGroups[index].panes.count == 2 else { return false }
+        splitGroups[index].panes.swapAt(0, 1)
+        return true
+    }
+
     /// Removing layout is not closing either of its tabs or releasing a view.
     @discardableResult
     public func exitSplit(_ id: UUID) -> Bool {

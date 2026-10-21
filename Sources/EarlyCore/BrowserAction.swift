@@ -15,6 +15,7 @@ public enum BrowserAction: Equatable, Sendable {
     case focusSplitPane(UUID)
     case removeSplitPane(UUID)
     case resizeSplit(UUID, Double)
+    case swapSplit(UUID)
     case exitSplit(UUID)
     case closeTab(UUID)
     case closeActiveTab

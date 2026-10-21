@@ -143,6 +143,18 @@ final class EarlyUITests: XCTestCase {
         XCTAssertLessThan(left.frame.midX, right.frame.midX)
         XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
         XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
+        for reversed in [true, false] {
+            app.buttons[firstID].rightClick()
+            app.menuItems["Split View"].hover()
+            XCTAssertTrue(app.menuItems["Swap Sides"].waitForExistence(timeout: 3))
+            XCTAssertTrue(app.menuItems["Exit Split View"].exists)
+            XCTAssertFalse(app.menuItems["Place on Left"].exists || app.menuItems["Place on Right"].exists)
+            visibleMenuAction("Swap Sides")
+            let swapped = NSPredicate { _, _ in reversed ? left.frame.midX > right.frame.midX : left.frame.midX < right.frame.midX }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: swapped, object: nil)], timeout: 5), .completed)
+            XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
+            XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
+        }
         right.textFields["Saved text"].click()
         app.typeKey("l", modifierFlags: .command)
         XCTAssertEqual(app.textFields["commandBar.query"].value as? String, "early-test://fixture/two")

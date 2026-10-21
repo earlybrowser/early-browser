@@ -41,7 +41,8 @@ struct SplitContentView: View {
                 }
                 if let group {
                     SplitDivider(model: model, group: group, layout: layout)
-                        .frame(width: layout.divider.width, height: layout.divider.height)
+                        // A slim visual grip with a forgiving, invisible hit area.
+                        .frame(width: min(12, geometry.size.width), height: layout.divider.height)
                         .position(x: layout.divider.midX, y: layout.divider.midY)
                         .allowsHitTesting(model.splitDropSourceID == nil)
                         .transition(reduceMotion ? .identity : .opacity)
@@ -191,65 +192,188 @@ struct SplitContentView: View {
     }
 }
 
-private struct SplitDivider: View {
+struct SplitDivider: NSViewRepresentable {
     @Bindable var model: BrowserWindowModel
     let group: BrowserSplitGroup
     let layout: BrowserSplitLayout
-    @State private var startFraction: Double?
-    @GestureState private var dragging = false
-    @FocusState private var focused: Bool
+    @Environment(\.colorSchemeContrast) private var contrast
 
-    var body: some View {
-        Rectangle().fill(Color.primary.opacity(focused || dragging ? 0.25 : 0.08))
-            .contentShape(Rectangle())
-            .onHover { ($0 ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
-            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("splitContent"))
-                .updating($dragging) { _, state, _ in state = true }
-                .onChanged { value in
-                    if startFraction == nil {
-                        startFraction = layout.fraction
-                        model.beginSplitResize(group.id)
-                    }
-                    let usable = layout.leading.width + layout.trailing.width
-                    guard usable > 0 else { return }
-                    let next = (startFraction ?? layout.fraction) + value.translation.width / usable
-                    model.updateSplitResize(min(max(next, layout.fractionRange.lowerBound), layout.fractionRange.upperBound))
-                }
-                .onEnded { _ in
-                    startFraction = nil
-                    model.finishSplitResize(commit: true)
-                    NSCursor.arrow.set()
-                })
-            .focusable().focused($focused)
-            .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-                guard press.modifiers.intersection([.command, .control, .option]).isEmpty else { return .ignored }
-                adjust(press.key == .leftArrow ? -0.05 : 0.05)
-                return .handled
-            }
-            .accessibilityLabel("Split divider")
-            .accessibilityValue("\(Int(layout.fraction * 100)) percent left pane")
-            .accessibilityIdentifier("split.divider")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: adjust(0.05)
-                case .decrement: adjust(-0.05)
-                @unknown default: break
-                }
-            }
-            .onChange(of: dragging) { _, active in
-                if !active {
-                    Task { @MainActor in
-                        await Task.yield()
-                        if !dragging { startFraction = nil; model.finishSplitResize(commit: false) }
-                    }
-                }
-            }
-            .onDisappear { model.finishSplitResize(commit: false) }
+    func makeNSView(context: Context) -> SplitDividerView { SplitDividerView() }
+    func updateNSView(_ view: SplitDividerView, context: Context) {
+        view.onBegin = {
+            model.beginSplitResize(group.id)
+            return model.splitResize?.groupID == group.id
+        }
+        view.onResize = { model.updateSplitResize($0) }
+        view.onEnd = { model.finishSplitResize(commit: $0) }
+        view.onAdjust = { amount in
+            let saved = model.coordinator.activeSplitGroup?.leadingFraction ?? layout.fraction
+            let current = min(max(saved, layout.fractionRange.lowerBound), layout.fractionRange.upperBound)
+            let next = min(max(current + amount, layout.fractionRange.lowerBound), layout.fractionRange.upperBound)
+            return model.perform(.resizeSplit(group.id, next))
+        }
+        view.configure(groupID: group.id, layout: layout,
+            enabled: model.splitResize?.groupID == group.id || model.canPerform(.resizeSplit(group.id, layout.fraction)),
+            resizing: model.splitResize?.groupID == group.id, increasedContrast: contrast == .increased)
+    }
+    static func dismantleNSView(_ view: SplitDividerView, coordinator: ()) { view.invalidate() }
+}
+
+/// Owns the small native hit/cursor region, rather than racing WebKit's cursor
+/// with SwiftUI onHover. No event monitor, tracking loop or global cursor change.
+final class SplitDividerView: NSView {
+    var onBegin: (() -> Bool)?
+    var onResize: ((Double) -> Void)?
+    var onEnd: ((Bool) -> Void)?
+    var onAdjust: ((Double) -> Bool)?
+    private var groupID: UUID?
+    private var fraction = 0.5
+    private var fractionRange = 0.2...0.8
+    private var usableWidth: CGFloat = 0
+    private var enabled = false
+    private var increasedContrast = false
+    private var tracking: NSTrackingArea?
+    private var dragAnchor: (x: CGFloat, fraction: Double)?
+    private var takingPointerFocus = false
+    private(set) var keyboardFocused = false
+    private var hovered = false
+    private var invalidated = false
+    private(set) var resizeCursorRect: CGRect?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        focusRingType = .none
+        clipsToBounds = true
+    }
+    required init?(coder: NSCoder) { return nil }
+
+    func configure(groupID: UUID, layout: BrowserSplitLayout, enabled: Bool, resizing: Bool, increasedContrast: Bool) {
+        guard !invalidated else { return }
+        if self.groupID != groupID || !resizing { dragAnchor = nil }
+        self.groupID = groupID
+        let fractionChanged = fraction != layout.fraction
+        fraction = layout.fraction
+        fractionRange = layout.fractionRange
+        usableWidth = layout.leading.width + layout.trailing.width
+        self.enabled = enabled
+        self.increasedContrast = increasedContrast
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+        if fractionChanged, window != nil { NSAccessibility.post(element: self, notification: .valueChanged) }
     }
 
-    private func adjust(_ amount: Double) {
-        let next = min(max(layout.fraction + amount, layout.fractionRange.lowerBound), layout.fractionRange.upperBound)
-        _ = model.perform(.resizeSplit(group.id, next))
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        let region = bounds.intersection(visibleRect)
+        resizeCursorRect = enabled && !region.isEmpty ? region : nil
+        if let resizeCursorRect { addCursorRect(resizeCursorRect, cursor: .resizeLeftRight) }
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        tracking = nil
+        guard !invalidated else { return }
+        tracking = NSTrackingArea(rect: bounds.intersection(visibleRect),
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .cursorUpdate, .enabledDuringMouseDrag],
+            owner: self, userInfo: nil)
+        if let tracking { addTrackingArea(tracking) }
+    }
+    override func cursorUpdate(with event: NSEvent) { if enabled { NSCursor.resizeLeftRight.set() } }
+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window { endResize(commit: false) }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let active = enabled && (hovered || dragAnchor != nil || keyboardFocused)
+        NSColor.labelColor.withAlphaComponent(increasedContrast ? 0.45 : (active ? 0.22 : 0.10)).setFill()
+        NSBezierPath(roundedRect: CGRect(x: bounds.midX - 0.5, y: bounds.minY + 8,
+            width: 1, height: max(0, bounds.height - 16)), xRadius: 0.5, yRadius: 0.5).fill()
+        let width: CGFloat = keyboardFocused ? 4 : 2
+        let height = min(keyboardFocused ? 48.0 : 36, max(0, bounds.height - 16))
+        NSColor.labelColor.withAlphaComponent(increasedContrast ? 0.85 : (active ? 0.55 : 0.25)).setFill()
+        NSBezierPath(roundedRect: CGRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2,
+            width: width, height: height), xRadius: width / 2, yRadius: width / 2).fill()
+    }
+
+    override var acceptsFirstResponder: Bool { enabled }
+    override func becomeFirstResponder() -> Bool {
+        guard enabled else { return false }
+        keyboardFocused = !takingPointerFocus
+        needsDisplay = true
+        return true
+    }
+    override func resignFirstResponder() -> Bool { keyboardFocused = false; needsDisplay = true; return true }
+    override func mouseDown(with event: NSEvent) {
+        guard enabled else { return }
+        keyboardFocused = false
+        takingPointerFocus = true
+        window?.makeFirstResponder(self)
+        takingPointerFocus = false
+        beginResize(atWindowX: event.locationInWindow.x)
+    }
+    override func mouseDragged(with event: NSEvent) {
+        updateResize(atWindowX: event.locationInWindow.x)
+    }
+    override func mouseUp(with event: NSEvent) {
+        updateResize(atWindowX: event.locationInWindow.x)
+        endResize(commit: true)
+        // Leave cursor restoration to AppKit's native cursor rectangles, not a
+        // forced arrow that would override the adjacent webpage's text cursor.
+        window?.invalidateCursorRects(for: self)
+    }
+
+    func beginResize(atWindowX x: CGFloat) {
+        guard enabled, x.isFinite, usableWidth > 0, dragAnchor == nil, onBegin?() == true else { return }
+        dragAnchor = (x, fraction)
+        needsDisplay = true
+    }
+    func updateResize(atWindowX x: CGFloat) {
+        guard let anchor = dragAnchor, x.isFinite, usableWidth > 0 else { return }
+        onResize?(min(max(anchor.fraction + (x - anchor.x) / usableWidth, fractionRange.lowerBound), fractionRange.upperBound))
+    }
+    func endResize(commit: Bool) {
+        guard dragAnchor != nil else { return }
+        dragAnchor = nil
+        onEnd?(commit)
+        needsDisplay = true
+    }
+
+    static func adjustment(for keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Double? {
+        guard modifiers.intersection([.command, .control, .option]).isEmpty else { return nil }
+        return keyCode == 123 ? -0.05 : (keyCode == 124 ? 0.05 : nil)
+    }
+    override func keyDown(with event: NSEvent) {
+        if enabled, let amount = Self.adjustment(for: event.keyCode, modifiers: event.modifierFlags) {
+            keyboardFocused = true
+            _ = onAdjust?(amount)
+            needsDisplay = true
+        } else if event.keyCode == 48, event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(self) }
+            else { window?.selectNextKeyView(self) }
+        } else { super.keyDown(with: event) }
+    }
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
+    override func accessibilityLabel() -> String? { "Split divider" }
+    override func accessibilityIdentifier() -> String { "split.divider" }
+    override func accessibilityValue() -> Any? { "\(Int(fraction * 100)) percent left pane" }
+    override func accessibilityOrientation() -> NSAccessibilityOrientation { .vertical }
+    override func isAccessibilityEnabled() -> Bool { enabled }
+    override func accessibilityPerformIncrement() -> Bool { enabled && onAdjust?(0.05) == true }
+    override func accessibilityPerformDecrement() -> Bool { enabled && onAdjust?(-0.05) == true }
+
+    func invalidate() {
+        invalidated = true
+        endResize(commit: false)
+        if let tracking { removeTrackingArea(tracking) }
+        tracking = nil
+        discardCursorRects()
+        resizeCursorRect = nil
+        enabled = false
+        onBegin = nil; onResize = nil; onEnd = nil; onAdjust = nil
     }
 }
 
