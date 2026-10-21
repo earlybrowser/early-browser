@@ -76,6 +76,20 @@ public extension BrowserSpace.Color {
         return swatch.blended(with: neutral, amount: isDark ? 0.09 : 0.25)
     }
 
+    /// A muted, legible focus edge, not a translucent copy of the swatch.
+    /// Darken warm/light hues against light pages and lift them against dark
+    /// pages. Gray is also the neutral fallback when Space themes are disabled.
+    func focusBorder(isDark: Bool, increasedContrast: Bool = false) -> SpaceThemeRGB {
+        let gray: Double
+        if self == .gray {
+            gray = increasedContrast ? (isDark ? 0.82 : 0.18) : (isDark ? 0.62 : 0.43)
+            return SpaceThemeRGB(red: gray, green: gray, blue: gray)
+        }
+        gray = increasedContrast ? (isDark ? 0.88 : 0.04) : (isDark ? 0.55 : 0.18)
+        return swatch.blended(with: SpaceThemeRGB(red: gray, green: gray, blue: gray),
+                              amount: increasedContrast ? 0.45 : 0.55)
+    }
+
     /// Muted layers keep folder artwork at home in its Space without tinting
     /// text or reducing the contrast of the icon's outline. Gray also preserves
     /// the original neutral artwork when Space themes are disabled.

@@ -52,8 +52,17 @@ final class BrowserWindowModel {
     @ObservationIgnored private var spaceSwipeSettleTask: Task<Void, Never>?
     @ObservationIgnored private var spaceSwipeRevision = UUID()
     var sidebarInteractionInProgress = false {
-        didSet { webViews.interactionInProgress = sidebarInteractionInProgress }
+        didSet { updateRuntimeInteraction() }
     }
+    struct SplitResize: Equatable {
+        let groupID: UUID
+        var fraction: Double
+    }
+    private(set) var splitPreview: BrowserSplitPlacement?
+    /// Entering content shows both targets; a proposal exists only INSIDE a card.
+    private(set) var splitDropSourceID: UUID?
+    private(set) var splitResize: SplitResize?
+    @ObservationIgnored var onSplitPreviewFeedback: (() -> Void)?
     var folderEditorIsPresented = false
     var renamingTabID: UUID?
     var renameText = ""
@@ -155,6 +164,7 @@ final class BrowserWindowModel {
     }
 
     var activePage: BrowserPage? { coordinator.focusedTabID.flatMap { webViews.pages[$0] } }
+    var hasVisibleDialog: Bool { coordinator.visibleTabIDs.contains { webViews.pages[$0]?.hasDialog == true } }
     var activeTab: BrowserTab? { coordinator.focusedTabID.flatMap { coordinator.tabStore.tab(id: $0) } }
     var openTabs: [BrowserTab] {
         coordinator.tabStore.openTabs(in: coordinator.activeSpaceID)
@@ -164,6 +174,8 @@ final class BrowserWindowModel {
     var todayTabs: [BrowserTab] { coordinator.tabStore.todayTabs(in: coordinator.activeSpaceID) }
 
     func presentCommandBar(_ intent: CommandBarIntent) {
+        cancelSplitPreview()
+        finishSplitResize(commit: false)
         cancelTabSwitcher(restoreFocus: false)
         sidebarReveal = nil
         cancelSpaceSwipePresentation()
@@ -430,9 +442,10 @@ final class BrowserWindowModel {
 
     func closeTab(_ id: UUID) {
         let previousActive = coordinator.activeTabID
+        let previousVisible = coordinator.visibleTabIDs
         guard coordinator.closeTab(id) != nil else { return }
         webViews.discard(tabID: id)
-        if previousActive != coordinator.activeTabID { activateSelection() }
+        if previousActive != coordinator.activeTabID || previousVisible != coordinator.visibleTabIDs { activateSelection() }
         save()
     }
 
@@ -487,7 +500,7 @@ final class BrowserWindowModel {
     }
 
     var canManageSpaces: Bool {
-        !spaceSwipeIsSettling && !sidebarInteractionInProgress && !folderEditorIsPresented && activePage?.hasDialog != true
+        !spaceSwipeIsSettling && !sidebarInteractionInProgress && splitResize == nil && !folderEditorIsPresented && !hasVisibleDialog
             && renamingTabID == nil && spaceEditor == nil && spaceDeletionID == nil
     }
 
@@ -515,7 +528,7 @@ final class BrowserWindowModel {
     }
 
     func updateSpaceSwipe(translation: Double) {
-        guard !spaceSwipeIsSettling, !sidebarInteractionInProgress else { return }
+        guard canManageSpaces else { return }
         let progress = SpaceNavigation.sidebarTravel(translation: translation, width: sidebarWidth,
             canGoPrevious: activeSpaceIndex > 0, canGoNext: activeSpaceIndex + 1 < coordinator.spaces.count)
         var transaction = Transaction()
@@ -558,12 +571,13 @@ final class BrowserWindowModel {
         let revision = UUID()
         spaceSwipeRevision = revision
         spaceSwipeIsSettling = true
-        withAnimation(.easeOut(duration: target == nil ? 0.18 : 0.15)) {
+        let settleDuration = target == nil ? SpaceSwitchMotion.cancellationSettleDuration : SpaceSwitchMotion.navigationSettleDuration
+        withAnimation(.easeOut(duration: settleDuration)) {
             spaceSwipeProgress = target == nil ? 0 : (delta > 0 ? -1 : 1)
             spaceSwipeCreationProgress = 0
         }
         spaceSwipeSettleTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(target == nil ? 180 : 150)) } catch { return }
+            do { try await Task.sleep(for: .seconds(settleDuration)) } catch { return }
             guard let self, self.spaceSwipeRevision == revision else { return }
             let contextMatches = self.coordinator.activeSpaceID == source && self.coordinator.spaces.map(\.id) == catalog
             var transaction = Transaction()
@@ -572,10 +586,13 @@ final class BrowserWindowModel {
                 self.spaceSwipeIsSettling = false
                 self.spaceSwipeSettleTask = nil
                 self.spaceSwipeProgress = 0
-                guard contextMatches, self.canManageSpaces else { return }
-                if let target { _ = self.switchSpace(to: target) }
-                else if action == .create { self.requestNewSpace() }
             }
+            // Only reset the sidebar's finished travel without animation.
+            // Committing the Space outside that transaction lets the content
+            // perform the same fade as a dot/menu/keyboard Space selection.
+            guard contextMatches, self.canManageSpaces else { return }
+            if let target { _ = self.switchSpace(to: target) }
+            else if action == .create { self.requestNewSpace() }
         }
     }
 
@@ -672,13 +689,159 @@ final class BrowserWindowModel {
         contentFocusRequest += 1
     }
 
-    /// Called by a future pane host, not exposed as an unfinished menu command.
+    /// Pointer focus must not steal the first responder from a clicked form
+    /// field. Menu/keyboard focus uses the same target with an explicit request.
     @discardableResult
-    func focusPane(_ id: UUID) -> Bool {
-        guard let group = coordinator.splitGroups.first(where: {
-            $0.spaceID == coordinator.activeSpaceID && $0.panes.contains { $0.id == id }
-        }), let pane = group.panes.first(where: { $0.id == id }) else { return false }
-        return perform(.selectTab(pane.tabID))
+    func focusPane(_ id: UUID, restoreFocus: Bool = true) -> Bool {
+        guard canPerform(.focusSplitPane(id)),
+              let pane = coordinator.activeSplitGroup?.panes.first(where: { $0.id == id }) else { return false }
+        guard coordinator.focusedTabID != pane.tabID else {
+            if restoreFocus { contentFocusRequest += 1 }
+            return true
+        }
+        cancelTabSwitcher(restoreFocus: false)
+        cancelCommandBarQueries()
+        guard coordinator.focusPane(id) else { return false }
+        save()
+        if restoreFocus { contentFocusRequest += 1 }
+        return true
+    }
+
+    private func updateRuntimeInteraction() {
+        webViews.interactionInProgress = sidebarInteractionInProgress || splitResize != nil
+    }
+
+    /// This gate intentionally allows a sidebar drag, but not a modal editor,
+    /// website dialog, command bar, resize, or a settling Space transition.
+    var canPreviewSplit: Bool {
+        coordinator.commandBar == nil && !spaceSwipeIsSettling && splitResize == nil
+            && !folderEditorIsPresented && renamingTabID == nil && spaceEditor == nil
+            && spaceDeletionID == nil && !hasVisibleDialog
+    }
+
+    /// Drop targets and the focused pane share the current Space's theme.
+    var splitTheme: BrowserSpace.Color {
+        preferences.spaceThemes ? (coordinator.activeSpace?.color ?? .gray) : .gray
+    }
+
+    func updateSplitPreview(for tabID: UUID, at point: CGPoint, in bounds: CGRect, leadingInset: CGFloat = 0) {
+        guard canPreviewSplit, point.x.isFinite, point.y.isFinite,
+              let targets = BrowserSplitDropTargets(in: bounds, leadingInset: leadingInset), targets.content.contains(point),
+              coordinator.splitPlacement(for: tabID, on: .leading) != nil else {
+            cancelSplitPreview()
+            return
+        }
+        if splitDropSourceID != tabID { splitDropSourceID = tabID }
+        let next = targets.side(at: point).flatMap { coordinator.splitPlacement(for: tabID, on: $0) }
+        guard next != splitPreview else { return }
+        let feedback = next != nil && (splitPreview?.sourceTabID != next?.sourceTabID || splitPreview?.side != next?.side)
+        splitPreview = next
+        if feedback, preferences.haptics {
+            if let onSplitPreviewFeedback { onSplitPreviewFeedback() }
+            else { BrowserHaptics.splitPreview() }
+        }
+    }
+
+    func cancelSplitPreview() {
+        splitPreview = nil
+        splitDropSourceID = nil
+    }
+
+    @discardableResult
+    func commitSplitPreview() -> Bool {
+        guard canPreviewSplit, let proposal = splitPreview else { cancelSplitPreview(); return false }
+        cancelSplitPreview()
+        guard coordinator.applySplit(proposal) else { return false }
+        // No drop haptic. Only a committed operation can activate the new pane.
+        activateSelection()
+        save()
+        return true
+    }
+
+    @discardableResult
+    func splitTab(_ id: UUID, on side: BrowserSplitSide) -> Bool {
+        guard splitGroup(containing: id) == nil,
+              let proposal = coordinator.splitPlacement(for: id, on: side), coordinator.applySplit(proposal) else { return false }
+        cancelSplitPreview()
+        activateSelection()
+        save()
+        return true
+    }
+
+    func splitGroup(containing tabID: UUID) -> BrowserSplitGroup? {
+        coordinator.splitGroups.first { $0.spaceID == coordinator.activeSpaceID && $0.panes.contains { $0.tabID == tabID } }
+    }
+
+    @discardableResult
+    func swapSplit(_ id: UUID) -> Bool {
+        guard coordinator.swapSplit(id) else { return false }
+        cancelSplitPreview()
+        // Both pages remain presented and the same tab/input owns focus. A swap
+        // is metadata only: do not activate, navigate or recreate either page.
+        save()
+        return true
+    }
+
+    @discardableResult
+    func removeSplitPane(_ id: UUID) -> Bool {
+        guard coordinator.removeSplitPane(id) else { return false }
+        activateSelection()
+        save()
+        return true
+    }
+
+    @discardableResult
+    func exitSplit(_ id: UUID) -> Bool {
+        guard coordinator.exitSplit(id) else { return false }
+        activateSelection()
+        save()
+        return true
+    }
+
+    @discardableResult
+    func resizeSplit(_ id: UUID, fraction: Double) -> Bool {
+        guard coordinator.resizeSplit(id, leadingFraction: fraction) else { return false }
+        save()
+        return true
+    }
+
+    func beginSplitResize(_ id: UUID) {
+        guard let group = coordinator.activeSplitGroup, group.id == id,
+              canPerform(.resizeSplit(id, group.leadingFraction)) else { return }
+        cancelTabSwitcher(restoreFocus: false)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            splitResize = SplitResize(groupID: id, fraction: group.leadingFraction)
+            updateRuntimeInteraction()
+        }
+    }
+
+    func updateSplitResize(_ fraction: Double) {
+        guard fraction.isFinite, let resize = splitResize, coordinator.activeSplitGroup?.id == resize.groupID else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            splitResize?.fraction = min(max(fraction, BrowserSplitGroup.fractionRange.lowerBound), BrowserSplitGroup.fractionRange.upperBound)
+        }
+    }
+
+    func finishSplitResize(commit: Bool) {
+        guard let resize = splitResize else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            splitResize = nil
+            updateRuntimeInteraction()
+            if commit { _ = perform(.resizeSplit(resize.groupID, resize.fraction)) }
+        }
+    }
+
+    func cancelWindowInteractions() {
+        cancelSplitPreview()
+        finishSplitResize(commit: false)
+        cancelTabSwitcher(restoreFocus: false)
+        cancelSpaceSwipePresentation()
     }
 
     private func reconcileRuntimePresentation() {
@@ -692,8 +855,19 @@ final class BrowserWindowModel {
     func forward() { if let id = coordinator.focusedTabID { webViews.forward(id) } }
     func save() {
         validateTabSwitcher()
+        validateSplitPresentation()
         reconcileRuntimePresentation()
         onSave?(self)
+    }
+
+    private func validateSplitPresentation() {
+        if let source = splitDropSourceID, !canPreviewSplit || coordinator.splitPlacement(for: source, on: .leading) == nil {
+            cancelSplitPreview()
+        }
+        if let splitPreview, coordinator.splitPlacement(for: splitPreview.sourceTabID, on: splitPreview.side) != splitPreview {
+            cancelSplitPreview()
+        }
+        if let splitResize, coordinator.activeSplitGroup?.id != splitResize.groupID { finishSplitResize(commit: false) }
     }
 
     func openTabInNewWindow(_ id: UUID) {
@@ -718,6 +892,7 @@ final class BrowserWindowModel {
     }
 
     func applyProfileSnapshot(_ session: BrowserSession) {
+        cancelWindowInteractions()
         cancelTabSwitcher(restoreFocus: false)
         let previous = coordinator.activeTabID
         guard coordinator.applySession(session, using: input) else { return }
@@ -737,6 +912,7 @@ final class BrowserWindowModel {
         let previousSpaces = coordinator.spaces.map(\.id)
         coordinator.synchronizeSavedItems(from: session)
         validateTabSwitcher()
+        validateSplitPresentation()
         if previousSpaces != coordinator.spaces.map(\.id) { cancelSpaceSwipePresentation() }
         let remaining = Set(coordinator.tabStore.tabs.map(\.id))
         for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }

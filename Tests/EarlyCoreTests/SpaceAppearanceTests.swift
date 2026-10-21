@@ -5,6 +5,45 @@ import Testing
 @testable import EarlyCore
 
 struct SpaceAppearanceTests {
+    @Test func focusedBordersAreMutedAndReadableAgainstLightAndDarkSurfaces() {
+        func luminance(_ rgb: SpaceThemeRGB) -> Double {
+            func linear(_ channel: Double) -> Double {
+                channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(rgb.red) + 0.7152 * linear(rgb.green) + 0.0722 * linear(rgb.blue)
+        }
+        func ratio(_ first: SpaceThemeRGB, _ second: SpaceThemeRGB) -> Double {
+            let left = luminance(first), right = luminance(second)
+            return (max(left, right) + 0.05) / (min(left, right) + 0.05)
+        }
+        for theme in BrowserSpace.Color.allCases {
+            for dark in [false, true] {
+                let page = dark ? SpaceThemeRGB(red: 0.125, green: 0.129, blue: 0.141)
+                    : SpaceThemeRGB(red: 1, green: 1, blue: 1)
+                let normal = theme.focusBorder(isDark: dark)
+                for increased in [false, true] {
+                    let edge = theme.focusBorder(isDark: dark, increasedContrast: increased)
+                    let channels = [edge.red, edge.green, edge.blue]
+                    #expect(channels.allSatisfy { $0.isFinite && (0...1).contains($0) })
+                    #expect(ratio(edge, page) >= 3)
+                    #expect(ratio(edge, theme.chromeTop(isDark: dark)) >= 3)
+                    #expect(ratio(edge, theme.chromeBottom(isDark: dark)) >= 3)
+                    #expect(!increased || ratio(edge, page) >= ratio(normal, page))
+                    if theme == .gray {
+                        #expect(edge.red == edge.green && edge.green == edge.blue)
+                    } else {
+                        let swatch = theme.swatch
+                        let original = [swatch.red, swatch.green, swatch.blue]
+                        #expect(edge != swatch)
+                        #expect(channels.max()! - channels.min()! < original.max()! - original.min()!)
+                        #expect((edge.red < edge.blue) == (swatch.red < swatch.blue))
+                    }
+                }
+                #expect(theme.focusBorder(isDark: true) != theme.focusBorder(isDark: false))
+            }
+        }
+    }
+
     @Test func folderLayersFollowTheirThemeInBothAppearances() {
         for color in BrowserSpace.Color.allCases {
             for dark in [false, true] {

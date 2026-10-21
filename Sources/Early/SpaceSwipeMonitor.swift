@@ -4,6 +4,14 @@ import AppKit
 import EarlyCore
 import SwiftUI
 
+/// Presentation timings, not loading delays. A successful swipe should not
+/// stack a long sidebar settlement in front of a slow-starting content fade.
+enum SpaceSwitchMotion {
+    static let contentDuration = 0.08
+    static let navigationSettleDuration = 0.08
+    static let cancellationSettleDuration = 0.18
+}
+
 /// AppKit chooses the performer for the current device, accessibility settings
 /// and user preferences. Unsupported/disabled feedback is suppressed by macOS.
 @MainActor
@@ -21,6 +29,13 @@ enum BrowserHaptics {
     static func pickupOrDrop(enabled: Bool = true) {
         guard enabled else { return }
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+    }
+
+    /// The split proposal already deduplicates activation/side changes. Do not
+    /// let an immediately preceding sidebar alignment suppress this distinct cue.
+    static func splitPreview(enabled: Bool = true) {
+        guard enabled else { return }
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
     }
 }
 

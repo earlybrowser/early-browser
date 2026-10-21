@@ -202,7 +202,10 @@ struct WindowControls: NSViewRepresentable {
                     let origUpdateLayer = unsafeBitCast(method_getImplementation(mUpdateLayer), to: UpdateLayerIMP.self)
                     let blockUpdateLayer: @convention(block) (NSView) -> Void = { view in
                         origUpdateLayer(view, updateLayerSel)
-                        view.layer?.opacity = 0
+                        // This existing compatibility hook must never alter
+                        // Settings, website sheets, or another app window.
+                        guard ControlsHost.ownsControls(in: view.window) else { return }
+                        view.layer?.opacity = view.window?.styleMask.contains(.fullScreen) == true ? 0 : 1
                     }
                     class_replaceMethod(bgClass, updateLayerSel, imp_implementationWithBlock(blockUpdateLayer), method_getTypeEncoding(mUpdateLayer))
                 }
@@ -225,6 +228,16 @@ struct WindowControls: NSViewRepresentable {
         // representables alive. Only viewDidMoveToWindow may claim ownership;
         // updates/notifications from a superseded host cannot steal it back.
         private static let owners = NSMapTable<NSWindow, ControlsHost>.weakToWeakObjects()
+
+        static func ownsControls(in window: NSWindow?) -> Bool {
+            var current = window
+            for _ in 0..<4 {
+                guard let candidate = current else { return false }
+                if owners.object(forKey: candidate) != nil { return true }
+                current = candidate.parent
+            }
+            return false
+        }
 
         private struct NativeControl {
             let kind: NSWindow.ButtonType
@@ -640,19 +653,120 @@ struct WindowDragRegion: NSViewRepresentable {
     }
 }
 
+enum SidebarRevealRegion {
+    static let edgeWidth: CGFloat = 2
+
+    static func contains(_ point: CGPoint?, sidebarWidth: CGFloat, revealed: Bool) -> Bool {
+        guard let point else { return false }
+        // Keep the edge-to-panel gutter active only AFTER a real edge entry.
+        return point.x >= 0 && point.x < (revealed ? sidebarWidth + 6 : edgeWidth)
+    }
+}
+
+/// Track the stationary native window surface, including events delivered to
+/// WebKit children. SwiftUI hover regions can miss a second edge entry after
+/// their overlay/sidebar hierarchy changes. Never intercept or synthesize input.
+struct BrowserWindowPointerMonitor: NSViewRepresentable {
+    let onMove: (CGPoint?) -> Void
+
+    func makeNSView(context: Context) -> PointerView {
+        let view = PointerView()
+        view.onMove = onMove
+        return view
+    }
+
+    func updateNSView(_ view: PointerView, context: Context) { view.onMove = onMove }
+    static func dismantleNSView(_ view: PointerView, coordinator: ()) {
+        view.stop()
+        view.onMove = nil
+    }
+
+    final class PointerView: NSView {
+        var onMove: ((CGPoint?) -> Void)?
+        private var monitor: Any?
+        private var area: NSTrackingArea?
+        private weak var monitoredWindow: NSWindow?
+        private var previouslyAcceptedMouseMoves = false
+
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stop()
+            guard let window else { return }
+            monitoredWindow = window
+            previouslyAcceptedMouseMoves = window.acceptsMouseMovedEvents
+            window.acceptsMouseMovedEvents = true
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [
+                .mouseMoved, .mouseEntered, .mouseExited,
+                .leftMouseDragged, .rightMouseDragged, .otherMouseDragged
+            ]) { [weak self] event in
+                self?.handle(event)
+                return event
+            }
+            for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(cancelPointer), name: name, object: window)
+            }
+            updateTrackingAreas()
+        }
+
+        override func updateTrackingAreas() {
+            if let area { removeTrackingArea(area) }
+            area = nil
+            if window != nil, monitor != nil {
+                let next = NSTrackingArea(rect: .zero,
+                    options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved], owner: self, userInfo: nil)
+                addTrackingArea(next)
+                area = next
+            }
+            super.updateTrackingAreas()
+        }
+
+        override func mouseEntered(with event: NSEvent) { handle(event) }
+        override func mouseMoved(with event: NSEvent) { handle(event) }
+        override func mouseExited(with event: NSEvent) { handle(event) }
+
+        func handle(_ event: NSEvent) {
+            guard monitor != nil, let window, event.window === window else { return }
+            let point = convert(event.locationInWindow, from: nil)
+            // A child tracking area's exit is NOT a window exit. Derive the
+            // result from the actual stable bounds, never the event's type.
+            onMove?(bounds.contains(point) ? point : nil)
+        }
+
+        @objc private func cancelPointer() { onMove?(nil) }
+
+        func stop() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            if let area { removeTrackingArea(area) }
+            area = nil
+            NotificationCenter.default.removeObserver(self)
+            monitoredWindow?.acceptsMouseMovedEvents = previouslyAcceptedMouseMoves
+            monitoredWindow = nil
+        }
+    }
+}
+
 /// SwiftUI owns this container; the manager owns the web view's lifetime.
 struct WebContentView: NSViewRepresentable {
     let view: WKWebView?
     let focusRequest: Int
     let canFocus: Bool
     let hasDialog: Bool
+    var isResizing = false
+    var onInteraction: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> HostView { HostView() }
     static func dismantleNSView(_ host: HostView, coordinator: ()) { host.invalidate() }
     func updateNSView(_ host: HostView, context: Context) {
+        host.setLiveResize(isResizing)
         host.display(view)
         host.canFocus = canFocus
         host.suppressAccessibilityChildren = hasDialog
+        host.onInteraction = onInteraction
         guard host.focusRequest != focusRequest else { return }
         host.focusRequest = focusRequest
         DispatchQueue.main.async { [weak host] in
@@ -672,6 +786,112 @@ struct WebContentView: NSViewRepresentable {
         private weak var desired: WKWebView?
         private var leavingFullscreen = false
         private var invalidated = false
+        private var resizeRequested = false
+        private weak var resizingView: WKWebView?
+        private var backgroundObservation: NSKeyValueObservation?
+        var onInteraction: (() -> Void)?
+        private var interactionMonitor: Any?
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            // SwiftUI clipping alone can leave the embedded native surface's
+            // exposed rect larger than the pane during rapid divider changes.
+            clipsToBounds = true
+            wantsLayer = true
+            autoresizesSubviews = false
+        }
+        required init?(coder: NSCoder) { return nil }
+        override var isFlipped: Bool { true }
+
+        override func setFrameSize(_ size: NSSize) {
+            super.setFrameSize(size)
+            layoutHostedView()
+        }
+        override func setBoundsSize(_ size: NSSize) {
+            super.setBoundsSize(size)
+            layoutHostedView()
+        }
+        override func layout() {
+            super.layout()
+            layoutHostedView()
+        }
+
+        private func layoutHostedView() {
+            guard !invalidated, let hosted, hosted.superview === self else { return }
+            // Set the viewport in the SAME native layout pass as its host,
+            // rather than animating a composited old-sized WebKit surface.
+            // Never touch a view reparented by element fullscreen.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            // A newly made/removed SwiftUI host can have zero bounds for one
+            // layout pass. Keep the last real viewport instead of asking
+            // WebKit to reflow to zero and repaint again on Space re-entry.
+            if hasViewport, hosted.frame != bounds { hosted.frame = bounds }
+            layer?.backgroundColor = hosted.underPageBackgroundColor.cgColor
+            CATransaction.commit()
+        }
+
+        private var hasViewport: Bool {
+            bounds.width.isFinite && bounds.height.isFinite && bounds.width > 0 && bounds.height > 0
+        }
+
+        func setLiveResize(_ resizing: Bool) {
+            resizeRequested = resizing && !invalidated
+            synchronizeLiveResize()
+        }
+
+        private func synchronizeLiveResize() {
+            let target = resizeRequested && hosted?.superview === self ? hosted : nil
+            guard resizingView !== target else { return }
+            finishLiveResize()
+            if let target {
+                resizingView = target
+                // Divider drags don't resize NSWindow, so AppKit doesn't send
+                // these notifications for us. WebKit uses them to coordinate
+                // drawing-area updates with continuous native viewport changes.
+                target.viewWillStartLiveResize()
+            }
+        }
+
+        private func finishLiveResize() {
+            guard let resizingView else { return }
+            self.resizingView = nil
+            resizingView.viewDidEndLiveResize()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopInteractionMonitor()
+            guard window != nil, !invalidated else { return }
+            interactionMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
+                guard let self, let window = self.window, event.window === window,
+                      window.attachedSheet == nil, self.hosted != nil else { return event }
+                let interacts: Bool
+                if event.type == .keyDown {
+                    interacts = self.containsPageView(window.firstResponder as? NSView)
+                } else {
+                    // Bounds alone also include SwiftUI overlays (command bar,
+                    // pane controls, notices). They must not focus the page
+                    // underneath a click intended for one of those controls.
+                    let content = window.contentView
+                    let point = content?.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+                    let hit = content?.hitTest(point)
+                    interacts = self.containsPageView(hit)
+                }
+                if interacts { self.onInteraction?() }
+                return event // Never consume or duplicate a website event.
+            }
+        }
+
+        private func stopInteractionMonitor() {
+            if let interactionMonitor { NSEvent.removeMonitor(interactionMonitor) }
+            interactionMonitor = nil
+        }
+
+        func containsPageView(_ candidate: NSView?) -> Bool {
+            guard let hosted, let candidate else { return false }
+            return candidate === hosted || candidate.isDescendant(of: hosted)
+        }
 
         @discardableResult
         func display(_ view: WKWebView?) -> Bool {
@@ -697,6 +917,8 @@ struct WebContentView: NSViewRepresentable {
 
         func invalidate() {
             invalidated = true
+            stopInteractionMonitor()
+            onInteraction = nil
             canFocus = false
             focusRequest = -1
             desired = nil
@@ -704,11 +926,14 @@ struct WebContentView: NSViewRepresentable {
         }
 
         private func releaseHostedView() {
+            finishLiveResize()
+            backgroundObservation = nil
             if let hosted {
                 if Self.owners.object(forKey: hosted) === self { Self.owners.removeObject(forKey: hosted) }
                 if hosted.superview === self { hosted.removeFromSuperview() }
             }
             hosted = nil
+            layer?.backgroundColor = nil
         }
 
         @discardableResult
@@ -719,9 +944,25 @@ struct WebContentView: NSViewRepresentable {
             if let view {
                 Self.owners.setObject(self, forKey: view)
                 view.removeFromSuperview()
-                view.frame = bounds
-                view.autoresizingMask = [.width, .height]
+                view.autoresizingMask = []
+                // Size before attachment: WebKit must not start drawing at the
+                // previous Space's viewport and immediately resize afterward.
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                if hasViewport { view.frame = bounds }
+                layer?.backgroundColor = view.underPageBackgroundColor.cgColor
                 addSubview(view)
+                CATransaction.commit()
+                layoutHostedView()
+                // Use WebKit's computed page background, not the browser's
+                // light/dark appearance, for any not-yet-painted resize area.
+                backgroundObservation = view.observe(\.underPageBackgroundColor) { [weak self, weak view] _, _ in
+                    Task { @MainActor [weak self, weak view] in
+                        guard let self, let view, self.hosted === view else { return }
+                        self.layoutHostedView()
+                    }
+                }
+                synchronizeLiveResize()
             }
             return true
         }

@@ -11,6 +11,12 @@ public enum BrowserAction: Equatable, Sendable {
     case selectTab(UUID)
     case selectTabNumber(Int)
     case cycleTab(Int)
+    case splitTab(UUID, BrowserSplitSide)
+    case focusSplitPane(UUID)
+    case removeSplitPane(UUID)
+    case resizeSplit(UUID, Double)
+    case swapSplit(UUID)
+    case exitSplit(UUID)
     case closeTab(UUID)
     case closeActiveTab
     case reopenLastTab
@@ -40,4 +46,5 @@ public enum BrowserAction: Equatable, Sendable {
     case openTabInNewWindow(UUID)
     case duplicateTab(UUID)
     case openSettings
+    case newWindow
 }

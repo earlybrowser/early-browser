@@ -22,6 +22,12 @@ struct BrowserCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
+            Button("New Window") {
+                if let model { _ = model.perform(.newWindow) }
+                else { _ = application.openNewWindow() }
+            }
+            .keyboardShortcut("n")
+            .disabled(model.map { !$0.canPerform(.newWindow) } ?? !application.canOpenWindow)
             Button("New Tab") { model?.perform(.presentCommandBar(.newTab)) }
                 .keyboardShortcut("t")
                 .disabled(model?.canPerform(.presentCommandBar(.newTab)) != true)
@@ -42,6 +48,36 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
         CommandMenu("Tab") {
+            Menu("Split with Tab") {
+                if let model {
+                    ForEach(model.openTabs.filter { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) }) { tab in
+                        Menu(tab.displayTitle) {
+                            Button("Place on Left") { model.perform(.splitTab(tab.id, .leading)) }
+                                .disabled(!model.canPerform(.splitTab(tab.id, .leading)))
+                            Button("Place on Right") { model.perform(.splitTab(tab.id, .trailing)) }
+                                .disabled(!model.canPerform(.splitTab(tab.id, .trailing)))
+                        }
+                    }
+                }
+            }
+            .disabled(model.map { model in !model.openTabs.contains { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) } } ?? true)
+            if let model, let group = model.coordinator.activeSplitGroup {
+                Button("Swap Sides") { model.perform(.swapSplit(group.id)) }
+                    .disabled(!model.canPerform(.swapSplit(group.id)))
+                Button("Focus Left Pane") { model.perform(.focusSplitPane(group.panes[0].id)) }
+                    .disabled(!model.canPerform(.focusSplitPane(group.panes[0].id)))
+                Button("Focus Right Pane") { model.perform(.focusSplitPane(group.panes[1].id)) }
+                    .disabled(!model.canPerform(.focusSplitPane(group.panes[1].id)))
+                Button("Remove Current Pane from Split") {
+                    if let pane = group.panes.first(where: { $0.tabID == model.coordinator.focusedTabID }) {
+                        model.perform(.removeSplitPane(pane.id))
+                    }
+                }
+                .disabled(!model.canPerform(.exitSplit(group.id)))
+                Button("Exit Split View") { model.perform(.exitSplit(group.id)) }
+                    .disabled(!model.canPerform(.exitSplit(group.id)))
+            }
+            Divider()
             Button("Duplicate Tab") {
                 if let tab = model?.activeTab { model?.perform(.duplicateTab(tab.id)) }
             }

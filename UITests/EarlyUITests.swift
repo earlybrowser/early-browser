@@ -121,6 +121,109 @@ final class EarlyUITests: XCTestCase {
         }
     }
 
+    func testSplitPaneFocusResizeAndRemovalKeepTabsAndLiveForms() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        pasteText("keep left", into: app.webViews.textFields["Saved text"], in: app)
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        pasteText("keep right", into: app.webViews.textFields["Saved text"], in: app)
+        app.buttons[firstID].rightClick()
+        app.menuItems["Split View"].hover()
+        visibleMenuAction("Place on Left")
+        let divider = app.descendants(matching: .any).matching(identifier: "split.divider").firstMatch
+        XCTAssertTrue(divider.waitForExistence(timeout: 5))
+        let left = app.descendants(matching: .any).matching(identifier: "browser.pane.\(firstID.dropFirst(4))").firstMatch
+        let right = app.descendants(matching: .any).matching(identifier: "browser.pane.\(secondID.dropFirst(4))").firstMatch
+        XCTAssertTrue(left.waitForExistence(timeout: 5) && right.exists)
+        XCTAssertLessThan(left.frame.midX, right.frame.midX)
+        XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
+        XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
+        // Resize the freshly created divider BEFORE any swap can refresh it.
+        let initialDividerX = divider.frame.midX
+        let initialHandle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        initialHandle.click(forDuration: 0.15, thenDragTo: initialHandle.withOffset(CGVector(dx: 50, dy: 0)))
+        let initiallyResized = NSPredicate { _, _ in divider.frame.midX > initialDividerX + 20 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: initiallyResized, object: nil)], timeout: 5), .completed)
+        for reversed in [true, false] {
+            app.buttons[firstID].rightClick()
+            app.menuItems["Split View"].hover()
+            XCTAssertTrue(app.menuItems["Swap Sides"].waitForExistence(timeout: 3))
+            XCTAssertTrue(app.menuItems["Exit Split View"].exists)
+            XCTAssertFalse(app.menuItems["Place on Left"].exists || app.menuItems["Place on Right"].exists)
+            visibleMenuAction("Swap Sides")
+            let swapped = NSPredicate { _, _ in reversed ? left.frame.midX > right.frame.midX : left.frame.midX < right.frame.midX }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: swapped, object: nil)], timeout: 5), .completed)
+            XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
+            XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
+        }
+        right.textFields["Saved text"].click()
+        app.typeKey("l", modifierFlags: .command)
+        XCTAssertEqual(app.textFields["commandBar.query"].value as? String, "early-test://fixture/two")
+        app.typeKey(.escape, modifierFlags: [])
+        left.textFields["Saved text"].click()
+        app.typeKey("l", modifierFlags: .command)
+        XCTAssertEqual(app.textFields["commandBar.query"].value as? String, "early-test://fixture/one")
+        app.typeKey(.escape, modifierFlags: [])
+        let handle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        handle.click(forDuration: 0.15, thenDragTo: handle.withOffset(CGVector(dx: 70, dy: 0)))
+        XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
+        XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.menuBarItems["Tab"].click()
+        visibleMenuAction("Remove Current Pane from Split")
+        XCTAssertTrue(divider.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons[firstID].exists && app.buttons[secondID].exists)
+        XCTAssertEqual(app.webViews.textFields["Saved text"].value as? String, "keep right")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.terminate()
+    }
+
+    func testSidebarFloatingTargetDropCreatesSplitAndRelaunchRestoresItsPanes() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        let content = app.descendants(matching: .any).matching(identifier: "browser.content").firstMatch
+        let divider = app.descendants(matching: .any).matching(identifier: "split.divider").firstMatch
+        // Entering content reveals targets, but dropping between them cancels.
+        app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.25, thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.5)
+        XCTAssertFalse(divider.exists)
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
+        XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.25, thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.5)
+        XCTAssertTrue(divider.waitForExistence(timeout: 5))
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        let initialDividerX = divider.frame.midX
+        let handle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        handle.click(forDuration: 0.15, thenDragTo: handle.withOffset(CGVector(dx: 50, dy: 0)))
+        let resized = NSPredicate { _, _ in divider.frame.midX > initialDividerX + 20 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: resized, object: nil)], timeout: 5), .completed)
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
+        XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(divider.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "browser.pane.\(firstID.dropFirst(4))").firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "browser.pane.\(secondID.dropFirst(4))").firstMatch.exists)
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.terminate()
+    }
+
     func testCurrentSavedResultsPreservePagesAndFreshLocationOpensToday() {
         for action in ["Pin Tab", "Add to Favorites"] {
             let app = launchFreshApp()
@@ -2515,18 +2618,29 @@ final class EarlyUITests: XCTestCase {
             predicate: NSPredicate(format: "exists == false"), object: app.buttons["sidebar.newTab"])
         unexpectedlyHidden.isInverted = true
         XCTAssertEqual(XCTWaiter.wait(for: [unexpectedlyHidden], timeout: 1.5), .completed)
+        let sidebar = app.descendants(matching: .any)["browser.sidebar"]
+        XCTAssertTrue(sidebar.exists)
+        // Derive the corridor from the revealed panel, not an assumed width.
+        // At the default 240 pt width, x=250 is already outside the sidebar
+        // and its gutter, so expecting it to remain visible there is incorrect.
+        let sidebarFrame = sidebar.frame
+        let insideSidebarX = sidebarFrame.midX - window.frame.minX
+        let trailingInsideX = sidebarFrame.maxX - window.frame.minX - 1
+        let outsideSidebarX = sidebarFrame.maxX - window.frame.minX + 16
         // Cross the gutter into the panel, then leave it. Only the actual edge
         // can reveal it again; the old sidebar footprint must remain inactive.
-        for x in [5.0, 120.0, 250.0] {
-            origin.withOffset(CGVector(dx: x, dy: window.frame.height / 2)).hover()
-            XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
+        for _ in 0..<3 {
+            for x in [5.0, insideSidebarX, trailingInsideX] {
+                origin.withOffset(CGVector(dx: x, dy: window.frame.height / 2)).hover()
+                XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
+            }
+            origin.withOffset(CGVector(dx: outsideSidebarX, dy: window.frame.height / 2)).hover()
+            XCTAssertTrue(app.buttons["sidebar.newTab"].waitForNonExistence(timeout: 3))
+            origin.withOffset(CGVector(dx: insideSidebarX, dy: window.frame.height / 2)).hover()
+            XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
+            origin.withOffset(CGVector(dx: 1, dy: window.frame.height / 2)).hover()
+            XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))
         }
-        origin.withOffset(CGVector(dx: 280, dy: window.frame.height / 2)).hover()
-        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForNonExistence(timeout: 3))
-        origin.withOffset(CGVector(dx: 120, dy: window.frame.height / 2)).hover()
-        XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
-        origin.withOffset(CGVector(dx: 1, dy: window.frame.height / 2)).hover()
-        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))
         app.webViews.firstMatch.hover()
         app.typeKey("s", modifierFlags: [.command, .shift])
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))

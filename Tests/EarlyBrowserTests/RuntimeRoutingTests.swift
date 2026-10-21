@@ -54,6 +54,92 @@ struct RuntimeRoutingTests {
             focusedPaneByGroupID: [group.id: group.panes[0].id])
     }
 
+    @Test(arguments: [TabStore.Section.regular, .pinned, .favorites], [false, true])
+    func closingRetainedPagesSuspendsNativeMediaAndReopeningDoesNotInheritSuspension(
+        section: TabStore.Section, hasOtherTab: Bool
+    ) async throws {
+        let profile = UUID(), space = UUID()
+        let url = URL(string: "early-test://fixture/one")!
+        let tab = BrowserTab(spaceID: space, profileID: profile, title: "Page One", currentURL: url,
+            pinnedURL: section == .regular ? nil : url, isFavorite: section == .favorites)
+        let other = BrowserTab(spaceID: space, profileID: profile, title: "Page Two", currentURL: nextURL)
+        let fixture = Fixture(session: BrowserSession(profileID: profile, activeSpaceID: space,
+            tabs: hasOtherTab ? [tab, other] : [tab], selectionBySpace: [space: tab.id]))
+        defer { fixture.cleanup() }
+        let model = fixture.model, retired = try #require(model.activePage)
+        try await waitUntil { !retired.isLoading && retired.view.title == "Page One" }
+        // Keep a strong reference throughout close/reopen, as an outgoing UI
+        // transition can. Zero gain guarantees no sound or desktop interaction.
+        // Check WebKit's native suspension, not Early's speaker flag or whether
+        // this headless runner's autoplay policy allowed audible playback.
+        _ = try await retired.view.evaluateJavaScript("""
+            // Register an HTML media session too: a headless runner may never
+            // start Web Audio, but the native suspension must still be visible.
+            window.closedPlayer = document.createElement('audio');
+            closedPlayer.muted = true; closedPlayer.loop = true;
+            document.body.append(closedPlayer); closedPlayer.play().catch(() => {});
+            window.mediaContext = new AudioContext();
+            const gain = mediaContext.createGain(); gain.gain.value = 0;
+            const oscillator = mediaContext.createOscillator();
+            oscillator.connect(gain); gain.connect(mediaContext.destination);
+            oscillator.start(); mediaContext.resume().catch(() => {});
+            true;
+            """)
+        let before = await playbackState(retired.view)
+        #expect(before != .suspended && before != .none)
+        var remaining: BrowserPage?
+        if hasOtherTab {
+            // Close this background page while another already-live media
+            // page is focused. Stopping it must not silence its neighbor.
+            #expect(model.perform(.selectTab(other.id)))
+            remaining = try #require(model.activePage)
+            let view = try #require(remaining?.view)
+            try await waitUntil { !view.isLoading && view.title == "Page Two" }
+            _ = try await view.evaluateJavaScript("""
+                window.otherPlayer = document.createElement('audio');
+                otherPlayer.muted = true; document.body.append(otherPlayer);
+                otherPlayer.play().catch(() => {}); true;
+                """)
+            #expect(await playbackState(view) == .playing)
+        }
+        #expect(model.perform(hasOtherTab ? .closeTab(tab.id) : .closeActiveTab))
+        #expect(model.webViews.pages[tab.id] == nil)
+        #expect(model.webViews.liveViewCount == (hasOtherTab ? 1 : 0))
+        #expect(retired.view.navigationDelegate == nil && retired.view.uiDelegate == nil)
+        let after = await playbackState(retired.view)
+        #expect(after == .suspended,
+                "Closing must stop native media even when the old page is still retained")
+        #expect(model.coordinator.tabStore.tab(id: tab.id)?.isOpen != true)
+        if let remaining {
+            #expect(model.activePage === remaining)
+            #expect(model.coordinator.activeTabID == other.id)
+            #expect(await playbackState(remaining.view) == .playing)
+        }
+        // A stale document must not restart itself after close.
+        _ = try await retired.view.evaluateJavaScript("closedPlayer.play().catch(() => {}); mediaContext.resume().catch(() => {}); true")
+        #expect(await playbackState(retired.view) == .suspended)
+        let created = model.webViews.creationCount
+        model.reopenLastTab()
+        let reopened = try #require(model.activePage)
+        #expect(reopened !== retired && reopened.view !== retired.view)
+        #expect(model.webViews.creationCount == created + 1)
+        try await waitUntil { !reopened.isLoading && reopened.view.title == "Page One" }
+        _ = try await reopened.view.evaluateJavaScript("""
+            window.reopenedPlayer = document.createElement('audio');
+            reopenedPlayer.muted = true; document.body.append(reopenedPlayer);
+            reopenedPlayer.play().catch(() => {}); true;
+            """)
+        #expect(await playbackState(reopened.view) == .playing,
+                "A reopened tab must not inherit its retired view's suspension")
+        #expect(await playbackState(retired.view) == .suspended)
+    }
+
+    private func playbackState(_ view: WKWebView) async -> WKMediaPlaybackState {
+        await withCheckedContinuation { continuation in
+            view.requestMediaPlaybackState { continuation.resume(returning: $0) }
+        }
+    }
+
     @Test func restorationPreparesVisibleMembersAndPaneFocusReusesTheirLivePages() async throws {
         let session = splitSession(), fixture = Fixture(session: session)
         defer { fixture.cleanup() }
@@ -255,6 +341,70 @@ struct RuntimeRoutingTests {
         #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep switcher state")
     }
 
+    @Test func splitCreationResizeNavigationAndExitPreserveTheExistingDocuments() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        model.updateQuery("early-test://fixture/one")
+        #expect(model.perform(.submit()))
+        let first = try #require(model.activeTab?.id), firstPage = try #require(model.activePage)
+        try await waitUntil { !firstPage.isLoading && firstPage.view.title == "Page One" }
+        _ = try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value = 'keep left'; window.identity = 'original left';")
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery(nextURL.absoluteString)
+        #expect(model.perform(.submit()))
+        let second = try #require(model.activeTab?.id), secondPage = try #require(model.activePage)
+        try await waitUntil { !secondPage.isLoading && secondPage.view.title == "Page Two" }
+        _ = try await secondPage.view.evaluateJavaScript("document.getElementById('saved').value = 'keep right';")
+        #expect(model.perform(.splitTab(first, .leading)))
+        let group = try #require(model.coordinator.activeSplitGroup)
+        #expect(group.panes.map(\.tabID) == [first, second])
+        #expect(model.webViews.creationCount == 2 && model.webViews.visibleTabIDs == [first, second])
+        for fraction in [0.3, 0.7, 0.5] { #expect(model.perform(.resizeSplit(group.id, fraction))) }
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
+        #expect(try await secondPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep right")
+        let focus = model.coordinator.focusedTabID
+        #expect(model.perform(.swapSplit(group.id)))
+        #expect(model.coordinator.activeSplitGroup?.panes.map(\.tabID) == [second, first])
+        #expect(model.coordinator.focusedTabID == focus && model.webViews.creationCount == 2)
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
+        #expect(try await secondPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep right")
+        #expect(model.perform(.focusSplitPane(group.panes[1].id)))
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        model.updateQuery("early-test://fixture/one?right=navigated")
+        #expect(model.perform(.submit()))
+        try await waitUntil { !secondPage.isLoading && secondPage.view.url?.query == "right=navigated" }
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
+        #expect(try await firstPage.view.evaluateJavaScript("window.identity") as? String == "original left")
+        #expect(model.perform(.exitSplit(group.id)))
+        #expect(model.webViews.pages[first] === firstPage && model.webViews.pages[second] === secondPage)
+        #expect(model.webViews.creationCount == 2 && model.coordinator.tabStore.tabs.count == 2)
+        #expect(model.perform(.splitTab(first, .leading)))
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
+    }
+
+    @Test func blockedDownloadHasNoFatalOverlayAndRetryUsesTheRequestedAddress() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        model.updateQuery("early-test://fixture/one")
+        #expect(model.perform(.submit()))
+        let page = try #require(model.activePage)
+        try await waitUntil { !page.isLoading && page.view.title == "Page One" }
+        let target = URL(string: "early-test://fixture/unsupported")!
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        model.updateQuery(target.absoluteString)
+        #expect(model.perform(.submit()))
+        try await waitUntil("unsupported response") { page.navigationNotice != nil && !page.view.isLoading }
+        #expect(page.failure == nil && page.requestedURL == target)
+        #expect(model.webViews.navigationDiagnostics.contains { $0.event == "response-download" && $0.isMainFrame })
+        fixture.pages.allowUnsupportedAsHTML = true
+        #expect(model.perform(.reload))
+        try await waitUntil("retry target") { !page.isLoading && page.view.url == target && page.view.title == "Page One" }
+        #expect(page.failure == nil && page.navigationNotice == nil)
+        #expect(model.webViews.creationCount == 1)
+    }
+
     @Test func windowLocalPaneFocusDoesNotShareLiveViewsOrSelection() throws {
         let session = splitSession(), first = Fixture(session: session), second = Fixture(session: session)
         defer { first.cleanup(); second.cleanup() }
@@ -335,11 +485,18 @@ struct RuntimeRoutingTests {
 @MainActor private final class RoutingPages: NSObject, WKURLSchemeHandler {
     private var pending: Set<ObjectIdentifier> = []
     var pendingCount: Int { pending.count }
+    var allowUnsupportedAsHTML = false
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         guard let url = task.request.url else { return }
         if url.path == "/slow" {
             pending.insert(ObjectIdentifier(task))
+            return
+        }
+        if url.path == "/unsupported", !allowUnsupportedAsHTML {
+            task.didReceive(URLResponse(url: url, mimeType: "application/octet-stream", expectedContentLength: 3, textEncodingName: nil))
+            task.didReceive(Data([0, 1, 2]))
+            task.didFinish()
             return
         }
         let title = url.path == "/two" ? "Page Two" : "Page One"

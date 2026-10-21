@@ -14,9 +14,9 @@ extension BrowserWindowModel {
     /// rules. A stale/foreign result must not dismiss an editor or change focus.
     func canPerform(_ action: BrowserAction) -> Bool {
         if case .dismissCommandBar = action { return coordinator.commandBar != nil }
-        guard !sidebarInteractionInProgress, !spaceSwipeIsSettling,
+        guard !sidebarInteractionInProgress, splitResize == nil, !spaceSwipeIsSettling,
               !folderEditorIsPresented, renamingTabID == nil, spaceEditor == nil,
-              spaceDeletionID == nil, activePage?.hasDialog != true else { return false }
+              spaceDeletionID == nil, !hasVisibleDialog else { return false }
         switch action {
         case .presentCommandBar, .toggleSidebar:
             return true
@@ -39,6 +39,15 @@ extension BrowserWindowModel {
             guard [-1, 1].contains(direction), !tabs.isEmpty else { return false }
             let current = tabs.firstIndex { $0.id == coordinator.activeTabID } ?? 0
             return accessibleTab(tabs[(current + direction + tabs.count) % tabs.count].id) != nil
+        case .splitTab(let id, let side):
+            return splitGroup(containing: id) == nil && coordinator.splitPlacement(for: id, on: side) != nil
+        case .focusSplitPane(let id), .removeSplitPane(let id):
+            return coordinator.activeSplitGroup?.panes.contains { $0.id == id } == true
+        case .resizeSplit(let id, let fraction):
+            return coordinator.activeSplitGroup?.id == id && fraction.isFinite
+                && BrowserSplitGroup.fractionRange.contains(fraction)
+        case .swapSplit(let id), .exitSplit(let id):
+            return coordinator.splitGroups.contains { $0.id == id && $0.spaceID == coordinator.activeSpaceID }
         case .closeTab(let id):
             return accessibleTab(id)?.isOpen == true
         case .closeActiveTab:
@@ -109,6 +118,8 @@ extension BrowserWindowModel {
             return (tab.isOpen || tab.pinnedURL != nil) && (try? input.validate(url)) != nil
         case .openSettings:
             return onOpenSettings != nil
+        case .newWindow:
+            return application?.canOpenWindow == true
         }
     }
 
@@ -133,6 +144,19 @@ extension BrowserWindowModel {
         case .selectTab(let id): selectTab(id)
         case .selectTabNumber(let number): selectTab(number: number)
         case .cycleTab(let direction): cycleTab(direction)
+        case .splitTab(let id, let side):
+            guard splitTab(id, on: side) else { return false }
+        case .focusSplitPane(let id):
+            guard focusPane(id) else { return false }
+        case .removeSplitPane(let id):
+            guard removeSplitPane(id) else { return false }
+        case .resizeSplit(let id, let fraction):
+            guard resizeSplit(id, fraction: fraction) else { return false }
+            restoreContentFocus = false
+        case .swapSplit(let id):
+            guard swapSplit(id) else { return false }
+        case .exitSplit(let id):
+            guard exitSplit(id) else { return false }
         case .closeTab(let id): closeTab(id)
         case .closeActiveTab: closeActiveTab()
         case .reopenLastTab: reopenLastTab()
@@ -180,6 +204,9 @@ extension BrowserWindowModel {
             guard duplicateTab(id) != nil else { return false }
         case .openSettings:
             onOpenSettings?()
+            restoreContentFocus = false
+        case .newWindow:
+            guard application?.openNewWindow(from: self) != nil else { return false }
             restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
@@ -249,6 +276,26 @@ extension BrowserWindowModel {
         addAction("toggleSidebar", "Toggle Sidebar", .toggleSidebar, terms: ["show sidebar", "hide sidebar"])
         addAction("newSpace", "New Space", .newSpace, terms: ["create space", "add space"])
         addAction("openSettings", "Open Settings", .openSettings, terms: ["settings", "preferences"])
+        addAction("newWindow", "New Window", .newWindow, terms: ["open browser window"])
+        if let group = coordinator.activeSplitGroup {
+            addAction("swapSplit", "Swap Sides", .swapSplit(group.id), terms: ["swap split panes", "swap left and right"])
+            addAction("exitSplit", "Exit Split View", .exitSplit(group.id), terms: ["unsplit", "single pane"])
+            for (index, pane) in group.panes.enumerated() {
+                addAction("focusPane.\(pane.id)", index == 0 ? "Focus Left Pane" : "Focus Right Pane",
+                    .focusSplitPane(pane.id), terms: ["switch pane", "split focus"])
+            }
+        }
+        // Tab-title searches remain about switching to a tab, not two extra
+        // copies of every match. Expand per-tab commands only for split intent.
+        let commandWords = coordinator.commandBar?.query.lowercased().split(whereSeparator: \.isWhitespace) ?? []
+        if commandWords.contains("split") {
+            for tab in openTabs {
+                addAction("splitLeft.\(tab.id)", "Split Left: \(tab.displayTitle)", .splitTab(tab.id, .leading),
+                    terms: ["split view", "split tab on left \(tab.displayTitle)"])
+                addAction("splitRight.\(tab.id)", "Split Right: \(tab.displayTitle)", .splitTab(tab.id, .trailing),
+                    terms: ["split view", "split tab on right \(tab.displayTitle)"])
+            }
+        }
         if let tab = activeTab {
             let muted = webViews.pages[tab.id]?.isMuted == true
             addAction("mute.\(tab.id.uuidString)", muted ? "Unmute Tab" : "Mute Tab",

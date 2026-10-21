@@ -64,6 +64,40 @@ struct SplitMetadataTests {
         #expect(browser.createSplit(between: first, and: second) == nil)
     }
 
+    @Test(arguments: [0, 1])
+    func swappingKeepsFocusPaneIdentitiesDividerPositionAndTabHistory(_ focusedIndex: Int) throws {
+        let state = session(), browser = coordinator(state)
+        let id = try #require(browser.createSplit(between: state.tabs[0].id, and: state.tabs[1].id, leadingFraction: 0.65))
+        let original = try #require(browser.activeSplitGroup)
+        #expect(browser.focusPane(original.panes[focusedIndex].id))
+        let before = browser.session
+        #expect(browser.swapSplit(id))
+        let swapped = try #require(browser.activeSplitGroup)
+        #expect(swapped.id == id && swapped.panes == Array(original.panes.reversed()))
+        #expect(swapped.leadingFraction == original.leadingFraction)
+        #expect(browser.focusedTabID == original.panes[focusedIndex].tabID)
+        #expect(browser.focusedPaneByGroupID == before.focusedPaneByGroupID)
+        #expect(browser.session.tabs == before.tabs && browser.session.selectionBySpace == before.selectionBySpace)
+        let restored = coordinator(try JSONDecoder().decode(BrowserSession.self, from: JSONEncoder().encode(browser.session)))
+        #expect(restored.activeSplitGroup == swapped && restored.focusedTabID == browser.focusedTabID)
+        try restored.session.validate()
+        #expect(browser.swapSplit(id) && browser.session == before)
+    }
+
+    @Test func swappingRejectsMissingClosedAndForeignSpaceGroupsWithoutMutation() throws {
+        let state = session(), browser = coordinator(state)
+        let id = try #require(browser.createSplit(between: state.tabs[0].id, and: state.tabs[1].id))
+        let before = browser.session
+        #expect(!browser.swapSplit(UUID()) && browser.session == before)
+        browser.switchSpace(to: state.spaces[1].id)
+        let otherSpace = browser.session
+        #expect(!browser.swapSplit(id) && browser.session == otherSpace)
+        browser.switchSpace(to: state.activeSpaceID)
+        browser.closeTab(state.tabs[1].id)
+        let closed = browser.session
+        #expect(!browser.swapSplit(id) && browser.session == closed)
+    }
+
     @Test func layoutAndFocusedPaneRoundTripWithoutRuntimeState() throws {
         let state = session(), browser = coordinator(state)
         _ = try #require(browser.createSplit(between: state.tabs[0].id, and: state.tabs[1].id))
