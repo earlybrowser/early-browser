@@ -52,15 +52,9 @@ struct TabSwitcherView: View {
                 }
             }
             .background {
-                if model.preferences.spaceThemes, contrast != .increased {
-                    BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray,
-                        floating: true, allowsTransparency: model.preferences.translucentChrome)
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                } else if reduceTransparency || !model.preferences.translucentChrome || contrast == .increased {
-                    RoundedRectangle(cornerRadius: 20).fill(Color(nsColor: .controlBackgroundColor))
-                } else {
-                    RoundedRectangle(cornerRadius: 20).fill(.thickMaterial)
-                }
+                BrowserChromeBackground(spaceColor: model.preferences.spaceThemes
+                    ? model.coordinator.activeSpace?.color ?? .gray : .gray,
+                    floating: true, allowsTransparency: model.preferences.translucentChrome, cornerRadius: 20)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 20)

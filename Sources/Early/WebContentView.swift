@@ -11,12 +11,25 @@ struct BrowserChromeBackground: View {
     var spaceColor: BrowserSpace.Color = .gray
     var floating = false
     var allowsTransparency = true
+    var cornerRadius: CGFloat = 16
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        BrowserGlassBackground(cornerRadius: cornerRadius,
+            tint: spaceColor == .gray ? nil : spaceColor.swatch.color.opacity(floating ? 0.14 : 0.20),
+            allowsTransparency: allowsTransparency) {
+            legacyBackground
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: spaceColor)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: colorScheme)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private var legacyBackground: some View {
         ZStack {
             if contrast == .increased {
                 Color(nsColor: .windowBackgroundColor)
@@ -29,10 +42,7 @@ struct BrowserChromeBackground: View {
                     .opacity(reduceTransparency || !allowsTransparency ? 1 : (colorScheme == .dark ? 0.64 : 0.68))
             }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: spaceColor)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: colorScheme)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
     }
 
     private struct ChromeMaterial: NSViewRepresentable {
@@ -44,7 +54,10 @@ struct BrowserChromeBackground: View {
             view.state = .followsWindowActiveState
             return view
         }
-        func updateNSView(_ view: MaterialView, context: Context) {}
+        func updateNSView(_ view: MaterialView, context: Context) {
+            view.material = floating ? .popover : .sidebar
+            view.blendingMode = floating ? .withinWindow : .behindWindow
+        }
 
         final class MaterialView: NSVisualEffectView {
             override func hitTest(_ point: NSPoint) -> NSView? { nil }

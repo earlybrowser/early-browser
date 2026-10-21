@@ -11,7 +11,6 @@ struct CommandBarView: View {
     @State private var hoveredItem: String?
     @State private var hoverLocation: CGPoint?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.colorScheme) private var colorScheme
 
@@ -98,15 +97,9 @@ struct CommandBarView: View {
         .frame(maxWidth: 560)
         .background(CommandBarCardAnchor(model: model))
         .background {
-            if model.preferences.spaceThemes, contrast != .increased {
-                BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray,
-                    floating: true, allowsTransparency: model.preferences.translucentChrome)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-            } else if reduceTransparency || !model.preferences.translucentChrome || contrast == .increased {
-                RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .controlBackgroundColor))
-            } else {
-                RoundedRectangle(cornerRadius: 16).fill(.thickMaterial)
-            }
+            BrowserChromeBackground(spaceColor: model.preferences.spaceThemes
+                ? model.coordinator.activeSpace?.color ?? .gray : .gray,
+                floating: true, allowsTransparency: model.preferences.translucentChrome, cornerRadius: 16)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 16)
