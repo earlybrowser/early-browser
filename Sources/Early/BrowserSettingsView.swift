@@ -37,6 +37,8 @@ struct BrowserSettingsView: View {
     @Bindable var preferences: BrowserPreferences
     @Environment(\.openWindow) private var openWindow
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var profileEditor: ProfileEditorRequest?
     @State private var deletingProfile: BrowserProfile?
     @State private var selectedProfileID: UUID?
@@ -69,7 +71,11 @@ struct BrowserSettingsView: View {
             // Extend one continuous surface behind the native title bar. Only
             // the decoration ignores the safe area; controls stay below it.
             HStack(spacing: 0) {
-                Rectangle().fill(.regularMaterial).frame(width: Self.navigationWidth)
+                Group {
+                    if reduceTransparency || contrast == .increased { Color(nsColor: .controlBackgroundColor) }
+                    else { Rectangle().fill(.regularMaterial) }
+                }
+                .frame(width: Self.navigationWidth)
                 Color(nsColor: .windowBackgroundColor)
             }
             .ignoresSafeArea(.container, edges: .top)
@@ -80,6 +86,7 @@ struct BrowserSettingsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Settings")
         .accessibilityIdentifier("settings.window")
+        .browserReducedMotion()
         .onAppear { application.presentWindow = { id in openWindow(id: "browser", value: id) } }
         .sheet(item: $profileEditor) { request in
             ProfileEditorSheet(application: application, request: request) { id in
@@ -124,6 +131,13 @@ struct BrowserSettingsView: View {
                         .contentShape(RoundedRectangle(cornerRadius: 9))
                 }
                 .buttonStyle(.plain)
+                .browserKeyboardFocus(cornerRadius: 9)
+                .overlay {
+                    if application.settingsSection == section, contrast == .increased {
+                        RoundedRectangle(cornerRadius: 9).strokeBorder(.primary, lineWidth: 1)
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
                 .accessibilityAddTraits(application.settingsSection == section ? .isSelected : [])
                 .accessibilityIdentifier("settings.section.\(section.key)")
             }
@@ -201,7 +215,7 @@ struct BrowserSettingsView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).accessibilityLabel(profile.name).accessibilityIdentifier("profile.\(profile.id)")
+            .buttonStyle(.plain).browserKeyboardFocus().accessibilityLabel(profile.name).accessibilityIdentifier("profile.\(profile.id)")
             Button("Open") { application.openProfile(profile.id) }
                 .disabled(application.profileOperationInProgress).accessibilityIdentifier("profile.open.\(profile.id)")
             Menu {
@@ -297,6 +311,7 @@ struct BrowserSettingsView: View {
             .frame(maxWidth: .infinity).contentShape(Rectangle())
         }
         .buttonStyle(.plain).accessibilityLabel(appearance.rawValue.capitalized)
+        .browserKeyboardFocus(cornerRadius: 9)
         .accessibilityAddTraits(selected ? .isSelected : []).accessibilityIdentifier("settings.appearance.\(appearance.rawValue)")
     }
 
@@ -405,11 +420,15 @@ struct BrowserSettingsWindowAppearance: NSViewRepresentable {
 
 private struct SettingsCard<Content: View>: View {
     @ViewBuilder var content: Content
+    @Environment(\.colorSchemeContrast) private var contrast
     var body: some View {
         VStack(alignment: .leading, spacing: 12) { content }
             .frame(maxWidth: .infinity, alignment: .leading).padding(18)
             .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
-            .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.08)) }
+            .overlay {
+                RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(contrast == .increased ? 0.5 : 0.08))
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
     }
 }
 
@@ -492,10 +511,11 @@ private struct ProfileEditorSheet: View {
                     Button { color = option } label: {
                         Circle().fill(option.tint).frame(width: 23, height: 23)
                             .overlay {
-                                if color == option { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white).shadow(radius: 1) }
+                                if color == option { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(option.accessibleCheckmark) }
                             }.frame(width: 28, height: 30).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).accessibilityLabel(option.rawValue.capitalized)
+                    .browserKeyboardFocus()
                     .accessibilityAddTraits(color == option ? .isSelected : [])
                     .accessibilityIdentifier("profile.color.\(option.rawValue)")
                 }
@@ -515,6 +535,7 @@ private struct ProfileEditorSheet: View {
             }
         }
         .padding(26).frame(width: 370)
+        .browserReducedMotion()
         .task { await Task.yield(); nameFocused = true }
     }
 

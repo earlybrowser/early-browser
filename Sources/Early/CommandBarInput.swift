@@ -212,6 +212,17 @@ final class CommandBarInputControl: NSView, NSTextViewDelegate {
         case #selector(NSResponder.cancelOperation(_:)):
             onCancel()
             return true
+        case #selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertBacktab(_:)):
+            guard modifiers.intersection([.option, .command, .control]).isEmpty,
+                  let window else { return false }
+            // This wraps like a multiline editor, but behaves like an address
+            // field for focus traversal. Do not insert a literal tab or submit.
+            if selector == #selector(NSResponder.insertBacktab(_:)) || modifiers.contains(.shift) {
+                window.selectPreviousKeyView(textView)
+            } else {
+                window.selectNextKeyView(textView)
+            }
+            return true
         case #selector(NSResponder.moveUp(_:)), #selector(NSResponder.moveDown(_:)):
             guard modifiers.intersection([.shift, .option, .command, .control]).isEmpty else { return false }
             return onMoveSelection(selector == #selector(NSResponder.moveDown(_:)) ? 1 : -1)

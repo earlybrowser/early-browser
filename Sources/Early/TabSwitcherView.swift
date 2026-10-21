@@ -28,6 +28,7 @@ struct TabSwitcherView: View {
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredID: UUID?
+    @AccessibilityFocusState(for: .voiceOver) private var accessibleCandidate: UUID?
 
     var body: some View {
         if let selection = model.tabSwitcher {
@@ -49,6 +50,7 @@ struct TabSwitcherView: View {
                 .onChange(of: selection.selectedTabID, initial: true) { _, id in
                     // No animated traversal through dozens of intermediate cards.
                     reader.scrollTo(id, anchor: .center)
+                    accessibleCandidate = id
                 }
             }
             .background {
@@ -73,6 +75,7 @@ struct TabSwitcherView: View {
             .accessibilityLabel("Tab switcher")
             .accessibilityHint("Use arrow keys to preview, Return to switch, or Escape to cancel")
             .accessibilityIdentifier("tabSwitcher")
+            .browserReducedMotion()
         }
     }
 
@@ -111,6 +114,8 @@ struct TabSwitcherView: View {
                     Text(tab.displayTitle).font(.system(size: 12, weight: selected ? .semibold : .regular))
                         .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 0)
+                    Image(systemName: "checkmark").font(.caption.weight(.semibold))
+                        .opacity(selected ? 1 : 0).accessibilityHidden(true)
                 }
                 .frame(height: 22)
             }
@@ -125,6 +130,7 @@ struct TabSwitcherView: View {
             .contentShape(RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
+        .browserKeyboardFocus(cornerRadius: 14)
         .onHover { hoveredID = $0 ? tab.id : (hoveredID == tab.id ? nil : hoveredID) }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: selected)
         .accessibilityLabel(tab.displayTitle)
@@ -132,6 +138,7 @@ struct TabSwitcherView: View {
         .accessibilityHint("Switch to this tab")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("tabSwitcher.tab.\(tab.id)")
+        .accessibilityFocused($accessibleCandidate, equals: tab.id)
         .help(tab.displayTitle)
     }
 }

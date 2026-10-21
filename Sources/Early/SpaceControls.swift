@@ -74,6 +74,7 @@ struct SpaceFooter: View {
                     }
             }
             .buttonStyle(SpaceControlStyle())
+            .browserKeyboardFocus(cornerRadius: 6)
             .accessibilityLabel("New Space")
             .accessibilityIdentifier("space.new")
             .help("New Space")
@@ -205,17 +206,17 @@ struct SpaceFooter: View {
             model.perform(.switchSpace(space.id))
         } label: {
             SpaceIconView(icon: space.icon)
-                .opacity((contrast == .increased ? 0.65 : 0.35) + (contrast == .increased ? 0.35 : 0.65) * fill)
+                .opacity((contrast == .increased ? 0.8 : 0.55) + (contrast == .increased ? 0.2 : 0.45) * fill)
                 .frame(width: SpaceNavigation.footerItemWidth, height: 28)
                 .contentShape(Rectangle())
+                .overlay(alignment: .bottom) { BrowserSelectionMark(selected: selected) }
                 .overlay {
-                    if focusedSpace == space.id {
-                        RoundedRectangle(cornerRadius: 6).strokeBorder(.primary.opacity(0.6), lineWidth: 2)
-                    }
+                    BrowserFocusOutline(focused: focusedSpace == space.id, cornerRadius: 6)
                 }
         }
         .buttonStyle(SpaceControlStyle())
         .focused($focusedSpace, equals: space.id)
+        .focusEffectDisabled()
         .disabled(!model.canManageSpaces && spaceDrag == nil)
         .accessibilityLabel(space.name)
         .accessibilityValue("\(selected ? "Current Space" : "Switch Space") · \(space.icon?.accessibilityName ?? "Default dot")")
@@ -324,6 +325,7 @@ private struct SpaceEditorSheet: View {
                         .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.12)) }
                 }
                 .buttonStyle(.plain)
+                .browserKeyboardFocus(cornerRadius: 10)
                 .accessibilityLabel("Choose Space icon")
                 .accessibilityValue(icon?.accessibilityName ?? "Default dot")
                 .accessibilityIdentifier("space.iconPicker")
@@ -350,13 +352,14 @@ private struct SpaceEditorSheet: View {
                                 .overlay {
                                     if color == option {
                                         Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
-                                            .foregroundStyle(.white).shadow(color: .black.opacity(0.6), radius: 1)
+                                            .foregroundStyle(option.accessibleCheckmark)
                                     }
                                 }
                                 .frame(width: 28, height: 30)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .browserKeyboardFocus(cornerRadius: 7)
                         .accessibilityLabel(option.rawValue.capitalized)
                         .accessibilityAddTraits(color == option ? .isSelected : [])
                         .accessibilityIdentifier("space.color.\(option.rawValue)")
@@ -386,6 +389,7 @@ private struct SpaceEditorSheet: View {
             }
         }
         .padding(24).frame(width: 340)
+        .browserReducedMotion()
         .task { await Task.yield(); nameFocused = true }
         .alert("Move Space to another profile?", isPresented: $confirmingProfileMove) {
             Button("Cancel", role: .cancel) {}

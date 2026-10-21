@@ -6,6 +6,10 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct CommandBarInputTests {
+    private final class FocusTarget: NSView {
+        override var acceptsFirstResponder: Bool { true }
+    }
+
     private func makeControl(width: CGFloat = 460, maxHeight: CGFloat = 120) -> CommandBarInputControl {
         _ = NSApplication.shared
         let control = CommandBarInputControl(frame: NSRect(x: 0, y: 0, width: width, height: 24))
@@ -30,6 +34,53 @@ struct CommandBarInputTests {
         #expect(!control.scrollView.hasHorizontalScroller)
         control.updateText("a multiline\naccessible query")
         #expect(control.textView.accessibilityValue() == "a multiline\naccessible query")
+    }
+
+    @Test func tabAndBacktabTraverseTheNativeKeyLoopWithoutEditingOrSubmitting() throws {
+        let control = makeControl()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 200),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 200))
+        let previous = FocusTarget(frame: NSRect(x: 0, y: 80, width: 40, height: 30))
+        let next = FocusTarget(frame: NSRect(x: 500, y: 80, width: 40, height: 30))
+        root.addSubview(previous); root.addSubview(control); root.addSubview(next)
+        window.contentView = root
+        window.autorecalculatesKeyViewLoop = false
+        previous.nextKeyView = control.textView
+        control.textView.nextKeyView = next
+        next.nextKeyView = previous
+        defer { control.invalidate(); window.contentView = nil; window.close() }
+        control.updateText("keep this query")
+        var edits = 0, submissions = 0
+        control.onTextChange = { _ in edits += 1 }
+        control.onSubmit = { submissions += 1 }
+        #expect(window.makeFirstResponder(control.textView))
+        #expect(control.handleCommand(#selector(NSResponder.insertTab(_:))))
+        #expect(window.firstResponder === next)
+        #expect(window.makeFirstResponder(control.textView))
+        #expect(control.handleCommand(#selector(NSResponder.insertBacktab(_:)), modifiers: .shift))
+        #expect(window.firstResponder === previous)
+        #expect(window.makeFirstResponder(control.textView))
+        #expect(control.handleCommand(#selector(NSResponder.insertTab(_:)), modifiers: .shift))
+        #expect(window.firstResponder === previous)
+        #expect(control.textView.string == "keep this query" && edits == 0 && submissions == 0)
+        #expect(!window.isVisible)
+    }
+
+    @Test func tabTraversalLeavesInputMethodsAndModifiedKeysToAppKit() {
+        let control = makeControl()
+        defer { control.invalidate() }
+        let tab = #selector(NSResponder.insertTab(_:)), backtab = #selector(NSResponder.insertBacktab(_:))
+        for modifiers: NSEvent.ModifierFlags in [.command, .control, .option, [.control, .option]] {
+            #expect(!control.handleCommand(tab, modifiers: modifiers))
+            #expect(!control.handleCommand(backtab, modifiers: modifiers))
+        }
+        control.textView.setMarkedText("candidate", selectedRange: NSRange(location: 9, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(control.textView.hasMarkedText())
+        #expect(!control.handleCommand(tab) && !control.handleCommand(backtab))
+        #expect(control.textView.hasMarkedText() && control.textView.string == "candidate")
     }
 
     @Test func wheelRoutingOutsideTheCardFindsOnlyTheUnderlyingNativePage() {

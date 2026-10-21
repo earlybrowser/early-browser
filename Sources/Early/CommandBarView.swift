@@ -68,6 +68,7 @@ struct CommandBarView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .frame(height: 24)
+                .browserKeyboardFocus(cornerRadius: 4)
                 .accessibilityLabel("Dismiss command bar")
                 .help("Dismiss (Escape)")
             }
@@ -128,6 +129,7 @@ struct CommandBarView: View {
             guard !model.commandBarIsComposing else { return }
             model.perform(.dismissCommandBar(restoreFocus: true), source: .commandBar)
         }
+        .browserReducedMotion()
     }
 
     private var suggestionList: some View {
@@ -160,8 +162,15 @@ struct CommandBarView: View {
                             .contentShape(Rectangle())
                             .background(Color.primary.opacity(selected || (!hasKeyboardSelection && hoveredItem == rowID) ? 0.08 : 0),
                                         in: RoundedRectangle(cornerRadius: 7))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 7)
+                                    .strokeBorder(Color.primary.opacity(selected ? (contrast == .increased ? 1 : 0.35) : 0),
+                                                  lineWidth: contrast == .increased ? 2 : 1)
+                                    .allowsHitTesting(false).accessibilityHidden(true)
+                            }
                         }
                         .buttonStyle(.plain)
+                        .browserKeyboardFocus()
                         .disabled(model.commandSearch.isRefreshing)
                         .opacity(model.commandSearch.isRefreshing ? 0.75 : 1)
                         .accessibilityLabel(resultAccessibilityLabel(for: result.candidate))
@@ -189,8 +198,15 @@ struct CommandBarView: View {
                             .contentShape(Rectangle())
                             .background(Color.primary.opacity(selected || (!hasKeyboardSelection && hoveredItem == rowID) ? 0.08 : 0),
                                         in: RoundedRectangle(cornerRadius: 7))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 7)
+                                    .strokeBorder(Color.primary.opacity(selected ? (contrast == .increased ? 1 : 0.35) : 0),
+                                                  lineWidth: contrast == .increased ? 2 : 1)
+                                    .allowsHitTesting(false).accessibilityHidden(true)
+                            }
                         }
                         .buttonStyle(.plain)
+                        .browserKeyboardFocus()
                         .disabled(model.suggestions.isRefreshing)
                         .opacity(model.suggestions.isRefreshing ? 0.75 : 1)
                         .accessibilityLabel("Search Google for \(suggestion)")
