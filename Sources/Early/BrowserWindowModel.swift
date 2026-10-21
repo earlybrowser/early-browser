@@ -215,7 +215,7 @@ final class BrowserWindowModel {
             cancelCommandBarQueries()
             return
         }
-        if bar.intent == .navigateCurrentTab, let url = activeTab?.currentURL.absoluteString, bar.query == url {
+        if bar.intent == .navigateCurrentTab, !bar.hasEditedQuery {
             // An unedited Cmd-L prefill represents the active address, not a
             // search query that should expand local results beneath the caret.
             cancelCommandBarQueries()
@@ -237,6 +237,15 @@ final class BrowserWindowModel {
         guard !commandBarIsComposing,
               (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true,
               let request = coordinator.navigationRequest() else { return false }
+        if coordinator.commandBar?.intent == .navigateCurrentTab,
+           coordinator.commandBar?.hasEditedQuery == false,
+           searchSuggestion == nil, targetURL == nil, let tab = activeTab,
+           tab.pinnedURL != nil || tab.isFavorite {
+            // Return on a saved tab's untouched address is not a new search and
+            // must not create a duplicate or reload the original page.
+            dismissCommandBar(restoreFocus: true)
+            return true
+        }
         cancelCommandBarQueries()
         do {
             let url: URL

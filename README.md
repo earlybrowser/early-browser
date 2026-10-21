@@ -16,7 +16,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | --- | --- | --- |
 | Native macOS interface | Light/dark translucent chrome, native window controls, and opaque website content. Solid surfaces respect Reduce Transparency and increased contrast. | Implemented. |
 | Vertical tabs | Organize pages in a resizable sidebar with an address bar, auto-hide, and edge-hover reveal. | Implemented. |
-| Command-bar navigation | Open URLs or Google searches in a new or current tab. Typing or dismissing the bar never creates a tab. | Implemented. |
+| Command-bar navigation | Open URLs or Google searches; new submissions from Favorites or pins open Today tabs without replacing saved pages. Typing or dismissing the bar never creates a tab. | Implemented. |
 | Tab search and commands | Find existing tabs, pins, and Favorites; switch Spaces or profiles; and run browser actions from the command bar. Saved pages reopen without duplicate tabs. | Implemented. |
 | Search suggestions | Optional Google suggestions below local matches, with keyboard and mouse selection and a privacy control in Settings. | Implemented. |
 | Favorites and pins | Keep frequently visited sites as compact Favorites or named pins. Return a pin to its saved address and reopen closed pins on demand. | Implemented. |

@@ -106,6 +106,9 @@ public enum BrowserContentPresentation: Equatable, Sendable {
 public struct CommandBarPresentation: Equatable, Sendable {
     public var intent: CommandBarIntent
     public var query: String
+    /// Distinguish an untouched location prefill from deliberately searching
+    /// for the same address. Transient UI state, never session metadata.
+    public internal(set) var hasEditedQuery = false
 
     public init(intent: CommandBarIntent, query: String = "") {
         self.intent = intent

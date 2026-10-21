@@ -62,6 +62,7 @@ public final class BrowserCoordinator {
 
     public func updateQuery(_ query: String) {
         commandBar?.query = query
+        commandBar?.hasEditedQuery = true
     }
 
     public func dismissCommandBar() {
@@ -74,9 +75,13 @@ public final class BrowserCoordinator {
         let query = commandBar.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return nil }
         let target: NavigationRequest.Target
-        if commandBar.intent == .navigateCurrentTab, case .web(let id) = content {
+        if commandBar.intent == .navigateCurrentTab, case .web(let id) = content,
+           let tab = tabStore.tab(id: id), tab.pinnedURL == nil, !tab.isFavorite {
             target = .currentTab(id)
         } else {
+            // Saved tabs are stable destinations. New command-bar searches or
+            // addresses leave them intact and create a Today tab in this Space.
+            // Website links/history still navigate their own live page normally.
             target = .newTab(spaceID: activeSpaceID)
         }
         return NavigationRequest(query: query, target: target)
