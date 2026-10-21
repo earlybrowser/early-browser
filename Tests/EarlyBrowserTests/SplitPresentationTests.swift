@@ -352,6 +352,53 @@ struct SplitPresentationTests {
         }
     }
 
+    @Test func contentEdgesHaveOnlyOneBorderOwnerAndFocusKeepsTheSameShape() {
+        for radius: CGFloat in [4, 8, 10, 16] {
+            let single = BrowserContentSurface.container(cornerRadius: radius, split: false)
+            let singlePage = BrowserContentSurface.pane(cornerRadius: radius, split: false, focused: true)
+            #expect(single.border == .standard && single.cornerRadius == radius)
+            #expect(singlePage.border == .none && singlePage.cornerRadius == 0)
+            let pair = BrowserContentSurface.container(cornerRadius: radius, split: true)
+            let focused = BrowserContentSurface.pane(cornerRadius: radius, split: true, focused: true)
+            let other = BrowserContentSurface.pane(cornerRadius: radius, split: true, focused: false)
+            #expect(pair.border == .none && pair.cornerRadius == 0, "The pair must not add another rounded edge")
+            #expect(focused.border == .focused && other.border == .standard)
+            #expect(focused.shape.cornerSize == CGSize(width: radius, height: radius))
+            #expect(other.shape.cornerSize == focused.shape.cornerSize)
+            let bounds = CGRect(x: 0, y: 0, width: 240, height: 160)
+            #expect(focused.shape.path(in: bounds) == other.shape.path(in: bounds))
+            #expect(focused.shape.path(in: bounds) == single.shape.path(in: bounds))
+        }
+    }
+
+    @Test(arguments: [ColorScheme.light, .dark])
+    func splitFocusEmphasizesTheSameSingleEdgeWithoutAnEnclosingOutline(_ scheme: ColorScheme) throws {
+        _ = NSApplication.shared
+        func pixels(focusLeft: Bool) throws -> NSBitmapImageRep {
+            let pair = HStack(spacing: 8) {
+                Color.clear.modifier(BrowserContentSurface.pane(cornerRadius: 10, split: true, focused: focusLeft))
+                Color.clear.modifier(BrowserContentSurface.pane(cornerRadius: 10, split: true, focused: !focusLeft))
+            }
+            .frame(width: 120, height: 80)
+            .modifier(BrowserContentSurface.container(cornerRadius: 10, split: true))
+            .environment(\.colorScheme, scheme)
+            let renderer = ImageRenderer(content: pair)
+            renderer.scale = 1
+            let data = try #require(renderer.nsImage?.tiffRepresentation)
+            return try #require(NSBitmapImageRep(data: data))
+        }
+        for focusLeft in [true, false] {
+            let image = try pixels(focusLeft: focusLeft)
+            func alpha(_ x: Int, _ y: Int) -> CGFloat { image.colorAt(x: x, y: y)?.alphaComponent ?? 1 }
+            let focused = alpha(focusLeft ? 28 : 92, 0)
+            let other = alpha(focusLeft ? 92 : 28, 0)
+            #expect(focused > other && other > 0)
+            #expect(alpha(28, 2) == 0 && alpha(92, 2) == 0, "Focus must not add a thicker inset ring")
+            #expect(alpha(60, 0) == 0 && alpha(60, 79) == 0, "No container border may bridge the split gap")
+            #expect(alpha(0, 0) == 0 && alpha(119, 0) == 0, "Each page keeps its own rounded corners")
+        }
+    }
+
     @Test func inactiveSplitMemberActionsManageTheirOwnGroupNotTheVisiblePair() throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
@@ -632,14 +679,16 @@ struct SplitPresentationTests {
         #expect(monitor.hitTest(.zero) == nil && !monitor.isAccessibilityElement())
     }
 
-    @Test func rendererRetainsHostsAcrossSplitResizeAndPreviewWithoutShowingAWindow() async throws {
+    @Test(arguments: [false, true])
+    func rendererRetainsHostsAcrossSplitResizeAndPreviewWithoutShowingAWindow(fullWindow: Bool) async throws {
         let fixture = Fixture()
         let model = fixture.model
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         // Offscreen geometry assertions use an animation-disabled transaction;
         // the real view reads the system's read-only Reduce Motion environment.
-        let hosting = NSHostingView(rootView: AnyView(SplitContentView(model: model).transaction { $0.disablesAnimations = true }))
+        let root = fullWindow ? AnyView(BrowserWindowView(model: model)) : AnyView(SplitContentView(model: model))
+        let hosting = NSHostingView(rootView: AnyView(root.transaction { $0.disablesAnimations = true }))
         window.contentView = hosting
         hosting.frame.size = CGSize(width: 800, height: 600)
         defer {

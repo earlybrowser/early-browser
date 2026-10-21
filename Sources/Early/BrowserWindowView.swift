@@ -298,7 +298,8 @@ struct BrowserWindowView: View {
     var body: some View {
         ZStack(alignment: .leading) {
             ZStack {
-                SplitContentView(model: model, dropTargetLeadingInset: splitDropLeadingInset)
+                SplitContentView(model: model, dropTargetLeadingInset: splitDropLeadingInset,
+                                 contentCornerRadius: contentCornerRadius)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("browser.content")
                 VStack {
@@ -319,13 +320,8 @@ struct BrowserWindowView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(surfaceFrame("content"))
-            .clipShape(RoundedRectangle(cornerRadius: contentCornerRadius))
-            .overlay {
-                RoundedRectangle(cornerRadius: contentCornerRadius)
-                    .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.30 : 0.08), lineWidth: 1)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
+            .modifier(BrowserContentSurface.container(cornerRadius: contentCornerRadius,
+                split: model.coordinator.activeSplitGroup != nil))
             .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
 
             sidebar

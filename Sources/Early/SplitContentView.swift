@@ -5,11 +5,46 @@ import EarlyCore
 import EarlyWeb
 import SwiftUI
 
+/// A page has one rounded edge. Split panes own it individually; their shared
+/// container must not draw or round a second border across the pair.
+struct BrowserContentSurface: ViewModifier {
+    enum Border: Equatable { case none, standard, focused }
+    let cornerRadius: CGFloat
+    let border: Border
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    static func container(cornerRadius: CGFloat, split: Bool) -> Self {
+        Self(cornerRadius: split ? 0 : cornerRadius, border: split ? .none : .standard)
+    }
+
+    static func pane(cornerRadius: CGFloat, split: Bool, focused: Bool) -> Self {
+        Self(cornerRadius: split ? cornerRadius : 0, border: split ? (focused ? .focused : .standard) : .none)
+    }
+
+    var shape: RoundedRectangle { RoundedRectangle(cornerRadius: cornerRadius) }
+
+    func body(content: Content) -> some View {
+        content.clipShape(shape)
+            .overlay {
+                if border != .none {
+                    // Focus changes contrast only. The same one-point edge
+                    // follows the clipping path without a second inset ring.
+                    shape.strokeBorder(Color.primary.opacity(border == .focused
+                        ? (contrast == .increased ? 0.65 : 0.27)
+                        : (contrast == .increased ? 0.30 : 0.08)), lineWidth: 1)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+    }
+}
+
 /// Stable tab-keyed hosts survive single/split transitions and divider changes.
 /// Drag targets are overlays only: hover NEVER resizes or hides a live page.
 struct SplitContentView: View {
     @Bindable var model: BrowserWindowModel
     var dropTargetLeadingInset: CGFloat = 0
+    var contentCornerRadius: CGFloat = 8
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -43,7 +78,8 @@ struct SplitContentView: View {
                     SplitDivider(model: model, group: group, layout: layout,
                         enabled: model.splitResize?.groupID == group.id || model.canPerform(.resizeSplit(group.id, layout.fraction)),
                         resizing: model.splitResize?.groupID == group.id)
-                        // A slim visual grip with a forgiving, invisible hit area.
+                        // An invisible full-height hit area; only keyboard focus
+                        // draws a cue, without restoring pointer decorations.
                         .frame(width: min(12, geometry.size.width), height: layout.divider.height)
                         .position(x: layout.divider.midX, y: layout.divider.midY)
                         .allowsHitTesting(model.splitDropSourceID == nil)
@@ -131,14 +167,7 @@ struct SplitContentView: View {
                 .accessibilityIdentifier("browser.navigationNotice.\(id)")
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: split ? 8 : 0))
-        .overlay {
-            if split {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(focused ? (contrast == .increased ? 0.65 : 0.27) : 0.07), lineWidth: focused ? 2 : 1)
-                    .allowsHitTesting(false)
-            }
-        }
+        .modifier(BrowserContentSurface.pane(cornerRadius: contentCornerRadius, split: split, focused: focused))
         .overlay(alignment: .topTrailing) {
             if let paneID, hoveredTabID == id || page?.failure != nil {
                 Button { _ = model.perform(.removeSplitPane(paneID)) } label: {
