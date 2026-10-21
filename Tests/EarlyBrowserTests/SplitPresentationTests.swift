@@ -310,6 +310,48 @@ struct SplitPresentationTests {
         #expect(!divider.acceptsFirstResponder && !divider.accessibilityPerformIncrement() && !window.isVisible)
     }
 
+    @Test(arguments: [false, true])
+    func nativeDividerDrawsOnlyAKeyboardFocusIndicator(increasedContrast: Bool) throws {
+        _ = NSApplication.shared
+        let divider = SplitDividerView(frame: CGRect(x: 0, y: 0, width: 12, height: 120))
+        defer { divider.invalidate() }
+        divider.configure(groupID: UUID(), layout: BrowserSplitLayout(size: CGSize(width: 800, height: 120), leadingFraction: 0.5),
+                          enabled: true, resizing: false, increasedContrast: increasedContrast)
+        func paintedPixels(appearance: NSAppearance.Name) throws -> [CGPoint] {
+            // Render this native drawing into memory only. No window, app
+            // launch, screen capture or synthesized pointer/keyboard input.
+            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 12, pixelsHigh: 120,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+            let style = try #require(NSAppearance(named: appearance))
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            NSGraphicsContext.current = context
+            context.cgContext.clear(divider.bounds)
+            style.performAsCurrentDrawingAppearance { divider.draw(divider.bounds) }
+            return (0..<120).flatMap { y in
+                (0..<12).compactMap { x in
+                    (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0 ? CGPoint(x: x, y: y) : nil
+                }
+            }
+        }
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            #expect(try paintedPixels(appearance: appearance).isEmpty)
+            divider.onBegin = { true }
+            divider.beginResize(atWindowX: 400)
+            #expect(try paintedPixels(appearance: appearance).isEmpty, "Pointer dragging must not show a grip or line")
+            divider.endResize(commit: false)
+            #expect(divider.becomeFirstResponder())
+            let focusedPixels = try paintedPixels(appearance: appearance)
+            #expect(!focusedPixels.isEmpty)
+            #expect(focusedPixels.allSatisfy { $0.x >= 4 && $0.x < 8 && $0.y >= 36 && $0.y < 84 },
+                    "Only the compact keyboard-focus indicator may be drawn")
+            #expect(divider.resignFirstResponder())
+            #expect(try paintedPixels(appearance: appearance).isEmpty)
+        }
+    }
+
     @Test func inactiveSplitMemberActionsManageTheirOwnGroupNotTheVisiblePair() throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }

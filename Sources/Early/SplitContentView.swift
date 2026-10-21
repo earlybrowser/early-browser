@@ -268,7 +268,6 @@ final class SplitDividerView: NSView {
     private var dragAnchor: (x: CGFloat, fraction: Double)?
     private var takingPointerFocus = false
     private(set) var keyboardFocused = false
-    private var hovered = false
     private var invalidated = false
     private(set) var resizeCursorRect: CGRect?
 
@@ -313,7 +312,7 @@ final class SplitDividerView: NSView {
         // zero-sized. AppKit must follow its clipped visible bounds after the
         // first layout, rather than freezing that initial empty rectangle.
         tracking = NSTrackingArea(rect: .zero,
-            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited, .cursorUpdate, .enabledDuringMouseDrag],
+            options: [.activeInKeyWindow, .inVisibleRect, .cursorUpdate, .enabledDuringMouseDrag],
             owner: self, userInfo: nil)
         if let tracking { addTrackingArea(tracking) }
     }
@@ -331,23 +330,19 @@ final class SplitDividerView: NSView {
         window?.invalidateCursorRects(for: self)
     }
     override func cursorUpdate(with event: NSEvent) { if isInteractive { NSCursor.resizeLeftRight.set() } }
-    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
-    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow !== window { endResize(commit: false) }
         super.viewWillMove(toWindow: newWindow)
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let active = isInteractive && (hovered || dragAnchor != nil || keyboardFocused)
-        NSColor.labelColor.withAlphaComponent(increasedContrast ? 0.45 : (active ? 0.22 : 0.10)).setFill()
-        NSBezierPath(roundedRect: CGRect(x: bounds.midX - 0.5, y: bounds.minY + 8,
-            width: 1, height: max(0, bounds.height - 16)), xRadius: 0.5, yRadius: 0.5).fill()
-        let width: CGFloat = keyboardFocused ? 4 : 2
-        let height = min(keyboardFocused ? 48.0 : 36, max(0, bounds.height - 16))
-        NSColor.labelColor.withAlphaComponent(increasedContrast ? 0.85 : (active ? 0.55 : 0.25)).setFill()
-        NSBezierPath(roundedRect: CGRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2,
-            width: width, height: height), xRadius: width / 2, yRadius: width / 2).fill()
+        // Keep a clean gap at rest, on hover and during pointer resizing. The
+        // full native hit area/cursor remain; only keyboard focus draws a cue.
+        guard isInteractive, keyboardFocused else { return }
+        let height = min(48.0, max(0, bounds.height - 16))
+        NSColor.labelColor.withAlphaComponent(increasedContrast ? 0.85 : 0.55).setFill()
+        NSBezierPath(roundedRect: CGRect(x: bounds.midX - 2, y: bounds.midY - height / 2,
+            width: 4, height: height), xRadius: 2, yRadius: 2).fill()
     }
 
     override var acceptsFirstResponder: Bool { isInteractive }
