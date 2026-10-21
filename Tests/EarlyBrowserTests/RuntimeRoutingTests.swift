@@ -255,6 +255,64 @@ struct RuntimeRoutingTests {
         #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep switcher state")
     }
 
+    @Test func splitCreationResizeNavigationAndExitPreserveTheExistingDocuments() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        model.updateQuery("early-test://fixture/one")
+        #expect(model.perform(.submit()))
+        let first = try #require(model.activeTab?.id), firstPage = try #require(model.activePage)
+        try await waitUntil { !firstPage.isLoading && firstPage.view.title == "Page One" }
+        _ = try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value = 'keep left'; window.identity = 'original left';")
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery(nextURL.absoluteString)
+        #expect(model.perform(.submit()))
+        let second = try #require(model.activeTab?.id), secondPage = try #require(model.activePage)
+        try await waitUntil { !secondPage.isLoading && secondPage.view.title == "Page Two" }
+        _ = try await secondPage.view.evaluateJavaScript("document.getElementById('saved').value = 'keep right';")
+        #expect(model.perform(.splitTab(first, .leading)))
+        let group = try #require(model.coordinator.activeSplitGroup)
+        #expect(group.panes.map(\.tabID) == [first, second])
+        #expect(model.webViews.creationCount == 2 && model.webViews.visibleTabIDs == [first, second])
+        for fraction in [0.3, 0.7, 0.5] { #expect(model.perform(.resizeSplit(group.id, fraction))) }
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
+        #expect(try await secondPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep right")
+        #expect(model.perform(.focusSplitPane(group.panes[1].id)))
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        model.updateQuery("early-test://fixture/one?right=navigated")
+        #expect(model.perform(.submit()))
+        try await waitUntil { !secondPage.isLoading && secondPage.view.url?.query == "right=navigated" }
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
+        #expect(try await firstPage.view.evaluateJavaScript("window.identity") as? String == "original left")
+        #expect(model.perform(.exitSplit(group.id)))
+        #expect(model.webViews.pages[first] === firstPage && model.webViews.pages[second] === secondPage)
+        #expect(model.webViews.creationCount == 2 && model.coordinator.tabStore.tabs.count == 2)
+        #expect(model.perform(.splitTab(first, .leading)))
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
+    }
+
+    @Test func blockedDownloadHasNoFatalOverlayAndRetryUsesTheRequestedAddress() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        model.updateQuery("early-test://fixture/one")
+        #expect(model.perform(.submit()))
+        let page = try #require(model.activePage)
+        try await waitUntil { !page.isLoading && page.view.title == "Page One" }
+        let target = URL(string: "early-test://fixture/unsupported")!
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        model.updateQuery(target.absoluteString)
+        #expect(model.perform(.submit()))
+        try await waitUntil("unsupported response") { page.navigationNotice != nil && !page.view.isLoading }
+        #expect(page.failure == nil && page.requestedURL == target)
+        #expect(model.webViews.navigationDiagnostics.contains { $0.event == "response-download" && $0.isMainFrame })
+        fixture.pages.allowUnsupportedAsHTML = true
+        #expect(model.perform(.reload))
+        try await waitUntil("retry target") { !page.isLoading && page.view.url == target && page.view.title == "Page One" }
+        #expect(page.failure == nil && page.navigationNotice == nil)
+        #expect(model.webViews.creationCount == 1)
+    }
+
     @Test func windowLocalPaneFocusDoesNotShareLiveViewsOrSelection() throws {
         let session = splitSession(), first = Fixture(session: session), second = Fixture(session: session)
         defer { first.cleanup(); second.cleanup() }
@@ -335,11 +393,18 @@ struct RuntimeRoutingTests {
 @MainActor private final class RoutingPages: NSObject, WKURLSchemeHandler {
     private var pending: Set<ObjectIdentifier> = []
     var pendingCount: Int { pending.count }
+    var allowUnsupportedAsHTML = false
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         guard let url = task.request.url else { return }
         if url.path == "/slow" {
             pending.insert(ObjectIdentifier(task))
+            return
+        }
+        if url.path == "/unsupported", !allowUnsupportedAsHTML {
+            task.didReceive(URLResponse(url: url, mimeType: "application/octet-stream", expectedContentLength: 3, textEncodingName: nil))
+            task.didReceive(Data([0, 1, 2]))
+            task.didFinish()
             return
         }
         let title = url.path == "/two" ? "Page Two" : "Page One"

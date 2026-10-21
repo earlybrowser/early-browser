@@ -18,6 +18,7 @@ public final class BrowserPage {
     public var canGoBack = false
     public var canGoForward = false
     public var failure: String?
+    public fileprivate(set) var navigationNotice: String?
     public var hasDialog = false
     public fileprivate(set) var hasUnsavedInput = false
     public fileprivate(set) var processTerminated = false
@@ -29,6 +30,8 @@ public final class BrowserPage {
     fileprivate var reportedURL: URL?
     var reportedTitle: String?
     fileprivate var navigationGeneration = UUID()
+    fileprivate var activeNavigation: ObjectIdentifier?
+    fileprivate var policyCancellations: [NavigationPolicyCancellation] = []
     fileprivate init(view: WKWebView, url: URL) { self.view = view; requestedURL = url }
 }
 
@@ -75,6 +78,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         var presentationVisits = 0
     }
     @ObservationIgnored private(set) var workMetrics = WorkMetrics()
+    @ObservationIgnored public private(set) var navigationDiagnostics: [NavigationDiagnostic] = []
 
     public init(profileID: UUID, ephemeral: Bool = false,
                 input: NavigationInput = NavigationInput(),
@@ -120,6 +124,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         for id in Array(lifecycles.keys) where !all.contains(id) { lifecycles[id] = nil }
         retentionPolicy.reconcile(tabIDs: all)
         snapshots.retain(tabIDs: open)
+        navigationDiagnostics.removeAll { !open.contains($0.tabID) }
         protections = protections.filter { open.contains($0.key) }
         muteChoices.formIntersection(open)
         for id in all where lifecycles[id] == nil { lifecycles[id] = PageLifecycle() }
@@ -363,6 +368,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     private func beginLoading(_ id: UUID) {
         guard let page = pages[id] else { return }
         page.failure = nil
+        page.navigationNotice = nil
+        page.policyCancellations.removeAll()
+        page.activeNavigation = nil
         page.isLoading = true
         page.progress = 0
         page.awaitsNavigationCommit = true
@@ -379,7 +387,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.processTerminated = false
         page.requestedURL = url
         beginLoading(tab.id)
-        page.view.load(URLRequest(url: url))
+        page.activeNavigation = page.view.load(URLRequest(url: url)).map(ObjectIdentifier.init)
     }
 
     public func activate(_ tab: BrowserTab) {
@@ -395,11 +403,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         cancelRecovery(id)
         page.automaticRecoveryAttempted = false
         page.processTerminated = false
-        let needsRequest = page.failure != nil || page.view.url == nil
+        let needsRequest = page.failure != nil || page.navigationNotice != nil || page.awaitsNavigationCommit || page.view.url == nil
         beginLoading(id)
         if needsRequest {
-            page.view.load(URLRequest(url: page.requestedURL))
-        } else { page.view.reload() }
+            page.activeNavigation = page.view.load(URLRequest(url: page.requestedURL)).map(ObjectIdentifier.init)
+        } else { page.activeNavigation = page.view.reload().map(ObjectIdentifier.init) }
     }
 
     public func stop(_ id: UUID) {
@@ -417,6 +425,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.processTerminated = false
         beginLoading(id)
         let navigation = forward ? page.view.goForward() : page.view.goBack()
+        page.activeNavigation = navigation.map(ObjectIdentifier.init)
         if navigation == nil {
             transition(id, .stopLoading)
             refresh(id)
@@ -445,6 +454,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     /// Explicit close/delete/shutdown always release. Policy eviction uses the
     /// same cleanup while retaining a bounded stale thumbnail for the switcher.
     public func discard(tabID: UUID) {
+        navigationDiagnostics.removeAll { $0.tabID == tabID }
         releasePage(tabID: tabID, preservingSnapshot: false)
         retentionPolicy.forget(tabID)
         muteChoices.remove(tabID)
@@ -492,6 +502,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         retentionTask?.cancel()
         retentionTask = nil
         snapshots.clear()
+        navigationDiagnostics.removeAll()
         protections.removeAll()
         muteChoices.removeAll()
     }
@@ -525,7 +536,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         } else {
             page.requestedURL = url
             beginLoading(id)
-            view.load(URLRequest(url: url))
+            page.activeNavigation = view.load(URLRequest(url: url)).map(ObjectIdentifier.init)
         }
         return true
     }
@@ -593,6 +604,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let mainFrame = action.targetFrame?.isMainFrame ?? true
         guard let url = action.request.url else { decisionHandler(.cancel); return }
         if (try? input.validate(url)) != nil {
+            if action.shouldPerformDownload {
+                if let id = identities[ObjectIdentifier(webView)] {
+                    cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: mainFrame ? NavigationResponseDisposition.download.notice : nil)
+                    recordNavigation(.init(tabID: id, event: "download-action", url: url, isMainFrame: mainFrame))
+                }
+                decisionHandler(.cancel)
+                return
+            }
             if openCommandClickedLink(action, in: webView) {
                 decisionHandler(.cancel)
                 return
@@ -611,23 +630,50 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             decisionHandler(.allow)
         } else {
             decisionHandler(.cancel)
-            onNotice?("This link uses an unsupported address type (\(url.scheme ?? "unknown")).")
+            if let id = identities[ObjectIdentifier(webView)] {
+                cancelForPolicy(id, url: url, mainFrame: mainFrame,
+                    notice: mainFrame ? "This link uses an unsupported address type (\(url.scheme ?? "unknown"))." : nil)
+            }
         }
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                         decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
-        guard response.canShowMIMEType else {
-            decisionHandler(.cancel)
-            onNotice?("This file needs download support, which is not available yet.")
-            return
-        }
-        decisionHandler(.allow)
+        decisionHandler(navigationResponsePolicy(for: webView, response: response.response,
+            canShowMIMEType: response.canShowMIMEType, isMainFrame: response.isForMainFrame))
+    }
+
+    /// Same path for the delegate and deterministic response fixtures. Embedded
+    /// responses cannot produce a top-level download warning or page failure.
+    func navigationResponsePolicy(for view: WKWebView, response: URLResponse,
+                                  canShowMIMEType: Bool, isMainFrame: Bool) -> WKNavigationResponsePolicy {
+        guard let id = identities[ObjectIdentifier(view)], pages[id] != nil else { return .cancel }
+        let disposition = NavigationResponseDisposition.classify(response, canShowMIMEType: canShowMIMEType, isMainFrame: isMainFrame)
+        recordNavigation(.init(tabID: id, event: "response-\(disposition.rawValue)", url: response.url,
+            status: (response as? HTTPURLResponse)?.statusCode, mimeType: response.mimeType, isMainFrame: isMainFrame))
+        guard disposition != .allow else { return .allow }
+        cancelForPolicy(id, url: response.url, mainFrame: isMainFrame, notice: disposition.notice)
+        return .cancel
+    }
+
+    private func cancelForPolicy(_ id: UUID, url: URL?, mainFrame: Bool, notice: String?) {
+        guard let page = pages[id] else { return }
+        page.policyCancellations.append(.init(generation: page.navigationGeneration, url: url, isMainFrame: mainFrame))
+        if page.policyCancellations.count > 8 { page.policyCancellations.removeFirst() }
+        if mainFrame { page.navigationNotice = notice }
+    }
+
+    public func dismissNavigationNotice(for id: UUID) { pages[id]?.navigationNotice = nil }
+
+    private func recordNavigation(_ event: NavigationDiagnostic) {
+        navigationDiagnostics.append(event)
+        if navigationDiagnostics.count > 24 { navigationDiagnostics.removeFirst(navigationDiagnostics.count - 24) }
     }
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
         beginLoading(id)
+        pages[id]?.activeNavigation = navigation.map(ObjectIdentifier.init)
         refresh(id)
     }
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -638,10 +684,18 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.editedFrames.removeAll()
         pages[id]?.hasUnsavedInput = false
         pages[id]?.awaitsNavigationCommit = false
+        pages[id]?.policyCancellations.removeAll()
+        pages[id]?.navigationNotice = nil
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
+    }
+    public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        guard let id = identities[ObjectIdentifier(webView)] else { return }
+        recordNavigation(.init(tabID: id, event: "redirect", url: webView.url, isMainFrame: true))
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
+        page.navigationNotice = nil
+        page.policyCancellations.removeAll()
         transition(id, .finishLoading)
         refresh(id)
         captureSnapshot(id)
@@ -662,15 +716,42 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             }
     }
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        failed(webView, error)
+        failed(webView, navigation: navigation, error)
     }
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        failed(webView, error)
+        failed(webView, navigation: navigation, error)
     }
-    private func failed(_ view: WKWebView, _ error: Error) {
-        guard (error as NSError).code != NSURLErrorCancelled,
-              let id = identities[ObjectIdentifier(view)] else { return }
-        pages[id]?.failure = error.localizedDescription
+    private func failed(_ view: WKWebView, navigation: WKNavigation?, _ error: Error) {
+        guard let id = identities[ObjectIdentifier(view)], let page = pages[id] else { return }
+        let nsError = error as NSError
+        let failingURL = (nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            ?? (nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))
+        if let navigation, let active = page.activeNavigation, active != ObjectIdentifier(navigation) {
+            recordNavigation(.init(tabID: id, event: "stale-navigation-error", url: failingURL, isMainFrame: true, error: nsError))
+            return
+        }
+        // WebKit reports intentional policy cancellation with its legacy error
+        // domain/code (WebKitErrors.h). Suppress only our matching decision, not
+        // every policy error, and never match an unrelated NSError by code alone.
+        let interruption = nsError.domain == "WebKitErrorDomain" && nsError.code == 102
+        let match = interruption ? page.policyCancellations.firstIndex { cancellation in
+            cancellation.generation == page.navigationGeneration
+                && (failingURL == nil ? cancellation.isMainFrame : cancellation.url == failingURL)
+        } : nil
+        if let match {
+            let cancelled = page.policyCancellations.remove(at: match)
+            recordNavigation(.init(tabID: id, event: "expected-policy-cancellation", url: failingURL ?? cancelled.url,
+                isMainFrame: cancelled.isMainFrame, error: nsError))
+            if cancelled.isMainFrame { refresh(id) }
+            return
+        }
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            recordNavigation(.init(tabID: id, event: "cancelled", url: failingURL, isMainFrame: true, error: nsError))
+            refresh(id)
+            return
+        }
+        recordNavigation(.init(tabID: id, event: "failure", url: failingURL ?? page.requestedURL, isMainFrame: true, error: nsError))
+        page.failure = error.localizedDescription
         transition(id, .fail)
         refresh(id)
     }
@@ -716,7 +797,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             self.beginLoading(id)
             // Reload the last validated address as a GET; never replay POST
             // bodies, dialogs, or claim that dead form/JavaScript state survived.
-            page.view.load(URLRequest(url: page.requestedURL))
+            page.activeNavigation = page.view.load(URLRequest(url: page.requestedURL)).map(ObjectIdentifier.init)
         }
     }
 

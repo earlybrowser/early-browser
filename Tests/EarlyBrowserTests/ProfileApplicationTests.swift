@@ -469,6 +469,32 @@ struct ProfileApplicationTests {
         #expect(EarlyAppDelegate().settingsSection == .appearance)
     }
 
+    @Test func newWindowSharesSavedItemsAndStoreButStartsWithNoPagesOrSplit() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let source = try #require(app.model)
+        let first = try #require(source.coordinator.navigate(to: url, target: .newTab(spaceID: source.coordinator.activeSpaceID)))
+        let second = try #require(source.coordinator.navigate(to: url, target: .newTab(spaceID: source.coordinator.activeSpaceID)))
+        source.activateSelection()
+        #expect(source.perform(.setPinned(first, true)))
+        #expect(source.perform(.splitTab(first, .leading)))
+        let original = source.coordinator.session
+        let firstPage = try #require(source.webViews.pages[first])
+        #expect(source.perform(.newWindow))
+        let id = try #require(fixture.opened.last), created = try #require(app.windowModel(id))
+        #expect(created.coordinator.profileID == source.coordinator.profileID)
+        #expect(created.webViews.websiteDataStore === source.webViews.websiteDataStore)
+        #expect(created.webViews.liveViewCount == 0 && created.webViews.creationCount == 0)
+        #expect(created.coordinator.splitGroups.isEmpty && created.coordinator.focusedTabID == nil)
+        #expect(created.coordinator.commandBar?.intent == .newTab)
+        #expect(created.coordinator.tabStore.tab(id: first)?.isOpen == false)
+        #expect(created.coordinator.tabStore.tab(id: second) == nil)
+        #expect(source.coordinator.session == original && source.webViews.pages[first] === firstPage)
+        #expect(await app.persistence?.flush() == true)
+        await fixture.cleanup()
+    }
+
     @Test func choosingDefaultPersistsWithoutSwitchingProfilesOrReplacingLiveViews() async throws {
         let fixture = Fixture()
         _ = await fixture.start()

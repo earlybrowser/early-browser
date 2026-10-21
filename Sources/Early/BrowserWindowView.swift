@@ -16,6 +16,13 @@ private extension EnvironmentValues {
     }
 }
 
+private struct BrowserSurfaceFrames: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 struct BrowserWindowView: View {
     /// Folders and pinned tabs share one island geometry at every sidebar width.
     private enum PinnedIsland {
@@ -35,9 +42,11 @@ struct BrowserWindowView: View {
     @State private var dropAreas: [String: CGRect] = [:]
     // Shared stable identity for a tab or folder being reordered.
     @GestureState private var dragGestureItemID: UUID?
+    @State private var cancelledGestureItemID: UUID?
     @State private var dragLayout: SidebarReorderLayout?
     @State private var dragPoint: CGPoint = .zero
     @State private var dragTranslation: CGSize = .zero
+    @State private var contentDragTranslationX: CGFloat = 0
     @State private var dragSourceFrame: CGRect = .zero
     @State private var frozenFrames: [UUID: CGRect] = [:]
     @State private var dropFolder: UUID?
@@ -74,12 +83,20 @@ struct BrowserWindowView: View {
     @State private var hoveredFolderGroups: Set<UUID> = []
     @State private var folderBounceEvent: FolderBounceEvent?
     @State private var sidebarPointer = SidebarPointer()
+    @State private var windowPointer = SidebarPointer()
+    @State private var contentWindowFrame: CGRect = .zero
+    @State private var sidebarWindowFrame: CGRect = .zero
     @FocusState private var focusedSidebarControl: SidebarControl?
-    private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered }
+    private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered || model.sidebarInteractionInProgress || resizeStartWidth != nil }
     // GestureState can reset before onEnded. Keep preview identity until the
     // drop transaction has exchanged it for the settlement proxy.
     private var draggingTab: UUID? { dragSourceItem?.id }
     private var hiddenDragItemID: UUID? { dragLanding?.motion.itemID ?? draggingTab }
+    private var tabDragIsOverContent: Bool {
+        guard case .tab = dragSourceItem else { return false }
+        return contentWindowFrame.contains(CGPoint(x: sidebarWindowFrame.minX + dragPoint.x,
+                                                  y: sidebarWindowFrame.minY + dragPoint.y))
+    }
     private var showsFolderDragTargets: Bool {
         guard let viewport = sectionFrames[false], let divider = dropAreas["divider"] else { return false }
         return SidebarFolderPreview.showsDragTargets(isDragging: dragSourceItem != nil, at: dragPoint,
@@ -106,11 +123,15 @@ struct BrowserWindowView: View {
             }
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { value in
-                    if resizeStartWidth == nil { resizeStartWidth = model.sidebarWidth }
+                    if resizeStartWidth == nil {
+                        resizeStartWidth = model.sidebarWidth
+                        model.sidebarInteractionInProgress = true
+                    }
                     model.sidebarWidth = SidebarWidth.clamped((resizeStartWidth ?? model.sidebarWidth) + value.translation.width)
                 }
                 .onEnded { _ in
                     resizeStartWidth = nil
+                    model.sidebarInteractionInProgress = false
                     model.finishSidebarResize()
                     NSCursor.arrow.set()
                 })
@@ -274,32 +295,9 @@ struct BrowserWindowView: View {
     var body: some View {
         ZStack(alignment: .leading) {
             ZStack {
-                if model.activePage != nil {
-                    Color(nsColor: .textBackgroundColor)
-                } else if reduceTransparency || contrast == .increased {
-                    Color(nsColor: .windowBackgroundColor)
-                } else {
-                    // A softly lifted empty canvas over the shared native blur.
-                    Color.white.opacity(colorScheme == .dark ? 0.01 : 0.08)
-                }
-                WebContentView(view: model.activePage?.view, focusRequest: model.contentFocusRequest,
-                               canFocus: model.coordinator.commandBar == nil && model.tabSwitcher == nil,
-                               hasDialog: model.activePage?.hasDialog == true)
-                    .accessibilityIdentifier("browser.content")
-                if let error = model.activePage?.failure {
-                    VStack(spacing: 12) {
-                        Label("Unable to open this page", systemImage: "exclamationmark.triangle")
-                            .font(.headline)
-                        Text(error).multilineTextAlignment(.center)
-                        Button("Try Again") { model.perform(.reload) }
-                            .accessibilityIdentifier("browser.retry")
-                    }
-                    .padding(24)
-                    .frame(maxWidth: 440)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                SplitContentView(model: model)
                     .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("browser.error")
-                }
+                    .accessibilityIdentifier("browser.content")
                 VStack {
                     if let error = model.persistence.error {
                         Text(error).font(.callout).padding(12)
@@ -317,7 +315,7 @@ struct BrowserWindowView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .topLeading) { pageLoadingLine }
+            .background(surfaceFrame("content"))
             .clipShape(RoundedRectangle(cornerRadius: contentCornerRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: contentCornerRadius)
@@ -328,6 +326,7 @@ struct BrowserWindowView: View {
             .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
 
             sidebar
+                .background(surfaceFrame("sidebar"))
                 .background {
                     if sidebarAutoHides {
                         // Floating chrome must stay legible over web content.
@@ -379,11 +378,32 @@ struct BrowserWindowView: View {
         .animation(sidebarMotion, value: sidebarAutoHides)
         .animation(sidebarMotion, value: sidebarVisible)
         .padding(6)
+        .coordinateSpace(name: "browserWindow")
+        .overlay(alignment: .topLeading) {
+            if case .tab(let tab) = dragSourceItem, dragLanding == nil, tabDragIsOverContent {
+                dragItemPreview(.tab(tab), section: section(of: tab), size: dragSourceFrame.size, lifted: true)
+                    .position(x: sidebarWindowFrame.minX + dragSourceFrame.midX + contentDragTranslationX,
+                              y: sidebarWindowFrame.minY + dragSourceFrame.midY + dragTranslation.height)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
+        .onPreferenceChange(BrowserSurfaceFrames.self) { frames in
+            if let content = frames["content"], contentWindowFrame != content { contentWindowFrame = content }
+            if let sidebar = frames["sidebar"], sidebarWindowFrame != sidebar { sidebarWindowFrame = sidebar }
+        }
         // One shared surface for the outer frame and pinned sidebar. Only the
         // clipped page area is inset into it; no sidebar tint or seam on top.
         .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
                                             allowsTransparency: model.preferences.translucentChrome))
         .background(TabSwitcherKeyboardMonitor(model: model))
+        .background(BrowserWindowActivityMonitor(onCancel: {
+            cancelledGestureItemID = dragGestureItemID
+            model.cancelWindowInteractions()
+            endDrag()
+            resizeStartWidth = nil
+            sidebarHovered = false
+            NSCursor.arrow.set()
+        }, isInteracting: model.sidebarInteractionInProgress || model.splitResize != nil))
         .overlay(alignment: .topTrailing) {
             if let toast = model.toast {
                 Label(toast.message, systemImage: "checkmark")
@@ -429,14 +449,16 @@ struct BrowserWindowView: View {
         // disappearing edge target. Their exit events can otherwise cancel a
         // reveal and repeatedly restart it beneath a stationary pointer.
         .onContinuousHover { phase in
-            guard sidebarAutoHides else { return }
             switch phase {
             case .active(let point):
+                windowPointer.location = point
+                guard sidebarAutoHides else { return }
                 // Retain across the edge-to-panel gutter as well as the panel.
                 // Entering its old footprint alone must never reveal it.
                 let inside = resizeStartWidth != nil || (point.x >= 0 && point.x < (sidebarHovered ? model.sidebarWidth + 6 : 2))
                 if sidebarHovered != inside { sidebarHovered = inside }
             case .ended:
+                windowPointer.location = nil
                 sidebarHovered = false
             }
         }
@@ -467,6 +489,18 @@ struct BrowserWindowView: View {
                 hoveredFolderGroups = []
             }
         }
+        .onChange(of: model.sidebarInteractionInProgress) { _, active in
+            if !active, sidebarAutoHides {
+                sidebarHovered = windowPointer.location.map { $0.x >= 0 && $0.x < model.sidebarWidth + 6 } ?? false
+            }
+        }
+        .onChange(of: model.hasVisibleDialog) { _, dialog in
+            if dialog {
+                cancelledGestureItemID = dragGestureItemID
+                model.cancelWindowInteractions()
+                endDrag()
+            }
+        }
         .sheet(isPresented: $folderEditor) {
           VStack(alignment: .leading, spacing: 16) {
             Text(editingFolder == nil ? "New Folder" : "Rename Folder").font(.headline)
@@ -488,7 +522,7 @@ struct BrowserWindowView: View {
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
         .onDisappear {
-            model.cancelTabSwitcher(restoreFocus: false)
+            model.cancelWindowInteractions()
             endDrag()
             model.cancelSpaceSwipePresentation()
             model.folderEditorIsPresented = false
@@ -608,6 +642,7 @@ struct BrowserWindowView: View {
             // Rebuild hit testing only after ALL measurements from this layout
             // pass agree; cross-folder moves change headers and ends together.
             frozenFrames = frames
+            guard model.splitPreview == nil else { return }
             // Insertion previews can move a header underneath a stationary
             // pointer. Re-resolve its folder before rebuilding sibling order.
             updateFolderHover(at: dragPoint)
@@ -615,11 +650,19 @@ struct BrowserWindowView: View {
         }
         .onChange(of: dragGestureItemID) { _, id in
             if id == nil {
-                if let item = dragSourceItem { finishDrag(item: item) }
+                cancelledGestureItemID = nil
+                Task { @MainActor in
+                    await Task.yield()
+                    if dragGestureItemID == nil, let item = dragSourceItem {
+                        model.cancelSplitPreview()
+                        finishDrag(item: item)
+                    }
+                }
             }
             else { folderBounceEvent = nil }
         }
         .onChange(of: model.coordinator.activeSpaceID) { _, _ in
+            cancelledGestureItemID = dragGestureItemID
             endDrag()
             folderBounceEvent = nil
             hoveredTab = nil
@@ -976,6 +1019,16 @@ struct BrowserWindowView: View {
         Button("Duplicate Tab") { model.perform(.duplicateTab(tab.id)) }
         Button("Open Tab in New Window") { model.perform(.openTabInNewWindow(tab.id)) }
         Button("Rename Tab…") { model.perform(.requestRename(tab.id)) }
+        Menu("Split View") {
+            Button("Place on Left") { model.perform(.splitTab(tab.id, .leading)) }
+                .disabled(!model.canPerform(.splitTab(tab.id, .leading)))
+            Button("Place on Right") { model.perform(.splitTab(tab.id, .trailing)) }
+                .disabled(!model.canPerform(.splitTab(tab.id, .trailing)))
+            if let group = model.coordinator.activeSplitGroup {
+                Button("Exit Split View") { model.perform(.exitSplit(group.id)) }
+                    .disabled(!model.canPerform(.exitSplit(group.id)))
+            }
+        }
         if let page = model.webViews.pages[tab.id] {
             Button(page.isMuted ? "Unmute Tab" : "Mute Tab") {
                 model.perform(.setMuted(tab.id, !page.isMuted))
@@ -1107,24 +1160,6 @@ struct BrowserWindowView: View {
         let visible = viewport.insetBy(dx: 0, dy: -SidebarReorderLayout.favoriteRowStride)
         return zip(model.favorites, frames).compactMap { tab, frame in
             tab.id == hiddenDragItemID || frame.intersects(visible) ? tab : nil
-        }
-    }
-
-    /// Page-level loading feedback stays separate from static sidebar artwork.
-    @ViewBuilder
-    private var pageLoadingLine: some View {
-        if let page = model.activePage, page.isLoading {
-            let progress = min(max(page.progress, 0), 1)
-            GeometryReader { geometry in
-                Rectangle().fill(Color.accentColor)
-                    .frame(width: geometry.size.width * progress)
-            }
-            .frame(height: 2)
-            .allowsHitTesting(false)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Page loading")
-            .accessibilityValue("\(Int(progress * 100)) percent")
-            .accessibilityIdentifier("browser.loading")
         }
     }
 
@@ -1465,6 +1500,7 @@ struct BrowserWindowView: View {
     }
 
     private func endDrag() {
+        model.cancelSplitPreview()
         var instant = Transaction(animation: nil)
         instant.disablesAnimations = true
         withTransaction(instant) {
@@ -1488,6 +1524,7 @@ struct BrowserWindowView: View {
         reservedFolderSlot = nil
         dragLayout = nil
         dragTranslation = .zero
+        contentDragTranslationX = 0
         dragSourceFrame = .zero
         frozenFrames = [:]
     }
@@ -1831,7 +1868,8 @@ struct BrowserWindowView: View {
         DragGesture(minimumDistance: 4, coordinateSpace: .named("sidebarReordering"))
             .updating($dragGestureItemID) { _, state, _ in state = folder.id }
             .onChanged { value in
-                guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
+                guard cancelledGestureItemID != folder.id,
+                      model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
                 dragPoint = value.location
                 if dragSourceFrame == .zero { beginDrag(.folder(folder)) }
                 guard dragSourceItem?.id == folder.id else { return }
@@ -1894,13 +1932,17 @@ struct BrowserWindowView: View {
         DragGesture(minimumDistance: 4, coordinateSpace: .named("sidebarReordering"))
             .updating($dragGestureItemID) { _, state, _ in state = tab.id }
             .onChanged { value in
-                guard model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
+                guard cancelledGestureItemID != tab.id,
+                      model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
                 dragPoint = value.location
                 if dragSourceFrame == .zero { beginDrag(.tab(tab)) }
                 guard dragSourceItem?.id == tab.id else { return }
                 revealSavedSections()
+                contentDragTranslationX = value.translation.width
                 dragTranslation = CGSize(width: tab.isFavorite ? value.translation.width : 0,
                                          height: value.translation.height)
+                updateContentSplitPreview(tab.id, at: value.location)
+                if model.splitPreview != nil { dragLayout = nil; updateFolderDropSlot(nil); return }
                 updateFolderHover(at: value.location)
                 refreshDragLayout(for: tab, at: value.location)
             }
@@ -1909,6 +1951,14 @@ struct BrowserWindowView: View {
                       dragSourceItem?.id == tab.id else { endDrag(); return }
                 dragPoint = value.location
                 dragTranslation = CGSize(width: tab.isFavorite ? value.translation.width : 0, height: value.translation.height)
+                updateContentSplitPreview(tab.id, at: value.location)
+                if model.splitPreview != nil {
+                    _ = model.commitSplitPreview()
+                    // Splitting never changes the sidebar organization and has
+                    // no placement haptic or cross-section landing animation.
+                    endDrag()
+                    return
+                }
                 updateFolderHover(at: value.location)
                 guard let destination = destinationSection(at: value.location) else { finishDrag(item: .tab(tab)); return }
                 refreshDragLayout(for: tab, at: value.location)
@@ -1923,6 +1973,19 @@ struct BrowserWindowView: View {
             }
     }
 
+    private func surfaceFrame(_ name: String) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(key: BrowserSurfaceFrames.self,
+                value: [name: geometry.frame(in: .named("browserWindow"))])
+        }.allowsHitTesting(false)
+    }
+
+    private func updateContentSplitPreview(_ tabID: UUID, at sidebarPoint: CGPoint) {
+        let point = CGPoint(x: sidebarWindowFrame.minX + sidebarPoint.x, y: sidebarWindowFrame.minY + sidebarPoint.y)
+        windowPointer.location = point
+        model.updateSplitPreview(for: tabID, at: point, in: contentWindowFrame)
+    }
+
     private var receivingFavorite: Bool {
         guard dragSourceItem != nil, let draggingTab, let tab = model.coordinator.tabStore.tab(id: draggingTab),
               let destination = destinationSection(at: dragPoint) else { return false }
@@ -1931,7 +1994,7 @@ struct BrowserWindowView: View {
 
     @ViewBuilder
     private var crossSectionPreview: some View {
-        if let item = dragSourceItem, dragLanding == nil {
+        if let item = dragSourceItem, dragLanding == nil, !tabDragIsOverContent {
             let section = previewSection(for: item)
             let frame = dragPreviewFrame(for: item, section: section)
             let overFavorites = section == .favorites

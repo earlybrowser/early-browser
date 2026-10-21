@@ -2,6 +2,73 @@
 
 import Foundation
 
+public enum BrowserSplitSide: String, CaseIterable, Sendable {
+    case leading, trailing
+    public var index: Int { self == .leading ? 0 : 1 }
+}
+
+/// A read-only proposal. Hovering never changes membership, selection or MRU.
+public struct BrowserSplitPlacement: Equatable, Sendable {
+    public let spaceID: UUID
+    public let sourceTabID: UUID
+    public let side: BrowserSplitSide
+    public let groupID: UUID?
+    public let tabIDs: [UUID]
+    public let leadingFraction: Double
+    public let reusesExistingPane: Bool
+}
+
+/// Geometry shared by the renderer, pointer targets, and keyboard resizing.
+/// Very narrow windows retain both pages instead of silently closing a pane.
+public struct BrowserSplitLayout: Equatable, Sendable {
+    public let leading: CGRect
+    public let trailing: CGRect
+    public let divider: CGRect
+    public let fractionRange: ClosedRange<Double>
+    public let fraction: Double
+
+    public init(size: CGSize, leadingFraction: Double) {
+        let width = size.width.isFinite ? max(0, size.width) : 0
+        let height = size.height.isFinite ? max(0, size.height) : 0
+        let gap = min(8, width)
+        let usable = max(0, width - gap)
+        let minimum = min(0.45, max(0.2, usable > 0 ? 120 / usable : 0.45))
+        fractionRange = minimum...(1 - minimum)
+        fraction = min(max(leadingFraction.isFinite ? leadingFraction : 0.5, minimum), 1 - minimum)
+        let left = usable * fraction
+        leading = CGRect(x: 0, y: 0, width: left, height: height)
+        divider = CGRect(x: left, y: 0, width: gap, height: height)
+        trailing = CGRect(x: left + gap, y: 0, width: max(0, usable - left), height: height)
+    }
+
+    public func frame(at index: Int) -> CGRect { index == 0 ? leading : trailing }
+
+    public static func dropSide(at point: CGPoint, in bounds: CGRect) -> BrowserSplitSide? {
+        guard point.x.isFinite, point.y.isFinite, bounds.width.isFinite, bounds.height.isFinite,
+              bounds.width >= 240, bounds.height > 0, bounds.contains(point) else { return nil }
+        let edge = min(96, bounds.width * 0.22)
+        if point.x < bounds.minX + edge { return .leading }
+        if point.x >= bounds.maxX - edge { return .trailing }
+        return nil
+    }
+}
+
+extension BrowserCoordinator {
+    public func splitPlacement(for sourceID: UUID, on side: BrowserSplitSide) -> BrowserSplitPlacement? {
+        guard let source = tabStore.tab(id: sourceID), source.profileID == profileID,
+              source.isOpen, source.isVisible(in: activeSpaceID), let activeID = activeTabID else { return nil }
+        let group = activeSplitGroup
+        let existing = group?.panes.contains { $0.tabID == sourceID } == true
+        guard group != nil || sourceID != activeID else { return nil }
+        var ids = group?.panes.map(\.tabID) ?? [activeID, activeID]
+        if !existing { ids[side.index] = sourceID }
+        guard Set(ids).count == 2 else { return nil }
+        return BrowserSplitPlacement(spaceID: activeSpaceID, sourceTabID: sourceID, side: side,
+            groupID: group?.id, tabIDs: ids, leadingFraction: group?.leadingFraction ?? 0.5,
+            reusesExistingPane: existing)
+    }
+}
+
 /// Window-local layout metadata, not a second tab or a second live page owner.
 public struct BrowserSplitPane: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
@@ -10,8 +77,7 @@ public struct BrowserSplitPane: Identifiable, Codable, Equatable, Sendable {
     public init(id: UUID = UUID(), tabID: UUID) { self.id = id; self.tabID = tabID }
 }
 
-/// Foundation for two side-by-side panes. Presentation and splitter controls
-/// are added separately; storing a group must never allocate a web view.
+/// Two side-by-side panes. Storing a group never allocates a web view.
 public struct BrowserSplitGroup: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
     public let spaceID: UUID

@@ -202,7 +202,10 @@ struct WindowControls: NSViewRepresentable {
                     let origUpdateLayer = unsafeBitCast(method_getImplementation(mUpdateLayer), to: UpdateLayerIMP.self)
                     let blockUpdateLayer: @convention(block) (NSView) -> Void = { view in
                         origUpdateLayer(view, updateLayerSel)
-                        view.layer?.opacity = 0
+                        // This existing compatibility hook must never alter
+                        // Settings, website sheets, or another app window.
+                        guard ControlsHost.ownsControls(in: view.window) else { return }
+                        view.layer?.opacity = view.window?.styleMask.contains(.fullScreen) == true ? 0 : 1
                     }
                     class_replaceMethod(bgClass, updateLayerSel, imp_implementationWithBlock(blockUpdateLayer), method_getTypeEncoding(mUpdateLayer))
                 }
@@ -225,6 +228,16 @@ struct WindowControls: NSViewRepresentable {
         // representables alive. Only viewDidMoveToWindow may claim ownership;
         // updates/notifications from a superseded host cannot steal it back.
         private static let owners = NSMapTable<NSWindow, ControlsHost>.weakToWeakObjects()
+
+        static func ownsControls(in window: NSWindow?) -> Bool {
+            var current = window
+            for _ in 0..<4 {
+                guard let candidate = current else { return false }
+                if owners.object(forKey: candidate) != nil { return true }
+                current = candidate.parent
+            }
+            return false
+        }
 
         private struct NativeControl {
             let kind: NSWindow.ButtonType
@@ -646,6 +659,7 @@ struct WebContentView: NSViewRepresentable {
     let focusRequest: Int
     let canFocus: Bool
     let hasDialog: Bool
+    var onInteraction: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> HostView { HostView() }
     static func dismantleNSView(_ host: HostView, coordinator: ()) { host.invalidate() }
@@ -653,6 +667,7 @@ struct WebContentView: NSViewRepresentable {
         host.display(view)
         host.canFocus = canFocus
         host.suppressAccessibilityChildren = hasDialog
+        host.onInteraction = onInteraction
         guard host.focusRequest != focusRequest else { return }
         host.focusRequest = focusRequest
         DispatchQueue.main.async { [weak host] in
@@ -672,6 +687,42 @@ struct WebContentView: NSViewRepresentable {
         private weak var desired: WKWebView?
         private var leavingFullscreen = false
         private var invalidated = false
+        var onInteraction: (() -> Void)?
+        private var interactionMonitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopInteractionMonitor()
+            guard window != nil, !invalidated else { return }
+            interactionMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
+                guard let self, let window = self.window, event.window === window,
+                      window.attachedSheet == nil, self.hosted != nil else { return event }
+                let interacts: Bool
+                if event.type == .keyDown {
+                    interacts = self.containsPageView(window.firstResponder as? NSView)
+                } else {
+                    // Bounds alone also include SwiftUI overlays (command bar,
+                    // pane controls, notices). They must not focus the page
+                    // underneath a click intended for one of those controls.
+                    let content = window.contentView
+                    let point = content?.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+                    let hit = content?.hitTest(point)
+                    interacts = self.containsPageView(hit)
+                }
+                if interacts { self.onInteraction?() }
+                return event // Never consume or duplicate a website event.
+            }
+        }
+
+        private func stopInteractionMonitor() {
+            if let interactionMonitor { NSEvent.removeMonitor(interactionMonitor) }
+            interactionMonitor = nil
+        }
+
+        func containsPageView(_ candidate: NSView?) -> Bool {
+            guard let hosted, let candidate else { return false }
+            return candidate === hosted || candidate.isDescendant(of: hosted)
+        }
 
         @discardableResult
         func display(_ view: WKWebView?) -> Bool {
@@ -697,6 +748,8 @@ struct WebContentView: NSViewRepresentable {
 
         func invalidate() {
             invalidated = true
+            stopInteractionMonitor()
+            onInteraction = nil
             canFocus = false
             focusRequest = -1
             desired = nil

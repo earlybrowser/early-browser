@@ -45,6 +45,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     private var primaryWindowIsOpen = false
 
     var profiles: [BrowserProfile] { workspace?.profiles ?? [] }
+    var canOpenWindow: Bool { workspace != nil && presentWindow != nil && !isTerminating && !profileOperationInProgress }
     var canEditProfiles: Bool { workspace != nil && persistence?.isAvailable == true && !profileOperationInProgress && !isTerminating }
     private var visibleModels: [BrowserWindowModel] { (primaryWindowIsOpen ? model.map { [$0] } ?? [] : []) + windows.map(\.model) }
 
@@ -129,6 +130,26 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         attach(primary)
         self.workspace?.activeProfileID = workspace.defaultProfileID
         save(primary)
+    }
+
+    /// A fresh window shares saved organization/store identity, never another
+    /// window's Today tabs, split membership, live views, or command-bar state.
+    @discardableResult
+    func openNewWindow(from source: BrowserWindowModel? = nil) -> UUID? {
+        guard canOpenWindow, let workspace else { return nil }
+        let template: BrowserSession
+        if let source {
+            guard visibleModels.contains(where: { $0 === source }) else { return nil }
+            template = source.coordinator.session
+        } else {
+            guard let session = workspace.session(for: workspace.activeProfileID) else { return nil }
+            template = session
+        }
+        let id = addWindow(session: template.savedItemsOnly)
+        self.workspace?.activeProfileID = template.profileID
+        saveAll()
+        presentWindow?(id)
+        return id
     }
 
     private func websiteDataStore(for id: UUID) -> WKWebsiteDataStore {
@@ -270,7 +291,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// WebKit views or cookies. Unrelated pages retain their live view identity.
     func moveSpace(_ id: UUID, from owner: BrowserWindowModel, to profileID: UUID,
                    name: String, color: BrowserSpace.Color, icon: SpaceIcon?) -> Bool {
-        guard canEditProfiles, !visibleModels.contains(where: { $0.webViews.pages.values.contains(where: \.hasDialog) || $0.sidebarInteractionInProgress }) else { return false }
+        guard canEditProfiles, !visibleModels.contains(where: {
+            $0.webViews.pages.values.contains(where: \.hasDialog) || $0.sidebarInteractionInProgress || $0.splitResize != nil
+        }) else { return false }
         captureWorkspace(preferred: owner)
         guard var draft = workspace, let source = draft.sessions.firstIndex(where: { $0.profileID == owner.coordinator.profileID }),
               let space = draft.sessions[source].spaces.firstIndex(where: { $0.id == id }),

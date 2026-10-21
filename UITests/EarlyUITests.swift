@@ -121,6 +121,77 @@ final class EarlyUITests: XCTestCase {
         }
     }
 
+    func testSplitPaneFocusResizeAndRemovalKeepTabsAndLiveForms() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        pasteText("keep left", into: app.webViews.textFields["Saved text"], in: app)
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        pasteText("keep right", into: app.webViews.textFields["Saved text"], in: app)
+        app.buttons[firstID].rightClick()
+        app.menuItems["Split View"].hover()
+        visibleMenuAction("Place on Left")
+        let divider = app.descendants(matching: .any).matching(identifier: "split.divider").firstMatch
+        XCTAssertTrue(divider.waitForExistence(timeout: 5))
+        let left = app.descendants(matching: .any).matching(identifier: "browser.pane.\(firstID.dropFirst(4))").firstMatch
+        let right = app.descendants(matching: .any).matching(identifier: "browser.pane.\(secondID.dropFirst(4))").firstMatch
+        XCTAssertTrue(left.waitForExistence(timeout: 5) && right.exists)
+        XCTAssertLessThan(left.frame.midX, right.frame.midX)
+        XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
+        XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
+        right.textFields["Saved text"].click()
+        app.typeKey("l", modifierFlags: .command)
+        XCTAssertEqual(app.textFields["commandBar.query"].value as? String, "early-test://fixture/two")
+        app.typeKey(.escape, modifierFlags: [])
+        left.textFields["Saved text"].click()
+        app.typeKey("l", modifierFlags: .command)
+        XCTAssertEqual(app.textFields["commandBar.query"].value as? String, "early-test://fixture/one")
+        app.typeKey(.escape, modifierFlags: [])
+        let handle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        handle.click(forDuration: 0.15, thenDragTo: handle.withOffset(CGVector(dx: 70, dy: 0)))
+        XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
+        XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.menuBarItems["Tab"].click()
+        visibleMenuAction("Remove Current Pane from Split")
+        XCTAssertTrue(divider.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons[firstID].exists && app.buttons[secondID].exists)
+        XCTAssertEqual(app.webViews.textFields["Saved text"].value as? String, "keep right")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.terminate()
+    }
+
+    func testSidebarEdgeDropCreatesSplitAndRelaunchRestoresItsPanes() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+        let firstID = rows.firstMatch.identifier
+        navigate(app, to: "early-test://fixture/two", newTab: true)
+        expectPage(app, "Two")
+        let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        let content = app.descendants(matching: .any).matching(identifier: "browser.content").firstMatch
+        app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.25, thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.6)),
+                   withVelocity: .slow, thenHoldForDuration: 0.5)
+        let divider = app.descendants(matching: .any).matching(identifier: "split.divider").firstMatch
+        XCTAssertTrue(divider.waitForExistence(timeout: 5))
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
+        XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(divider.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "browser.pane.\(firstID.dropFirst(4))").firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "browser.pane.\(secondID.dropFirst(4))").firstMatch.exists)
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.terminate()
+    }
+
     func testCurrentSavedResultsPreservePagesAndFreshLocationOpensToday() {
         for action in ["Pin Tab", "Add to Favorites"] {
             let app = launchFreshApp()

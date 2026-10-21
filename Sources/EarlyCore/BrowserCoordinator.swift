@@ -180,8 +180,7 @@ public final class BrowserCoordinator {
         return nil
     }
 
-    /// There is one command target per window. `content` remains the focused
-    /// page until the split renderer is introduced, never a duplicate tab ID.
+    /// There is one command target per window, even with two visible panes.
     public var focusedTabID: UUID? { activeTabID }
 
     public var activeSplitGroup: BrowserSplitGroup? {
@@ -233,6 +232,41 @@ public final class BrowserCoordinator {
         guard splitGroups.contains(where: { $0.id == id && $0.spaceID == activeSpaceID }) else { return false }
         splitGroups.removeAll { $0.id == id }
         focusedPaneByGroupID[id] = nil
+        return true
+    }
+
+    /// Revalidate the entire proposal at commit. Replaced/detached members stay
+    /// open; a tab belongs to only one group and keeps its durable identity.
+    @discardableResult
+    public func applySplit(_ placement: BrowserSplitPlacement) -> Bool {
+        guard splitPlacement(for: placement.sourceTabID, on: placement.side) == placement else { return false }
+        if placement.reusesExistingPane {
+            guard let pane = activeSplitGroup?.panes.first(where: { $0.tabID == placement.sourceTabID }) else { return false }
+            return focusPane(pane.id)
+        }
+        let previous = activeSplitGroup
+        let panes = placement.tabIDs.enumerated().map { index, id in
+            BrowserSplitPane(id: previous?.panes[index].id ?? UUID(), tabID: id)
+        }
+        let group = BrowserSplitGroup(id: previous?.id ?? UUID(), spaceID: activeSpaceID,
+            panes: panes, leadingFraction: placement.leadingFraction)
+        let removed = splitGroups.filter {
+            $0.id == group.id || $0.panes.contains { $0.tabID == placement.sourceTabID }
+        }.map(\.id)
+        splitGroups.removeAll { removed.contains($0.id) }
+        for id in removed { focusedPaneByGroupID[id] = nil }
+        splitGroups.append(group)
+        focusedPaneByGroupID[group.id] = panes[placement.side.index].id
+        selectOpenTab(placement.sourceTabID)
+        return true
+    }
+
+    /// Removing a pane exits its two-pane layout, not the underlying tab.
+    @discardableResult
+    public func removeSplitPane(_ id: UUID) -> Bool {
+        guard let group = activeSplitGroup, let survivor = group.panes.first(where: { $0.id != id }),
+              group.panes.contains(where: { $0.id == id }), exitSplit(group.id) else { return false }
+        selectOpenTab(survivor.tabID)
         return true
     }
 
