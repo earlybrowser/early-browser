@@ -253,7 +253,7 @@ struct BrowserSettingsView: View {
             SettingsCard {
                 SettingsToggle("Space themes", detail: "Tint the browser chrome with each Space’s chosen color.", isOn: $preferences.spaceThemes, identifier: "settings.spaceThemes")
                 Divider().padding(.vertical, 6)
-                SettingsToggle("Translucent chrome", detail: "Use Liquid Glass on macOS 26 or later, or standard materials on older systems. Turn off for solid chrome. Websites stay unchanged.", isOn: $preferences.translucentChrome, identifier: "settings.translucency")
+                SettingsToggle("Translucent chrome", detail: "Let a little of your desktop show through the sidebar and frame. Websites stay unchanged.", isOn: $preferences.translucentChrome, identifier: "settings.translucency")
             }
             Text("Space colors adapt to light and dark appearance. Accessibility settings for contrast and reduced transparency always take priority.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
