@@ -118,6 +118,7 @@ extension BrowserWindowModel {
     @discardableResult
     func perform(_ action: BrowserAction, source: BrowserActionSource = .interface) -> Bool {
         guard canPerform(action) else { return false }
+        cancelTabSwitcher(restoreFocus: false)
         let previousFocusRequest = contentFocusRequest
         var restoreContentFocus = true
         switch action {
@@ -208,9 +209,8 @@ extension BrowserWindowModel {
     /// actor before handing the immutable array to `CommandSearch`.
     func commandSearchCandidates() -> [CommandSearchCandidate] {
         var candidates: [CommandSearchCandidate] = []
-        let activeID = coordinator.activeTabID
         var seenTabs = Set<UUID>()
-        for tab in favorites + pinnedTabs + todayTabs where tab.id != activeID && seenTabs.insert(tab.id).inserted {
+        for tab in favorites + pinnedTabs + todayTabs where seenTabs.insert(tab.id).inserted {
             guard canPerform(.selectTab(tab.id)) else { continue }
             let kind: CommandSearchCandidate.Kind = tab.isFavorite ? .favorite : (tab.pinnedURL != nil ? .pinnedTab : .openTab)
             let displayURL = (tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL)).absoluteString
@@ -273,6 +273,22 @@ extension BrowserWindowModel {
             }
         }
         return candidates
+    }
+
+    func commandResultBadge(for candidate: CommandSearchCandidate) -> String {
+        if case .tab(let id) = candidate.target, id == coordinator.focusedTabID {
+            return "Current tab"
+        }
+        switch candidate.kind {
+        case .favorite: return candidate.isOpen ? "Switch to Tab" : "Open Favorite"
+        case .pinnedTab: return candidate.isOpen ? "Switch to Tab" : "Open Pin"
+        case .openTab: return "Switch to Tab"
+        case .space: return "Switch Space"
+        case .profile: return "Switch Profile"
+        case .action: return "Command"
+        case .bookmark: return "Open Bookmark"
+        case .history: return "Open History"
+        }
     }
 
     /// Ranked tabs, pins, Favorites, and (when enabled) Spaces, profiles, and actions.
@@ -338,7 +354,17 @@ extension BrowserWindowModel {
     @discardableResult
     func perform(_ result: CommandSearchResult, source: BrowserActionSource = .commandBar) -> Bool {
         switch result.candidate.target {
-        case .tab(let id): return perform(.selectTab(id), source: source)
+        case .tab(let id):
+            if id == coordinator.focusedTabID {
+                guard canPerform(.selectTab(id)) else { return false }
+                // The current result is a confirmation, not a new activation:
+                // do not reveal folders, save, recover/reload, or reset the page.
+                if coordinator.commandBar != nil {
+                    return perform(.dismissCommandBar(restoreFocus: true), source: source)
+                }
+                return true
+            }
+            return perform(.selectTab(id), source: source)
         case .space(let id): return perform(.switchSpace(id), source: source)
         case .profile(let id): return perform(.openProfile(id), source: source)
         case .action(let action): return perform(action, source: source)

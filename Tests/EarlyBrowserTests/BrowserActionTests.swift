@@ -507,7 +507,7 @@ struct BrowserActionTests {
 
         let candidates = model.commandSearchCandidates()
         #expect(candidates.contains { $0.id == "tab.\(sibling.id.uuidString)" })
-        #expect(!candidates.contains { $0.id == "tab.\(active.id.uuidString)" })
+        #expect(candidates.contains { $0.id == "tab.\(active.id.uuidString)" })
         #expect(!candidates.contains { $0.id == "tab.\(otherSpace.id.uuidString)" })
         #expect(!candidates.contains { $0.id == "tab.\(foreign.id.uuidString)" })
         #expect(candidates.contains { $0.id == "space.\(personal.uuidString)" })
@@ -534,6 +534,116 @@ struct BrowserActionTests {
         #expect(model.selectedCommandResult == nil && model.suggestions.selectedIndex == nil)
     }
 
+
+    @Test func currentTabResultsRemainSearchableAndOnlyDismissWithoutSavingOrReloading() async throws {
+        for section in [TabStore.Section.regular, .pinned, .favorites] {
+            let fixture = Fixture()
+            defer { fixture.cleanup() }
+            let model = fixture.model, id = try fixture.open(firstURL)
+            if section != .regular { #expect(model.placeTab(id, in: section)) }
+            #expect(model.coordinator.renameTab(id, to: "Unicorn guide"))
+            let page = try #require(model.activePage)
+            #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+            #expect(model.visibleCommandResults.isEmpty, "Untouched address prefill should remain quiet")
+            model.updateQuery("unicorn")
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while model.commandSearch.isRefreshing && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(!model.commandSearch.isRefreshing)
+            let result = try #require(model.visibleCommandResults.first)
+            #expect(result.candidate.target == .tab(id))
+            #expect(model.commandResultBadge(for: result.candidate) == "Current tab")
+            let before = model.coordinator.session, saves = fixture.saves, focus = model.contentFocusRequest
+            let location = page.requestedURL
+            #expect(model.moveCommandBarSelection(1))
+            #expect(model.performCommandBarSelection())
+            #expect(model.coordinator.commandBar == nil && model.coordinator.session == before)
+            #expect(model.activePage === page && model.webViews.creationCount == 1)
+            #expect(page.requestedURL == location && fixture.saves == saves)
+            #expect(model.contentFocusRequest == focus + 1)
+            // An explicitly entered URL must be searchable even when identical
+            // to the prefill; only the untouched prefill suppresses results.
+            #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+            model.updateQuery(firstURL.absoluteString)
+            let urlDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while model.commandSearch.isRefreshing && ContinuousClock.now < urlDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let exact = try #require(model.visibleCommandResults.first { $0.candidate.target == .tab(id) })
+            #expect(model.commandResultBadge(for: exact.candidate) == "Current tab")
+            #expect(model.perform(exact))
+            #expect(model.webViews.creationCount == 1 && model.coordinator.commandBar == nil)
+        }
+    }
+
+    @Test func savedLocationSubmissionsCreateTodayAndUneditedPrefillDoesNotDuplicate() throws {
+        for section in [TabStore.Section.pinned, .favorites] {
+            let fixture = Fixture()
+            defer { fixture.cleanup() }
+            let model = fixture.model, saved = try fixture.open(firstURL)
+            #expect(model.placeTab(saved, in: section))
+            let page = try #require(model.activePage), before = model.coordinator.session
+            let location = page.requestedURL, saves = fixture.saves
+            #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+            #expect(model.performCommandBarSelection()) // Unedited address: no-op.
+            #expect(model.coordinator.commandBar == nil && model.coordinator.session == before)
+            #expect(model.webViews.creationCount == 1 && page.requestedURL == location && fixture.saves == saves)
+
+            #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+            model.updateQuery(secondURL.absoluteString)
+            #expect(model.performCommandBarSelection())
+            let today = try #require(model.activeTab)
+            #expect(today.id != saved && today.pinnedURL == nil && !today.isFavorite)
+            #expect(today.currentURL == secondURL && today.spaceID == model.coordinator.activeSpaceID)
+            #expect(model.webViews.pages[saved] === page && page.requestedURL == location)
+            #expect(model.coordinator.tabStore.tab(id: saved)?.currentURL == firstURL)
+            #expect(model.coordinator.tabStore.tab(id: saved)?.pinnedURL == firstURL)
+            #expect(model.webViews.creationCount == 2 && model.coordinator.tabStore.tabs.count == 2)
+            #expect(model.perform(.selectTab(saved)))
+            #expect(model.perform(.presentCommandBar(.newTab)))
+            model.updateQuery(secondURL.absoluteString)
+            #expect(model.performCommandBarSelection())
+            #expect(model.coordinator.tabStore.tabs.count == 3 && model.activeTab?.pinnedURL == nil)
+        }
+    }
+
+    @Test func untouchedSavedPrefillDoesNotNavigateAfterAnAsynchronousURLUpdate() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model, id = try fixture.open(firstURL)
+        #expect(model.perform(.setFavorite(id, true)))
+        let page = try #require(model.activePage)
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        #expect(model.coordinator.updateMetadata(id, url: secondURL, title: "Redirected"))
+        let before = model.coordinator.session, saves = fixture.saves
+        #expect(model.performCommandBarSelection())
+        #expect(model.coordinator.commandBar == nil && model.coordinator.session == before)
+        #expect(model.activePage === page && model.webViews.creationCount == 1 && fixture.saves == saves)
+    }
+
+    @Test func currentResultCannotBypassAvailabilityOrActOnAStaleClosedTab() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model, saved = try fixture.open(firstURL)
+        #expect(model.perform(.setFavorite(saved, true)))
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("fixture/one")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while model.commandSearch.isRefreshing && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let result = try #require(model.visibleCommandResults.first)
+        model.folderEditorIsPresented = true
+        #expect(!model.perform(result) && model.coordinator.commandBar != nil)
+        model.folderEditorIsPresented = false
+        #expect(model.perform(.closeTab(saved)))
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        #expect(model.commandResultBadge(for: result.candidate) != "Current tab")
+        #expect(model.perform(result)) // A still-saved closed Favorite reopens once.
+        #expect(model.coordinator.activeTabID == saved && model.webViews.creationCount == 2)
+        #expect(model.coordinator.tabStore.tabs.count == 1)
+    }
 
     @Test func commandBarSurfacesAndExecutesActionsSpacesProfilesDuplicateAndSettingsWithProperFocus() async throws {
         let profile = UUID(), work = UUID(), personal = UUID()

@@ -95,6 +95,44 @@ struct BrowserCoordinatorTests {
         #expect(browser.tabStore.tabs == [existing])
     }
 
+    @Test(arguments: [false, true])
+    func commandBarNavigationFromSavedTabsCreatesTodayWithoutChangingSavedIdentity(favorite: Bool) throws {
+        let saved = tab(pinned: true)
+        let browser = coordinator(tabs: [saved], selected: saved.id)
+        if favorite { #expect(browser.setFavorite(saved.id, favorite: true)) }
+        let before = try #require(browser.tabStore.tab(id: saved.id))
+        for intent in [CommandBarIntent.navigateCurrentTab, .newTab] {
+            browser.presentCommandBar(intent)
+            browser.updateQuery("dog")
+            #expect(browser.navigationRequest()?.target == .newTab(spaceID: space))
+            #expect(browser.tabStore.tab(id: saved.id) == before)
+        }
+        let request = try #require(browser.navigationRequest())
+        let id = try #require(browser.navigate(to: NavigationInput().resolve(request.query), target: request.target))
+        let today = try #require(browser.tabStore.tab(id: id))
+        #expect(id != saved.id && browser.activeTabID == id)
+        #expect(today.spaceID == space && today.pinnedURL == nil && !today.isFavorite)
+        #expect(try today.currentURL == NavigationInput().searchURL(for: "dog"))
+        #expect(browser.tabStore.tab(id: saved.id) == before)
+    }
+
+    @Test func favoriteSearchUsesCurrentSpaceRatherThanTheFavoritesOriginalSpace() throws {
+        let saved = tab()
+        let browser = coordinator(tabs: [saved], selected: saved.id)
+        #expect(browser.setFavorite(saved.id, favorite: true))
+        let other = try #require(browser.createSpace(name: "Other"))
+        browser.switchSpace(to: other)
+        #expect(browser.openTab(saved.id))
+        browser.presentCommandBar(.navigateCurrentTab)
+        browser.updateQuery("https://swift.org")
+        let request = try #require(browser.navigationRequest())
+        #expect(request.target == .newTab(spaceID: other))
+        let id = try #require(browser.navigate(to: NavigationInput().resolve(request.query), target: request.target))
+        #expect(browser.tabStore.tab(id: id)?.spaceID == other)
+        #expect(browser.tabStore.tab(id: saved.id)?.spaceID == space)
+        #expect(browser.tabStore.tab(id: saved.id)?.currentURL == saved.currentURL)
+    }
+
     @Test func blankSubmissionAndCommandSearchCannotCreateNavigation() {
         let browser = BrowserCoordinator(startup: .firstLaunch)
         browser.updateQuery(" \n ")

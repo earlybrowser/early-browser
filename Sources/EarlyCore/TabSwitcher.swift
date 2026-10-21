@@ -5,7 +5,7 @@ import Foundation
 /// Keyboard tab-switcher selection contract (Control-Tab / Control-Shift-Tab).
 /// Orders open tabs by most recent activation, falling back to sidebar order,
 /// and commits only the chosen stable tab identity through the window's shared
-/// action dispatcher. Phase 6 attaches the thumbnail overlay UI to this model.
+/// action dispatcher. Highlighting is independent of live-page activation.
 public struct TabSwitcher: Equatable, Sendable {
     public let tabIDs: [UUID]
     public let initialID: UUID?
@@ -17,12 +17,11 @@ public struct TabSwitcher: Equatable, Sendable {
         let ids = ordered.map(\.id)
         tabIDs = ids
         initialID = activeTabID
-        let start = activeTabID.flatMap { ids.firstIndex(of: $0) } ?? 0
-        if ids.count == 1 {
-            selectedIndex = 0
-        } else {
+        if let start = activeTabID.flatMap({ ids.firstIndex(of: $0) }) {
             let step = initialDelta >= 0 ? 1 : -1
             selectedIndex = (start + step + ids.count) % ids.count
+        } else {
+            selectedIndex = initialDelta >= 0 ? 0 : ids.count - 1
         }
     }
 
@@ -52,7 +51,7 @@ public struct TabSwitcher: Equatable, Sendable {
     /// and descending `activationCount`, breaking ties by sidebar order.
     public static func mruOrder(openTabs: [BrowserTab], activeTabID: UUID?) -> [BrowserTab] {
         var seen = Set<UUID>()
-        let indexed = openTabs.enumerated().filter { seen.insert($0.element.id).inserted }
+        let indexed = openTabs.enumerated().filter { $0.element.isOpen && seen.insert($0.element.id).inserted }
         return indexed.sorted { lhs, rhs in
             let leftActive = lhs.element.id == activeTabID
             let rightActive = rhs.element.id == activeTabID

@@ -184,6 +184,77 @@ struct RuntimeRoutingTests {
         #expect(model.coordinator.tabStore.tabs.count == 1 && model.favorites.map(\.id) == [tab.id])
     }
 
+    @Test(arguments: [false, true])
+    func savedCommandBarNavigationPreservesDOMAndCurrentResultDoesNotResetDetours(favorite: Bool) async throws {
+        let profile = UUID(), space = UUID()
+        let url = URL(string: "early-test://fixture/one")!
+        let tab = BrowserTab(spaceID: space, profileID: profile, title: "Page One", currentURL: url)
+        let session = BrowserSession(profileID: profile, activeSpaceID: space, tabs: [tab],
+                                     selectionBySpace: [space: tab.id])
+        let fixture = Fixture(session: session)
+        defer { fixture.cleanup() }
+        let model = fixture.model, page = try #require(model.activePage)
+        try await waitUntil("saved command fixture") { !page.isLoading && page.view.title == "Page One" }
+        #expect(model.perform(favorite ? .setFavorite(tab.id, true) : .setPinned(tab.id, true)))
+        _ = try await page.view.evaluateJavaScript("document.getElementById('saved').value = 'keep saved page';")
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        #expect(model.performCommandBarSelection()) // Return on untouched prefill.
+        #expect(model.webViews.creationCount == 1)
+        #expect(try await page.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep saved page")
+
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        model.updateQuery(nextURL.absoluteString)
+        #expect(model.performCommandBarSelection())
+        let today = try #require(model.activeTab)
+        #expect(today.id != tab.id && !today.isFavorite && today.pinnedURL == nil)
+        #expect(model.webViews.pages[tab.id] === page && model.webViews.creationCount == 2)
+        #expect(try await page.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep saved page")
+        #expect(model.coordinator.tabStore.tab(id: tab.id)?.currentURL == url)
+
+        // Normal website navigation still belongs to this live saved page.
+        #expect(model.perform(.selectTab(tab.id)))
+        _ = try await page.view.evaluateJavaScript("document.querySelector('a').click();")
+        try await waitUntil("saved page detour") { !page.isLoading && page.view.title == "Page Two" }
+        #expect(model.coordinator.tabStore.tab(id: tab.id)?.currentURL == nextURL)
+        #expect(model.coordinator.tabStore.tab(id: tab.id)?.pinnedURL == url)
+        _ = try await page.view.evaluateJavaScript("document.getElementById('saved').value = 'keep detour';")
+        #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        model.updateQuery(url.absoluteString) // Match its original saved address.
+        try await waitUntil("current saved result") { !model.commandSearch.isRefreshing }
+        let current = try #require(model.visibleCommandResults.first { $0.candidate.target == .tab(tab.id) })
+        #expect(model.commandResultBadge(for: current.candidate) == "Current tab")
+        #expect(model.perform(current))
+        #expect(model.activePage === page && model.webViews.creationCount == 2 && page.view.url == nextURL)
+        #expect(try await page.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep detour")
+    }
+
+    @Test func tabSwitcherPreviewCancelAndCommitKeepExistingDOMAndSplitIdentity() async throws {
+        let session = splitSession(), fixture = Fixture(session: session)
+        defer { fixture.cleanup() }
+        let model = fixture.model, first = session.tabs[0].id, second = session.tabs[1].id
+        let firstPage = try #require(model.webViews.pages[first])
+        let secondPage = try #require(model.webViews.pages[second])
+        try await waitUntil("switcher documents") {
+            !firstPage.isLoading && !secondPage.isLoading
+                && firstPage.view.title == "Page One" && secondPage.view.title == "Page One"
+        }
+        _ = try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value = 'keep switcher state';")
+        for _ in 0..<5 {
+            #expect(model.advanceTabSwitcher(1, commitsOnControlRelease: true))
+            #expect(model.coordinator.focusedTabID == first && model.activePage === firstPage)
+            #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep switcher state")
+            model.cancelTabSwitcher()
+        }
+        #expect(model.advanceTabSwitcher(1))
+        #expect(model.commitTabSwitcher(selecting: second))
+        #expect(model.coordinator.focusedTabID == second && model.activePage === secondPage)
+        #expect(model.coordinator.splitGroups == session.splitGroups && model.webViews.creationCount == 2)
+        #expect(model.advanceTabSwitcher(-1))
+        #expect(model.commitTabSwitcher(selecting: first))
+        #expect(model.activePage === firstPage && model.webViews.creationCount == 2)
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep switcher state")
+    }
+
     @Test func windowLocalPaneFocusDoesNotShareLiveViewsOrSelection() throws {
         let session = splitSession(), first = Fixture(session: session), second = Fixture(session: session)
         defer { first.cleanup(); second.cleanup() }
@@ -272,7 +343,7 @@ struct RuntimeRoutingTests {
             return
         }
         let title = url.path == "/two" ? "Page Two" : "Page One"
-        let data = Data("<!doctype html><title>\(title)</title><p>Local routing fixture</p><input id='saved' aria-label='Saved text'>".utf8)
+        let data = Data("<!doctype html><title>\(title)</title><p>Local routing fixture</p><input id='saved' aria-label='Saved text'><a href='early-test://fixture/two'>Go to Two</a>".utf8)
         task.didReceive(URLResponse(url: url, mimeType: "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
         task.didReceive(data)
         task.didFinish()

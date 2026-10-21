@@ -147,12 +147,12 @@ struct BrowserCommands: Commands {
             Button("Reopen Closed Tab") { model?.perform(.reopenLastTab) }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(model?.canPerform(.reopenLastTab) != true)
-            Button("Next Tab") { model?.perform(.cycleTab(1)) }
+            Button("Next Tab") { model?.advanceTabSwitcher(1) }
                 .keyboardShortcut(.tab, modifiers: .control)
-                .disabled(model?.canPerform(.cycleTab(1)) != true)
-            Button("Previous Tab") { model?.perform(.cycleTab(-1)) }
+                .disabled(model?.canPresentTabSwitcher != true)
+            Button("Previous Tab") { model?.advanceTabSwitcher(-1) }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift])
-                .disabled(model?.canPerform(.cycleTab(-1)) != true)
+                .disabled(model?.canPresentTabSwitcher != true)
             ForEach(1...9, id: \.self) { number in
                 Button(number == 9 ? "Select Last Tab" : "Select Tab \(number)") { model?.perform(.selectTabNumber(number)) }
                     .keyboardShortcut(KeyEquivalent(Character(String(number))))

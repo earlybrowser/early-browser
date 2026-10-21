@@ -51,6 +51,127 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(query.value as? String, "")
     }
 
+    func testThumbnailSwitcherCancelCommitAndCompactLayoutPreserveLivePages() {
+        for appearance in ["dark", "light"] {
+            let app = launchFreshApp(appearance: appearance)
+            navigate(app, to: "early-test://fixture/one")
+            expectPage(app, "One")
+            let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+            let firstID = rows.firstMatch.identifier
+            let saved = app.webViews.textFields["Saved text"]
+            pasteText("switcher keeps this page", into: saved, in: app)
+            navigate(app, to: "early-test://fixture/two", newTab: true)
+            expectPage(app, "Two")
+            let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+            let firstCard = app.buttons["tabSwitcher.tab.\(firstID.dropFirst(4))"]
+            let secondCard = app.buttons["tabSwitcher.tab.\(secondID.dropFirst(4))"]
+            let strip = app.descendants(matching: .any).matching(identifier: "tabSwitcher").firstMatch
+
+            func showSwitcher() {
+                app.menuBarItems["Navigate"].click()
+                visibleMenuAction("Next Tab")
+                XCTAssertTrue(strip.waitForExistence(timeout: 5))
+                XCTAssertTrue(firstCard.exists && secondCard.exists)
+            }
+            showSwitcher()
+            XCTAssertTrue(firstCard.isSelected)
+            expectPage(app, "Two") // Highlighting does not navigate or resume.
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+            app.typeKey(.rightArrow, modifierFlags: [])
+            XCTAssertTrue(secondCard.isSelected)
+            app.typeKey(.leftArrow, modifierFlags: [])
+            XCTAssertTrue(firstCard.isSelected)
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertTrue(strip.waitForNonExistence(timeout: 3))
+            expectPage(app, "Two")
+            showSwitcher()
+            app.typeKey(.return, modifierFlags: [])
+            XCTAssertTrue(strip.waitForNonExistence(timeout: 3))
+            expectPage(app, "One")
+            XCTAssertEqual(saved.value as? String, "switcher keeps this page")
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+
+            for size in ["Compact Test Window", "Wide Test Window"] {
+                app.menuBarItems["Test Window"].click()
+                visibleMenuAction(size)
+                showSwitcher()
+                let window = app.windows["browser"].frame
+                XCTAssertGreaterThan(strip.frame.width, 100)
+                XCTAssertGreaterThanOrEqual(strip.frame.minX, window.minX + 6)
+                XCTAssertLessThanOrEqual(strip.frame.maxX, window.maxX - 6)
+                XCTAssertGreaterThanOrEqual(strip.frame.minY, window.minY + 6)
+                XCTAssertLessThanOrEqual(strip.frame.maxY, window.maxY - 6)
+                let capture = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+                capture.name = "\(appearance) thumbnail switcher — \(size)"
+                capture.lifetime = .keepAlways
+                add(capture)
+                app.typeKey(.escape, modifierFlags: [])
+                XCTAssertTrue(strip.waitForNonExistence(timeout: 3))
+            }
+            showSwitcher()
+            secondCard.click()
+            expectPage(app, "Two")
+            // A quick Control-Tab must commit when Control is released.
+            app.typeKey(.tab, modifierFlags: .control)
+            expectPage(app, "One")
+            XCTAssertTrue(strip.waitForNonExistence(timeout: 3))
+            XCTAssertEqual(saved.value as? String, "switcher keeps this page")
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+            app.terminate()
+        }
+    }
+
+    func testCurrentSavedResultsPreservePagesAndFreshLocationOpensToday() {
+        for action in ["Pin Tab", "Add to Favorites"] {
+            let app = launchFreshApp()
+            navigate(app, to: "early-test://fixture/one")
+            expectPage(app, "One")
+            let id = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+            let saved = app.webViews.textFields["Saved text"]
+            pasteText("keep saved document", into: saved, in: app)
+            pinAction(action, on: app.buttons[id])
+            let savedControl = action == "Pin Tab" ? app.buttons[id] : app.buttons["favorite.\(id.dropFirst(4))"]
+            XCTAssertTrue(savedControl.waitForExistence(timeout: 3))
+
+            app.typeKey("l", modifierFlags: .command)
+            let query = app.textFields["commandBar.query"]
+            XCTAssertTrue(query.waitForExistence(timeout: 3))
+            pasteText("Page One", into: query, in: app)
+            let current = app.buttons.matching(NSPredicate(format: "label == %@", "Current tab: Page One")).firstMatch
+            XCTAssertTrue(current.waitForExistence(timeout: 5))
+            current.click()
+            XCTAssertTrue(query.waitForNonExistence(timeout: 3))
+            XCTAssertEqual(saved.value as? String, "keep saved document")
+            expectRuntime(app, tabs: 1, views: 1, created: 1)
+            // Untouched location Return must not reload or make a duplicate.
+            app.typeKey("l", modifierFlags: .command)
+            XCTAssertTrue(query.waitForExistence(timeout: 3))
+            app.typeKey(.return, modifierFlags: [])
+            XCTAssertTrue(query.waitForNonExistence(timeout: 3))
+            XCTAssertEqual(saved.value as? String, "keep saved document")
+            expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+            navigate(app, to: "early-test://fixture/two")
+            expectPage(app, "Two")
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+            XCTAssertFalse(savedControl.isSelected)
+            let today = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.' AND identifier != %@", id)).firstMatch
+            XCTAssertEqual(today.value as? String, "Today")
+            savedControl.click()
+            expectPage(app, "One")
+            XCTAssertEqual(saved.value as? String, "keep saved document")
+            app.typeKey("l", modifierFlags: .command)
+            XCTAssertTrue(query.waitForExistence(timeout: 3))
+            pasteText("Page Two", into: query, in: app)
+            let existing = app.buttons.matching(NSPredicate(format: "label == %@", "Switch to Tab: Page Two")).firstMatch
+            XCTAssertTrue(existing.waitForExistence(timeout: 5))
+            existing.click()
+            expectPage(app, "Two")
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+            app.terminate()
+        }
+    }
+
     func testLongCommandBarInputWrapsInCompactWindowAndKeepsNavigationIntent() {
         let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])
@@ -1464,7 +1585,7 @@ final class EarlyUITests: XCTestCase {
         app.buttons["Save"].click()
         XCTAssertEqual(app.buttons[id].label, "My Videos")
         pinAction("Pin Tab", on: app.buttons[id])
-        navigate(app, to: "early-test://fixture/two")
+        app.webViews.links["Go to Two"].click()
         expectPage(app, "Two")
         XCTAssertEqual(app.buttons[id].label, "My Videos")
         app.typeKey("w", modifierFlags: .command)
@@ -1499,7 +1620,7 @@ final class EarlyUITests: XCTestCase {
         firstFavorite.click()
         XCTAssertEqual(saved.value as? String, "keep favorite state")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
-        navigate(app, to: "early-test://fixture/two")
+        app.webViews.links["Go to Two"].click()
         expectPage(app, "Two")
         firstFavorite.click()
         expectPage(app, "Two")
@@ -1574,7 +1695,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(saved.value as? String, "preserve pin state")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
         pinAction("Pin Tab", on: row)
-        navigate(app, to: "early-test://fixture/two")
+        app.webViews.links["Go to Two"].click()
         expectPage(app, "Two")
         app.menuBars.menuBarItems["Tab"].click()
         visibleMenuAction("Reset to Pinned URL")
@@ -1617,7 +1738,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertFalse(select.isEnabled)
         select.hover()
         XCTAssertFalse(reset.exists)
-        navigate(app, to: "early-test://fixture/two")
+        app.webViews.links["Go to Two"].click()
         expectPage(app, "Two")
         XCTAssertTrue(reset.waitForExistence(timeout: 3))
         let saved = app.webViews.textFields["Saved text"]
@@ -1666,7 +1787,7 @@ final class EarlyUITests: XCTestCase {
         let id = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
         let row = app.buttons[id]
         pinAction("Pin Tab", on: row)
-        navigate(app, to: "early-test://fixture/two")
+        app.webViews.links["Go to Two"].click()
         expectPage(app, "Two")
         app.typeKey("w", modifierFlags: .command)
         expectRuntime(app, tabs: 0, views: 0, created: 1)
@@ -2333,16 +2454,15 @@ final class EarlyUITests: XCTestCase {
         pinAction("Stop Loading", on: favorite)
         expectSidebarStatus(favorite, "Favorite, open")
         favorite.click()
-        navigate(app, to: "early-test://fixture/slow")
+        XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5))
+        app.buttons["navigation.reload"].click()
         XCTAssertTrue(app.buttons["navigation.stop"].waitForExistence(timeout: 5))
         XCTAssertTrue(loading.waitForExistence(timeout: 5))
         app.buttons["navigation.stop"].click()
         XCTAssertTrue(app.buttons["navigation.reload"].waitForExistence(timeout: 5))
         XCTAssertFalse(loading.exists)
         expectSidebarStatus(favorite, "Favorite, open")
-        navigate(app, to: "early-test://fixture/one")
-        expectPage(app, "One")
-        expectSidebarStatus(favorite, "Favorite, open")
+        XCTAssertEqual(app.buttons["sidebar.addressBar"].value as? String, "early-test://fixture/slow")
         expectRuntime(app, tabs: 2, views: 2, created: 2)
         app.typeKey("w", modifierFlags: .command)
         expectSidebarStatus(favorite, "Favorite, closed")

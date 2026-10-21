@@ -304,16 +304,7 @@ struct CommandBarView: View {
     }
 
     private func resultBadge(for candidate: CommandSearchCandidate) -> String {
-        switch candidate.kind {
-        case .favorite: candidate.isOpen ? "Switch to Tab" : "Open Favorite"
-        case .pinnedTab: candidate.isOpen ? "Switch to Tab" : "Open Pin"
-        case .openTab: "Switch to Tab"
-        case .space: "Switch Space"
-        case .profile: "Switch Profile"
-        case .action: "Command"
-        case .bookmark: "Open Bookmark"
-        case .history: "Open History"
-        }
+        model.commandResultBadge(for: candidate)
     }
 
     private func resultAccessibilityLabel(for candidate: CommandSearchCandidate) -> String {
