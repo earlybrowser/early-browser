@@ -11,6 +11,14 @@ import WebKit
 /// Controller and unshown native-host checks only. No app launch/input synthesis.
 @Suite(.serialized) @MainActor
 struct SplitPresentationTests {
+    @MainActor private final class AttachmentRecordingWebView: WKWebView {
+        var arrivalFrames: [CGRect] = []
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            if superview != nil { arrivalFrames.append(frame) }
+        }
+    }
+
     @MainActor private final class ResizeRecordingWebView: WKWebView {
         var resizeStarts = 0
         var resizeEnds = 0
@@ -821,6 +829,152 @@ struct SplitPresentationTests {
         #expect(!window.isVisible)
     }
 
+    @Test(arguments: [false, true])
+    func rapidSpaceHandoffsReusePagesAndSharedFavoritesWithoutBlankHosts(disableAnimations: Bool) async throws {
+        let fixture = Fixture(servePages: true), model = fixture.model
+        let originalSpace = model.coordinator.activeSpaceID
+        let otherSpace = try #require(model.createSpace(name: "Other"))
+        let emptySpace = try #require(model.createSpace(name: "Empty"))
+        #expect(model.moveTab(fixture.tabs[1].id, toSpace: otherSpace))
+        let otherPage = try #require(model.activePage)
+        #expect(model.switchSpace(to: originalSpace))
+        let originalPage = try #require(model.activePage)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: AnyView(SplitContentView(model: model)
+            .transaction { if disableAnimations { $0.disablesAnimations = true } }))
+        window.contentView = hosting
+        hosting.frame.size = CGSize(width: 800, height: 600)
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            fixture.cleanup()
+        }
+        func hosts() -> [WebContentView.HostView] {
+            func collect(_ view: NSView) -> [WebContentView.HostView] {
+                (view as? WebContentView.HostView).map { [$0] } ?? view.subviews.flatMap(collect)
+            }
+            hosting.needsLayout = true
+            hosting.layoutSubtreeIfNeeded()
+            return collect(hosting)
+        }
+        func waitForHosts(_ count: Int) async throws -> [WebContentView.HostView] {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while true {
+                let result = hosts()
+                if result.count == count && result.allSatisfy({ $0.hosted != nil }) { return result }
+                guard ContinuousClock.now < deadline else { throw LayoutFailure.timeout }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        _ = try await waitForHosts(1)
+        let readyDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while originalPage.view.title != "Ready" || otherPage.view.title != "Ready" {
+            guard ContinuousClock.now < readyDeadline else { throw LayoutFailure.timeout }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        for page in [originalPage, otherPage] {
+            _ = try await page.view.evaluateJavaScript("window.spaceIdentity = 'keep document'; document.getElementById('saved').value = 'keep form'; true")
+        }
+        // Re-enter before the previous transition has finished. A new
+        // host must never be left empty because an outgoing host still owns it.
+        for space in [otherSpace, originalSpace, otherSpace, originalSpace] {
+            #expect(model.switchSpace(to: space))
+            #expect(model.coordinator.activeSpaceID == space, "Direct Space selection must commit synchronously, without waiting for the fade")
+            _ = hosts()
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        let returned = try #require(try await waitForHosts(1).first)
+        #expect(returned.hosted === originalPage.view)
+        #expect(originalPage.view.frame == returned.bounds)
+        #expect(model.webViews.creationCount == 2)
+        for page in [originalPage, otherPage] {
+            #expect(try await page.view.evaluateJavaScript("window.spaceIdentity") as? String == "keep document")
+            #expect(try await page.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep form")
+        }
+        #expect(model.switchSpace(to: emptySpace))
+        _ = try await waitForHosts(0)
+        #expect(model.activePage == nil && model.webViews.creationCount == 2)
+        #expect(originalPage.view.bounds.width > 0 && otherPage.view.bounds.width > 0)
+        #expect(model.switchSpace(to: originalSpace))
+        _ = try await waitForHosts(1)
+
+        // The same Favorite selected in two Spaces has no page handoff at all.
+        #expect(model.perform(.setFavorite(fixture.tabs[0].id, true)))
+        #expect(model.switchSpace(to: otherSpace))
+        #expect(model.perform(.selectTab(fixture.tabs[0].id)))
+        let favoriteHost = try #require(try await waitForHosts(1).first)
+        #expect(model.switchSpace(to: originalSpace))
+        let unchanged = try #require(try await waitForHosts(1).first)
+        #expect(unchanged === favoriteHost && unchanged.hosted === originalPage.view)
+        #expect(model.webViews.creationCount == 2 && !window.isVisible)
+    }
+
+    @Test func spaceSwitchPresentationKeepsSuccessfulHandoffsShortWithoutRushingCancellation() {
+        // A deterministic animation contract, not a hardware-dependent speed
+        // benchmark: no wall-clock threshold is asserted by this test.
+        #expect(SpaceSwitchMotion.contentDuration > 0 && SpaceSwitchMotion.contentDuration <= 0.08)
+        #expect(SpaceSwitchMotion.navigationSettleDuration > 0 && SpaceSwitchMotion.navigationSettleDuration <= 0.08)
+        #expect(SpaceSwitchMotion.contentDuration + SpaceSwitchMotion.navigationSettleDuration <= 0.16)
+        #expect(SpaceSwitchMotion.cancellationSettleDuration == 0.18)
+    }
+
+    @Test func settledSpaceSwipesCommitOnceAndCanceledSwipesCannotReplaceANewerSelection() async throws {
+        let fixture = Fixture(), model = fixture.model
+        defer { fixture.cleanup() }
+        let next = try #require(model.createSpace(name: "Next"))
+        let empty = try #require(model.createSpace(name: "Empty"))
+        model.finishSpaceSwipe(.next)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while model.coordinator.activeSpaceID != next {
+            guard ContinuousClock.now < deadline else { throw LayoutFailure.timeout }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!model.spaceSwipeIsSettling && model.spaceSwipeProgress == 0)
+        #expect(model.activePage == nil && model.webViews.creationCount == 1)
+        model.finishSpaceSwipe(.previous)
+        #expect(model.switchSpace(to: empty)) // Cancels any unfinished settle.
+        try await Task.sleep(for: .milliseconds(220))
+        #expect(model.coordinator.activeSpaceID == empty)
+        #expect(!model.spaceSwipeIsSettling && model.spaceSwipeProgress == 0)
+        #expect(model.activePage == nil && model.webViews.creationCount == 1)
+    }
+
+    @Test func nativePageHandoffPreservesItsViewportUntilTheNewHostHasARealSize() {
+        _ = NSApplication.shared
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let page = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
+        let original = WebContentView.HostView(frame: page.frame)
+        #expect(original.display(page))
+        let previousFrame = page.frame
+        original.invalidate()
+        let destination = WebContentView.HostView(frame: .zero)
+        defer { destination.invalidate() }
+        #expect(destination.display(page))
+        #expect(page.frame == previousFrame, "Attaching to an unlaid-out host must not collapse a warm page to zero")
+        destination.setFrameSize(CGSize(width: 700, height: 500))
+        #expect(page.frame == destination.bounds)
+        destination.setBoundsSize(.zero)
+        #expect(page.frame.size == CGSize(width: 700, height: 500))
+        destination.setBoundsSize(CGSize(width: 500, height: 400))
+        #expect(page.frame == destination.bounds)
+    }
+
+    @Test func nativePageIsSizedBeforeItJoinsItsNewHost() {
+        _ = NSApplication.shared
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let page = AttachmentRecordingWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
+        let host = WebContentView.HostView(frame: CGRect(x: 0, y: 0, width: 400, height: 500))
+        defer { host.invalidate() }
+        #expect(host.display(page))
+        #expect(page.arrivalFrames.last == host.bounds,
+                "WebKit must see its final viewport when attachment makes the page drawable")
+    }
+
     @Test func nativePageHostClipsAndResizesImmediatelyAndBalancesLiveResize() {
         _ = NSApplication.shared
         let config = WKWebViewConfiguration()
@@ -837,10 +991,16 @@ struct SplitPresentationTests {
         #expect(host.clipsToBounds && host.isFlipped && !host.autoresizesSubviews)
         #expect(host.visibleRect == host.bounds)
         for size in [CGSize(width: 650, height: 480), .zero, CGSize(width: 200, height: 700), CGSize(width: 800, height: 600)] {
+            let previousFrame = first.frame
             host.setFrameSize(size)
             // Assert before another run-loop/layout pass: there must not be an
             // old-sized child behind a newly positioned pane boundary.
-            #expect(first.frame == host.bounds && first.bounds.size == size)
+            if size == .zero {
+                #expect(first.frame == previousFrame, "A transient empty host must not collapse the page viewport")
+                #expect(host.visibleRect.isEmpty, "The clipped zero-sized host must not expose its retained page")
+            } else {
+                #expect(first.frame == host.bounds && first.bounds.size == size)
+            }
             host.setLiveResize(true)
             #expect(host.display(first))
         }

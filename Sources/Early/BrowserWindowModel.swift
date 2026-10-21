@@ -571,12 +571,13 @@ final class BrowserWindowModel {
         let revision = UUID()
         spaceSwipeRevision = revision
         spaceSwipeIsSettling = true
-        withAnimation(.easeOut(duration: target == nil ? 0.18 : 0.15)) {
+        let settleDuration = target == nil ? SpaceSwitchMotion.cancellationSettleDuration : SpaceSwitchMotion.navigationSettleDuration
+        withAnimation(.easeOut(duration: settleDuration)) {
             spaceSwipeProgress = target == nil ? 0 : (delta > 0 ? -1 : 1)
             spaceSwipeCreationProgress = 0
         }
         spaceSwipeSettleTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(target == nil ? 180 : 150)) } catch { return }
+            do { try await Task.sleep(for: .seconds(settleDuration)) } catch { return }
             guard let self, self.spaceSwipeRevision == revision else { return }
             let contextMatches = self.coordinator.activeSpaceID == source && self.coordinator.spaces.map(\.id) == catalog
             var transaction = Transaction()
@@ -585,10 +586,13 @@ final class BrowserWindowModel {
                 self.spaceSwipeIsSettling = false
                 self.spaceSwipeSettleTask = nil
                 self.spaceSwipeProgress = 0
-                guard contextMatches, self.canManageSpaces else { return }
-                if let target { _ = self.switchSpace(to: target) }
-                else if action == .create { self.requestNewSpace() }
             }
+            // Only reset the sidebar's finished travel without animation.
+            // Committing the Space outside that transaction lets the content
+            // perform the same fade as a dot/menu/keyboard Space selection.
+            guard contextMatches, self.canManageSpaces else { return }
+            if let target { _ = self.switchSpace(to: target) }
+            else if action == .create { self.requestNewSpace() }
         }
     }
 

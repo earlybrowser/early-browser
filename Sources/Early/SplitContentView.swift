@@ -102,6 +102,10 @@ struct SplitContentView: View {
                         .transition(.identity)
                 }
             }
+            // Space handoffs get a fast-starting opacity transition, including between
+            // two ordinary (non-split) pages. Keep tab-keyed hosts so a shared
+            // Favorite never gets rehosted merely because its Space changed.
+            .animation(reduceMotion ? nil : .easeOut(duration: SpaceSwitchMotion.contentDuration), value: model.coordinator.activeSpaceID)
             // Animate only COMMITTED membership changes, not pointer movement,
             // focus, window resizing or live divider tracking. A surviving host
             // expands/contracts in place while the added/removed pane fades.
@@ -130,7 +134,9 @@ struct SplitContentView: View {
         let page = model.webViews.pages[id]
         let focused = model.coordinator.focusedTabID == id
         return ZStack {
-            Color(nsColor: .textBackgroundColor)
+            // Match the actual page, not the browser appearance: a dark site
+            // in light chrome must not flash a white island during attachment.
+            Color(nsColor: page?.view.underPageBackgroundColor ?? .textBackgroundColor)
             WebContentView(view: page?.view, focusRequest: model.contentFocusRequest,
                 canFocus: focused && model.coordinator.commandBar == nil && model.tabSwitcher == nil
                     && model.splitDropSourceID == nil && !model.hasVisibleDialog,

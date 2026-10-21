@@ -823,9 +823,16 @@ struct WebContentView: NSViewRepresentable {
             // Never touch a view reparented by element fullscreen.
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            if hosted.frame != bounds { hosted.frame = bounds }
+            // A newly made/removed SwiftUI host can have zero bounds for one
+            // layout pass. Keep the last real viewport instead of asking
+            // WebKit to reflow to zero and repaint again on Space re-entry.
+            if hasViewport, hosted.frame != bounds { hosted.frame = bounds }
             layer?.backgroundColor = hosted.underPageBackgroundColor.cgColor
             CATransaction.commit()
+        }
+
+        private var hasViewport: Bool {
+            bounds.width.isFinite && bounds.height.isFinite && bounds.width > 0 && bounds.height > 0
         }
 
         func setLiveResize(_ resizing: Bool) {
@@ -938,7 +945,14 @@ struct WebContentView: NSViewRepresentable {
                 Self.owners.setObject(self, forKey: view)
                 view.removeFromSuperview()
                 view.autoresizingMask = []
+                // Size before attachment: WebKit must not start drawing at the
+                // previous Space's viewport and immediately resize afterward.
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                if hasViewport { view.frame = bounds }
+                layer?.backgroundColor = view.underPageBackgroundColor.cgColor
                 addSubview(view)
+                CATransaction.commit()
                 layoutHostedView()
                 // Use WebKit's computed page background, not the browser's
                 // light/dark appearance, for any not-yet-painted resize area.
