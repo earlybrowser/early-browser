@@ -86,6 +86,7 @@ struct SplitContentView: View {
                 canFocus: focused && model.coordinator.commandBar == nil && model.tabSwitcher == nil
                     && model.splitDropSourceID == nil && !model.hasVisibleDialog,
                 hasDialog: page?.hasDialog == true,
+                isResizing: model.splitResize != nil,
                 onInteraction: {
                     if model.coordinator.commandBar != nil { model.dismissCommandBar(restoreFocus: false) }
                     if let paneID { _ = model.focusPane(paneID, restoreFocus: false) }

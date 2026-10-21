@@ -804,20 +804,32 @@ final class BrowserWindowModel {
         guard let group = coordinator.activeSplitGroup, group.id == id,
               canPerform(.resizeSplit(id, group.leadingFraction)) else { return }
         cancelTabSwitcher(restoreFocus: false)
-        splitResize = SplitResize(groupID: id, fraction: group.leadingFraction)
-        updateRuntimeInteraction()
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            splitResize = SplitResize(groupID: id, fraction: group.leadingFraction)
+            updateRuntimeInteraction()
+        }
     }
 
     func updateSplitResize(_ fraction: Double) {
         guard fraction.isFinite, let resize = splitResize, coordinator.activeSplitGroup?.id == resize.groupID else { return }
-        splitResize?.fraction = min(max(fraction, BrowserSplitGroup.fractionRange.lowerBound), BrowserSplitGroup.fractionRange.upperBound)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            splitResize?.fraction = min(max(fraction, BrowserSplitGroup.fractionRange.lowerBound), BrowserSplitGroup.fractionRange.upperBound)
+        }
     }
 
     func finishSplitResize(commit: Bool) {
         guard let resize = splitResize else { return }
-        splitResize = nil
-        updateRuntimeInteraction()
-        if commit { _ = perform(.resizeSplit(resize.groupID, resize.fraction)) }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            splitResize = nil
+            updateRuntimeInteraction()
+            if commit { _ = perform(.resizeSplit(resize.groupID, resize.fraction)) }
+        }
     }
 
     func cancelWindowInteractions() {

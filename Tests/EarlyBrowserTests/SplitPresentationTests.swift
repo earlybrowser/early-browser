@@ -11,10 +11,28 @@ import WebKit
 /// Controller and unshown native-host checks only. No app launch/input synthesis.
 @Suite(.serialized) @MainActor
 struct SplitPresentationTests {
+    @MainActor private final class ResizeRecordingWebView: WKWebView {
+        var resizeStarts = 0
+        var resizeEnds = 0
+        override func viewWillStartLiveResize() {
+            resizeStarts += 1
+            super.viewWillStartLiveResize()
+        }
+        override func viewDidEndLiveResize() {
+            resizeEnds += 1
+            super.viewDidEndLiveResize()
+        }
+    }
+
     @MainActor private final class ReadyPages: NSObject, WKURLSchemeHandler {
         func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
             guard let url = task.request.url else { return }
-            let data = Data("<html><head><title>Ready</title></head><body>Ready</body></html>".utf8)
+            let data = Data("""
+                <!doctype html><html><head><title>Ready</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>html,body{margin:0;background:#202124;color:white}body{min-height:100vh}</style>
+                </head><body>Ready<input id="saved"></body></html>
+                """.utf8)
             task.didReceive(URLResponse(url: url, mimeType: "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
             task.didReceive(data)
             task.didFinish()
@@ -661,6 +679,186 @@ struct SplitPresentationTests {
         #expect(remainingHost === originalHost && remainingHost.hosted === originalView)
         #expect(hosting.convert(originalHost.bounds, from: originalHost) == originalFrame)
         #expect(model.webViews.creationCount == created)
+        #expect(!window.isVisible)
+    }
+
+    @Test func nativePageHostClipsAndResizesImmediatelyAndBalancesLiveResize() {
+        _ = NSApplication.shared
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let first = ResizeRecordingWebView(frame: .zero, configuration: config)
+        let second = ResizeRecordingWebView(frame: .zero, configuration: config)
+        let parent = NSView(frame: CGRect(x: 0, y: 0, width: 1600, height: 1000))
+        let host = WebContentView.HostView(frame: CGRect(x: 20, y: 20, width: 400, height: 600))
+        parent.addSubview(host)
+        defer { host.invalidate() }
+        host.setLiveResize(true) // A request before a page is attached is safe.
+        #expect(host.display(first))
+        #expect(first.resizeStarts == 1 && first.resizeEnds == 0)
+        #expect(host.clipsToBounds && host.isFlipped && !host.autoresizesSubviews)
+        #expect(host.visibleRect == host.bounds)
+        for size in [CGSize(width: 650, height: 480), .zero, CGSize(width: 200, height: 700), CGSize(width: 800, height: 600)] {
+            host.setFrameSize(size)
+            // Assert before another run-loop/layout pass: there must not be an
+            // old-sized child behind a newly positioned pane boundary.
+            #expect(first.frame == host.bounds && first.bounds.size == size)
+            host.setLiveResize(true)
+            #expect(host.display(first))
+        }
+        #expect(first.resizeStarts == 1 && first.resizeEnds == 0)
+        host.setBoundsSize(CGSize(width: 500, height: 400))
+        #expect(first.frame == host.bounds)
+        // Element fullscreen reparents the page. Native layout must not resize
+        // a view that now belongs to another container.
+        let fullscreenOwner = NSView(frame: CGRect(x: 0, y: 0, width: 1200, height: 900))
+        first.removeFromSuperview()
+        fullscreenOwner.addSubview(first)
+        let fullscreenFrame = first.frame
+        host.setFrameSize(CGSize(width: 300, height: 500))
+        #expect(first.frame == fullscreenFrame && first.superview === fullscreenOwner)
+        #expect(host.display(second))
+        #expect(first.resizeStarts == 1 && first.resizeEnds == 1)
+        #expect(second.resizeStarts == 1 && second.resizeEnds == 0)
+        #expect(second.frame == host.bounds)
+        host.setLiveResize(false)
+        host.setLiveResize(false)
+        #expect(second.resizeEnds == 1)
+        host.setLiveResize(true)
+        #expect(second.resizeStarts == 2)
+        host.invalidate() // Cancellation/teardown must always end live resize.
+        host.setLiveResize(true)
+        #expect(second.resizeEnds == 2 && !host.display(second))
+        #expect(first.superview === fullscreenOwner)
+    }
+
+    @Test func nativePageHostBackgroundFollowsOnlyItsCurrentPage() async throws {
+        _ = NSApplication.shared
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let first = WKWebView(frame: .zero, configuration: config)
+        let second = WKWebView(frame: .zero, configuration: config)
+        let host = WebContentView.HostView(frame: CGRect(x: 0, y: 0, width: 400, height: 600))
+        defer { host.invalidate() }
+        first.underPageBackgroundColor = NSColor(srgbRed: 0.1, green: 0.2, blue: 0.3, alpha: 1)
+        #expect(host.display(first))
+        #expect(host.layer?.backgroundColor == first.underPageBackgroundColor.cgColor)
+        first.underPageBackgroundColor = NSColor(srgbRed: 0.4, green: 0.5, blue: 0.6, alpha: 1)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while host.layer?.backgroundColor != first.underPageBackgroundColor.cgColor, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(host.layer?.backgroundColor == first.underPageBackgroundColor.cgColor)
+        // Queue an old page notification, then replace it before that task can
+        // run. Neither it nor future notifications may recolor the new page.
+        first.underPageBackgroundColor = .red
+        second.underPageBackgroundColor = NSColor(srgbRed: 0.2, green: 0.7, blue: 0.3, alpha: 1)
+        #expect(host.display(second))
+        await Task.yield()
+        #expect(host.layer?.backgroundColor == second.underPageBackgroundColor.cgColor)
+        #expect(host.display(nil))
+        first.underPageBackgroundColor = .blue
+        second.underPageBackgroundColor = .blue
+        await Task.yield()
+        #expect(host.layer?.backgroundColor == nil)
+    }
+
+    @Test func liveSplitResizeKeepsNativeAndDOMViewportsAligned() async throws {
+        let fixture = Fixture(servePages: true), model = fixture.model
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: AnyView(SplitContentView(model: model)))
+        window.contentView = hosting
+        hosting.frame.size = CGSize(width: 800, height: 600)
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            fixture.cleanup()
+        }
+        func hosts(in view: NSView) -> [WebContentView.HostView] {
+            (view as? WebContentView.HostView).map { [$0] } ?? view.subviews.flatMap { hosts(in: $0) }
+        }
+        func layout() {
+            hosting.needsLayout = true
+            hosting.layoutSubtreeIfNeeded()
+        }
+        func expectDOMViewport(_ view: WKWebView, in host: WebContentView.HostView) async throws {
+            // WebKit's separate process applies viewport messages asynchronously.
+            // Native bounds must match immediately; the DOM must converge on the
+            // latest size, including after a burst of intermediate geometries.
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            var viewport = -1.0
+            repeat {
+                viewport = try #require(try await view.evaluateJavaScript("window.innerWidth") as? Double)
+                if abs(viewport - host.bounds.width) < 1 { return }
+                try await Task.sleep(for: .milliseconds(10))
+                layout()
+            } while ContinuousClock.now < deadline
+            #expect(abs(viewport - host.bounds.width) < 1, "DOM viewport must follow the latest native size: DOM \(viewport), host \(host.bounds)")
+        }
+        #expect(model.perform(.splitTab(fixture.tabs[1].id, .trailing)))
+        let group = try #require(model.coordinator.activeSplitGroup)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while (hosts(in: hosting).count != 2 || model.webViews.pages.values.contains { $0.isLoading || $0.view.title != "Ready" }), ContinuousClock.now < deadline {
+            layout()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        // Allow only the committed split insertion animation to settle. Divider
+        // tracking below must resize directly, with production animations ON.
+        try await Task.sleep(for: .milliseconds(300))
+        layout()
+        let originalHosts = hosts(in: hosting)
+        try #require(originalHosts.count == 2)
+        let originalViews = try originalHosts.map { try #require($0.hosted) }
+        for view in originalViews {
+            _ = try await view.evaluateJavaScript("window.resizeMarker = 'keep'; document.getElementById('saved').value = 'keep';")
+        }
+        let created = model.webViews.creationCount, saves = fixture.saves, focus = model.contentFocusRequest
+        model.beginSplitResize(group.id)
+        for fraction in [0.7, 0.3, 0.8, 0.2, 0.6] {
+            model.updateSplitResize(fraction)
+            layout()
+            let expected = BrowserSplitLayout(size: hosting.bounds.size, leadingFraction: fraction)
+            let currentHosts = hosts(in: hosting)
+            for (index, pane) in group.panes.enumerated() {
+                let view = try #require(model.webViews.pages[pane.tabID]?.view)
+                let host = try #require(currentHosts.first { $0.hosted === view })
+                let actual = hosting.convert(host.bounds, from: host)
+                #expect(abs(actual.width - expected.frame(at: index).width) < 1, "Pane geometry must follow the live fraction")
+                #expect(view.frame == host.bounds, "Native viewport must fill its host immediately: web \(view.frame), host \(host.bounds)")
+                #expect(view.bounds.size == host.bounds.size)
+                try await expectDOMViewport(view, in: host)
+            }
+        }
+        model.finishSplitResize(commit: true)
+        layout()
+        #expect(fixture.saves == saves + 1 && model.contentFocusRequest == focus)
+        // Exercise rapid changes without waiting on JavaScript/WebKit between
+        // native layouts, then cancel back to the saved ratio.
+        model.beginSplitResize(group.id)
+        for step in 0..<40 {
+            model.updateSplitResize(step.isMultiple(of: 2) ? 0.25 : 0.75)
+            layout()
+            for host in hosts(in: hosting) { #expect(host.hosted?.frame == host.bounds) }
+        }
+        model.finishSplitResize(commit: false)
+        layout()
+        #expect(fixture.saves == saves + 1 && model.coordinator.activeSplitGroup?.leadingFraction == 0.6)
+        for size in [CGSize(width: 1100, height: 500), CGSize(width: 640, height: 720)] {
+            window.setContentSize(size)
+            layout()
+            for host in hosts(in: hosting) {
+                let view = try #require(host.hosted)
+                #expect(view.frame == host.bounds)
+                try await expectDOMViewport(view, in: host)
+            }
+        }
+        #expect(model.webViews.creationCount == created)
+        for (host, view) in zip(originalHosts, originalViews) {
+            #expect(hosts(in: hosting).contains { $0 === host } && host.hosted === view)
+            #expect(try await view.evaluateJavaScript("window.resizeMarker") as? String == "keep")
+            #expect(try await view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep")
+        }
         #expect(!window.isVisible)
     }
 

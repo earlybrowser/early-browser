@@ -659,11 +659,13 @@ struct WebContentView: NSViewRepresentable {
     let focusRequest: Int
     let canFocus: Bool
     let hasDialog: Bool
+    var isResizing = false
     var onInteraction: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> HostView { HostView() }
     static func dismantleNSView(_ host: HostView, coordinator: ()) { host.invalidate() }
     func updateNSView(_ host: HostView, context: Context) {
+        host.setLiveResize(isResizing)
         host.display(view)
         host.canFocus = canFocus
         host.suppressAccessibilityChildren = hasDialog
@@ -687,8 +689,71 @@ struct WebContentView: NSViewRepresentable {
         private weak var desired: WKWebView?
         private var leavingFullscreen = false
         private var invalidated = false
+        private var resizeRequested = false
+        private weak var resizingView: WKWebView?
+        private var backgroundObservation: NSKeyValueObservation?
         var onInteraction: (() -> Void)?
         private var interactionMonitor: Any?
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            // SwiftUI clipping alone can leave the embedded native surface's
+            // exposed rect larger than the pane during rapid divider changes.
+            clipsToBounds = true
+            wantsLayer = true
+            autoresizesSubviews = false
+        }
+        required init?(coder: NSCoder) { return nil }
+        override var isFlipped: Bool { true }
+
+        override func setFrameSize(_ size: NSSize) {
+            super.setFrameSize(size)
+            layoutHostedView()
+        }
+        override func setBoundsSize(_ size: NSSize) {
+            super.setBoundsSize(size)
+            layoutHostedView()
+        }
+        override func layout() {
+            super.layout()
+            layoutHostedView()
+        }
+
+        private func layoutHostedView() {
+            guard !invalidated, let hosted, hosted.superview === self else { return }
+            // Set the viewport in the SAME native layout pass as its host,
+            // rather than animating a composited old-sized WebKit surface.
+            // Never touch a view reparented by element fullscreen.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            if hosted.frame != bounds { hosted.frame = bounds }
+            layer?.backgroundColor = hosted.underPageBackgroundColor.cgColor
+            CATransaction.commit()
+        }
+
+        func setLiveResize(_ resizing: Bool) {
+            resizeRequested = resizing && !invalidated
+            synchronizeLiveResize()
+        }
+
+        private func synchronizeLiveResize() {
+            let target = resizeRequested && hosted?.superview === self ? hosted : nil
+            guard resizingView !== target else { return }
+            finishLiveResize()
+            if let target {
+                resizingView = target
+                // Divider drags don't resize NSWindow, so AppKit doesn't send
+                // these notifications for us. WebKit uses them to coordinate
+                // drawing-area updates with continuous native viewport changes.
+                target.viewWillStartLiveResize()
+            }
+        }
+
+        private func finishLiveResize() {
+            guard let resizingView else { return }
+            self.resizingView = nil
+            resizingView.viewDidEndLiveResize()
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -757,11 +822,14 @@ struct WebContentView: NSViewRepresentable {
         }
 
         private func releaseHostedView() {
+            finishLiveResize()
+            backgroundObservation = nil
             if let hosted {
                 if Self.owners.object(forKey: hosted) === self { Self.owners.removeObject(forKey: hosted) }
                 if hosted.superview === self { hosted.removeFromSuperview() }
             }
             hosted = nil
+            layer?.backgroundColor = nil
         }
 
         @discardableResult
@@ -772,9 +840,18 @@ struct WebContentView: NSViewRepresentable {
             if let view {
                 Self.owners.setObject(self, forKey: view)
                 view.removeFromSuperview()
-                view.frame = bounds
-                view.autoresizingMask = [.width, .height]
+                view.autoresizingMask = []
                 addSubview(view)
+                layoutHostedView()
+                // Use WebKit's computed page background, not the browser's
+                // light/dark appearance, for any not-yet-painted resize area.
+                backgroundObservation = view.observe(\.underPageBackgroundColor) { [weak self, weak view] _, _ in
+                    Task { @MainActor [weak self, weak view] in
+                        guard let self, let view, self.hosted === view else { return }
+                        self.layoutHostedView()
+                    }
+                }
+                synchronizeLiveResize()
             }
             return true
         }
