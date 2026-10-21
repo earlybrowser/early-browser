@@ -143,6 +143,12 @@ final class EarlyUITests: XCTestCase {
         XCTAssertLessThan(left.frame.midX, right.frame.midX)
         XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
         XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
+        // Resize the freshly created divider BEFORE any swap can refresh it.
+        let initialDividerX = divider.frame.midX
+        let initialHandle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        initialHandle.click(forDuration: 0.15, thenDragTo: initialHandle.withOffset(CGVector(dx: 50, dy: 0)))
+        let initiallyResized = NSPredicate { _, _ in divider.frame.midX > initialDividerX + 20 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: initiallyResized, object: nil)], timeout: 5), .completed)
         for reversed in [true, false] {
             app.buttons[firstID].rightClick()
             app.menuItems["Split View"].hover()
@@ -202,6 +208,11 @@ final class EarlyUITests: XCTestCase {
                    withVelocity: .slow, thenHoldForDuration: 0.5)
         XCTAssertTrue(divider.waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 2, views: 2, created: 2)
+        let initialDividerX = divider.frame.midX
+        let handle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        handle.click(forDuration: 0.15, thenDragTo: handle.withOffset(CGVector(dx: 50, dy: 0)))
+        let resized = NSPredicate { _, _ in divider.frame.midX > initialDividerX + 20 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: resized, object: nil)], timeout: 5), .completed)
         XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
         XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
         app.terminate()

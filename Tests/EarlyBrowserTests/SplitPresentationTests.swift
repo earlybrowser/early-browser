@@ -297,6 +297,92 @@ struct SplitPresentationTests {
         #expect(model.coordinator.splitGroups.count == 1 && model.webViews.creationCount == 4)
     }
 
+    @Test(arguments: [false, true])
+    func freshDragSplitEnablesDividerWhenSidebarDragEndsWithoutASwap(animationsEnabled: Bool) async throws {
+        let fixture = Fixture(), model = fixture.model
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: AnyView(BrowserWindowView(model: model).transaction { $0.disablesAnimations = !animationsEnabled }))
+        window.contentView = hosting
+        hosting.frame.size = CGSize(width: 800, height: 600)
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            fixture.cleanup()
+        }
+        func divider(in view: NSView) -> SplitDividerView? {
+            (view as? SplitDividerView) ?? view.subviews.lazy.compactMap { divider(in: $0) }.first
+        }
+        func layout() {
+            hosting.needsLayout = true
+            hosting.layoutSubtreeIfNeeded()
+        }
+        layout()
+        model.sidebarInteractionInProgress = true
+        model.updateSplitPreview(for: fixture.tabs[1].id, at: right, in: bounds)
+        layout()
+        #expect(model.commitSplitPreview())
+        let group = try #require(model.coordinator.activeSplitGroup)
+        layout()
+        let native = try #require(divider(in: hosting))
+        #expect(!native.isAccessibilityEnabled(), "Still blocked while the sidebar owns the drag")
+        // This is the last state change made by endDrag(). No swap, focus or
+        // ratio mutation may be needed to refresh the native control afterward.
+        model.sidebarInteractionInProgress = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !native.isAccessibilityEnabled(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            layout()
+        }
+        try #require(native.isAccessibilityEnabled(), "A new split must be immediately resizable without swapping")
+        try await Task.sleep(for: .milliseconds(350))
+        layout()
+        #expect(divider(in: hosting) === native)
+        native.resetCursorRects()
+        #expect(native.resizeCursorRect?.isEmpty == false)
+        let center = CGPoint(x: native.bounds.midX, y: native.bounds.midY)
+        let hit = hosting.hitTest(try #require(hosting.superview).convert(center, from: native))
+        #expect(hit === native, "The new divider must own its native hit region")
+        let saves = fixture.saves
+        native.beginResize(atWindowX: 400)
+        try #require(model.splitResize?.groupID == group.id)
+        layout()
+        native.updateResize(atWindowX: 450)
+        layout()
+        let fraction = try #require(model.splitResize?.fraction)
+        #expect(fraction > group.leadingFraction && fixture.saves == saves)
+        native.endResize(commit: true)
+        #expect(model.coordinator.activeSplitGroup?.leadingFraction == fraction)
+        #expect(fixture.saves == saves + 1 && model.splitResize == nil)
+        layout()
+        #expect(native.isAccessibilityEnabled() && !window.isVisible)
+    }
+
+    @Test func dividerTrackingFollowsItsFirstAssignedFrameWithoutASwapOrReconfigure() throws {
+        _ = NSApplication.shared
+        let container = NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let divider = SplitDividerView(frame: .zero)
+        container.addSubview(divider)
+        defer { divider.invalidate() }
+        divider.configure(groupID: UUID(), layout: BrowserSplitLayout(size: container.bounds.size, leadingFraction: 0.5),
+                          enabled: true, resizing: false, increasedContrast: false)
+        // Native representables are configured before SwiftUI assigns their
+        // first real frame. The initial tracking area is consequently empty.
+        divider.updateTrackingAreas()
+        divider.frame = CGRect(x: 394, y: 0, width: 12, height: 600)
+        divider.needsLayout = true
+        divider.layoutSubtreeIfNeeded()
+        let area = try #require(divider.trackingAreas.first)
+        let tracked = area.options.contains(.inVisibleRect) ? divider.bounds.intersection(divider.visibleRect) : area.rect
+        #expect(tracked == divider.bounds, "First layout must replace the empty native hover/cursor area")
+        #expect(tracked.width == 12 && tracked.height == 600)
+        // The same area must follow another resize without any model update.
+        divider.frame.size.height = 400
+        let resized = area.options.contains(.inVisibleRect) ? divider.bounds.intersection(divider.visibleRect) : area.rect
+        #expect(resized.height == 400)
+    }
+
     @Test func eitherVisibleDialogBlocksSplitFocusAndPreviewAndForeignWindowStaysUntouched() throws {
         let first = Fixture(), second = Fixture()
         defer { first.cleanup(); second.cleanup() }

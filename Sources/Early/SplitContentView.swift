@@ -45,7 +45,10 @@ struct SplitContentView: View {
                         .frame(width: min(12, geometry.size.width), height: layout.divider.height)
                         .position(x: layout.divider.midX, y: layout.divider.midY)
                         .allowsHitTesting(model.splitDropSourceID == nil)
-                        .transition(reduceMotion ? .identity : .opacity)
+                        // Native input must sit above newly inserted WebKit
+                        // hosts and must not inherit their insertion fade.
+                        .zIndex(1)
+                        .transition(.identity)
                 }
             }
             // Animate only COMMITTED membership changes, not pointer movement,
@@ -273,10 +276,26 @@ final class SplitDividerView: NSView {
         if let tracking { removeTrackingArea(tracking) }
         tracking = nil
         guard !invalidated else { return }
-        tracking = NSTrackingArea(rect: bounds.intersection(visibleRect),
-            options: [.activeInKeyWindow, .mouseEnteredAndExited, .cursorUpdate, .enabledDuringMouseDrag],
+        // updateNSView/attachment may run while the representable is still
+        // zero-sized. AppKit must follow its clipped visible bounds after the
+        // first layout, rather than freezing that initial empty rectangle.
+        tracking = NSTrackingArea(rect: .zero,
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited, .cursorUpdate, .enabledDuringMouseDrag],
             owner: self, userInfo: nil)
         if let tracking { addTrackingArea(tracking) }
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard !invalidated else { return }
+        updateTrackingAreas()
+        window?.invalidateCursorRects(for: self)
+    }
+    override func layout() {
+        super.layout()
+        guard !invalidated else { return }
+        // Configuration precedes frame assignment. Register the cursor again
+        // once its actual native hit area is known, without a swap/reconfigure.
+        window?.invalidateCursorRects(for: self)
     }
     override func cursorUpdate(with event: NSEvent) { if enabled { NSCursor.resizeLeftRight.set() } }
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
