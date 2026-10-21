@@ -509,6 +509,7 @@ struct BrowserWindowView: View {
             model.webViews.discardAll()
         }
         .environment(\.browserAllowsTransparency, model.preferences.translucentChrome)
+        .environment(\.browserSpaceColor, model.preferences.spaceThemes ? model.coordinator.activeSpace?.color : nil)
     }
 
     private var sidebar: some View {
@@ -1150,8 +1151,6 @@ struct BrowserWindowView: View {
         let name = tab.customTitle ?? tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
         let selected = model.coordinator.activeTabID == tab.id
         let tint = favoriteTint(tab)
-        let border = (selected ? tint : nil)?.opacity(contrast == .increased ? 0.80 : 0.65)
-            ?? Color.primary.opacity(contrast == .increased ? 0.30 : 0.07)
         return Button { model.perform(.selectTab(tab.id)) } label: {
             SiteIcon(url: tab.pinnedURL ?? tab.currentURL, store: model.webViews.favicons,
                      size: 18, monogram: String(name.prefix(1)).uppercased())
@@ -1161,10 +1160,6 @@ struct BrowserWindowView: View {
             .background {
                 FavoriteCardBackground(selected: selected, hovered: hoveredTab == tab.id, tint: tint,
                     allowsTransparency: model.preferences.translucentChrome)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9)
-                    .strokeBorder(border, lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: 9))
         }
@@ -2031,13 +2026,8 @@ struct BrowserWindowView: View {
                     BrowserFloatingBackground(spaceColor: nil, cornerRadius: cornerRadius,
                         allowsTransparency: model.preferences.translucentChrome,
                         color: overFavorites && model.coordinator.activeTabID == tab.id ? favoriteTint(tab) : nil,
-                        colorOpacity: FavoriteCardPalette.fillOpacity(isDark: colorScheme == .dark))
-                }
-                .overlay {
-                    if overFavorites, model.coordinator.activeTabID == tab.id, let tint = favoriteTint(tab) {
-                        RoundedRectangle(cornerRadius: 9)
-                            .strokeBorder(tint.opacity(contrast == .increased ? 0.80 : 0.65), lineWidth: 1)
-                    }
+                        colorOpacity: FavoriteCardPalette.fillOpacity(isDark: colorScheme == .dark),
+                        siteEdgeColor: overFavorites && model.coordinator.activeTabID == tab.id ? favoriteTint(tab) : nil)
                 }
                 .shadow(radius: lifted ? 5 : 0, y: lifted ? 2 : 0)
         case .folder(let folder):

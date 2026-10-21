@@ -7,10 +7,21 @@ private struct BrowserTransparencyKey: EnvironmentKey {
     static let defaultValue = true
 }
 
+private struct BrowserSpaceColorKey: EnvironmentKey {
+    static let defaultValue: BrowserSpace.Color? = nil
+}
+
 extension EnvironmentValues {
     var browserAllowsTransparency: Bool {
         get { self[BrowserTransparencyKey.self] }
         set { self[BrowserTransparencyKey.self] = newValue }
+    }
+
+    /// Window-local identity, not the system accent color. Nil keeps global
+    /// Settings and windows with Space themes disabled neutral.
+    var browserSpaceColor: BrowserSpace.Color? {
+        get { self[BrowserSpaceColorKey.self] }
+        set { self[BrowserSpaceColorKey.self] = newValue }
     }
 }
 
@@ -37,6 +48,63 @@ enum BrowserSurfacePalette {
     }
 
     static func borderOpacity(isDark: Bool) -> Double { isDark ? 0.07 : 0.14 }
+}
+
+/// Only the decorative perimeter receives theme color. Native glass lighting,
+/// surface fills and foreground content never receive a whole-surface tint.
+struct BrowserSurfaceEdgeStyle: Equatable {
+    let color: Color
+    let opacity: Double
+    let lineWidth: CGFloat
+
+    init?(spaceColor: BrowserSpace.Color?, siteColor: Color? = nil, isDark: Bool,
+          increasedContrast: Bool, drawsNeutralEdge: Bool = true) {
+        if let siteColor {
+            color = siteColor
+            opacity = increasedContrast ? 0.80 : 0.65
+            lineWidth = 1
+        } else if increasedContrast {
+            guard drawsNeutralEdge else { return nil }
+            color = .primary
+            opacity = 0.40
+            lineWidth = 1
+        } else if let spaceColor, spaceColor != .gray {
+            color = spaceColor.tint
+            opacity = isDark ? 0.32 : 0.38
+            lineWidth = 1
+        } else {
+            guard drawsNeutralEdge else { return nil }
+            color = .primary
+            opacity = BrowserSurfacePalette.borderOpacity(isDark: isDark)
+            lineWidth = 0.5
+        }
+    }
+}
+
+struct BrowserSurfaceEdge: View {
+    var shape: RoundedRectangle
+    var spaceColor: BrowserSpace.Color? = nil
+    var siteColor: Color? = nil
+    var drawsNeutralEdge = true
+    @Environment(\.browserSpaceColor) private var inheritedSpaceColor
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let theme = spaceColor ?? inheritedSpaceColor
+        Group {
+            if let style = BrowserSurfaceEdgeStyle(spaceColor: theme, siteColor: siteColor,
+                isDark: colorScheme == .dark, increasedContrast: contrast == .increased,
+                drawsNeutralEdge: drawsNeutralEdge) {
+                shape.strokeBorder(style.color.opacity(style.opacity), lineWidth: style.lineWidth)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: theme)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: colorScheme)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
 }
 
 struct BrowserGlassPolicy: Equatable {
@@ -94,8 +162,8 @@ struct BrowserIslandBackground: View {
     var colorOpacity: Double = 0
     var allowsTransparency: Bool
     var role: BrowserGlassRole = .island
+    var siteEdgeColor: Color? = nil
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius)
@@ -107,8 +175,7 @@ struct BrowserIslandBackground: View {
         .overlay { if let color { shape.fill(color.opacity(colorOpacity)) } }
         .overlay {
             if role != .control {
-                shape.strokeBorder(Color.primary.opacity(contrast == .increased ? 0.40
-                    : BrowserSurfacePalette.borderOpacity(isDark: colorScheme == .dark)), lineWidth: 0.5)
+                BrowserSurfaceEdge(shape: shape, siteColor: siteEdgeColor)
             }
         }
         .allowsHitTesting(false)
@@ -162,6 +229,9 @@ struct BrowserFrameGlassBackground: View {
     var body: some View {
         BrowserGlassBackground(shape: RoundedRectangle(cornerRadius: windowCornerRadius),
             allowsTransparency: allowsTransparency, role: .chrome)
+            .overlay {
+                BrowserSurfaceEdge(shape: RoundedRectangle(cornerRadius: windowCornerRadius), drawsNeutralEdge: false)
+            }
             .compositingGroup()
             .mask { maskShape.fill(.white) }
             .allowsHitTesting(false)
@@ -178,6 +248,7 @@ struct BrowserFloatingBackground: View {
     var color: Color? = nil
     var colorOpacity: Double = 0
     var role: BrowserGlassRole = .floating
+    var siteEdgeColor: Color? = nil
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -196,6 +267,9 @@ struct BrowserFloatingBackground: View {
         .clipShape(shape)
         .overlay { BrowserGlassBackground(shape: shape, allowsTransparency: allowsTransparency, role: role) }
         .overlay { if let color { shape.fill(color.opacity(colorOpacity)) } }
+        .overlay {
+            BrowserSurfaceEdge(shape: shape, spaceColor: spaceColor, siteColor: siteEdgeColor, drawsNeutralEdge: false)
+        }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -272,6 +346,6 @@ struct FavoriteCardBackground: View {
     var body: some View {
         BrowserIslandBackground(cornerRadius: 9, fillOpacity: selected ? 0.12 : (hovered ? 0.08 : 0.04),
             color: selected ? tint : nil, colorOpacity: FavoriteCardPalette.fillOpacity(isDark: colorScheme == .dark),
-            allowsTransparency: allowsTransparency)
+            allowsTransparency: allowsTransparency, siteEdgeColor: selected ? tint : nil)
     }
 }
