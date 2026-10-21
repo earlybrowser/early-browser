@@ -653,6 +653,103 @@ struct WindowDragRegion: NSViewRepresentable {
     }
 }
 
+enum SidebarRevealRegion {
+    static let edgeWidth: CGFloat = 2
+
+    static func contains(_ point: CGPoint?, sidebarWidth: CGFloat, revealed: Bool) -> Bool {
+        guard let point else { return false }
+        // Keep the edge-to-panel gutter active only AFTER a real edge entry.
+        return point.x >= 0 && point.x < (revealed ? sidebarWidth + 6 : edgeWidth)
+    }
+}
+
+/// Track the stationary native window surface, including events delivered to
+/// WebKit children. SwiftUI hover regions can miss a second edge entry after
+/// their overlay/sidebar hierarchy changes. Never intercept or synthesize input.
+struct BrowserWindowPointerMonitor: NSViewRepresentable {
+    let onMove: (CGPoint?) -> Void
+
+    func makeNSView(context: Context) -> PointerView {
+        let view = PointerView()
+        view.onMove = onMove
+        return view
+    }
+
+    func updateNSView(_ view: PointerView, context: Context) { view.onMove = onMove }
+    static func dismantleNSView(_ view: PointerView, coordinator: ()) {
+        view.stop()
+        view.onMove = nil
+    }
+
+    final class PointerView: NSView {
+        var onMove: ((CGPoint?) -> Void)?
+        private var monitor: Any?
+        private var area: NSTrackingArea?
+        private weak var monitoredWindow: NSWindow?
+        private var previouslyAcceptedMouseMoves = false
+
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stop()
+            guard let window else { return }
+            monitoredWindow = window
+            previouslyAcceptedMouseMoves = window.acceptsMouseMovedEvents
+            window.acceptsMouseMovedEvents = true
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [
+                .mouseMoved, .mouseEntered, .mouseExited,
+                .leftMouseDragged, .rightMouseDragged, .otherMouseDragged
+            ]) { [weak self] event in
+                self?.handle(event)
+                return event
+            }
+            for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(cancelPointer), name: name, object: window)
+            }
+            updateTrackingAreas()
+        }
+
+        override func updateTrackingAreas() {
+            if let area { removeTrackingArea(area) }
+            area = nil
+            if window != nil, monitor != nil {
+                let next = NSTrackingArea(rect: .zero,
+                    options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved], owner: self, userInfo: nil)
+                addTrackingArea(next)
+                area = next
+            }
+            super.updateTrackingAreas()
+        }
+
+        override func mouseEntered(with event: NSEvent) { handle(event) }
+        override func mouseMoved(with event: NSEvent) { handle(event) }
+        override func mouseExited(with event: NSEvent) { handle(event) }
+
+        func handle(_ event: NSEvent) {
+            guard monitor != nil, let window, event.window === window else { return }
+            let point = convert(event.locationInWindow, from: nil)
+            // A child tracking area's exit is NOT a window exit. Derive the
+            // result from the actual stable bounds, never the event's type.
+            onMove?(bounds.contains(point) ? point : nil)
+        }
+
+        @objc private func cancelPointer() { onMove?(nil) }
+
+        func stop() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            if let area { removeTrackingArea(area) }
+            area = nil
+            NotificationCenter.default.removeObserver(self)
+            monitoredWindow?.acceptsMouseMovedEvents = previouslyAcceptedMouseMoves
+            monitoredWindow = nil
+        }
+    }
+}
+
 /// SwiftUI owns this container; the manager owns the web view's lifetime.
 struct WebContentView: NSViewRepresentable {
     let view: WKWebView?

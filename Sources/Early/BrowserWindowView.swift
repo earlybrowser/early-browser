@@ -394,6 +394,13 @@ struct BrowserWindowView: View {
         // clipped page area is inset into it; no sidebar tint or seam on top.
         .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
                                             allowsTransparency: model.preferences.translucentChrome))
+        .background(BrowserWindowPointerMonitor { point in
+            windowPointer.location = point
+            guard sidebarAutoHides else { return }
+            let inside = point != nil && (resizeStartWidth != nil
+                || SidebarRevealRegion.contains(point, sidebarWidth: model.sidebarWidth, revealed: sidebarHovered))
+            if sidebarHovered != inside { sidebarHovered = inside }
+        })
         .background(TabSwitcherKeyboardMonitor(model: model))
         .background(BrowserWindowActivityMonitor(onCancel: {
             cancelledGestureItemID = dragGestureItemID
@@ -436,29 +443,12 @@ struct BrowserWindowView: View {
         .overlay(alignment: .leading) {
             if sidebarAutoHides && !sidebarVisible {
                 Color.clear
-                    .frame(width: 2)
+                    .frame(width: SidebarRevealRegion.edgeWidth)
                     .contentShape(Rectangle())
                     .onTapGesture { sidebarHovered = true }
                     .accessibilityLabel("Reveal sidebar")
                     .accessibilityAddTraits(.isButton)
                     .accessibilityIdentifier("sidebar.reveal")
-            }
-        }
-        // Track the stationary window surface, not the animated sidebar or the
-        // disappearing edge target. Their exit events can otherwise cancel a
-        // reveal and repeatedly restart it beneath a stationary pointer.
-        .onContinuousHover { phase in
-            switch phase {
-            case .active(let point):
-                windowPointer.location = point
-                guard sidebarAutoHides else { return }
-                // Retain across the edge-to-panel gutter as well as the panel.
-                // Entering its old footprint alone must never reveal it.
-                let inside = resizeStartWidth != nil || (point.x >= 0 && point.x < (sidebarHovered ? model.sidebarWidth + 6 : 2))
-                if sidebarHovered != inside { sidebarHovered = inside }
-            case .ended:
-                windowPointer.location = nil
-                sidebarHovered = false
             }
         }
         .ignoresSafeArea(.container, edges: .top)

@@ -2620,16 +2620,18 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [unexpectedlyHidden], timeout: 1.5), .completed)
         // Cross the gutter into the panel, then leave it. Only the actual edge
         // can reveal it again; the old sidebar footprint must remain inactive.
-        for x in [5.0, 120.0, 250.0] {
-            origin.withOffset(CGVector(dx: x, dy: window.frame.height / 2)).hover()
-            XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
+        for _ in 0..<3 {
+            for x in [5.0, 120.0, 250.0] {
+                origin.withOffset(CGVector(dx: x, dy: window.frame.height / 2)).hover()
+                XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
+            }
+            origin.withOffset(CGVector(dx: 280, dy: window.frame.height / 2)).hover()
+            XCTAssertTrue(app.buttons["sidebar.newTab"].waitForNonExistence(timeout: 3))
+            origin.withOffset(CGVector(dx: 120, dy: window.frame.height / 2)).hover()
+            XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
+            origin.withOffset(CGVector(dx: 1, dy: window.frame.height / 2)).hover()
+            XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))
         }
-        origin.withOffset(CGVector(dx: 280, dy: window.frame.height / 2)).hover()
-        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForNonExistence(timeout: 3))
-        origin.withOffset(CGVector(dx: 120, dy: window.frame.height / 2)).hover()
-        XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
-        origin.withOffset(CGVector(dx: 1, dy: window.frame.height / 2)).hover()
-        XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))
         app.webViews.firstMatch.hover()
         app.typeKey("s", modifierFlags: [.command, .shift])
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))

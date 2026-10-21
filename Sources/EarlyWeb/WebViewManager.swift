@@ -467,6 +467,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         protections[tabID] = nil
         if lifecycles[tabID] != nil { transition(tabID, .discard) }
         guard let page = pages[tabID] else { return }
+        // Removing a view/owner and stopping resource loads does not stop its
+        // media. An outgoing SwiftUI transition can still retain the document.
+        // Native suspension covers HTML media, embedded frames and Web Audio,
+        // and blocks stale page scripts from restarting playback after close.
+        // Discarded views are never reused; a reopened tab gets a fresh view.
+        page.view.setAllMediaPlaybackSuspended(true, completionHandler: nil)
         identities.removeValue(forKey: ObjectIdentifier(page.view))
         cancelDialog(tabID)
         pages.removeValue(forKey: tabID)

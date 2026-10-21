@@ -54,6 +54,92 @@ struct RuntimeRoutingTests {
             focusedPaneByGroupID: [group.id: group.panes[0].id])
     }
 
+    @Test(arguments: [TabStore.Section.regular, .pinned, .favorites], [false, true])
+    func closingRetainedPagesSuspendsNativeMediaAndReopeningDoesNotInheritSuspension(
+        section: TabStore.Section, hasOtherTab: Bool
+    ) async throws {
+        let profile = UUID(), space = UUID()
+        let url = URL(string: "early-test://fixture/one")!
+        let tab = BrowserTab(spaceID: space, profileID: profile, title: "Page One", currentURL: url,
+            pinnedURL: section == .regular ? nil : url, isFavorite: section == .favorites)
+        let other = BrowserTab(spaceID: space, profileID: profile, title: "Page Two", currentURL: nextURL)
+        let fixture = Fixture(session: BrowserSession(profileID: profile, activeSpaceID: space,
+            tabs: hasOtherTab ? [tab, other] : [tab], selectionBySpace: [space: tab.id]))
+        defer { fixture.cleanup() }
+        let model = fixture.model, retired = try #require(model.activePage)
+        try await waitUntil { !retired.isLoading && retired.view.title == "Page One" }
+        // Keep a strong reference throughout close/reopen, as an outgoing UI
+        // transition can. Zero gain guarantees no sound or desktop interaction.
+        // Check WebKit's native suspension, not Early's speaker flag or whether
+        // this headless runner's autoplay policy allowed audible playback.
+        _ = try await retired.view.evaluateJavaScript("""
+            // Register an HTML media session too: a headless runner may never
+            // start Web Audio, but the native suspension must still be visible.
+            window.closedPlayer = document.createElement('audio');
+            closedPlayer.muted = true; closedPlayer.loop = true;
+            document.body.append(closedPlayer); closedPlayer.play().catch(() => {});
+            window.mediaContext = new AudioContext();
+            const gain = mediaContext.createGain(); gain.gain.value = 0;
+            const oscillator = mediaContext.createOscillator();
+            oscillator.connect(gain); gain.connect(mediaContext.destination);
+            oscillator.start(); mediaContext.resume().catch(() => {});
+            true;
+            """)
+        let before = await playbackState(retired.view)
+        #expect(before != .suspended && before != .none)
+        var remaining: BrowserPage?
+        if hasOtherTab {
+            // Close this background page while another already-live media
+            // page is focused. Stopping it must not silence its neighbor.
+            #expect(model.perform(.selectTab(other.id)))
+            remaining = try #require(model.activePage)
+            let view = try #require(remaining?.view)
+            try await waitUntil { !view.isLoading && view.title == "Page Two" }
+            _ = try await view.evaluateJavaScript("""
+                window.otherPlayer = document.createElement('audio');
+                otherPlayer.muted = true; document.body.append(otherPlayer);
+                otherPlayer.play().catch(() => {}); true;
+                """)
+            #expect(await playbackState(view) == .playing)
+        }
+        #expect(model.perform(hasOtherTab ? .closeTab(tab.id) : .closeActiveTab))
+        #expect(model.webViews.pages[tab.id] == nil)
+        #expect(model.webViews.liveViewCount == (hasOtherTab ? 1 : 0))
+        #expect(retired.view.navigationDelegate == nil && retired.view.uiDelegate == nil)
+        let after = await playbackState(retired.view)
+        #expect(after == .suspended,
+                "Closing must stop native media even when the old page is still retained")
+        #expect(model.coordinator.tabStore.tab(id: tab.id)?.isOpen != true)
+        if let remaining {
+            #expect(model.activePage === remaining)
+            #expect(model.coordinator.activeTabID == other.id)
+            #expect(await playbackState(remaining.view) == .playing)
+        }
+        // A stale document must not restart itself after close.
+        _ = try await retired.view.evaluateJavaScript("closedPlayer.play().catch(() => {}); mediaContext.resume().catch(() => {}); true")
+        #expect(await playbackState(retired.view) == .suspended)
+        let created = model.webViews.creationCount
+        model.reopenLastTab()
+        let reopened = try #require(model.activePage)
+        #expect(reopened !== retired && reopened.view !== retired.view)
+        #expect(model.webViews.creationCount == created + 1)
+        try await waitUntil { !reopened.isLoading && reopened.view.title == "Page One" }
+        _ = try await reopened.view.evaluateJavaScript("""
+            window.reopenedPlayer = document.createElement('audio');
+            reopenedPlayer.muted = true; document.body.append(reopenedPlayer);
+            reopenedPlayer.play().catch(() => {}); true;
+            """)
+        #expect(await playbackState(reopened.view) == .playing,
+                "A reopened tab must not inherit its retired view's suspension")
+        #expect(await playbackState(retired.view) == .suspended)
+    }
+
+    private func playbackState(_ view: WKWebView) async -> WKMediaPlaybackState {
+        await withCheckedContinuation { continuation in
+            view.requestMediaPlaybackState { continuation.resume(returning: $0) }
+        }
+    }
+
     @Test func restorationPreparesVisibleMembersAndPaneFocusReusesTheirLivePages() async throws {
         let session = splitSession(), fixture = Fixture(session: session)
         defer { fixture.cleanup() }
