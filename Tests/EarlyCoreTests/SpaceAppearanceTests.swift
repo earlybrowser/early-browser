@@ -119,8 +119,8 @@ struct SpaceAppearanceTests {
                 for rgb in [color.chromeTop(isDark: dark), color.chromeBottom(isDark: dark)] {
                     let channels = [rgb.red, rgb.green, rgb.blue]
                     #expect(channels.allSatisfy { $0.isFinite && (0...1).contains($0) })
-                    #expect(dark ? channels.allSatisfy { $0 < 0.24 } : channels.allSatisfy { $0 > 0.65 })
-                    #expect(channels.max()! - channels.min()! < (dark ? 0.16 : 0.30))
+                    #expect(dark ? channels.allSatisfy { $0 < 0.15 } : channels.allSatisfy { $0 > 0.65 })
+                    #expect(channels.max()! - channels.min()! < (dark ? 0.10 : 0.30))
                     #expect(rgb != swatch)
                 }
                 #expect(color.swatch == swatch)
@@ -139,31 +139,5 @@ struct SpaceAppearanceTests {
         #expect(darkBlue.blue - darkBlue.red > 0.085)
         let darkBlueBottom = BrowserSpace.Color.blue.chromeBottom(isDark: true)
         #expect(darkBlueBottom.blue - darkBlueBottom.red > 0.05)
-    }
-
-    @Test func strongerDarkThemesPreserveTheLightPaletteAndNeutralGray() {
-        for color in BrowserSpace.Color.allCases {
-            let swatch = color.swatch
-            func blend(_ neutral: SpaceThemeRGB, _ amount: Double) -> SpaceThemeRGB {
-                SpaceThemeRGB(red: neutral.red + (swatch.red - neutral.red) * amount,
-                    green: neutral.green + (swatch.green - neutral.green) * amount,
-                    blue: neutral.blue + (swatch.blue - neutral.blue) * amount)
-            }
-            #expect(color.chromeTop(isDark: false) == blend(SpaceThemeRGB(red: 0.99, green: 0.965, blue: 0.91), 0.34))
-            #expect(color.chromeBottom(isDark: false) == blend(SpaceThemeRGB(red: 0.975, green: 0.947, blue: 0.88), 0.25))
-            let topNeutral = SpaceThemeRGB(red: 0.018, green: 0.018, blue: 0.018)
-            let bottomNeutral = SpaceThemeRGB(red: 0.010, green: 0.010, blue: 0.010)
-            if color == .gray {
-                #expect(color.chromeTop(isDark: true) == blend(topNeutral, 0.14))
-                #expect(color.chromeBottom(isDark: true) == blend(bottomNeutral, 0.09))
-            } else {
-                func chroma(_ rgb: SpaceThemeRGB) -> Double {
-                    let channels = [rgb.red, rgb.green, rgb.blue]
-                    return channels.max()! - channels.min()!
-                }
-                #expect(chroma(color.chromeTop(isDark: true)) > chroma(blend(topNeutral, 0.14)) * 1.5)
-                #expect(chroma(color.chromeBottom(isDark: true)) > chroma(blend(bottomNeutral, 0.09)) * 1.5)
-            }
-        }
     }
 }

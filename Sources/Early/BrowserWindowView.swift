@@ -296,20 +296,14 @@ struct BrowserWindowView: View {
                     }
                     .padding(24)
                     .frame(maxWidth: 440)
-                    .background {
-                        BrowserFloatingBackground(spaceColor: nil, cornerRadius: 12,
-                            allowsTransparency: model.preferences.translucentChrome)
-                    }
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("browser.error")
                 }
                 VStack {
                     if let error = model.persistence.error {
                         Text(error).font(.callout).padding(12)
-                            .background {
-                                BrowserFloatingBackground(spaceColor: nil, cornerRadius: 10,
-                                    allowsTransparency: model.preferences.translucentChrome)
-                            }
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                             .accessibilityIdentifier("browser.persistenceError")
                     }
                     if let notice = model.notice {
@@ -317,10 +311,7 @@ struct BrowserWindowView: View {
                             Text(notice)
                             Button("Dismiss") { model.notice = nil }
                         }.font(.callout).padding(12)
-                            .background {
-                                BrowserFloatingBackground(spaceColor: nil, cornerRadius: 10,
-                                    allowsTransparency: model.preferences.translucentChrome)
-                            }
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                     }
                     Spacer()
                 }
@@ -340,8 +331,8 @@ struct BrowserWindowView: View {
                 .background {
                     if sidebarAutoHides {
                         // Floating chrome must stay legible over web content.
-                        BrowserFloatingBackground(spaceColor: model.preferences.spaceThemes ? model.coordinator.activeSpace?.color : nil,
-                            cornerRadius: sidebarCornerRadius, allowsTransparency: model.preferences.translucentChrome, role: .chrome)
+                        BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+                                                floating: true, allowsTransparency: model.preferences.translucentChrome)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: sidebarCornerRadius))
@@ -390,15 +381,8 @@ struct BrowserWindowView: View {
         .padding(6)
         // One shared surface for the outer frame and pinned sidebar. Only the
         // clipped page area is inset into it; no sidebar tint or seam on top.
-        .background {
-            BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
-                allowsTransparency: model.preferences.translucentChrome)
-                .overlay {
-                    BrowserFrameGlassBackground(contentLeadingInset: sidebarAutoHides ? 6 : model.sidebarWidth + 12,
-                        windowCornerRadius: Self.windowCornerRadius, allowsTransparency: model.preferences.translucentChrome)
-                        .animation(sidebarMotion, value: sidebarAutoHides)
-                }
-        }
+        .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+                                            allowsTransparency: model.preferences.translucentChrome))
         .background(TabSwitcherKeyboardMonitor(model: model))
         .overlay(alignment: .topTrailing) {
             if let toast = model.toast {
@@ -407,8 +391,11 @@ struct BrowserWindowView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background {
-                        BrowserFloatingBackground(spaceColor: nil, cornerRadius: 12,
-                            allowsTransparency: model.preferences.translucentChrome)
+                        if reduceTransparency || contrast == .increased {
+                            RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
+                        } else {
+                            RoundedRectangle(cornerRadius: 12).fill(.thickMaterial)
+                        }
                     }
                     .overlay {
                         RoundedRectangle(cornerRadius: 12)
@@ -497,7 +484,7 @@ struct BrowserWindowView: View {
             .keyboardShortcut(.defaultAction)
             .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-          }.padding(24).frame(width: 340).browserEditorPanel()
+          }.padding(24).frame(width: 340)
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
         .onDisappear {
@@ -508,8 +495,6 @@ struct BrowserWindowView: View {
             model.save()
             model.webViews.discardAll()
         }
-        .environment(\.browserAllowsTransparency, model.preferences.translucentChrome)
-        .environment(\.browserSpaceColor, model.preferences.spaceThemes ? model.coordinator.activeSpace?.color : nil)
     }
 
     private var sidebar: some View {
@@ -888,12 +873,7 @@ struct BrowserWindowView: View {
         let hasMedia = showsMediaControl(tab)
         return tabRowContent(tab, selected: selected, requestsArtwork: requestsArtwork)
         .animation(reduceMotion || draggingTab != nil ? nil : .easeInOut(duration: 0.18), value: hasMedia)
-        .background {
-            if selected || hoveredTab == tab.id {
-                BrowserIslandBackground(cornerRadius: cornerRadius, fillOpacity: selected ? 0.08 : 0.04,
-                    allowsTransparency: model.preferences.translucentChrome)
-            }
-        }
+        .background(Color.primary.opacity(selected ? 0.08 : (hoveredTab == tab.id ? 0.04 : 0)))
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .overlay {
             RoundedRectangle(cornerRadius: cornerRadius)
@@ -937,7 +917,8 @@ struct BrowserWindowView: View {
     private func tabControlLabel(_ symbol: String, highlighted: Bool) -> some View {
         Image(systemName: symbol).font(.caption)
             .frame(width: 24, height: 24)
-            .background { BrowserControlBackground(highlighted: highlighted) }
+            .background(Color.primary.opacity(highlighted ? 0.12 : 0),
+                        in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
             .contentTransition(.opacity)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: symbol)
@@ -1151,6 +1132,8 @@ struct BrowserWindowView: View {
         let name = tab.customTitle ?? tab.pinnedTitle ?? tab.pinnedURL?.host ?? tab.title
         let selected = model.coordinator.activeTabID == tab.id
         let tint = favoriteTint(tab)
+        let border = (selected ? tint : nil)?.opacity(contrast == .increased ? 0.80 : 0.55)
+            ?? Color.primary.opacity(contrast == .increased ? 0.30 : 0.07)
         return Button { model.perform(.selectTab(tab.id)) } label: {
             SiteIcon(url: tab.pinnedURL ?? tab.currentURL, store: model.webViews.favicons,
                      size: 18, monogram: String(name.prefix(1)).uppercased())
@@ -1158,8 +1141,16 @@ struct BrowserWindowView: View {
             .frame(maxWidth: .infinity)
             .frame(height: SidebarReorderLayout.favoriteHeight)
             .background {
-                FavoriteCardBackground(selected: selected, hovered: hoveredTab == tab.id, tint: tint,
-                    allowsTransparency: model.preferences.translucentChrome)
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color.primary.opacity(selected ? 0.12 : (hoveredTab == tab.id ? 0.08 : 0.04)))
+                if selected, let tint {
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(tint.opacity(colorScheme == .dark ? 0.26 : 0.20))
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(border, lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: 9))
         }
@@ -1189,8 +1180,8 @@ struct BrowserWindowView: View {
         let iconColor = NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1)
         var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
         iconColor.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-        return Color(hue: hue, saturation: FavoriteCardPalette.saturation(for: saturation),
-                     brightness: FavoriteCardPalette.brightness(isDark: colorScheme == .dark))
+        return Color(hue: hue, saturation: min(saturation * 0.55, 0.50),
+                     brightness: colorScheme == .dark ? 0.72 : 0.64)
     }
 
     /// The title selects/reopens a pin. Its icon is interactive only for reset
@@ -2023,11 +2014,17 @@ struct BrowserWindowView: View {
                 .font(.body).lineLimit(1)
                 .frame(width: size.width, height: size.height)
                 .background {
-                    BrowserFloatingBackground(spaceColor: nil, cornerRadius: cornerRadius,
-                        allowsTransparency: model.preferences.translucentChrome,
-                        color: overFavorites && model.coordinator.activeTabID == tab.id ? favoriteTint(tab) : nil,
-                        colorOpacity: FavoriteCardPalette.fillOpacity(isDark: colorScheme == .dark),
-                        siteEdgeColor: overFavorites && model.coordinator.activeTabID == tab.id ? favoriteTint(tab) : nil)
+                    if overFavorites, model.coordinator.activeTabID == tab.id, let tint = favoriteTint(tab) {
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(tint.opacity(colorScheme == .dark ? 0.26 : 0.20))
+                    }
+                }
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
+                .overlay {
+                    if overFavorites, model.coordinator.activeTabID == tab.id, let tint = favoriteTint(tab) {
+                        RoundedRectangle(cornerRadius: 9)
+                            .strokeBorder(tint.opacity(contrast == .increased ? 0.80 : 0.55), lineWidth: 1)
+                    }
                 }
                 .shadow(radius: lifted ? 5 : 0, y: lifted ? 2 : 0)
         case .folder(let folder):
@@ -2040,10 +2037,7 @@ struct BrowserWindowView: View {
             }
             .font(.callout).padding(.leading, PinnedIsland.leadingInset).padding(.trailing, 8)
             .frame(width: size.width, height: size.height)
-            .background {
-                BrowserFloatingBackground(spaceColor: nil, cornerRadius: PinnedIsland.cornerRadius,
-                    allowsTransparency: model.preferences.translucentChrome)
-            }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PinnedIsland.cornerRadius))
             .shadow(radius: lifted ? 5 : 0, y: lifted ? 2 : 0)
         }
     }
@@ -2090,14 +2084,8 @@ struct BrowserWindowView: View {
     }
 
     private func groupPanel(active: Bool, dashed: Bool = false, isFolder: Bool = false) -> some View {
-        Group {
-            if isFolder {
-                BrowserIslandBackground(cornerRadius: PinnedIsland.cornerRadius,
-                    fillOpacity: active ? 0.10 : 0.04, allowsTransparency: model.preferences.translucentChrome)
-            } else {
-                RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(active ? 0.10 : 0.045))
-            }
-        }
+        RoundedRectangle(cornerRadius: isFolder ? PinnedIsland.cornerRadius : 12)
+            .fill(Color.primary.opacity(active ? 0.10 : (isFolder ? 0.04 : 0.045)))
             .overlay {
                 // Ordinary folder hover uses the same clean fill as a tab.
                 // Borders are reserved for actual drag destinations.
@@ -2289,7 +2277,6 @@ struct BrowserWindowView: View {
                 }
             }
             .padding(24).frame(width: 380)
-            .browserEditorPanel()
             .onAppear { focused = true }
         }
     }
@@ -2321,7 +2308,6 @@ struct BrowserWindowView: View {
             } label: {
                 Image(systemName: "sidebar.left").frame(width: 32, height: 32)
             }
-            .buttonStyle(BrowserToolbarButtonStyle())
             .accessibilityLabel(sidebarAutoHides ? "Keep sidebar visible" : "Auto-hide sidebar")
             .accessibilityValue(sidebarAutoHides ? "Auto-hide enabled" : "Always visible")
             .keyboardShortcut("s", modifiers: [.command, .shift])
@@ -2378,11 +2364,8 @@ struct BrowserWindowView: View {
             .font(.system(size: 14, weight: .medium))
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36, alignment: .leading)
-            .background {
-                BrowserIslandBackground(cornerRadius: 12,
-                    fillOpacity: contrast == .increased ? 0.12 : (addressHovered ? 0.085 : 0.055),
-                    allowsTransparency: model.preferences.translucentChrome)
-            }
+            .background(Color.primary.opacity(contrast == .increased ? 0.12 : (addressHovered ? 0.085 : 0.055)),
+                        in: RoundedRectangle(cornerRadius: 12))
             .overlay {
                 RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(Color.primary.opacity(focusedSidebarControl == .address ? 0.55 : 0), lineWidth: 2)
@@ -2542,7 +2525,8 @@ private struct NavigationControlStyle: ButtonStyle {
             }
             .scaleEffect((kind == .back || kind == .forward) && pressed && !reduceMotion ? 0.88 : 1)
             .frame(width: 32, height: 32)
-            .background { BrowserControlBackground(highlighted: pressed || highlighted, cornerRadius: 8) }
+            .background(Color.primary.opacity(pressed ? 0.13 : (highlighted ? 0.075 : 0)),
+                        in: RoundedRectangle(cornerRadius: 8))
             .opacity(isEnabled ? 1 : 0.35)
             .contentShape(RoundedRectangle(cornerRadius: 8))
             .onHover { hovered = $0 }

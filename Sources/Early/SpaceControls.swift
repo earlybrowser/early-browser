@@ -49,6 +49,7 @@ struct SpaceFooter: View {
     @State private var spaceDrag: SpaceReorderDrag?
     @GestureState private var spaceDragGestureActive = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
@@ -87,8 +88,9 @@ struct SpaceFooter: View {
                 Text("Release to create a Space")
                     .font(.caption).padding(8)
                     .background {
-                        BrowserFloatingBackground(spaceColor: nil, cornerRadius: 8,
-                            allowsTransparency: model.preferences.translucentChrome)
+                        if reduceTransparency || contrast == .increased {
+                            RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor))
+                        } else { RoundedRectangle(cornerRadius: 8).fill(.thickMaterial) }
                     }
                     .offset(y: -42)
                     .allowsHitTesting(false).accessibilityHidden(true)
@@ -276,7 +278,7 @@ struct SpaceFooter: View {
 /// during that lock instead of PlainButtonStyle's dim/restore flash.
 private struct SpaceControlStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        BrowserToolbarButtonStyle().makeBody(configuration: configuration)
+        configuration.label.opacity(configuration.isPressed ? 0.8 : 1)
     }
 }
 
@@ -318,7 +320,7 @@ private struct SpaceEditorSheet: View {
                 Button { showingIconPicker.toggle() } label: {
                     SpaceIconView(icon: icon, size: 15)
                         .frame(width: 38, height: 38)
-                        .background { BrowserControlBackground(highlighted: true, cornerRadius: 10) }
+                        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
                         .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.12)) }
                 }
                 .buttonStyle(.plain)
@@ -384,7 +386,6 @@ private struct SpaceEditorSheet: View {
             }
         }
         .padding(24).frame(width: 340)
-        .browserEditorPanel()
         .task { await Task.yield(); nameFocused = true }
         .alert("Move Space to another profile?", isPresented: $confirmingProfileMove) {
             Button("Cancel", role: .cancel) {}

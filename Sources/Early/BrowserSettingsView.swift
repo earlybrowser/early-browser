@@ -43,18 +43,12 @@ struct BrowserSettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             navigation
-            Divider().ignoresSafeArea(.container, edges: .top)
+            Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(application.settingsSection.rawValue).font(.system(size: 27, weight: .semibold, design: .rounded))
                         Text(application.settingsSection.subtitle).font(.callout).foregroundStyle(.secondary)
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        BrowserFloatingBackground(spaceColor: nil, cornerRadius: 14,
-                            allowsTransparency: preferences.translucentChrome)
                     }
                     .padding(.bottom, 4)
                     if application.workspace == nil { ProgressView("Loading your settings…") }
@@ -69,13 +63,6 @@ struct BrowserSettingsView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .frame(minWidth: 760, minHeight: 560)
-        .background {
-            // One surface behind both the sidebar and native traffic lights.
-            // Only decoration ignores the titlebar safe area; controls do not.
-            BrowserSettingsBackground(allowsTransparency: preferences.translucentChrome)
-                .ignoresSafeArea(.container, edges: .top)
-        }
-        .background(BrowserSettingsWindowAppearance())
         // Scope this ID to a real group. On macOS a bare container ID replaces
         // the navigation buttons' IDs instead of identifying the container.
         .accessibilityElement(children: .contain)
@@ -105,7 +92,6 @@ struct BrowserSettingsView: View {
         )) {
             Button("OK") { application.profileError = nil }
         } message: { Text(application.profileError ?? "") }
-        .environment(\.browserAllowsTransparency, preferences.translucentChrome)
     }
 
     private var navigation: some View {
@@ -120,8 +106,7 @@ struct BrowserSettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 11)
                         .background {
                             if application.settingsSection == section {
-                                BrowserIslandBackground(cornerRadius: 9, fillOpacity: colorScheme == .dark ? 0.10 : 0.065,
-                                    allowsTransparency: preferences.translucentChrome)
+                                RoundedRectangle(cornerRadius: 9).fill(.primary.opacity(colorScheme == .dark ? 0.10 : 0.065))
                             }
                         }
                         .contentShape(RoundedRectangle(cornerRadius: 9))
@@ -137,7 +122,8 @@ struct BrowserSettingsView: View {
             }
             .foregroundStyle(.secondary).padding(12)
         }
-        .padding(.horizontal, 12).padding(.bottom, 10).frame(width: BrowserSettingsBackground.sidebarWidth)
+        .padding(.horizontal, 12).padding(.bottom, 10).frame(width: 190)
+        .background(.regularMaterial)
     }
 
     @ViewBuilder private var sectionContent: some View {
@@ -267,7 +253,7 @@ struct BrowserSettingsView: View {
             SettingsCard {
                 SettingsToggle("Space themes", detail: "Tint the browser chrome with each Space’s chosen color.", isOn: $preferences.spaceThemes, identifier: "settings.spaceThemes")
                 Divider().padding(.vertical, 6)
-                SettingsToggle("Translucent chrome", detail: "Use subtle clear glass on macOS 26 or later and standard materials on older systems. Turn off for solid chrome. Websites stay unchanged.", isOn: $preferences.translucentChrome, identifier: "settings.translucency")
+                SettingsToggle("Translucent chrome", detail: "Let a little of your desktop show through the sidebar and frame. Websites stay unchanged.", isOn: $preferences.translucentChrome, identifier: "settings.translucency")
             }
             Text("Space colors adapt to light and dark appearance. Accessibility settings for contrast and reduced transparency always take priority.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -372,50 +358,6 @@ struct BrowserSettingsView: View {
                 if let sessionMessage { Text(sessionMessage).font(.caption).foregroundStyle(.secondary) }
             }
         }
-    }
-}
-
-/// A continuous sidebar/titlebar fill. Keep this outside the navigation's safe
-/// area so its glass never ends at the bottom of the native window controls.
-struct BrowserSettingsBackground: View {
-    static let sidebarWidth: CGFloat = 190
-    var allowsTransparency: Bool
-
-    var body: some View {
-        HStack(spacing: 0) {
-            BrowserFloatingBackground(spaceColor: nil, cornerRadius: 0,
-                allowsTransparency: allowsTransparency, role: .chrome)
-                .frame(width: Self.sidebarWidth)
-            Color(nsColor: .windowBackgroundColor)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
-/// Configure only the native Settings window, without replacing its traffic
-/// lights, title (used by Window/VoiceOver), content host or window delegate.
-struct BrowserSettingsWindowAppearance: NSViewRepresentable {
-    func makeNSView(context: Context) -> AppearanceView { AppearanceView() }
-    func updateNSView(_ view: AppearanceView, context: Context) { view.configureWindow() }
-
-    static func configure(_ window: NSWindow) {
-        if !window.styleMask.contains(.fullSizeContentView) { window.styleMask.insert(.fullSizeContentView) }
-        if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
-        if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
-        if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
-    }
-
-    final class AppearanceView: NSView {
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            configureWindow()
-        }
-        func configureWindow() {
-            if let window { BrowserSettingsWindowAppearance.configure(window) }
-        }
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override func isAccessibilityElement() -> Bool { false }
     }
 }
 
@@ -531,7 +473,6 @@ private struct ProfileEditorSheet: View {
             }
         }
         .padding(26).frame(width: 370)
-        .browserEditorPanel()
         .task { await Task.yield(); nameFocused = true }
     }
 
