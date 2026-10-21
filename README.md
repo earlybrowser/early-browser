@@ -14,7 +14,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 
 | Feature | Description | Status |
 | --- | --- | --- |
-| Native macOS interface | Light/dark translucent chrome, native window controls, and opaque website content. Solid surfaces respect Reduce Transparency and increased contrast. | Implemented. |
+| Native macOS interface | Restrained clear Liquid Glass on macOS 26+: unified sidebar/frame, islands, and floating panels over the existing light/dark themes. Native window controls and opaque websites stay unchanged. Standard-material/solid fallbacks respect system support and accessibility preferences. | Implemented. |
 | Vertical tabs | Organize pages in a resizable sidebar with an address bar, auto-hide, and edge-hover reveal. | Implemented. |
 | Command-bar navigation | Open URLs or Google searches; new submissions from Favorites or pins open Today tabs without replacing saved pages. Typing or dismissing the bar never creates a tab. | Implemented. |
 | Tab search and commands | Find existing tabs, pins, and Favorites; switch Spaces or profiles; and run browser actions from the command bar. Saved pages reopen without duplicate tabs. | Implemented. |
@@ -58,6 +58,8 @@ shadow-tree players, or audio elements never attached to a document. Player
 volume and pre-existing mute settings are preserved.
 
 ## Commands
+
+Building from source requires Xcode 26 or later; Early runs on macOS 14 and later.
 
 Run all commands from the repository root directory (`early-browser`):
 
