@@ -364,7 +364,7 @@ struct SplitPresentationTests {
             let other = BrowserContentSurface.pane(cornerRadius: radius, split: true, focused: false)
             #expect(pair.border == .none && pair.cornerRadius == 0, "The pair must not add another rounded edge")
             #expect(focused.border == .focused && other.border == .standard)
-            #expect(pair.borderWidth == 0 && focused.borderWidth == 1.5 && other.borderWidth == 1)
+            #expect(pair.borderWidth == 0 && focused.borderWidth == 2 && other.borderWidth == 1)
             #expect(focused.shape.cornerSize == CGSize(width: radius, height: radius))
             #expect(other.shape.cornerSize == focused.shape.cornerSize)
             let bounds = CGRect(x: 0, y: 0, width: 240, height: 160)
@@ -385,7 +385,7 @@ struct SplitPresentationTests {
             .modifier(BrowserContentSurface.container(cornerRadius: 10, split: true))
             .environment(\.colorScheme, scheme)
             let renderer = ImageRenderer(content: pair)
-            renderer.scale = 2 // Resolve the extra half-point as one Retina pixel.
+            renderer.scale = 2
             let data = try #require(renderer.nsImage?.tiffRepresentation)
             return try #require(NSBitmapImageRep(data: data))
         }
@@ -396,11 +396,50 @@ struct SplitPresentationTests {
             let focused = alpha(focusLeft ? 28 : 92, 0)
             let other = alpha(focusLeft ? 92 : 28, 0)
             #expect(focused > other && other > 0)
-            #expect(alpha(focusLeft ? 28 : 92, 1) > 0 && alpha(focusLeft ? 92 : 28, 1) == 0,
-                    "Only the focused edge gets the extra half-point")
+            #expect((image.colorAt(x: (focusLeft ? 28 : 92) * 2, y: 3)?.alphaComponent ?? 0) > 0
+                    && (image.colorAt(x: (focusLeft ? 92 : 28) * 2, y: 3)?.alphaComponent ?? 1) == 0,
+                    "Only the focused edge extends to two points")
             #expect(alpha(28, 2) == 0 && alpha(92, 2) == 0, "The page interior stays clear, without a separate inset ring")
             #expect(alpha(60, 0) == 0 && alpha(60, 79) == 0, "No container border may bridge the split gap")
             #expect(alpha(0, 0) == 0 && alpha(119, 0) == 0, "Each page keeps its own rounded corners")
+        }
+    }
+
+    @Test(arguments: [ColorScheme.light, .dark])
+    func focusedPageEdgeRendersEveryThemeWithoutTintingInactiveBorders(_ scheme: ColorScheme) throws {
+        _ = NSApplication.shared
+        func sample(_ theme: BrowserSpace.Color, focused: Bool) throws -> NSColor {
+            let content = Color.clear.frame(width: 80, height: 64)
+                .modifier(BrowserContentSurface.pane(cornerRadius: 10, split: true, focused: focused, theme: theme))
+                .environment(\.colorScheme, scheme)
+            let renderer = ImageRenderer(content: content)
+            renderer.scale = 2
+            // Normalize into an explicit sRGB bitmap so numeric comparisons
+            // don't depend on NSColor's host-display/device color conversions.
+            let image = try #require(renderer.cgImage)
+            let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+            let context = try #require(CGContext(data: nil, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: space,
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            let bytes = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+            let offset = 80 * 4, alpha = Double(bytes[offset + 3]) / 255
+            func channel(_ index: Int) -> Double { alpha > 0 ? Double(bytes[offset + index]) / 255 / alpha : 0 }
+            return NSColor(srgbRed: channel(0), green: channel(1), blue: channel(2), alpha: alpha)
+        }
+        let neutral = try sample(.gray, focused: false)
+        for theme in BrowserSpace.Color.allCases {
+            let edge = try sample(theme, focused: true)
+            let expected = theme.focusBorder(isDark: scheme == .dark)
+            #expect(abs(edge.redComponent - expected.red) < 0.01)
+            #expect(abs(edge.greenComponent - expected.green) < 0.01)
+            #expect(abs(edge.blueComponent - expected.blue) < 0.01)
+            #expect(edge.alphaComponent > 0.99)
+            let inactive = try sample(theme, focused: false)
+            #expect(abs(inactive.redComponent - neutral.redComponent) < 0.001)
+            #expect(abs(inactive.greenComponent - neutral.greenComponent) < 0.001)
+            #expect(abs(inactive.blueComponent - neutral.blueComponent) < 0.001)
+            #expect(inactive.alphaComponent == neutral.alphaComponent)
         }
     }
 
@@ -593,17 +632,21 @@ struct SplitPresentationTests {
         #expect(native.isAccessibilityEnabled())
     }
 
-    @Test func splitCardsFollowActiveThemeAndKeepRoundedInsetBorders() throws {
+    @Test func splitTargetsAndFocusFollowActiveThemeAndKeepRoundedInsetBorders() throws {
         let fixture = Fixture(), model = fixture.model
         defer { fixture.cleanup() }
+        #expect(model.perform(.splitTab(fixture.tabs[1].id, .trailing)))
+        let pages = model.webViews.pages, focus = model.coordinator.focusedTabID
         for theme in BrowserSpace.Color.allCases {
             #expect(model.editSpace(model.coordinator.activeSpaceID, name: "Theme", color: theme, icon: nil))
-            #expect(model.splitDropTheme == theme)
+            #expect(model.splitTheme == theme)
         }
         model.preferences.spaceThemes = false
-        #expect(model.splitDropTheme == .gray)
+        #expect(model.splitTheme == .gray)
         model.preferences.spaceThemes = true
-        #expect(model.splitDropTheme == .green)
+        #expect(model.splitTheme == .green)
+        #expect(model.coordinator.focusedTabID == focus && model.webViews.creationCount == 2)
+        for (id, page) in pages { #expect(model.webViews.pages[id] === page) }
         #expect(SplitDropCard.shape.cornerSize == CGSize(width: 18, height: 18))
         let inner = CGRect(x: 0, y: 0, width: 224, height: 420).insetBy(dx: SplitDropCard.borderInset, dy: SplitDropCard.borderInset)
         let path = SplitDropCard.shape.path(in: inner)

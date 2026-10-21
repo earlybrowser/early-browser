@@ -11,14 +11,16 @@ struct BrowserContentSurface: ViewModifier {
     enum Border: Equatable { case none, standard, focused }
     let cornerRadius: CGFloat
     let border: Border
+    let theme: BrowserSpace.Color
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
     static func container(cornerRadius: CGFloat, split: Bool) -> Self {
-        Self(cornerRadius: split ? 0 : cornerRadius, border: split ? .none : .standard)
+        Self(cornerRadius: split ? 0 : cornerRadius, border: split ? .none : .standard, theme: .gray)
     }
 
-    static func pane(cornerRadius: CGFloat, split: Bool, focused: Bool) -> Self {
-        Self(cornerRadius: split ? cornerRadius : 0, border: split ? (focused ? .focused : .standard) : .none)
+    static func pane(cornerRadius: CGFloat, split: Bool, focused: Bool, theme: BrowserSpace.Color = .gray) -> Self {
+        Self(cornerRadius: split ? cornerRadius : 0, border: split ? (focused ? .focused : .standard) : .none, theme: theme)
     }
 
     var shape: RoundedRectangle { RoundedRectangle(cornerRadius: cornerRadius) }
@@ -26,19 +28,23 @@ struct BrowserContentSurface: ViewModifier {
         switch border {
         case .none: 0
         case .standard: 1
-        case .focused: 1.5
+        case .focused: 2
         }
+    }
+
+    private var borderColor: Color {
+        border == .focused
+            ? theme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+            : Color.primary.opacity(contrast == .increased ? 0.30 : 0.08)
     }
 
     func body(content: Content) -> some View {
         content.clipShape(shape)
             .overlay {
                 if border != .none {
-                    // Focus adds just half a point inward. Both strokes share
-                    // the clipping edge, without a second inset ring.
-                    shape.strokeBorder(Color.primary.opacity(border == .focused
-                        ? (contrast == .increased ? 0.65 : 0.27)
-                        : (contrast == .increased ? 0.30 : 0.08)), lineWidth: borderWidth)
+                    // The focused theme edge thickens inward. Both strokes
+                    // share the clipping edge, without a second inset ring.
+                    shape.strokeBorder(borderColor, lineWidth: borderWidth)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }
@@ -174,7 +180,8 @@ struct SplitContentView: View {
                 .accessibilityIdentifier("browser.navigationNotice.\(id)")
             }
         }
-        .modifier(BrowserContentSurface.pane(cornerRadius: contentCornerRadius, split: split, focused: focused))
+        .modifier(BrowserContentSurface.pane(cornerRadius: contentCornerRadius, split: split, focused: focused,
+                                            theme: model.splitTheme))
         .overlay(alignment: .topTrailing) {
             if let paneID, hoveredTabID == id || page?.failure != nil {
                 Button { _ = model.perform(.removeSplitPane(paneID)) } label: {
@@ -203,7 +210,7 @@ struct SplitContentView: View {
                 let proposal = model.coordinator.splitPlacement(for: sourceID, on: side)
                 let reuses = proposal?.reusesExistingPane == true
                 let name = side == .leading ? "left" : "right"
-                SplitDropCard(theme: model.splitDropTheme, side: side, highlighted: highlighted,
+                SplitDropCard(theme: model.splitTheme, side: side, highlighted: highlighted,
                     title: reuses ? "Focus existing pane" : "\(model.coordinator.activeSplitGroup == nil ? "Add" : "Replace") \(name) split",
                     size: frame.size, allowsTransparency: model.preferences.translucentChrome)
                 .frame(width: frame.width, height: frame.height)

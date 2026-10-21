@@ -715,7 +715,8 @@ final class BrowserWindowModel {
             && spaceDeletionID == nil && !hasVisibleDialog
     }
 
-    var splitDropTheme: BrowserSpace.Color {
+    /// Drop targets and the focused pane share the current Space's theme.
+    var splitTheme: BrowserSpace.Color {
         preferences.spaceThemes ? (coordinator.activeSpace?.color ?? .gray) : .gray
     }
 
