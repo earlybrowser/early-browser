@@ -43,7 +43,7 @@ struct BrowserSettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             navigation
-            Divider()
+            Divider().ignoresSafeArea(.container, edges: .top)
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -69,6 +69,13 @@ struct BrowserSettingsView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .frame(minWidth: 760, minHeight: 560)
+        .background {
+            // One surface behind both the sidebar and native traffic lights.
+            // Only decoration ignores the titlebar safe area; controls do not.
+            BrowserSettingsBackground(allowsTransparency: preferences.translucentChrome)
+                .ignoresSafeArea(.container, edges: .top)
+        }
+        .background(BrowserSettingsWindowAppearance())
         // Scope this ID to a real group. On macOS a bare container ID replaces
         // the navigation buttons' IDs instead of identifying the container.
         .accessibilityElement(children: .contain)
@@ -130,11 +137,7 @@ struct BrowserSettingsView: View {
             }
             .foregroundStyle(.secondary).padding(12)
         }
-        .padding(.horizontal, 12).padding(.bottom, 10).frame(width: 190)
-        .background {
-            BrowserFloatingBackground(spaceColor: nil, cornerRadius: 0,
-                allowsTransparency: preferences.translucentChrome, role: .chrome)
-        }
+        .padding(.horizontal, 12).padding(.bottom, 10).frame(width: BrowserSettingsBackground.sidebarWidth)
     }
 
     @ViewBuilder private var sectionContent: some View {
@@ -369,6 +372,50 @@ struct BrowserSettingsView: View {
                 if let sessionMessage { Text(sessionMessage).font(.caption).foregroundStyle(.secondary) }
             }
         }
+    }
+}
+
+/// A continuous sidebar/titlebar fill. Keep this outside the navigation's safe
+/// area so its glass never ends at the bottom of the native window controls.
+struct BrowserSettingsBackground: View {
+    static let sidebarWidth: CGFloat = 190
+    var allowsTransparency: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            BrowserFloatingBackground(spaceColor: nil, cornerRadius: 0,
+                allowsTransparency: allowsTransparency, role: .chrome)
+                .frame(width: Self.sidebarWidth)
+            Color(nsColor: .windowBackgroundColor)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Configure only the native Settings window, without replacing its traffic
+/// lights, title (used by Window/VoiceOver), content host or window delegate.
+struct BrowserSettingsWindowAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> AppearanceView { AppearanceView() }
+    func updateNSView(_ view: AppearanceView, context: Context) { view.configureWindow() }
+
+    static func configure(_ window: NSWindow) {
+        if !window.styleMask.contains(.fullSizeContentView) { window.styleMask.insert(.fullSizeContentView) }
+        if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
+        if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
+        if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
+    }
+
+    final class AppearanceView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            configureWindow()
+        }
+        func configureWindow() {
+            if let window { BrowserSettingsWindowAppearance.configure(window) }
+        }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
     }
 }
 

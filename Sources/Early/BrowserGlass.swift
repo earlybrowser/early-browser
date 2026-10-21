@@ -215,15 +215,21 @@ struct BrowserControlBackground: View {
 }
 
 private struct BrowserEditorPanel: ViewModifier {
+    private static let cornerRadius: CGFloat = 16
     @Environment(\.browserAllowsTransparency) private var allowsTransparency
 
     func body(content: Content) -> some View {
-        // Keep the native sheet host/focus/alerts. macOS sheets are opaque;
-        // style their presentation surface without pretending to see through it.
-        content.presentationBackground {
-            BrowserFloatingBackground(spaceColor: nil, cornerRadius: 0,
-                allowsTransparency: allowsTransparency)
-        }
+        // Draw the effect in the content hierarchy, not the presentation host:
+        // macOS flattens sheet presentation backgrounds to an opaque surface.
+        // A rounded content-sized surface gives glass its actual panel edges.
+        // Keep the native sheet, first responder, dismissal and alerts intact.
+        content
+            .background {
+                BrowserFloatingBackground(spaceColor: nil, cornerRadius: Self.cornerRadius,
+                    allowsTransparency: allowsTransparency)
+            }
+            .presentationBackground(Color(nsColor: .controlBackgroundColor))
+            .presentationCornerRadius(Self.cornerRadius)
     }
 }
 

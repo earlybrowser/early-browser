@@ -72,6 +72,9 @@ struct BrowserGlassTests {
                     BrowserControlBackground(highlighted: true)
                 }.environment(\.browserAllowsTransparency, translucent).environment(\.colorScheme, scheme))
                 #expect(try iconPixels(in: #require(control.cgImage)) == original)
+                let editor = ImageRenderer(content: artwork.browserEditorPanel()
+                    .environment(\.browserAllowsTransparency, translucent).environment(\.colorScheme, scheme))
+                #expect(try iconPixels(in: #require(editor.cgImage)) == original)
             }
         }
     }
@@ -217,6 +220,76 @@ struct BrowserGlassTests {
                 #expect(editor.window == nil)
             }
         }
+    }
+
+    @Test func editorPaintsItsOwnBackgroundWithoutAPresentationHost() throws {
+        _ = NSApplication.shared
+        for scheme in [ColorScheme.light, .dark] {
+            for translucent in [false, true] {
+                // A presentationBackground-only modifier paints nothing here.
+                // The editor itself must own the visible surface and its edges.
+                let renderer = ImageRenderer(content: Color.clear.frame(width: 340, height: 240)
+                    .browserEditorPanel().environment(\.browserAllowsTransparency, translucent)
+                    .environment(\.colorScheme, scheme))
+                let image = try #require(renderer.cgImage)
+                #expect(image.width == 340 && image.height == 240)
+                #expect(try pixel(in: image, x: 170, y: 120)[3] > 0)
+                #expect(try pixel(in: image, x: 1, y: 1)[3] == 0)
+            }
+        }
+    }
+
+    @Test func settingsSidebarSurfaceSpansTheEntireWindowHeight() throws {
+        _ = NSApplication.shared
+        let width = 800.0, height = 600.0
+        for scheme in [ColorScheme.light, .dark] {
+            for translucent in [false, true] {
+                let renderer = ImageRenderer(content: BrowserSettingsBackground(allowsTransparency: translucent)
+                    .frame(width: width, height: height).environment(\.colorScheme, scheme))
+                let image = try #require(renderer.cgImage)
+                #expect(image.width == Int(width) && image.height == Int(height))
+                // These samples stand in for the titlebar strip and navigation
+                // body: the same fill, no gap or separate titlebar material.
+                // Material rasterization can dither by one color level.
+                let top = try pixel(in: image, x: 95, y: 8)
+                let middle = try pixel(in: image, x: 95, y: 300)
+                #expect(zip(top, middle).allSatisfy { abs(Int($0.0) - Int($0.1)) <= 1 })
+                #expect(top[3] > 0)
+                let detailTop = try pixel(in: image, x: 400, y: 8)
+                let detailMiddle = try pixel(in: image, x: 400, y: 300)
+                #expect(detailTop == detailMiddle && detailTop[3] > 0)
+            }
+        }
+        #expect(BrowserSettingsBackground.sidebarWidth == 190)
+    }
+
+    @Test func settingsHidesOnlyTheTitleAndKeepsNativeWindowControls() throws {
+        _ = NSApplication.shared
+        // Never order this window on screen or run an application event loop.
+        let originalStyle: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: originalStyle, backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.title = "Early Settings"
+        let content = window.contentView
+        let kinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        let buttons = try kinds.map { try #require(window.standardWindowButton($0)) }
+        let parents = buttons.map(\.superview)
+
+        for _ in 0..<2 { BrowserSettingsWindowAppearance.configure(window) }
+
+        #expect(window.titleVisibility == .hidden && window.titlebarAppearsTransparent)
+        #expect(window.titlebarSeparatorStyle == .none)
+        #expect(window.styleMask == originalStyle.union(.fullSizeContentView))
+        #expect(window.title == "Early Settings" && window.contentView === content)
+        #expect(!window.isVisible)
+        for (index, kind) in kinds.enumerated() {
+            #expect(window.standardWindowButton(kind) === buttons[index])
+            #expect(buttons[index].superview === parents[index])
+        }
+        let decoration = BrowserSettingsWindowAppearance.AppearanceView()
+        #expect(decoration.hitTest(.zero) == nil && !decoration.isAccessibilityElement())
     }
 
     private func pixel(in image: CGImage, x: Int, y: Int) throws -> [UInt8] {
