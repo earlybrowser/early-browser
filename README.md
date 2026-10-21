@@ -30,7 +30,8 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Website fullscreen | Let compatible website players enter and exit fullscreen. | Implemented. |
 | Spaces and profiles | Named Spaces with icons and adaptive themes, plus separate profiles for cookies, logins, website data, and Favorites. | Implemented. |
 | Haptic feedback | Subtle native feedback for sidebar dragging and Space changes on supported devices, respecting macOS preferences. | Implemented. |
-| Split views and tab previews | Side-by-side pages with shared controls following the focused pane; thumbnail tab switcher. | Planned. |
+| Thumbnail tab switcher | Preview open tabs in a compact strip; confirm a selection or cancel without changing the current page. Missing previews have a clear fallback. | Implemented. |
+| Split views | Side-by-side pages with shared controls following the focused pane. | Planned. |
 | Page lifecycle | Keep recent pages live, limit retained background pages, and reload released pages on selection. Protect visible panes, media, and editing; recover from page-process crashes with a bounded retry. | Implemented. |
 | Downloads and page tools | Manage downloads, upload files, print, view PDFs, find text, and adjust zoom. | Planned. |
 | Reading tools | Reader Mode for supported articles and page translation. | Planned. |
@@ -48,7 +49,7 @@ Early uses a Safari-compatible browser identity to improve website compatibility
 
 Released pages restore their saved address and organization, not live forms,
 JavaScript state, or exact back/forward history. Profile-local tab thumbnails
-are bounded and kept only in memory for the future tab switcher.
+are bounded and kept only in memory for the tab switcher.
 
 Tab mute choices survive reloads/navigation and memory eviction until the tab closes; they are
 not site preferences or restored session state. Public HTML media APIs cover

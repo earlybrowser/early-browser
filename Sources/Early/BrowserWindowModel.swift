@@ -58,6 +58,9 @@ final class BrowserWindowModel {
     var renamingTabID: UUID?
     var renameText = ""
     var contentFocusRequest = 0
+    private(set) var tabSwitcher: TabSwitcher?
+    private(set) var tabSwitcherCommitsOnControlRelease = false
+    @ObservationIgnored private var tabSwitcherSpaceID: UUID?
     let suggestions: SearchSuggestions
     let commandSearch: CommandSearch
     var onSave: ((BrowserWindowModel) -> Void)?
@@ -161,6 +164,7 @@ final class BrowserWindowModel {
     var todayTabs: [BrowserTab] { coordinator.tabStore.todayTabs(in: coordinator.activeSpaceID) }
 
     func presentCommandBar(_ intent: CommandBarIntent) {
+        cancelTabSwitcher(restoreFocus: false)
         sidebarReveal = nil
         cancelSpaceSwipePresentation()
         cancelCommandBarQueries()
@@ -341,6 +345,73 @@ final class BrowserWindowModel {
         guard !tabs.isEmpty else { return }
         let current = tabs.firstIndex { $0.id == coordinator.activeTabID } ?? 0
         selectTab(tabs[(current + direction + tabs.count) % tabs.count].id)
+    }
+
+    var canPresentTabSwitcher: Bool {
+        coordinator.commandBar == nil && openTabs.count > 1 && canPerform(.cycleTab(1))
+    }
+
+    /// Preview is metadata/cache-only. Freeze MRU order until commit or cancel;
+    /// never activate, snapshot, save, or allocate a page while stepping.
+    @discardableResult
+    func advanceTabSwitcher(_ delta: Int, commitsOnControlRelease: Bool = false) -> Bool {
+        guard [-1, 1].contains(delta), canPresentTabSwitcher else {
+            cancelTabSwitcher(restoreFocus: false)
+            return false
+        }
+        validateTabSwitcher()
+        if var selection = tabSwitcher {
+            selection.step(delta)
+            tabSwitcher = selection
+        } else {
+            tabSwitcher = TabSwitcher(openTabs: openTabs, activeTabID: coordinator.activeTabID, initialDelta: delta)
+            tabSwitcherSpaceID = coordinator.activeSpaceID
+        }
+        tabSwitcherCommitsOnControlRelease = commitsOnControlRelease
+        return tabSwitcher != nil
+    }
+
+    @discardableResult
+    func selectTabSwitcherCandidate(_ id: UUID) -> Bool {
+        validateTabSwitcher()
+        guard var selection = tabSwitcher, selection.select(id) else { return false }
+        tabSwitcher = selection
+        return true
+    }
+
+    @discardableResult
+    func commitTabSwitcher(selecting id: UUID? = nil) -> Bool {
+        validateTabSwitcher()
+        guard canPresentTabSwitcher, var selection = tabSwitcher else {
+            cancelTabSwitcher(restoreFocus: false)
+            return false
+        }
+        if let id, !selection.select(id) { return false }
+        let action = selection.commitAction
+        cancelTabSwitcher(restoreFocus: false)
+        if let action { return perform(action) }
+        contentFocusRequest += 1
+        return true
+    }
+
+    func cancelTabSwitcher(restoreFocus: Bool = true) {
+        let wasPresented = tabSwitcher != nil
+        tabSwitcher = nil
+        tabSwitcherSpaceID = nil
+        tabSwitcherCommitsOnControlRelease = false
+        if wasPresented && restoreFocus && coordinator.commandBar == nil { contentFocusRequest += 1 }
+    }
+
+    /// Page metadata can change asynchronously, but membership, selection, Space
+    /// or modal changes invalidate the frozen selection instead of committing a
+    /// stale target. A later physical Control release then has no effect.
+    func validateTabSwitcher() {
+        guard let selection = tabSwitcher else { return }
+        if !canPresentTabSwitcher || tabSwitcherSpaceID != coordinator.activeSpaceID
+            || selection.initialID != coordinator.activeTabID
+            || Set(selection.tabIDs) != Set(openTabs.map(\.id)) {
+            cancelTabSwitcher(restoreFocus: false)
+        }
     }
 
     func closeActiveTab() {
@@ -611,6 +682,7 @@ final class BrowserWindowModel {
     func back() { if let id = coordinator.focusedTabID { webViews.back(id) } }
     func forward() { if let id = coordinator.focusedTabID { webViews.forward(id) } }
     func save() {
+        validateTabSwitcher()
         reconcileRuntimePresentation()
         onSave?(self)
     }
@@ -637,6 +709,7 @@ final class BrowserWindowModel {
     }
 
     func applyProfileSnapshot(_ session: BrowserSession) {
+        cancelTabSwitcher(restoreFocus: false)
         let previous = coordinator.activeTabID
         guard coordinator.applySession(session, using: input) else { return }
         cancelSpaceSwipePresentation()
@@ -654,6 +727,7 @@ final class BrowserWindowModel {
         let previous = coordinator.activeTabID
         let previousSpaces = coordinator.spaces.map(\.id)
         coordinator.synchronizeSavedItems(from: session)
+        validateTabSwitcher()
         if previousSpaces != coordinator.spaces.map(\.id) { cancelSpaceSwipePresentation() }
         let remaining = Set(coordinator.tabStore.tabs.map(\.id))
         for id in Array(webViews.pages.keys) where !remaining.contains(id) { webViews.discard(tabID: id) }

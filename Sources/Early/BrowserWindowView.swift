@@ -68,6 +68,7 @@ struct BrowserWindowView: View {
     }
     #endif
     @State private var hoveredTab: UUID?
+    @State private var addressHovered = false
     @State private var hoveredMedia: UUID?
     @State private var hoveredFolder: UUID?
     @State private var hoveredFolderGroups: Set<UUID> = []
@@ -133,7 +134,7 @@ struct BrowserWindowView: View {
     }
 
     private enum SidebarControl: Hashable {
-        case tab(UUID), close(UUID), media(UUID), favorite(UUID), folder(UUID), folderToggle(UUID)
+        case address, tab(UUID), close(UUID), media(UUID), favorite(UUID), folder(UUID), folderToggle(UUID)
     }
 
     private struct DragContainer: Equatable {
@@ -282,7 +283,7 @@ struct BrowserWindowView: View {
                     Color.white.opacity(colorScheme == .dark ? 0.01 : 0.08)
                 }
                 WebContentView(view: model.activePage?.view, focusRequest: model.contentFocusRequest,
-                               canFocus: model.coordinator.commandBar == nil,
+                               canFocus: model.coordinator.commandBar == nil && model.tabSwitcher == nil,
                                hasDialog: model.activePage?.hasDialog == true)
                     .accessibilityIdentifier("browser.content")
                 if let error = model.activePage?.failure {
@@ -302,14 +303,15 @@ struct BrowserWindowView: View {
                 VStack {
                     if let error = model.persistence.error {
                         Text(error).font(.callout).padding(12)
-                            .background(.regularMaterial)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                             .accessibilityIdentifier("browser.persistenceError")
                     }
                     if let notice = model.notice {
                         HStack {
                             Text(notice)
                             Button("Dismiss") { model.notice = nil }
-                        }.font(.callout).padding(12).background(.regularMaterial)
+                        }.font(.callout).padding(12)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                     }
                     Spacer()
                 }
@@ -365,6 +367,14 @@ struct BrowserWindowView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            if model.tabSwitcher != nil {
+                GeometryReader { geometry in
+                    TabSwitcherView(model: model, availableWidth: geometry.size.width)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
+                .transition(.opacity)
+            }
         }
         .animation(sidebarMotion, value: sidebarAutoHides)
         .animation(sidebarMotion, value: sidebarVisible)
@@ -373,6 +383,7 @@ struct BrowserWindowView: View {
         // clipped page area is inset into it; no sidebar tint or seam on top.
         .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
                                             allowsTransparency: model.preferences.translucentChrome))
+        .background(TabSwitcherKeyboardMonitor(model: model))
         .overlay(alignment: .topTrailing) {
             if let toast = model.toast {
                 Label(toast.message, systemImage: "checkmark")
@@ -446,6 +457,9 @@ struct BrowserWindowView: View {
             RenameTabSheet(model: model)
         }
         .onAppear { model.activateSelection() }
+        .onChange(of: model.canPresentTabSwitcher) { _, allowed in
+            if !allowed { model.cancelTabSwitcher(restoreFocus: false) }
+        }
         .onChange(of: sidebarVisible, initial: true) { _, visible in
             model.sidebarIsHidden = !visible
             if !visible {
@@ -474,6 +488,7 @@ struct BrowserWindowView: View {
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
         .onDisappear {
+            model.cancelTabSwitcher(restoreFocus: false)
             endDrag()
             model.cancelSpaceSwipePresentation()
             model.folderEditorIsPresented = false
@@ -2349,10 +2364,18 @@ struct BrowserWindowView: View {
             .font(.system(size: 14, weight: .medium))
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36, alignment: .leading)
-            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+            .background(Color.primary.opacity(contrast == .increased ? 0.12 : (addressHovered ? 0.085 : 0.055)),
+                        in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.primary.opacity(focusedSidebarControl == .address ? 0.55 : 0), lineWidth: 2)
+            }
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
+        .focused($focusedSidebarControl, equals: .address)
+        .onHover { addressHovered = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: addressHovered)
         .accessibilityLabel("Address bar")
         .accessibilityValue(currentURL ?? "No active tab")
         .accessibilityIdentifier("sidebar.addressBar")

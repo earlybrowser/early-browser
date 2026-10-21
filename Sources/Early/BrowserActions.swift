@@ -118,6 +118,7 @@ extension BrowserWindowModel {
     @discardableResult
     func perform(_ action: BrowserAction, source: BrowserActionSource = .interface) -> Bool {
         guard canPerform(action) else { return false }
+        cancelTabSwitcher(restoreFocus: false)
         let previousFocusRequest = contentFocusRequest
         var restoreContentFocus = true
         switch action {

@@ -51,6 +51,76 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(query.value as? String, "")
     }
 
+    func testThumbnailSwitcherCancelCommitAndCompactLayoutPreserveLivePages() {
+        for appearance in ["dark", "light"] {
+            let app = launchFreshApp(appearance: appearance)
+            navigate(app, to: "early-test://fixture/one")
+            expectPage(app, "One")
+            let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'"))
+            let firstID = rows.firstMatch.identifier
+            let saved = app.webViews.textFields["Saved text"]
+            pasteText("switcher keeps this page", into: saved, in: app)
+            navigate(app, to: "early-test://fixture/two", newTab: true)
+            expectPage(app, "Two")
+            let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+            let firstCard = app.buttons["tabSwitcher.tab.\(firstID.dropFirst(4))"]
+            let secondCard = app.buttons["tabSwitcher.tab.\(secondID.dropFirst(4))"]
+            let strip = app.descendants(matching: .any).matching(identifier: "tabSwitcher").firstMatch
+
+            func showSwitcher() {
+                app.menuBarItems["Navigate"].click()
+                visibleMenuAction("Next Tab")
+                XCTAssertTrue(strip.waitForExistence(timeout: 5))
+                XCTAssertTrue(firstCard.exists && secondCard.exists)
+            }
+            showSwitcher()
+            XCTAssertTrue(firstCard.isSelected)
+            expectPage(app, "Two") // Highlighting does not navigate or resume.
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+            app.typeKey(.rightArrow, modifierFlags: [])
+            XCTAssertTrue(secondCard.isSelected)
+            app.typeKey(.leftArrow, modifierFlags: [])
+            XCTAssertTrue(firstCard.isSelected)
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertTrue(strip.waitForNonExistence(timeout: 3))
+            expectPage(app, "Two")
+            showSwitcher()
+            app.typeKey(.return, modifierFlags: [])
+            XCTAssertTrue(strip.waitForNonExistence(timeout: 3))
+            expectPage(app, "One")
+            XCTAssertEqual(saved.value as? String, "switcher keeps this page")
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+
+            for size in ["Compact Test Window", "Wide Test Window"] {
+                app.menuBarItems["Test Window"].click()
+                visibleMenuAction(size)
+                showSwitcher()
+                let window = app.windows["browser"].frame
+                XCTAssertGreaterThan(strip.frame.width, 100)
+                XCTAssertGreaterThanOrEqual(strip.frame.minX, window.minX + 6)
+                XCTAssertLessThanOrEqual(strip.frame.maxX, window.maxX - 6)
+                XCTAssertGreaterThanOrEqual(strip.frame.minY, window.minY + 6)
+                XCTAssertLessThanOrEqual(strip.frame.maxY, window.maxY - 6)
+                let capture = XCTAttachment(screenshot: app.windows["browser"].screenshot())
+                capture.name = "\(appearance) thumbnail switcher — \(size)"
+                capture.lifetime = .keepAlways
+                add(capture)
+                app.typeKey(.escape, modifierFlags: [])
+                XCTAssertTrue(strip.waitForNonExistence(timeout: 3))
+            }
+            showSwitcher()
+            secondCard.click()
+            expectPage(app, "Two")
+            // A quick Control-Tab must commit when Control is released.
+            app.typeKey(.tab, modifierFlags: .control)
+            expectPage(app, "One")
+            XCTAssertTrue(strip.waitForNonExistence(timeout: 3))
+            XCTAssertEqual(saved.value as? String, "switcher keeps this page")
+            expectRuntime(app, tabs: 2, views: 2, created: 2)
+            app.terminate()
+        }
+    }
+
     func testLongCommandBarInputWrapsInCompactWindowAndKeepsNavigationIntent() {
         let app = launchFreshApp()
         app.typeKey(.escape, modifierFlags: [])

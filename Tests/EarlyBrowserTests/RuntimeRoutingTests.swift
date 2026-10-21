@@ -184,6 +184,33 @@ struct RuntimeRoutingTests {
         #expect(model.coordinator.tabStore.tabs.count == 1 && model.favorites.map(\.id) == [tab.id])
     }
 
+    @Test func tabSwitcherPreviewCancelAndCommitKeepExistingDOMAndSplitIdentity() async throws {
+        let session = splitSession(), fixture = Fixture(session: session)
+        defer { fixture.cleanup() }
+        let model = fixture.model, first = session.tabs[0].id, second = session.tabs[1].id
+        let firstPage = try #require(model.webViews.pages[first])
+        let secondPage = try #require(model.webViews.pages[second])
+        try await waitUntil("switcher documents") {
+            !firstPage.isLoading && !secondPage.isLoading
+                && firstPage.view.title == "Page One" && secondPage.view.title == "Page One"
+        }
+        _ = try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value = 'keep switcher state';")
+        for _ in 0..<5 {
+            #expect(model.advanceTabSwitcher(1, commitsOnControlRelease: true))
+            #expect(model.coordinator.focusedTabID == first && model.activePage === firstPage)
+            #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep switcher state")
+            model.cancelTabSwitcher()
+        }
+        #expect(model.advanceTabSwitcher(1))
+        #expect(model.commitTabSwitcher(selecting: second))
+        #expect(model.coordinator.focusedTabID == second && model.activePage === secondPage)
+        #expect(model.coordinator.splitGroups == session.splitGroups && model.webViews.creationCount == 2)
+        #expect(model.advanceTabSwitcher(-1))
+        #expect(model.commitTabSwitcher(selecting: first))
+        #expect(model.activePage === firstPage && model.webViews.creationCount == 2)
+        #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep switcher state")
+    }
+
     @Test func windowLocalPaneFocusDoesNotShareLiveViewsOrSelection() throws {
         let session = splitSession(), first = Fixture(session: session), second = Fixture(session: session)
         defer { first.cleanup(); second.cleanup() }
