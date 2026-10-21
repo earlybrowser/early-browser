@@ -2618,16 +2618,25 @@ final class EarlyUITests: XCTestCase {
             predicate: NSPredicate(format: "exists == false"), object: app.buttons["sidebar.newTab"])
         unexpectedlyHidden.isInverted = true
         XCTAssertEqual(XCTWaiter.wait(for: [unexpectedlyHidden], timeout: 1.5), .completed)
+        let sidebar = app.descendants(matching: .any)["browser.sidebar"]
+        XCTAssertTrue(sidebar.exists)
+        // Derive the corridor from the revealed panel, not an assumed width.
+        // At the default 240 pt width, x=250 is already outside the sidebar
+        // and its gutter, so expecting it to remain visible there is incorrect.
+        let sidebarFrame = sidebar.frame
+        let insideSidebarX = sidebarFrame.midX - window.frame.minX
+        let trailingInsideX = sidebarFrame.maxX - window.frame.minX - 1
+        let outsideSidebarX = sidebarFrame.maxX - window.frame.minX + 16
         // Cross the gutter into the panel, then leave it. Only the actual edge
         // can reveal it again; the old sidebar footprint must remain inactive.
         for _ in 0..<3 {
-            for x in [5.0, 120.0, 250.0] {
+            for x in [5.0, insideSidebarX, trailingInsideX] {
                 origin.withOffset(CGVector(dx: x, dy: window.frame.height / 2)).hover()
                 XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
             }
-            origin.withOffset(CGVector(dx: 280, dy: window.frame.height / 2)).hover()
+            origin.withOffset(CGVector(dx: outsideSidebarX, dy: window.frame.height / 2)).hover()
             XCTAssertTrue(app.buttons["sidebar.newTab"].waitForNonExistence(timeout: 3))
-            origin.withOffset(CGVector(dx: 120, dy: window.frame.height / 2)).hover()
+            origin.withOffset(CGVector(dx: insideSidebarX, dy: window.frame.height / 2)).hover()
             XCTAssertFalse(app.buttons["sidebar.newTab"].exists)
             origin.withOffset(CGVector(dx: 1, dy: window.frame.height / 2)).hover()
             XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 3))

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import EarlyCore
 @testable import EarlyBrowser
 import Testing
 
@@ -39,12 +40,13 @@ struct SidebarPointerMonitorTests {
         }
     }
 
-    @Test func repeatedEdgeEntriesRevealWithoutActivatingTheOldSidebarFootprint() throws {
+    @Test(arguments: [SidebarWidth.minimum, SidebarWidth.defaultValue, 250, SidebarWidth.maximum])
+    func repeatedEdgeEntriesRevealWithoutActivatingTheOldSidebarFootprint(sidebarWidth: Double) throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
         var revealed = false
         fixture.view.onMove = { point in
-            revealed = SidebarRevealRegion.contains(point, sidebarWidth: 250, revealed: revealed)
+            revealed = SidebarRevealRegion.contains(point, sidebarWidth: sidebarWidth, revealed: revealed)
         }
         let y = fixture.view.bounds.midY
         for _ in 0..<5 {
@@ -58,15 +60,30 @@ struct SidebarPointerMonitorTests {
             // remains inside the window. It must not undo the edge reveal.
             fixture.view.mouseExited(with: try fixture.event(at: CGPoint(x: 1, y: y), type: .mouseExited))
             #expect(revealed)
-            for x in [5.0, 120, 250, 255] {
+            for x in [5.0, sidebarWidth / 2, sidebarWidth, sidebarWidth + 5] {
                 fixture.view.handle(try fixture.event(at: CGPoint(x: x, y: y)))
                 #expect(revealed)
             }
-            fixture.view.handle(try fixture.event(at: CGPoint(x: 280, y: y)))
+            fixture.view.handle(try fixture.event(at: CGPoint(x: sidebarWidth + 6, y: y)))
+            #expect(!revealed, "The retention region ends at the sidebar plus its 6 pt gutter")
+            fixture.view.handle(try fixture.event(at: CGPoint(x: sidebarWidth / 2, y: y)))
+            #expect(!revealed, "An old sidebar footprint cannot reveal the hidden panel")
+            fixture.view.handle(try fixture.event(at: CGPoint(x: 1, y: y)))
+            #expect(revealed)
+            fixture.view.handle(try fixture.event(at: CGPoint(x: sidebarWidth + 30, y: y)))
             #expect(!revealed)
         }
         #expect(!fixture.window.isVisible && !fixture.view.isAccessibilityElement())
         #expect(fixture.view.hitTest(CGPoint(x: 1, y: y)) == nil)
+    }
+
+    @Test func defaultWidthDoesNotKeepTheSidebarVisibleAtTheOldHardCodedUITestPoint() {
+        let width = SidebarWidth.defaultValue
+        #expect(width == 240)
+        #expect(SidebarRevealRegion.contains(CGPoint(x: 245, y: 100), sidebarWidth: width, revealed: true))
+        #expect(!SidebarRevealRegion.contains(CGPoint(x: 246, y: 100), sidebarWidth: width, revealed: true))
+        #expect(!SidebarRevealRegion.contains(CGPoint(x: 250, y: 100), sidebarWidth: width, revealed: true),
+                "The failed CI assertion hovered outside the actual default sidebar and its gutter")
     }
 
     @Test func nativeCoordinatesAreFlippedAndWindowExitsClearThePointer() throws {
