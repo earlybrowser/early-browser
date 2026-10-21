@@ -31,7 +31,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Spaces and profiles | Named Spaces with icons and adaptive themes, plus separate profiles for cookies, logins, website data, and Favorites. | Implemented. |
 | Haptic feedback | Subtle native feedback for sidebar dragging and Space changes on supported devices, respecting macOS preferences. | Implemented. |
 | Thumbnail tab switcher | Preview open tabs in a compact strip; confirm a selection or cancel without changing the current page. Missing previews have a clear fallback. | Implemented. |
-| Split views | Resizable side-by-side pages, edge-drag split previews, and shared controls following the focused pane. Removing a pane keeps its tab open. | Implemented. |
+| Split views | Resizable side-by-side pages, floating drag-to-split targets, and shared controls following the focused pane. Removing a pane keeps its tab open. | Implemented. |
 | Page lifecycle | Keep recent pages live, limit retained background pages, and reload released pages on selection. Protect visible panes, media, and editing; recover from page-process crashes with a bounded retry. | Implemented. |
 | Downloads and page tools | Manage downloads, upload files, print, view PDFs, find text, and adjust zoom. | Planned. |
 | Reading tools | Reader Mode for supported articles and page translation. | Planned. |

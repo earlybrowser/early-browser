@@ -165,7 +165,7 @@ final class EarlyUITests: XCTestCase {
         app.terminate()
     }
 
-    func testSidebarEdgeDropCreatesSplitAndRelaunchRestoresItsPanes() {
+    func testSidebarFloatingTargetDropCreatesSplitAndRelaunchRestoresItsPanes() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
@@ -175,10 +175,19 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "Two")
         let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
         let content = app.descendants(matching: .any).matching(identifier: "browser.content").firstMatch
-        app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .click(forDuration: 0.25, thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.6)),
-                   withVelocity: .slow, thenHoldForDuration: 0.5)
         let divider = app.descendants(matching: .any).matching(identifier: "split.divider").firstMatch
+        // Entering content reveals targets, but dropping between them cancels.
+        app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.25, thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.5)
+        XCTAssertFalse(divider.exists)
+        XCTAssertEqual(app.buttons[firstID].value as? String, "Today")
+        XCTAssertEqual(app.buttons[secondID].value as? String, "Today")
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.buttons[firstID].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click(forDuration: 0.25, thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.5)
         XCTAssertTrue(divider.waitForExistence(timeout: 5))
         expectRuntime(app, tabs: 2, views: 2, created: 2)
         XCTAssertEqual(app.buttons[firstID].value as? String, "Today")

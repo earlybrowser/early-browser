@@ -92,10 +92,13 @@ struct BrowserWindowView: View {
     // drop transaction has exchanged it for the settlement proxy.
     private var draggingTab: UUID? { dragSourceItem?.id }
     private var hiddenDragItemID: UUID? { dragLanding?.motion.itemID ?? draggingTab }
+    private var splitDropLeadingInset: CGFloat {
+        sidebarAutoHides && sidebarVisible ? max(0, sidebarWindowFrame.maxX - contentWindowFrame.minX) : 0
+    }
     private var tabDragIsOverContent: Bool {
         guard case .tab = dragSourceItem else { return false }
-        return contentWindowFrame.contains(CGPoint(x: sidebarWindowFrame.minX + dragPoint.x,
-                                                  y: sidebarWindowFrame.minY + dragPoint.y))
+        let point = CGPoint(x: sidebarWindowFrame.minX + dragPoint.x, y: sidebarWindowFrame.minY + dragPoint.y)
+        return contentWindowFrame.contains(point) && point.x >= contentWindowFrame.minX + splitDropLeadingInset
     }
     private var showsFolderDragTargets: Bool {
         guard let viewport = sectionFrames[false], let divider = dropAreas["divider"] else { return false }
@@ -295,7 +298,7 @@ struct BrowserWindowView: View {
     var body: some View {
         ZStack(alignment: .leading) {
             ZStack {
-                SplitContentView(model: model)
+                SplitContentView(model: model, dropTargetLeadingInset: splitDropLeadingInset)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("browser.content")
                 VStack {
@@ -642,7 +645,7 @@ struct BrowserWindowView: View {
             // Rebuild hit testing only after ALL measurements from this layout
             // pass agree; cross-folder moves change headers and ends together.
             frozenFrames = frames
-            guard model.splitPreview == nil else { return }
+            guard !tabDragIsOverContent else { return }
             // Insertion previews can move a header underneath a stationary
             // pointer. Re-resolve its folder before rebuilding sibling order.
             updateFolderHover(at: dragPoint)
@@ -1942,7 +1945,7 @@ struct BrowserWindowView: View {
                 dragTranslation = CGSize(width: tab.isFavorite ? value.translation.width : 0,
                                          height: value.translation.height)
                 updateContentSplitPreview(tab.id, at: value.location)
-                if model.splitPreview != nil { dragLayout = nil; updateFolderDropSlot(nil); return }
+                if tabDragIsOverContent { dragLayout = nil; updateFolderDropSlot(nil); return }
                 updateFolderHover(at: value.location)
                 refreshDragLayout(for: tab, at: value.location)
             }
@@ -1952,10 +1955,11 @@ struct BrowserWindowView: View {
                 dragPoint = value.location
                 dragTranslation = CGSize(width: tab.isFavorite ? value.translation.width : 0, height: value.translation.height)
                 updateContentSplitPreview(tab.id, at: value.location)
-                if model.splitPreview != nil {
+                if tabDragIsOverContent {
                     _ = model.commitSplitPreview()
                     // Splitting never changes the sidebar organization and has
                     // no placement haptic or cross-section landing animation.
+                    // Releasing between/outside the cards cancels, never reorders.
                     endDrag()
                     return
                 }
@@ -1983,7 +1987,7 @@ struct BrowserWindowView: View {
     private func updateContentSplitPreview(_ tabID: UUID, at sidebarPoint: CGPoint) {
         let point = CGPoint(x: sidebarWindowFrame.minX + sidebarPoint.x, y: sidebarWindowFrame.minY + sidebarPoint.y)
         windowPointer.location = point
-        model.updateSplitPreview(for: tabID, at: point, in: contentWindowFrame)
+        model.updateSplitPreview(for: tabID, at: point, in: contentWindowFrame, leadingInset: splitDropLeadingInset)
     }
 
     private var receivingFavorite: Bool {

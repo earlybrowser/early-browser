@@ -6,9 +6,10 @@ import EarlyWeb
 import SwiftUI
 
 /// Stable tab-keyed hosts survive single/split transitions and divider changes.
-/// A drag preview changes geometry only; its candidate is cache/metadata-only.
+/// Drag targets are overlays only: hover NEVER resizes or hides a live page.
 struct SplitContentView: View {
     @Bindable var model: BrowserWindowModel
+    var dropTargetLeadingInset: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -31,43 +32,41 @@ struct SplitContentView: View {
                 }
                 ForEach(tabIDs, id: \.self) { id in
                     let frame = frame(for: id, size: geometry.size, layout: layout)
-                    let hidden = model.splitPreview.map { !$0.tabIDs.contains(id) } ?? false
                     let paneID = group?.panes.first { $0.tabID == id }?.id
-                    pane(id, paneID: paneID, split: group != nil || model.splitPreview != nil)
+                    pane(id, paneID: paneID, split: group != nil)
                         .frame(width: frame.width, height: frame.height)
                         .position(x: frame.midX, y: frame.midY)
-                        .opacity(hidden ? 0 : 1)
-                        .allowsHitTesting(!hidden && model.splitPreview == nil)
-                        .accessibilityHidden(hidden)
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.splitPreview)
+                        .allowsHitTesting(model.splitDropSourceID == nil)
+                        .transition(reduceMotion ? .identity : .opacity)
                 }
-                if let group, model.splitPreview == nil {
+                if let group {
                     SplitDivider(model: model, group: group, layout: layout)
                         .frame(width: layout.divider.width, height: layout.divider.height)
                         .position(x: layout.divider.midX, y: layout.divider.midY)
+                        .allowsHitTesting(model.splitDropSourceID == nil)
+                        .transition(reduceMotion ? .identity : .opacity)
                 }
-                if let preview = model.splitPreview {
-                    let previewLayout = BrowserSplitLayout(size: geometry.size, leadingFraction: preview.leadingFraction)
-                    let index = preview.reusesExistingPane
-                        ? (preview.tabIDs.firstIndex(of: preview.sourceTabID) ?? preview.side.index) : preview.side.index
-                    let frame = previewLayout.frame(at: index)
-                    splitPreview(preview)
-                        .frame(width: frame.width, height: frame.height)
-                        .position(x: frame.midX, y: frame.midY)
-                        .transition(.opacity)
+            }
+            // Animate only COMMITTED membership changes, not pointer movement,
+            // focus, window resizing or live divider tracking. A surviving host
+            // expands/contracts in place while the added/removed pane fades.
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.26), value: group?.panes.map(\.tabID))
+            .overlay {
+                if let sourceID = model.splitDropSourceID,
+                   let targets = BrowserSplitDropTargets(in: CGRect(origin: .zero, size: geometry.size), leadingInset: dropTargetLeadingInset) {
+                    splitDropTargets(targets, sourceID: sourceID)
+                        .transition(reduceMotion ? .identity : .opacity)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }
             }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: model.splitDropSourceID != nil)
             .frame(width: geometry.size.width, height: geometry.size.height)
             .coordinateSpace(name: "splitContent")
         }
     }
 
     private func frame(for id: UUID, size: CGSize, layout: BrowserSplitLayout) -> CGRect {
-        if let preview = model.splitPreview, let index = preview.tabIDs.firstIndex(of: id) {
-            return BrowserSplitLayout(size: size, leadingFraction: preview.leadingFraction).frame(at: index)
-        }
         if model.coordinator.activeSplitGroup != nil, let index = tabIDs.firstIndex(of: id) { return layout.frame(at: index) }
         return CGRect(origin: .zero, size: size)
     }
@@ -79,7 +78,7 @@ struct SplitContentView: View {
             Color(nsColor: .textBackgroundColor)
             WebContentView(view: page?.view, focusRequest: model.contentFocusRequest,
                 canFocus: focused && model.coordinator.commandBar == nil && model.tabSwitcher == nil
-                    && model.splitPreview == nil && !model.hasVisibleDialog,
+                    && model.splitDropSourceID == nil && !model.hasVisibleDialog,
                 hasDialog: page?.hasDialog == true,
                 onInteraction: {
                     if model.coordinator.commandBar != nil { model.dismissCommandBar(restoreFocus: false) }
@@ -152,25 +151,43 @@ struct SplitContentView: View {
         .accessibilityLabel(split ? "\(focused ? "Focused p" : "P")ane: \(model.coordinator.tabStore.tab(id: id)?.displayTitle ?? "Page")" : "Web content")
     }
 
-    private func splitPreview(_ proposal: BrowserSplitPlacement) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(proposal.reusesExistingPane ? 0.08 : 0.12))
-            if !proposal.reusesExistingPane {
-                VStack(spacing: 12) {
-                    if let image = model.webViews.snapshots.image(for: proposal.sourceTabID) {
-                        Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 240, maxHeight: 150).clipped()
+    private func splitDropTargets(_ targets: BrowserSplitDropTargets, sourceID: UUID) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.black.opacity(colorScheme == .dark ? 0.22 : 0.12)
+            ForEach(BrowserSplitSide.allCases, id: \.self) { side in
+                let frame = targets.frame(on: side)
+                let highlighted = model.splitPreview?.side == side
+                let proposal = model.coordinator.splitPlacement(for: sourceID, on: side)
+                let reuses = proposal?.reusesExistingPane == true
+                let name = side == .leading ? "left" : "right"
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(reduceTransparency || contrast == .increased ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.regularMaterial))
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(Color.accentColor.opacity(highlighted ? 0.13 : 0))
+                    RoundedRectangle(cornerRadius: 18)
+                        .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.5 : 0.10), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 12).inset(by: 9)
+                        .strokeBorder(highlighted ? Color.accentColor : Color.primary.opacity(contrast == .increased ? 0.6 : 0.24),
+                                      style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+                    VStack(spacing: frame.height < 180 ? 8 : 12) {
+                        Image(systemName: side == .leading ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled")
+                            .font(frame.width < 130 ? .title3 : .title2)
+                        Text(reuses ? "Focus existing pane" : "\(model.coordinator.activeSplitGroup == nil ? "Add" : "Replace") \(name) split")
+                            .font(frame.width < 130 ? .callout : .headline).multilineTextAlignment(.center)
                     }
-                    Image(systemName: "rectangle.split.2x1").font(.title2)
-                    Text(model.coordinator.tabStore.tab(id: proposal.sourceTabID)?.displayTitle ?? "Tab")
-                        .font(.headline).lineLimit(1)
-                    Text("Release to split \(proposal.side == .leading ? "left" : "right")").font(.callout)
+                    .foregroundStyle(highlighted ? Color.primary : Color.secondary)
+                    .padding(frame.width < 130 ? 10 : 18)
                 }
-                .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.10), radius: 12, y: 4)
+                // A highlight never scales the card: its visible/hit bounds agree.
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: highlighted)
+                .accessibilityIdentifier("split.dropTarget.\(side.rawValue)")
             }
-            RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 2)
         }
-        .accessibilityIdentifier("split.dropPreview")
+        .accessibilityIdentifier("split.dropTargets")
     }
 }
 

@@ -96,11 +96,54 @@ struct SplitPlacementTests {
                 if width >= 275 { #expect(layout.leading.width >= 119.999 && layout.trailing.width >= 119.999) }
             }
         }
-        let bounds = CGRect(x: 250, y: 6, width: 700, height: 600)
-        #expect(BrowserSplitLayout.dropSide(at: CGPoint(x: 251, y: 100), in: bounds) == .leading)
-        #expect(BrowserSplitLayout.dropSide(at: CGPoint(x: 949, y: 100), in: bounds) == .trailing)
-        for point in [CGPoint(x: 500, y: 100), CGPoint(x: 200, y: 100), CGPoint(x: 251, y: -1), CGPoint(x: CGFloat.nan, y: 50)] {
-            #expect(BrowserSplitLayout.dropSide(at: point, in: bounds) == nil)
+    }
+
+    @Test func floatingTargetsAreInsetSymmetricAndShareExactHitBoundsAtAllSizes() throws {
+        for size in [CGSize(width: 240, height: 160), CGSize(width: 700, height: 600), CGSize(width: 2_000, height: 1_400)] {
+            let bounds = CGRect(origin: CGPoint(x: 250, y: 6), size: size)
+            let targets = try #require(BrowserSplitDropTargets(in: bounds))
+            #expect(bounds.contains(targets.leading) && bounds.contains(targets.trailing))
+            #expect(!targets.leading.intersects(targets.trailing))
+            #expect(targets.leading.size == targets.trailing.size)
+            #expect(targets.leading.minX > bounds.minX && targets.trailing.maxX < bounds.maxX)
+            #expect(targets.leading.midX == bounds.minX + size.width * 0.25)
+            #expect(targets.trailing.midX == bounds.minX + size.width * 0.75)
+            for side in BrowserSplitSide.allCases {
+                let frame = targets.frame(on: side)
+                for point in [CGPoint(x: frame.midX, y: frame.midY),
+                              CGPoint(x: frame.minX + 1, y: frame.minY + 1),
+                              CGPoint(x: frame.maxX - 1, y: frame.maxY - 1)] {
+                    #expect(targets.side(at: point) == side)
+                }
+            }
+            for point in [CGPoint(x: bounds.midX, y: bounds.midY),
+                          CGPoint(x: bounds.minX + 1, y: bounds.midY),
+                          CGPoint(x: bounds.maxX - 1, y: bounds.midY),
+                          CGPoint(x: targets.leading.midX, y: bounds.minY + 1),
+                          CGPoint(x: 200, y: 100), CGPoint(x: CGFloat.nan, y: 50)] {
+                #expect(targets.side(at: point) == nil)
+            }
+        }
+    }
+
+    @Test func floatingTargetsRejectInsufficientOrNonfiniteContentBounds() {
+        for bounds in [CGRect.zero, CGRect.infinite, CGRect.null,
+                       CGRect(x: 0, y: 0, width: 239, height: 600),
+                       CGRect(x: 0, y: 0, width: 700, height: 159),
+                       CGRect(x: CGFloat.nan, y: 0, width: 700, height: 600)] {
+            #expect(BrowserSplitDropTargets(in: bounds) == nil)
+        }
+    }
+
+    @Test func floatingSidebarInsetKeepsBothCardsVisibleAndOutOfSidebarOrganization() throws {
+        let bounds = CGRect(x: 6, y: 6, width: 900, height: 600)
+        let targets = try #require(BrowserSplitDropTargets(in: bounds, leadingInset: 270))
+        #expect(targets.content == CGRect(x: 276, y: 6, width: 630, height: 600))
+        #expect(targets.content.contains(targets.leading) && targets.content.contains(targets.trailing))
+        #expect(targets.side(at: CGPoint(x: 200, y: 306)) == nil)
+        #expect(targets.side(at: CGPoint(x: targets.leading.midX, y: targets.leading.midY)) == .leading)
+        for inset in [CGFloat.nan, .infinity, -1, 700, 901] {
+            #expect(BrowserSplitDropTargets(in: bounds, leadingInset: inset) == nil)
         }
     }
 }

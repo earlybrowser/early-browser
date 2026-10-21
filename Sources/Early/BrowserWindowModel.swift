@@ -59,6 +59,8 @@ final class BrowserWindowModel {
         var fraction: Double
     }
     private(set) var splitPreview: BrowserSplitPlacement?
+    /// Entering content shows both targets; a proposal exists only INSIDE a card.
+    private(set) var splitDropSourceID: UUID?
     private(set) var splitResize: SplitResize?
     @ObservationIgnored var onSplitPreviewFeedback: (() -> Void)?
     var folderEditorIsPresented = false
@@ -713,10 +715,15 @@ final class BrowserWindowModel {
             && spaceDeletionID == nil && !hasVisibleDialog
     }
 
-    func updateSplitPreview(for tabID: UUID, at point: CGPoint, in bounds: CGRect) {
-        let next = canPreviewSplit
-            ? BrowserSplitLayout.dropSide(at: point, in: bounds).flatMap { coordinator.splitPlacement(for: tabID, on: $0) }
-            : nil
+    func updateSplitPreview(for tabID: UUID, at point: CGPoint, in bounds: CGRect, leadingInset: CGFloat = 0) {
+        guard canPreviewSplit, point.x.isFinite, point.y.isFinite,
+              let targets = BrowserSplitDropTargets(in: bounds, leadingInset: leadingInset), targets.content.contains(point),
+              coordinator.splitPlacement(for: tabID, on: .leading) != nil else {
+            cancelSplitPreview()
+            return
+        }
+        if splitDropSourceID != tabID { splitDropSourceID = tabID }
+        let next = targets.side(at: point).flatMap { coordinator.splitPlacement(for: tabID, on: $0) }
         guard next != splitPreview else { return }
         let feedback = next != nil && (splitPreview?.sourceTabID != next?.sourceTabID || splitPreview?.side != next?.side)
         splitPreview = next
@@ -726,12 +733,15 @@ final class BrowserWindowModel {
         }
     }
 
-    func cancelSplitPreview() { splitPreview = nil }
+    func cancelSplitPreview() {
+        splitPreview = nil
+        splitDropSourceID = nil
+    }
 
     @discardableResult
     func commitSplitPreview() -> Bool {
-        guard canPreviewSplit, let proposal = splitPreview else { splitPreview = nil; return false }
-        splitPreview = nil
+        guard canPreviewSplit, let proposal = splitPreview else { cancelSplitPreview(); return false }
+        cancelSplitPreview()
         guard coordinator.applySplit(proposal) else { return false }
         // No drop haptic. Only a committed operation can activate the new pane.
         activateSelection()
@@ -815,6 +825,9 @@ final class BrowserWindowModel {
     }
 
     private func validateSplitPresentation() {
+        if let source = splitDropSourceID, !canPreviewSplit || coordinator.splitPlacement(for: source, on: .leading) == nil {
+            cancelSplitPreview()
+        }
         if let splitPreview, coordinator.splitPlacement(for: splitPreview.sourceTabID, on: splitPreview.side) != splitPreview {
             cancelSplitPreview()
         }

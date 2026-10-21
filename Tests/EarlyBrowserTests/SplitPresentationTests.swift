@@ -43,7 +43,7 @@ struct SplitPresentationTests {
     }
 
     private let bounds = CGRect(x: 250, y: 6, width: 700, height: 600)
-    private let left = CGPoint(x: 251, y: 100), right = CGPoint(x: 949, y: 100)
+    private let left = CGPoint(x: 425, y: 306), right = CGPoint(x: 775, y: 306)
 
     @Test func dragPreviewIsReadOnlyDeduplicatesHapticsAndCommitHasNoDropPulse() throws {
         let fixture = Fixture()
@@ -53,6 +53,13 @@ struct SplitPresentationTests {
         let original = try #require(model.activePage)
         model.preferences.haptics = true // Test callback replaces the performer.
         model.sidebarInteractionInProgress = true
+        // Crossing the content boundary reveals BOTH cards without activating a
+        // split. Neither old edge is a target, and the center is a cancel zone.
+        for point in [CGPoint(x: 251, y: 306), CGPoint(x: 600, y: 306), CGPoint(x: 949, y: 306)] {
+            model.updateSplitPreview(for: fixture.tabs[1].id, at: point, in: bounds)
+            #expect(model.splitDropSourceID == fixture.tabs[1].id && model.splitPreview == nil)
+            #expect(fixture.feedback == 0 && model.coordinator.session == initial)
+        }
         for _ in 0..<50 { model.updateSplitPreview(for: fixture.tabs[1].id, at: right, in: bounds) }
         #expect(model.splitPreview?.side == .trailing && fixture.feedback == 1)
         #expect(model.coordinator.session == initial && model.activePage === original)
@@ -64,7 +71,8 @@ struct SplitPresentationTests {
         #expect(fixture.feedback == 2)
         #expect(model.commitSplitPreview())
         #expect(fixture.feedback == 2 && fixture.saves == 1)
-        #expect(model.splitPreview == nil && model.coordinator.visibleTabIDs == [fixture.tabs[0].id, fixture.tabs[1].id])
+        #expect(model.splitPreview == nil && model.splitDropSourceID == nil)
+        #expect(model.coordinator.visibleTabIDs == [fixture.tabs[0].id, fixture.tabs[1].id])
         #expect(model.webViews.creationCount == 2 && model.webViews.pages[fixture.tabs[0].id] === original)
         #expect(model.webViews.visibleTabIDs == model.coordinator.visibleTabIDs)
         #expect(model.contentFocusRequest == focus + 1)
@@ -77,15 +85,72 @@ struct SplitPresentationTests {
         model.sidebarInteractionInProgress = true
         model.updateSplitPreview(for: fixture.tabs[1].id, at: right, in: bounds)
         #expect(model.splitPreview != nil && fixture.feedback == 0)
-        for point in [CGPoint(x: 200, y: 100), CGPoint(x: 500, y: 100), CGPoint(x: 949, y: -1)] {
+        for point in [CGPoint(x: 200, y: 100), CGPoint(x: 600, y: 306), CGPoint(x: 949, y: -1)] {
             model.updateSplitPreview(for: fixture.tabs[1].id, at: point, in: bounds)
             #expect(model.splitPreview == nil && !model.commitSplitPreview())
         }
         model.updateSplitPreview(for: fixture.tabs[0].id, at: right, in: bounds)
-        #expect(model.splitPreview == nil)
+        #expect(model.splitPreview == nil && model.splitDropSourceID == nil)
         model.updateSplitPreview(for: fixture.tabs[1].id, at: right, in: bounds)
         model.cancelWindowInteractions()
-        #expect(model.splitPreview == nil && !model.commitSplitPreview())
+        #expect(model.splitPreview == nil && model.splitDropSourceID == nil && !model.commitSplitPreview())
+        #expect(model.coordinator.session == initial && fixture.saves == 0 && model.webViews.creationCount == 1)
+    }
+
+    @Test func leavingCardsClearsHighlightLeavingContentHidesTargetsAndStaleSourceCannotCommit() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model, source = fixture.tabs[1].id
+        model.preferences.haptics = true
+        model.sidebarInteractionInProgress = true
+        model.updateSplitPreview(for: source, at: left, in: bounds)
+        #expect(fixture.feedback == 1 && model.splitPreview?.side == .leading)
+        model.updateSplitPreview(for: source, at: CGPoint(x: bounds.midX, y: bounds.midY), in: bounds)
+        #expect(model.splitDropSourceID == source && model.splitPreview == nil && fixture.feedback == 1)
+        model.updateSplitPreview(for: source, at: CGPoint(x: bounds.minX - 1, y: bounds.midY), in: bounds)
+        #expect(model.splitDropSourceID == nil && model.splitPreview == nil)
+        model.updateSplitPreview(for: source, at: right, in: bounds)
+        #expect(fixture.feedback == 2)
+        // A close arriving while dragging cannot apply the stale proposal.
+        model.coordinator.closeTab(source)
+        #expect(!model.commitSplitPreview())
+        #expect(model.splitDropSourceID == nil && model.splitPreview == nil && fixture.feedback == 2)
+        #expect(model.coordinator.activeSplitGroup == nil && fixture.saves == 0)
+    }
+
+    @Test func modalAndOrganizationChangesClearEvenUnhighlightedTargets() {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model, source = fixture.tabs[1].id
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        model.updateSplitPreview(for: source, at: center, in: bounds)
+        #expect(model.splitDropSourceID == source && model.splitPreview == nil)
+        model.folderEditorIsPresented = true
+        model.updateSplitPreview(for: source, at: right, in: bounds)
+        #expect(model.splitDropSourceID == nil && model.splitPreview == nil)
+        model.folderEditorIsPresented = false
+        model.updateSplitPreview(for: source, at: center, in: bounds)
+        model.coordinator.closeTab(source)
+        model.save()
+        #expect(model.splitDropSourceID == nil && model.splitPreview == nil)
+    }
+
+    @Test func floatingSidebarOrganizationNeverRevealsOrActivatesContentTargets() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model, initial = model.coordinator.session, source = fixture.tabs[1].id
+        model.sidebarInteractionInProgress = true
+        let content = CGRect(x: 6, y: 6, width: 900, height: 600)
+        let targets = try #require(BrowserSplitDropTargets(in: content, leadingInset: 270))
+        model.updateSplitPreview(for: source, at: CGPoint(x: 200, y: 306), in: content, leadingInset: 270)
+        #expect(model.splitDropSourceID == nil && model.splitPreview == nil)
+        model.updateSplitPreview(for: source, at: CGPoint(x: 280, y: 306), in: content, leadingInset: 270)
+        #expect(model.splitDropSourceID == source && model.splitPreview == nil)
+        model.updateSplitPreview(for: source, at: CGPoint(x: targets.leading.midX, y: targets.leading.midY), in: content, leadingInset: 270)
+        #expect(model.splitPreview?.side == .leading)
+        // Returning to the overlapping sidebar cancels the content proposal.
+        model.updateSplitPreview(for: source, at: CGPoint(x: 200, y: 306), in: content, leadingInset: 270)
+        #expect(model.splitDropSourceID == nil && !model.commitSplitPreview())
         #expect(model.coordinator.session == initial && fixture.saves == 0 && model.webViews.creationCount == 1)
     }
 
@@ -192,7 +257,9 @@ struct SplitPresentationTests {
         let model = fixture.model
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
-        let hosting = NSHostingView(rootView: AnyView(SplitContentView(model: model)))
+        // Offscreen geometry assertions use an animation-disabled transaction;
+        // the real view reads the system's read-only Reduce Motion environment.
+        let hosting = NSHostingView(rootView: AnyView(SplitContentView(model: model).transaction { $0.disablesAnimations = true }))
         window.contentView = hosting
         hosting.frame.size = CGSize(width: 800, height: 600)
         defer {
@@ -220,10 +287,30 @@ struct SplitPresentationTests {
         }
         let originalHost = try #require(try await waitForHosts(1).first)
         let originalView = try #require(originalHost.hosted)
+        let originalFrame = hosting.convert(originalHost.bounds, from: originalHost)
         #expect(originalHost.containsPageView(originalView))
         #expect(!originalHost.containsPageView(hosting))
         #expect(!originalHost.containsPageView(NSButton()))
         #expect(!originalHost.containsPageView(nil))
+        // Both cards can appear, highlight and change sides without moving,
+        // shrinking, hiding, rehosting or snapshotting the current live page.
+        let localBounds = CGRect(origin: .zero, size: hosting.bounds.size)
+        let targets = try #require(BrowserSplitDropTargets(in: localBounds))
+        model.sidebarInteractionInProgress = true
+        for point in [CGPoint(x: localBounds.minX + 1, y: localBounds.midY),
+                      CGPoint(x: targets.leading.midX, y: targets.leading.midY),
+                      CGPoint(x: targets.trailing.midX, y: targets.trailing.midY),
+                      CGPoint(x: localBounds.midX, y: localBounds.midY)] {
+            model.updateSplitPreview(for: fixture.tabs[1].id, at: point, in: localBounds)
+            _ = hosts()
+            #expect(model.splitDropSourceID == fixture.tabs[1].id)
+            #expect(hosting.convert(originalHost.bounds, from: originalHost) == originalFrame)
+            #expect(originalHost.hosted === originalView && originalHost.alphaValue == 1)
+            #expect(hosts().count == 1 && model.webViews.creationCount == 1)
+            #expect(model.webViews.snapshots.pendingCount == 0)
+        }
+        model.cancelSplitPreview()
+        model.sidebarInteractionInProgress = false
         #expect(model.perform(.splitTab(fixture.tabs[1].id, .trailing)))
         let splitHosts = try await waitForHosts(2)
         #expect(splitHosts.contains { $0 === originalHost && $0.hosted === originalView })
@@ -232,13 +319,23 @@ struct SplitPresentationTests {
         _ = hosts()
         #expect(hosts().contains { $0 === originalHost && $0.hosted === originalView })
         let created = model.webViews.creationCount
+        let splitFrames = Dictionary(uniqueKeysWithValues: hosts().map { (ObjectIdentifier($0), hosting.convert($0.bounds, from: $0)) })
         model.sidebarInteractionInProgress = true
         model.updateSplitPreview(for: fixture.tabs[2].id, at: right, in: bounds)
         _ = hosts()
         #expect(hosts().count == 2 && model.webViews.creationCount == created)
+        for host in hosts() {
+            #expect(hosting.convert(host.bounds, from: host) == splitFrames[ObjectIdentifier(host)])
+            #expect(host.alphaValue == 1)
+        }
         #expect(model.webViews.pages[fixture.tabs[2].id] == nil)
         model.cancelSplitPreview()
         model.sidebarInteractionInProgress = false
+        #expect(model.perform(.removeSplitPane(group.panes[1].id)))
+        let remainingHost = try #require(try await waitForHosts(1).first)
+        #expect(remainingHost === originalHost && remainingHost.hosted === originalView)
+        #expect(hosting.convert(originalHost.bounds, from: originalHost) == originalFrame)
+        #expect(model.webViews.creationCount == created)
         #expect(!window.isVisible)
     }
 

@@ -42,13 +42,40 @@ public struct BrowserSplitLayout: Equatable, Sendable {
     }
 
     public func frame(at index: Int) -> CGRect { index == 0 ? leading : trailing }
+}
 
-    public static func dropSide(at point: CGPoint, in bounds: CGRect) -> BrowserSplitSide? {
-        guard point.x.isFinite, point.y.isFinite, bounds.width.isFinite, bounds.height.isFinite,
-              bounds.width >= 240, bounds.height > 0, bounds.contains(point) else { return nil }
-        let edge = min(96, bounds.width * 0.22)
-        if point.x < bounds.minX + edge { return .leading }
-        if point.x >= bounds.maxX - edge { return .trailing }
+/// Floating drop cards, not edge bands. Renderer and pointer hit testing use
+/// exactly the same inset rectangles, including in an auto-hidden sidebar window.
+public struct BrowserSplitDropTargets: Equatable, Sendable {
+    public let content: CGRect
+    public let leading: CGRect
+    public let trailing: CGRect
+
+    public init?(in bounds: CGRect, leadingInset: CGFloat = 0) {
+        guard !bounds.isNull, !bounds.isInfinite,
+              bounds.minX.isFinite, bounds.minY.isFinite,
+              bounds.maxX.isFinite, bounds.maxY.isFinite,
+              bounds.width.isFinite, bounds.height.isFinite, leadingInset.isFinite,
+              leadingInset >= 0, bounds.width - leadingInset >= 240, bounds.height >= 160 else { return nil }
+        // An auto-hidden sidebar floats over the page. Cards belong only in
+        // the exposed content; organizing a tab inside that sidebar stays local.
+        content = CGRect(x: bounds.minX + leadingInset, y: bounds.minY,
+                         width: bounds.width - leadingInset, height: bounds.height)
+        let width = min(260, content.width * 0.32)
+        let height = min(440, content.height * 0.70)
+        let y = content.midY - height / 2
+        leading = CGRect(x: content.minX + content.width * 0.25 - width / 2,
+                         y: y, width: width, height: height)
+        trailing = CGRect(x: content.minX + content.width * 0.75 - width / 2,
+                          y: y, width: width, height: height)
+    }
+
+    public func frame(on side: BrowserSplitSide) -> CGRect { side == .leading ? leading : trailing }
+
+    public func side(at point: CGPoint) -> BrowserSplitSide? {
+        guard point.x.isFinite, point.y.isFinite else { return nil }
+        if leading.contains(point) { return .leading }
+        if trailing.contains(point) { return .trailing }
         return nil
     }
 }
