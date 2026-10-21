@@ -22,16 +22,23 @@ struct BrowserContentSurface: ViewModifier {
     }
 
     var shape: RoundedRectangle { RoundedRectangle(cornerRadius: cornerRadius) }
+    var borderWidth: CGFloat {
+        switch border {
+        case .none: 0
+        case .standard: 1
+        case .focused: 1.5
+        }
+    }
 
     func body(content: Content) -> some View {
         content.clipShape(shape)
             .overlay {
                 if border != .none {
-                    // Focus changes contrast only. The same one-point edge
-                    // follows the clipping path without a second inset ring.
+                    // Focus adds just half a point inward. Both strokes share
+                    // the clipping edge, without a second inset ring.
                     shape.strokeBorder(Color.primary.opacity(border == .focused
                         ? (contrast == .increased ? 0.65 : 0.27)
-                        : (contrast == .increased ? 0.30 : 0.08)), lineWidth: 1)
+                        : (contrast == .increased ? 0.30 : 0.08)), lineWidth: borderWidth)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }

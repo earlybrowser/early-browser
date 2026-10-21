@@ -358,11 +358,13 @@ struct SplitPresentationTests {
             let singlePage = BrowserContentSurface.pane(cornerRadius: radius, split: false, focused: true)
             #expect(single.border == .standard && single.cornerRadius == radius)
             #expect(singlePage.border == .none && singlePage.cornerRadius == 0)
+            #expect(single.borderWidth == 1 && singlePage.borderWidth == 0)
             let pair = BrowserContentSurface.container(cornerRadius: radius, split: true)
             let focused = BrowserContentSurface.pane(cornerRadius: radius, split: true, focused: true)
             let other = BrowserContentSurface.pane(cornerRadius: radius, split: true, focused: false)
             #expect(pair.border == .none && pair.cornerRadius == 0, "The pair must not add another rounded edge")
             #expect(focused.border == .focused && other.border == .standard)
+            #expect(pair.borderWidth == 0 && focused.borderWidth == 1.5 && other.borderWidth == 1)
             #expect(focused.shape.cornerSize == CGSize(width: radius, height: radius))
             #expect(other.shape.cornerSize == focused.shape.cornerSize)
             let bounds = CGRect(x: 0, y: 0, width: 240, height: 160)
@@ -383,17 +385,20 @@ struct SplitPresentationTests {
             .modifier(BrowserContentSurface.container(cornerRadius: 10, split: true))
             .environment(\.colorScheme, scheme)
             let renderer = ImageRenderer(content: pair)
-            renderer.scale = 1
+            renderer.scale = 2 // Resolve the extra half-point as one Retina pixel.
             let data = try #require(renderer.nsImage?.tiffRepresentation)
             return try #require(NSBitmapImageRep(data: data))
         }
         for focusLeft in [true, false] {
             let image = try pixels(focusLeft: focusLeft)
-            func alpha(_ x: Int, _ y: Int) -> CGFloat { image.colorAt(x: x, y: y)?.alphaComponent ?? 1 }
+            #expect(image.pixelsWide == 240 && image.pixelsHigh == 160)
+            func alpha(_ x: Int, _ y: Int) -> CGFloat { image.colorAt(x: x * 2, y: y * 2)?.alphaComponent ?? 1 }
             let focused = alpha(focusLeft ? 28 : 92, 0)
             let other = alpha(focusLeft ? 92 : 28, 0)
             #expect(focused > other && other > 0)
-            #expect(alpha(28, 2) == 0 && alpha(92, 2) == 0, "Focus must not add a thicker inset ring")
+            #expect(alpha(focusLeft ? 28 : 92, 1) > 0 && alpha(focusLeft ? 92 : 28, 1) == 0,
+                    "Only the focused edge gets the extra half-point")
+            #expect(alpha(28, 2) == 0 && alpha(92, 2) == 0, "The page interior stays clear, without a separate inset ring")
             #expect(alpha(60, 0) == 0 && alpha(60, 79) == 0, "No container border may bridge the split gap")
             #expect(alpha(0, 0) == 0 && alpha(119, 0) == 0, "Each page keeps its own rounded corners")
         }
