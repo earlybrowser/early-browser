@@ -12,6 +12,8 @@ public final class BrowserPreferences {
     public var appearance: Appearance { didSet { store(appearance.rawValue, for: "browserAppearance") } }
     public var onlineSuggestions: Bool { didSet { store(onlineSuggestions, for: "onlineSearchSuggestions") } }
     public var commandBarActions: Bool { didSet { store(commandBarActions, for: "commandBarActions") } }
+    /// Off by default: what is typed in a private window stays local until searched.
+    public var privateOnlineSuggestions: Bool { didSet { store(privateOnlineSuggestions, for: "privateSearchSuggestions") } }
     public var sidebarAutoHides: Bool { didSet { store(sidebarAutoHides, for: "sidebarAutoHides") } }
     public var spaceSwipes: Bool { didSet { store(spaceSwipes, for: "spaceSwipes") } }
     public var haptics: Bool { didSet { store(haptics, for: "haptics") } }
@@ -35,6 +37,7 @@ public final class BrowserPreferences {
         appearance = Appearance(rawValue: defaults.string(forKey: "browserAppearance") ?? "") ?? .system
         onlineSuggestions = defaults.bool(forKey: "onlineSearchSuggestions")
         commandBarActions = defaults.bool(forKey: "commandBarActions")
+        privateOnlineSuggestions = defaults.bool(forKey: "privateSearchSuggestions")
         sidebarAutoHides = defaults.bool(forKey: "sidebarAutoHides")
         spaceSwipes = defaults.bool(forKey: "spaceSwipes")
         haptics = defaults.bool(forKey: "haptics")

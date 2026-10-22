@@ -416,7 +416,7 @@ struct SplitPresentationTests {
     @Test(arguments: [ColorScheme.light, .dark])
     func focusedPageEdgeRendersEveryThemeWithoutTintingInactiveBorders(_ scheme: ColorScheme) throws {
         _ = NSApplication.shared
-        func sample(_ theme: BrowserSpace.Color, focused: Bool) throws -> NSColor {
+        func sample(_ theme: WindowTheme, focused: Bool) throws -> NSColor {
             let content = Color.clear.frame(width: 80, height: 64)
                 .modifier(BrowserContentSurface.pane(cornerRadius: 10, split: true, focused: focused, theme: theme))
                 .environment(\.colorScheme, scheme)
@@ -435,8 +435,8 @@ struct SplitPresentationTests {
             func channel(_ index: Int) -> Double { alpha > 0 ? Double(bytes[offset + index]) / 255 / alpha : 0 }
             return NSColor(srgbRed: channel(0), green: channel(1), blue: channel(2), alpha: alpha)
         }
-        let neutral = try sample(.gray, focused: false)
-        for theme in BrowserSpace.Color.allCases {
+        let neutral = try sample(.space(.gray), focused: false)
+        for theme in BrowserSpace.Color.allCases.map(WindowTheme.space) + [.privateBrowsing] {
             let edge = try sample(theme, focused: true)
             let expected = theme.focusBorder(isDark: scheme == .dark)
             #expect(abs(edge.redComponent - expected.red) < 0.01)
@@ -680,12 +680,12 @@ struct SplitPresentationTests {
         let pages = model.webViews.pages, focus = model.coordinator.focusedTabID
         for theme in BrowserSpace.Color.allCases {
             #expect(model.editSpace(model.coordinator.activeSpaceID, name: "Theme", color: theme, icon: nil))
-            #expect(model.splitTheme == theme)
+            #expect(model.chromeTheme == .space(theme))
         }
         model.preferences.spaceThemes = false
-        #expect(model.splitTheme == .gray)
+        #expect(model.chromeTheme == .space(.gray) && !model.tintsChrome)
         model.preferences.spaceThemes = true
-        #expect(model.splitTheme == .green)
+        #expect(model.chromeTheme == .space(.green) && model.tintsChrome)
         #expect(model.coordinator.focusedTabID == focus && model.webViews.creationCount == 2)
         for (id, page) in pages { #expect(model.webViews.pages[id] === page) }
         #expect(SplitDropCard.shape.cornerSize == CGSize(width: 18, height: 18))
@@ -699,7 +699,7 @@ struct SplitPresentationTests {
     @Test(arguments: [ColorScheme.light, .dark])
     func splitCardBackgroundActuallyRendersItsThemeInBothAppearances(_ scheme: ColorScheme) throws {
         _ = NSApplication.shared
-        func sample(_ theme: BrowserSpace.Color) throws -> NSColor {
+        func sample(_ theme: WindowTheme) throws -> NSColor {
             let card = SplitDropCard(theme: theme, side: .leading, highlighted: true, title: "Add left split",
                                      size: CGSize(width: 224, height: 420), allowsTransparency: false)
                 .frame(width: 224, height: 420).environment(\.colorScheme, scheme)
@@ -710,9 +710,13 @@ struct SplitPresentationTests {
             #expect((pixels.colorAt(x: 0, y: 0)?.alphaComponent ?? 1) < 0.01, "Outer card corners stay rounded")
             return try #require(pixels.colorAt(x: 35, y: 60)?.usingColorSpace(.deviceRGB))
         }
-        let red = try sample(.red), blue = try sample(.blue)
+        let red = try sample(.space(.red)), blue = try sample(.space(.blue))
         #expect(red.redComponent > red.blueComponent + 0.04)
         #expect(blue.blueComponent > blue.redComponent + 0.04)
+        // The private gray is the same dark gray in either appearance.
+        let gray = try sample(.privateBrowsing)
+        #expect(abs(gray.redComponent - gray.blueComponent) < 0.05 && abs(gray.redComponent - gray.greenComponent) < 0.05)
+        #expect((0.15...0.4).contains(gray.greenComponent))
     }
 
     @Test func eitherVisibleDialogBlocksSplitFocusAndPreviewAndForeignWindowStaysUntouched() throws {

@@ -15,7 +15,7 @@ struct PageToolsActionTests {
         let defaults: UserDefaults
         let model: BrowserWindowModel
 
-        init(session: BrowserSession = BrowserSession()) {
+        init(session: BrowserSession = BrowserSession(), history: HistoryStore? = nil) {
             _ = NSApplication.shared
             defaults = UserDefaults(suiteName: suite)!
             defaults.set(false, forKey: "onlineSearchSuggestions")
@@ -23,7 +23,7 @@ struct PageToolsActionTests {
             let repository = SessionRepository(fileURL: FileManager.default.temporaryDirectory
                 .appendingPathComponent("EarlyPageTools-\(UUID()).sqlite"), input: input)
             model = BrowserWindowModel(startup: .returningSession, session: session, repository: repository,
-                input: input, isTesting: true, restorationError: nil, defaults: defaults)
+                input: input, isTesting: true, restorationError: nil, defaults: defaults, history: history)
         }
 
         func cleanup() {
@@ -208,6 +208,231 @@ struct PageToolsActionTests {
         model.toggleReader(id)
         try await fixture.waitUntil("reader") { model.webViews.pages[id]?.isReaderShown == true }
         #expect(model.translationTitle(for: id) == nil && !model.canPerform(.toggleTranslation))
+    }
+
+    @Test func backAndForwardListsJumpWithinTheFocusedTabAndAClickStillNavigates() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        let id = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(id)
+        #expect(!model.canPerform(.goToHistory(offset: -1)))
+        model.presentCommandBar(.navigateCurrentTab)
+        model.updateQuery("early-test://fixture/two")
+        #expect(model.submit())
+        try await fixture.waitUntil("two") {
+            model.webViews.pages[id]?.view.url == URL(string: "early-test://fixture/two") && model.webViews.pages[id]?.isLoading == false
+        }
+        #expect(model.canPerform(.goToHistory(offset: -1)) && !model.canPerform(.goToHistory(offset: -2)))
+        #expect(!model.canPerform(.goToHistory(offset: 1)) && !model.canPerform(.goToHistory(offset: 0)))
+
+        let view = HistoryMenuOverlay.HistoryMenuView()
+        view.frame = CGRect(x: 0, y: 0, width: 28, height: 28)
+        view.entries = { model.webViews.historyList(id, forward: false) }
+        var selected: [Int] = [], clicks = 0
+        view.onSelect = { selected.append($0) }
+        view.onClick = { clicks += 1 }
+        let menu = try #require(view.makeMenu())
+        #expect(menu.items.map(\.title) == ["Page One"] && menu.items.map(\.tag) == [-1])
+        menu.performActionForItem(at: 0)
+        #expect(selected == [-1])
+        view.entries = { [] }
+        #expect(view.makeMenu() == nil, "No list, no menu")
+
+        // A short click is an ordinary Back, not a menu.
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(with: type, location: CGPoint(x: 10, y: 10), modifierFlags: [],
+                timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            type == .leftMouseDown ? view.mouseDown(with: event) : view.mouseUp(with: event)
+        }
+        #expect(clicks == 1)
+        #expect(!view.mouseDownCanMoveWindow, "Pressing Back never drags the window")
+        view.cancelHold()
+    }
+
+    @Test func tabCleanupClosesTodayTabsAndReleasesTheirPages() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let urls = ["one", "two", "article"].map { URL(string: "early-test://fixture/\($0)")! }
+        #expect(model.openLocations(urls))
+        let today = model.todayTabs.map(\.id)
+        #expect(today.count == 3 && model.webViews.liveViewCount == 3)
+        #expect(model.perform(.selectTab(today[0])))
+        let titles = model.commandSearchCandidates().map(\.title)
+        #expect(titles.contains("Close Other Tabs") && titles.contains("Close Tabs Below") && titles.contains("Clear Today Tabs"))
+        #expect(model.perform(.closeTabsBelow(today[0])))
+        #expect(model.todayTabs.map(\.id) == [today[0]] && model.webViews.liveViewCount == 1, "Closed pages are released")
+        #expect(!model.canPerform(.closeOtherTabs(today[0])) && !model.canPerform(.closeTabsBelow(today[0])))
+        #expect(model.perform(.reopenLastTab) && model.todayTabs.count == 2)
+        #expect(model.perform(.clearTodayTabs) && model.todayTabs.isEmpty && !model.canPerform(.clearTodayTabs))
+    }
+
+    @Test func recentlyClosedListsTabsNewestFirstAndReopensAnyOfThem() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations(["one", "two", "article"].map { URL(string: "early-test://fixture/\($0)")! }))
+        let today = model.todayTabs.map(\.id)
+        model.closeTab(today[0])
+        model.closeTab(today[1])
+        #expect(model.recentlyClosedTabs.map(\.id) == [today[1], today[0]])
+        #expect(model.perform(.reopenRecentlyClosedTab(today[0])))
+        #expect(model.activeTab?.id == today[0] && model.recentlyClosedTabs.map(\.id) == [today[1]])
+        #expect(!model.canPerform(.reopenRecentlyClosedTab(today[0])), "Reopened once")
+        #expect(model.perform(.reopenLastTab) && model.recentlyClosedTabs.isEmpty)
+
+        #expect(BrowserCommands.menuTitle(" Page\nOne ") == "Page One")
+        let long = BrowserCommands.menuTitle(String(repeating: "a", count: 80))
+        #expect(long.count == 60 && long.hasSuffix("…"), "Long titles stay short in menus")
+        let favicon = NSImage(size: NSSize(width: 64, height: 64))
+        #expect(BrowserCommands.menuIcon(favicon).size == NSSize(width: 16, height: 16) && favicon.size.width == 64,
+                "Site icons are drawn at menu size without changing the shared icon")
+    }
+
+    @Test func historyMenuListsTodaysPagesOnceNewestFirstAndOpensThemAsTabs() async throws {
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let fixture = Fixture(history: history)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let one = URL(string: "early-test://fixture/one")!, two = URL(string: "early-test://fixture/two")!
+        #expect(model.recentlyVisited.isEmpty)
+        for url in [one, two] {
+            #expect(model.openLocations([url]))
+            try await fixture.waitForLoad(model.coordinator.focusedTabID)
+        }
+        try await fixture.waitUntil("menu pages") {
+            model.recentlyVisited.map(\.url) == [two, one] && model.recentlyVisited.first?.title == "Page Two"
+        }
+
+        // Opening one adds a Today tab and moves it to the top, listed once.
+        let tabs = model.todayTabs.count
+        #expect(model.canPerform(.openHistoryPage(one)))
+        #expect(model.perform(.openHistoryPage(one)))
+        #expect(model.todayTabs.count == tabs + 1 && model.activeTab?.currentURL == one)
+        try await fixture.waitUntil("revisited") { model.recentlyVisited.map(\.url) == [one, two] }
+        #expect(!model.canPerform(.openHistoryPage(URL(string: "javascript:alert(1)")!)))
+
+        await model.clearHistory(.all)
+        try await fixture.waitUntil("cleared") { model.recentlyVisited.isEmpty }
+    }
+
+    @Test func visitsAreRecordedAndTheCommandBarOffersHistoryButNotOpenTabsTwice() async throws {
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let fixture = Fixture(history: history)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        let one = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(one)
+        #expect(model.openLocations([URL(string: "early-test://fixture/two")!]))
+        let two = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(two)
+        try await fixture.waitUntil("titles") { model.coordinator.tabStore.tab(id: two)?.title == "Page Two" }
+        await model.flushHistory()
+        let visits = try await history.visits()
+        #expect(Set(visits.map(\.url.absoluteString)) == ["early-test://fixture/one", "early-test://fixture/two"])
+        #expect(visits.count == 2, "A title arriving later is not another visit")
+        #expect(try await history.search("page two", limit: 5).first?.title == "Page Two")
+
+        // An open tab appears once as that tab; a closed page comes from history.
+        model.closeTab(one)
+        model.presentCommandBar(.newTab)
+        model.updateQuery("page")
+        try await fixture.waitUntil("history results") {
+            !model.commandSearch.isRefreshing && !model.commandSearch.isLoadingProviders
+                && model.visibleCommandResults.contains { $0.candidate.kind == .history }
+        }
+        let results = model.visibleCommandResults
+        #expect(results.contains { $0.candidate.kind == .history && $0.candidate.detail == "early-test://fixture/one" })
+        #expect(!results.contains { $0.candidate.kind == .history && $0.candidate.detail == "early-test://fixture/two" })
+        #expect(results.contains { $0.candidate.kind == .openTab && $0.candidate.detail == "early-test://fixture/two" })
+        let page = try #require(results.first { $0.candidate.kind == .history })
+        #expect(model.commandResultBadge(for: page.candidate) == "History")
+        #expect(model.perform(page, source: .commandBar))
+        #expect(model.activeTab?.currentURL == URL(string: "early-test://fixture/one") && model.coordinator.commandBar == nil)
+    }
+
+    @Test func reopeningAFavoriteOrPinAtItsSavedAddressIsAVisit() async throws {
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let profile = UUID(), space = UUID()
+        let one = URL(string: "early-test://fixture/one")!, two = URL(string: "early-test://fixture/two")!
+        // Closed saved pages already carry their saved address and page title.
+        let favorite = BrowserTab(spaceID: space, profileID: profile, title: "Page One", currentURL: one,
+                                  pinnedURL: one, isOpen: false, pinnedTitle: "Page One", isFavorite: true)
+        let pin = BrowserTab(spaceID: space, profileID: profile, title: "Page Two", currentURL: two,
+                             pinnedURL: two, isOpen: false, pinnedTitle: "Page Two")
+        let fixture = Fixture(session: BrowserSession(profileID: profile, activeSpaceID: space, tabs: [favorite, pin]),
+                              history: history)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        for tab in [favorite, pin] {
+            #expect(model.perform(.selectTab(tab.id)))
+            try await fixture.waitForLoad(tab.id)
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        await model.flushHistory()
+        #expect(Set(try await history.visits().map(\.url)) == [one, two], "Opening a saved page records a visit")
+
+        // Closing the pin and opening it again later is another visit.
+        model.closeTab(pin.id)
+        #expect(model.perform(.selectTab(pin.id)))
+        try await fixture.waitForLoad(pin.id)
+        try await Task.sleep(for: .milliseconds(100))
+        await model.flushHistory()
+        #expect(try await history.visits().filter { $0.url == two }.count == 2)
+
+        // In the command bar the saved pages appear as themselves, not as history.
+        model.closeTab(pin.id)
+        model.closeTab(favorite.id)
+        model.presentCommandBar(.newTab)
+        model.updateQuery("page")
+        try await fixture.waitUntil("results") { !model.commandSearch.isRefreshing && !model.commandSearch.isLoadingProviders }
+        #expect(!model.visibleCommandResults.contains { $0.candidate.kind == .history })
+        #expect(model.visibleCommandResults.contains { $0.candidate.target == .tab(pin.id) })
+        // Clearing history keeps the icons of every tab, pin and Favorite.
+        #expect(Set(model.sidebarURLs).isSuperset(of: [one, two]))
+    }
+
+    @Test func historyOpensAsAWindowSheetGroupsVisitsByDayAndClearsARange() async throws {
+        let withoutHistory = Fixture()
+        #expect(!withoutHistory.model.canPerform(.showHistory), "No history store, no History")
+        withoutHistory.cleanup()
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let fixture = Fixture(history: history)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let now = Date()
+        let old = URL(string: "https://example.com/old")!, recent = URL(string: "https://example.com/recent")!
+        try await history.record(old, title: "Old", at: now.addingTimeInterval(-3 * 86400))
+        try await history.record(recent, title: "Recent", at: now.addingTimeInterval(-60))
+
+        #expect(model.canPerform(.showHistory) && model.perform(.showHistory) && model.historyPresented)
+        #expect(!model.canPerform(.presentCommandBar(.newTab)), "History is modal for this window")
+        model.historyPresented = false
+        #expect(model.commandSearchCandidates().map(\.title).contains("Show All History"))
+        #expect(model.perform(.clearHistory) && model.clearHistoryPresented)
+        model.clearHistoryPresented = false
+
+        let sections = HistoryView.sections(try await history.visits(), now: now)
+        #expect(sections.map(\.title).first == "Today" && sections.count == 2)
+        #expect(sections.first?.visits.map(\.url) == [recent])
+
+        let revision = model.historyRevision
+        await model.clearHistory(.lastHour)
+        #expect(try await history.visits().map(\.url) == [old], "Only the chosen period is cleared")
+        #expect(model.historyRevision == revision + 1)
+        await model.clearHistory(.all)
+        #expect(try await history.visits().isEmpty)
     }
 
     @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {

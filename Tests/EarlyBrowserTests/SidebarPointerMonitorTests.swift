@@ -137,4 +137,12 @@ struct SidebarPointerMonitorTests {
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: other.window)
         #expect(received == point)
     }
+
+    @Test func windowChromeDoubleClickFollowsTheSystemTitleBarSetting() {
+        #expect(WindowDragRegion.doubleClickAction(nil) == .zoom, "Zoom is the macOS default")
+        #expect(WindowDragRegion.doubleClickAction("Maximize") == .zoom)
+        #expect(WindowDragRegion.doubleClickAction("Fill") == .zoom)
+        #expect(WindowDragRegion.doubleClickAction("Minimize") == .minimize)
+        #expect(WindowDragRegion.doubleClickAction("None") == .none)
+    }
 }

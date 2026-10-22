@@ -5,17 +5,20 @@ import Testing
 @testable import EarlyCore
 
 struct SpaceAppearanceTests {
+    private static func luminance(_ rgb: SpaceThemeRGB) -> Double {
+        func linear(_ channel: Double) -> Double {
+            channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(rgb.red) + 0.7152 * linear(rgb.green) + 0.0722 * linear(rgb.blue)
+    }
+
+    private static func ratio(_ first: SpaceThemeRGB, _ second: SpaceThemeRGB) -> Double {
+        let left = luminance(first), right = luminance(second)
+        return (max(left, right) + 0.05) / (min(left, right) + 0.05)
+    }
+
     @Test func focusedBordersAreMutedAndReadableAgainstLightAndDarkSurfaces() {
-        func luminance(_ rgb: SpaceThemeRGB) -> Double {
-            func linear(_ channel: Double) -> Double {
-                channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
-            }
-            return 0.2126 * linear(rgb.red) + 0.7152 * linear(rgb.green) + 0.0722 * linear(rgb.blue)
-        }
-        func ratio(_ first: SpaceThemeRGB, _ second: SpaceThemeRGB) -> Double {
-            let left = luminance(first), right = luminance(second)
-            return (max(left, right) + 0.05) / (min(left, right) + 0.05)
-        }
+        let ratio = Self.ratio
         for theme in BrowserSpace.Color.allCases {
             for dark in [false, true] {
                 let page = dark ? SpaceThemeRGB(red: 0.125, green: 0.129, blue: 0.141)
@@ -178,5 +181,41 @@ struct SpaceAppearanceTests {
         #expect(darkBlue.blue - darkBlue.red > 0.085)
         let darkBlueBottom = BrowserSpace.Color.blue.chromeBottom(isDark: true)
         #expect(darkBlueBottom.blue - darkBlueBottom.red > 0.05)
+    }
+
+    @Test func privateWindowsUseOneDarkGrayLighterThanDarkChromeThatNoSpaceCanChoose() {
+        let theme = WindowTheme.privateBrowsing
+        let top = theme.chromeTop(isDark: false), bottom = theme.chromeBottom(isDark: false)
+        #expect(theme.chromeTop(isDark: true) == top && theme.chromeBottom(isDark: true) == bottom, "The same in both appearances")
+        #expect(theme.focusBorder(isDark: true) == theme.focusBorder(isDark: false))
+        for rgb in [top, bottom] {
+            #expect(max(rgb.red, rgb.green, rgb.blue) - min(rgb.red, rgb.green, rgb.blue) < 0.03, "A gray, barely cool")
+            #expect(rgb.blue > rgb.red)
+            #expect(Self.ratio(rgb, SpaceThemeRGB(red: 1, green: 1, blue: 1)) >= 7, "White text reads clearly on it")
+            #expect(Self.ratio(rgb, SpaceThemeRGB(red: 0, green: 0, blue: 0)) < 3, "So its chrome is drawn dark")
+            let edge = theme.focusBorder(isDark: true), strong = theme.focusBorder(isDark: true, increasedContrast: true)
+            #expect(Self.ratio(edge, rgb) >= 3 && Self.ratio(strong, rgb) >= 4.5)
+            #expect(Self.ratio(strong, rgb) > Self.ratio(edge, rgb))
+        }
+        for color in BrowserSpace.Color.allCases {
+            // Lighter than every Space's dark chrome, and nothing like its light chrome.
+            #expect(Self.luminance(top) > Self.luminance(color.chromeTop(isDark: true)))
+            #expect(Self.ratio(top, color.chromeTop(isDark: true)) >= 1.3)
+            #expect(Self.ratio(bottom, color.chromeBottom(isDark: true)) >= 1.3)
+            #expect(Self.ratio(top, color.chromeTop(isDark: false)) >= 5)
+        }
+        #expect(BrowserSpace.Color.allCases.map(\.rawValue) == ["gray", "blue", "purple", "pink", "red", "orange", "yellow", "green"],
+                "The private gray is not a Space or profile color")
+        #expect(BrowserSession.privateWindow().spaces.first?.color == .gray)
+        for color in BrowserSpace.Color.allCases {
+            for dark in [false, true] {
+                let space = WindowTheme.space(color)
+                #expect(space.chromeTop(isDark: dark) == color.chromeTop(isDark: dark))
+                #expect(space.chromeBottom(isDark: dark) == color.chromeBottom(isDark: dark))
+                #expect(space.focusBorder(isDark: dark, increasedContrast: true) == color.focusBorder(isDark: dark, increasedContrast: true))
+                #expect(space.chromeTop(isDark: dark) != top)
+            }
+            #expect(WindowTheme.space(color).swatch == color.swatch && WindowTheme.space(color) != theme)
+        }
     }
 }

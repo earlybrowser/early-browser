@@ -7,13 +7,11 @@ import Foundation
 public struct CommandSearchCandidate: Identifiable, Equatable, Sendable {
     public enum Kind: Int, Comparable, Sendable {
         // Raw values are the deterministic tie-break order.
-        case favorite, pinnedTab, openTab, space, profile, action, bookmark, history
+        case favorite, pinnedTab, openTab, space, profile, action, history
 
         public var isTab: Bool { self == .favorite || self == .pinnedTab || self == .openTab }
         public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
     }
-
-    public enum PageSource: Equatable, Sendable { case history, bookmark }
 
     public enum Target: Equatable, Sendable {
         /// An existing record. Selection switches to or reopens this identity.
@@ -21,8 +19,8 @@ public struct CommandSearchCandidate: Identifiable, Equatable, Sendable {
         case space(UUID)
         case profile(UUID)
         case action(BrowserAction)
-        /// Reserved for history and bookmark providers.
-        case page(URL, source: PageSource)
+        /// A page from history, opened like a typed address.
+        case page(URL)
     }
 
     public let id: String
@@ -63,8 +61,8 @@ public struct CommandSearchResult: Identifiable, Equatable, Sendable {
     public var id: String { candidate.id }
 }
 
-/// Asynchronous source for data owned outside the window, such as history and
-/// bookmarks. Providers return candidates; Early's ranker decides which match.
+/// Asynchronous source for data owned outside the window, such as history.
+/// Providers return candidates; Early's ranker decides which match.
 public protocol CommandSearchProvider: Sendable {
     func candidates(matching query: String, limit: Int) async throws -> [CommandSearchCandidate]
 }
@@ -99,7 +97,7 @@ public struct CommandSearchLimits: Equatable, Sendable {
         case .space: spaces
         case .profile: profiles
         case .action: actions
-        case .bookmark, .history: pages
+        case .history: pages
         }
     }
 }
@@ -160,7 +158,7 @@ public enum CommandSearchRanker {
             if kind.isTab {
                 guard tabCount < limits.tabs else { continue }
                 tabCount += 1
-            } else if kind == .bookmark || kind == .history {
+            } else if kind == .history {
                 guard pageCount < limits.pages else { continue }
                 pageCount += 1
             } else {

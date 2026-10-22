@@ -120,6 +120,13 @@ public struct BrowserSession: Codable, Equatable, Sendable {
         }
     }
 
+    /// A private window's session: one Space named "Private" and no saved
+    /// pages. It belongs to a temporary profile that is never persisted.
+    public static func privateWindow(profileID: UUID = UUID()) -> BrowserSession {
+        let space = BrowserSpace(profileID: profileID, name: "Private", color: .gray, icon: .symbol(.masks))
+        return BrowserSession(profileID: profileID, activeSpaceID: space.id, spaces: [space])
+    }
+
     /// A copied page is a new Today tab, even when opened from a saved pin.
     /// Saved tabs start unloaded; no other window's live navigation is copied.
     public func openingWindow(at url: URL, title: String? = nil) -> BrowserSession {

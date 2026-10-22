@@ -8,7 +8,7 @@ import SwiftUI
 /// The shared look of a pane's floating tools: the active Space's chrome with
 /// a theme-colored edge, like the split drop cards.
 struct PageToolSurface: ViewModifier {
-    let theme: BrowserSpace.Color
+    let theme: WindowTheme
     let allowsTransparency: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
@@ -18,7 +18,7 @@ struct PageToolSurface: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background {
-                BrowserChromeBackground(spaceColor: theme, floating: true, allowsTransparency: allowsTransparency)
+                BrowserChromeBackground(theme: theme, floating: true, allowsTransparency: allowsTransparency)
                     .clipShape(Self.shape)
             }
             .overlay {
@@ -48,7 +48,7 @@ struct PageToolsOverlay: View {
                     .transition(reduceMotion ? .identity : .opacity)
             }
             if let notice = model.zoomNotice, notice.tabID == tabID {
-                ZoomNoticeView(zoom: notice.zoom, theme: model.splitTheme,
+                ZoomNoticeView(zoom: notice.zoom, theme: model.chromeTheme,
                                allowsTransparency: model.preferences.translucentChrome)
                     .task(id: notice.id) {
                         do { try await Task.sleep(for: .seconds(1.2)) } catch { return }
@@ -70,7 +70,7 @@ struct ReaderBadge: View {
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
-        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        let tint = model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         HStack(spacing: 8) {
             Label("Reader", systemImage: "doc.plaintext")
                 .font(.system(size: 12, weight: .semibold))
@@ -83,7 +83,7 @@ struct ReaderBadge: View {
                 .accessibilityIdentifier("reader.original")
         }
         .padding(.horizontal, 10).frame(height: 30)
-        .modifier(PageToolSurface(theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome))
+        .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
         .padding(10)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("reader.badge")
@@ -126,7 +126,7 @@ struct SiteControlsButton: View {
     }
 
     var body: some View {
-        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        let tint = model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         if Self.isVisible(for: model), let id = model.coordinator.focusedTabID {
             Button { presented.toggle() } label: {
                 SiteControlsGlyph()
@@ -166,7 +166,7 @@ struct SiteControlsPanel: View {
     }
 
     var body: some View {
-        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        let tint = model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         let page = model.webViews.pages[tabID]
         let url = model.currentPageURL
         VStack(alignment: .leading, spacing: 12) {
@@ -304,7 +304,7 @@ private extension String {
 /// page keeps every click, and the preview hides while the page is fullscreen.
 struct LinkPreview: View {
     let hover: LinkHover
-    let theme: BrowserSpace.Color
+    let theme: WindowTheme
     let allowsTransparency: Bool
 
     var body: some View {
@@ -349,7 +349,7 @@ struct PageFindBar: View {
     }
 
     var body: some View {
-        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        let tint = model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         let status = Self.status(for: state)
         HStack(spacing: 4) {
             Image(systemName: "magnifyingglass")
@@ -382,7 +382,7 @@ struct PageFindBar: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 34)
-        .modifier(PageToolSurface(theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome))
+        .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Find on page")
         .accessibilityIdentifier("find.bar")
@@ -431,7 +431,7 @@ struct PageFindBar: View {
 
 struct ZoomNoticeView: View {
     let zoom: Double
-    let theme: BrowserSpace.Color
+    let theme: WindowTheme
     let allowsTransparency: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast

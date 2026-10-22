@@ -123,6 +123,28 @@ struct DownloadStoreTests {
         }
     }
 
+    @Test func privateDownloadsKeepTheirQuarantineButNotTheAddressesTheyCameFrom() async throws {
+        let body = Data("private file".utf8)
+        let server = try LocalHTTPServer(body: body, initialChunk: body.count)
+        let fixture = Fixture()
+        defer { server.stop(); fixture.cleanup() }
+        for records in [true, false] {
+            fixture.store.recordsSourceAddresses = records
+            let count = fixture.store.items.count
+            #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id))
+            try await waitUntil("download") {
+                fixture.store.items.count == count + 1 && fixture.store.items.first?.state == .finished
+            }
+            let item = try #require(fixture.store.items.first)
+            let destination = try #require(item.destination)
+            let quarantine = try destination.resourceValues(forKeys: [.quarantinePropertiesKey]).quarantineProperties
+            #expect(quarantine?[kLSQuarantineAgentNameKey as String] as? String == "Early", "Gatekeeper still checks it")
+            // macOS keeps the address in its quarantine-event log, not the file.
+            #expect(fixture.store.quarantineAddresses(for: item).source == (records ? server.url : nil),
+                    records ? "Ordinary downloads say where they came from" : "Private downloads never do")
+        }
+    }
+
     @Test func downloadLinksBecomeUniqueFilesWithoutChangingThePage() async throws {
         let fixture = Fixture(page: "<a id='file' download='note.txt' href='data:text/plain;base64,bm90ZQ=='>Note</a>")
         defer { fixture.cleanup() }

@@ -9,6 +9,12 @@ extension BrowserSpace.Color {
     }
 }
 
+extension WindowTheme {
+    var tint: SwiftUI.Color {
+        swatch.color
+    }
+}
+
 extension SpaceThemeRGB {
     var color: SwiftUI.Color { Color(.sRGB, red: red, green: green, blue: blue, opacity: 1) }
     var hex: String {

@@ -322,7 +322,7 @@ struct BrowserWindowView: View {
                 .background {
                     if sidebarAutoHides {
                         // Floating chrome must stay legible over web content.
-                        BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+                        BrowserChromeBackground(theme: model.chromeTheme,
                                                 floating: true, allowsTransparency: model.preferences.translucentChrome)
                     }
                 }
@@ -382,7 +382,7 @@ struct BrowserWindowView: View {
         .overlay(alignment: .topLeading) {
             if let flight = model.downloadFlight {
                 DownloadFlightView(flight: flight,
-                                   theme: model.splitTheme.focusBorder(isDark: colorScheme == .dark,
+                                   theme: model.chromeTheme.focusBorder(isDark: colorScheme == .dark,
                                                                        increasedContrast: contrast == .increased).color) {
                     model.finishDownloadFlight(flight.id)
                 }
@@ -399,8 +399,13 @@ struct BrowserWindowView: View {
         }
         // One shared surface for the outer frame and pinned sidebar. Only the
         // clipped page area is inset into it; no sidebar tint or seam on top.
-        .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+        .background(BrowserChromeBackground(theme: model.chromeTheme,
                                             allowsTransparency: model.preferences.translucentChrome))
+        // The thin chrome border around the sidebar and page behaves like a
+        // title bar in every window (ordinary and private): drag to move,
+        // double-click to zoom. The chrome above ignores clicks.
+        .background(WindowDragRegion())
+        .background { if model.isPrivate { PrivateWindowAppearance() } }
         .background(BrowserWindowPointerMonitor { point in
             windowPointer.location = point
             guard sidebarAutoHides else { return }
@@ -527,6 +532,15 @@ struct BrowserWindowView: View {
           }.padding(24).frame(width: 340).browserReducedMotion()
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
+        .sheet(isPresented: $model.historyPresented) { HistoryView(model: model) }
+        // Clear History from the menu without opening History first.
+        .confirmationDialog("Clear history and website data?",
+                            isPresented: Binding(get: { model.clearHistoryPresented && !model.historyPresented },
+                                                 set: { model.clearHistoryPresented = $0 })) {
+            ClearHistoryButtons(model: model)
+        } message: {
+            Text(ClearHistoryButtons.message)
+        }
         .onDisappear {
             model.cancelWindowInteractions()
             endDrag()
@@ -582,10 +596,13 @@ struct BrowserWindowView: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button("New Tab") { model.perform(.presentCommandBar(.newTab)) }
-            Button("New Folder") { editFolder(nil, parent: nil) }
-            Divider()
-            Button("New Space…") { model.perform(.newSpace) }
-            if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
+            // A private window has no saved pages, folders or other Spaces.
+            if !model.isPrivate {
+                Button("New Folder") { editFolder(nil, parent: nil) }
+                Divider()
+                Button("New Space…") { model.perform(.newSpace) }
+                if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
+            }
         }
         .background(SpaceSwipeMonitor(model: model,
             enabled: model.preferences.spaceSwipes && sidebarVisible && hiddenDragItemID == nil && resizeStartWidth == nil && !folderEditor))
@@ -698,15 +715,21 @@ struct BrowserWindowView: View {
         let showsPins = !pinIDs.isEmpty || (active && revealDropSections)
         let selection = model.coordinator.session.selectionBySpace[space.id]
         return VStack(alignment: .leading, spacing: 16) {
-            Text(space.name)
-                .font(.callout.weight(.medium)).foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .contentTransition(.opacity)
-                .accessibilityAddTraits(.isHeader)
-                .contextMenu {
-                    SpaceActions(model: model, space: space)
-                    Button("New Space…") { model.perform(.newSpace) }
-                }
+            if model.isPrivate {
+                PrivateBrowsingBadge(name: space.name)
+                    .padding(.horizontal, 8)
+                    .accessibilityAddTraits(.isHeader)
+            } else {
+                Text(space.name)
+                    .font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .contentTransition(.opacity)
+                    .accessibilityAddTraits(.isHeader)
+                    .contextMenu {
+                        SpaceActions(model: model, space: space)
+                        Button("New Space…") { model.perform(.newSpace) }
+                    }
+            }
             ScrollViewReader { scroll in
                 ScrollView {
                     // Pins and Today share a scroll region: many persistent pins
@@ -745,8 +768,30 @@ struct BrowserWindowView: View {
                                     .background(dropArea("pinnedEnd"))
                                     .accessibilityHidden(true)
                             case .divider:
-                                Divider().padding(.vertical, 8)
-                                    .background(dropArea("divider"))
+                                HStack(spacing: 6) {
+                                    VStack { Divider() }
+                                    if active && !model.todayTabs.isEmpty {
+                                        // Clears Today only; pins and folders stay, and
+                                        // Reopen Closed Tab brings pages back.
+                                        Button { model.perform(.clearTodayTabs) } label: {
+                                            Label("Clear", systemImage: "arrow.down")
+                                                .labelStyle(.titleAndIcon)
+                                                .font(.system(size: 11, weight: .medium))
+                                                .padding(.horizontal, 6).frame(height: 17)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(.secondary)
+                                        .browserKeyboardFocus(cornerRadius: 5)
+                                        .disabled(!model.canPerform(.clearTodayTabs))
+                                        .help("Close all Today tabs in this Space. Pins and Favorites stay.")
+                                        .accessibilityLabel("Clear Today Tabs")
+                                        .accessibilityIdentifier("sidebar.clearToday")
+                                    }
+                                }
+                                // The same 17 points as the plain divider it replaces.
+                                .frame(height: 17)
+                                .background(dropArea("divider"))
                             case .newTab:
                                 newTabButton
                                     .fixedSize(horizontal: false, vertical: true)
@@ -1047,7 +1092,7 @@ struct BrowserWindowView: View {
             }
             .disabled(!model.canPerform(.setMuted(tab.id, !page.isMuted)))
         }
-        if !tab.isFavorite {
+        if !tab.isFavorite && !model.isPrivate {
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
                     Button(space.name) { model.perform(.moveTab(tab.id, toSpace: space.id)) }
@@ -1068,12 +1113,14 @@ struct BrowserWindowView: View {
             .disabled(model.coordinator.tabStore.siblingIDs(of: tab).first == tab.id)
         Button("Move Down") { model.perform(.moveTabBy(tab.id, 1)) }
             .disabled(model.coordinator.tabStore.siblingIDs(of: tab).last == tab.id)
-        Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
-            model.perform(.setFavorite(tab.id, !tab.isFavorite))
-        }
-        if !tab.isFavorite {
-            Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
-                model.perform(.setPinned(tab.id, tab.pinnedURL == nil))
+        if !model.isPrivate {
+            Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                model.perform(.setFavorite(tab.id, !tab.isFavorite))
+            }
+            if !tab.isFavorite {
+                Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
+                    model.perform(.setPinned(tab.id, tab.pinnedURL == nil))
+                }
             }
         }
         if tab.pinnedURL != nil {
@@ -1085,6 +1132,12 @@ struct BrowserWindowView: View {
         Divider()
         Button("Close Tab") { model.perform(.closeTab(tab.id)) }
             .disabled(!tab.isOpen)
+        if tab.pinnedURL == nil && !tab.isFavorite {
+            Button("Close Other Tabs") { model.perform(.closeOtherTabs(tab.id)) }
+                .disabled(!model.canPerform(.closeOtherTabs(tab.id)))
+            Button("Close Tabs Below") { model.perform(.closeTabsBelow(tab.id)) }
+                .disabled(!model.canPerform(.closeTabsBelow(tab.id)))
+        }
     }
 
     private func emptySavedSectionTarget(_ title: String, preview: SidebarSavedSectionPreview,
@@ -1518,7 +1571,8 @@ struct BrowserWindowView: View {
 
     private func revealSavedSections() {
         guard !revealDropSections else { return }
-        withAnimation(folderDragAnimation) { revealDropSections = true }
+        // Private windows have no Pins or Favorites to drop into.
+        withAnimation(folderDragAnimation) { revealDropSections = !model.isPrivate }
     }
 
     private func endDrag() {
@@ -2163,10 +2217,10 @@ struct BrowserWindowView: View {
     }
 
     private func destinationSection(at point: CGPoint) -> TabStore.Section? {
-        if (!model.favorites.isEmpty || revealDropSections), dropAreas["favorites"]?.contains(point) == true { return .favorites }
+        if !model.isPrivate, (!model.favorites.isEmpty || revealDropSections), dropAreas["favorites"]?.contains(point) == true { return .favorites }
         guard let viewport = sectionFrames[false], viewport.contains(point),
               let regular = dropAreas["regular"] else { return nil }
-        return point.y >= regular.minY ? .regular : .pinned
+        return model.isPrivate || point.y >= regular.minY ? .regular : .pinned
     }
 
     private func groupPanel(active: Bool, dashed: Bool = false, isFolder: Bool = false) -> some View {
@@ -2403,10 +2457,12 @@ struct BrowserWindowView: View {
             .accessibilityIdentifier("sidebar.toggle")
             .help("Toggle sidebar auto-hide (Command-Shift-S). Reveal at the left edge.")
             Spacer(minLength: 0)
-            NavigationButton(kind: .back) { model.perform(.back) }
+            NavigationButton(kind: .back, history: { historyEntries(forward: false) },
+                             onHistory: { model.perform(.goToHistory(offset: $0)) }) { model.perform(.back) }
                 .disabled(model.activePage?.canGoBack != true)
                 .accessibilityLabel("Back").accessibilityIdentifier("navigation.back")
-            NavigationButton(kind: .forward) { model.perform(.forward) }
+            NavigationButton(kind: .forward, history: { historyEntries(forward: true) },
+                             onHistory: { model.perform(.goToHistory(offset: $0)) }) { model.perform(.forward) }
                 .disabled(model.activePage?.canGoForward != true)
                 .accessibilityLabel("Forward").accessibilityIdentifier("navigation.forward")
             NavigationButton(kind: model.activePage?.isLoading == true ? .stop : .reload) {
@@ -2421,6 +2477,10 @@ struct BrowserWindowView: View {
         .foregroundStyle(.secondary)
         .buttonStyle(.plain)
         .background(WindowDragRegion())
+    }
+
+    private func historyEntries(forward: Bool) -> [WebViewManager.HistoryListEntry] {
+        model.coordinator.focusedTabID.map { model.webViews.historyList($0, forward: forward) } ?? []
     }
 
     private var currentURL: String? {
@@ -2500,20 +2560,25 @@ struct BrowserWindowView: View {
 /// Activation feedback never delays the action or the actual Reload/Stop state.
 private struct NavigationButton: View {
     let kind: NavigationControlStyle.Kind
+    /// Back and Forward list the tab's history on right-click or press-and-hold.
+    var history: (() -> [WebViewManager.HistoryListEntry])? = nil
+    var onHistory: (Int) -> Void = { _ in }
     let action: () -> Void
     @State private var activation = 0
     @State private var clickFeedback = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
-        Button {
-            clickFeedback = !reduceMotion
-            activation += 1
-            action()
-        } label: {
+        Button { activate() } label: {
             ReloadStopArtwork(isLoading: kind == .stop)
         }
         .buttonStyle(NavigationControlStyle(kind: kind, clickFeedback: clickFeedback))
+        .overlay {
+            if let history, isEnabled {
+                HistoryMenuOverlay(onClick: activate, entries: history, onSelect: onHistory)
+            }
+        }
         .browserKeyboardFocus(cornerRadius: 8)
         .task(id: activation) {
             guard activation > 0 else { return }
@@ -2522,6 +2587,91 @@ private struct NavigationButton: View {
                 clickFeedback = false
             } catch { /* A newer activation or disappearing view cancels feedback. */ }
         }
+    }
+
+    private func activate() {
+        clickFeedback = !reduceMotion
+        activation += 1
+        action()
+    }
+}
+
+/// Native press-and-hold and right-click for Back and Forward. A click shorter
+/// than the hold delay is an ordinary Back/Forward; keyboard and VoiceOver use
+/// the SwiftUI button underneath.
+struct HistoryMenuOverlay: NSViewRepresentable {
+    let onClick: () -> Void
+    let entries: () -> [WebViewManager.HistoryListEntry]
+    let onSelect: (Int) -> Void
+
+    func makeNSView(context: Context) -> HistoryMenuView { HistoryMenuView() }
+    func updateNSView(_ view: HistoryMenuView, context: Context) {
+        view.onClick = onClick
+        view.entries = entries
+        view.onSelect = onSelect
+    }
+    static func dismantleNSView(_ view: HistoryMenuView, coordinator: ()) { view.cancelHold() }
+
+    final class HistoryMenuView: NSView {
+        static let holdDelay: TimeInterval = 0.4
+        var onClick: () -> Void = {}
+        var entries: () -> [WebViewManager.HistoryListEntry] = { [] }
+        var onSelect: (Int) -> Void = { _ in }
+        private var hold: Timer?
+        private var showedMenu = false
+
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func isAccessibilityElement() -> Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            showedMenu = false
+            cancelHold()
+            hold = Timer.scheduledTimer(withTimeInterval: Self.holdDelay, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.showMenu() }
+            }
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            let wasHolding = hold != nil
+            cancelHold()
+            if wasHolding, !showedMenu, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick() }
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            cancelHold()
+            showMenu()
+        }
+
+        func cancelHold() {
+            hold?.invalidate()
+            hold = nil
+        }
+
+        func makeMenu() -> NSMenu? {
+            let list = entries()
+            guard !list.isEmpty else { return nil }
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            for entry in list {
+                let item = NSMenuItem(title: entry.title, action: #selector(choose(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = entry.offset
+                item.toolTip = entry.url.absoluteString
+                menu.addItem(item)
+            }
+            return menu
+        }
+
+        private func showMenu() {
+            cancelHold()
+            guard let menu = makeMenu() else { return }
+            showedMenu = true
+            // Just below the button.
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: isFlipped ? bounds.maxY + 4 : -4), in: self)
+        }
+
+        @objc private func choose(_ sender: NSMenuItem) { onSelect(sender.tag) }
     }
 }
 

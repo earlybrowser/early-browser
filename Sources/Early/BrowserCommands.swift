@@ -20,6 +20,37 @@ struct BrowserCommands: Commands {
     @FocusedValue(\.browserWindow) private var model
     @Environment(\.openSettings) private var openSettings
 
+    static let recentlyClosedTabLimit = 10
+
+    /// Page titles stay short enough for a menu.
+    static func menuTitle(_ title: String) -> String {
+        let line = title.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return line.count > 60 ? String(line.prefix(59)).trimmingCharacters(in: .whitespaces) + "…" : line
+    }
+
+    /// Menus draw an item's image at the image's own size.
+    static let menuIconSize = NSSize(width: 16, height: 16)
+
+    static func menuIcon(_ image: NSImage) -> NSImage {
+        let icon = (image.copy() as? NSImage) ?? image
+        icon.size = menuIconSize
+        return icon
+    }
+
+    /// A page in History's menu: its site icon, or a globe until one is known.
+    private func pageItem(_ title: String, url: URL, model: BrowserWindowModel) -> some View {
+        Label {
+            Text(Self.menuTitle(title))
+        } icon: {
+            if let icon = model.webViews.favicons.image(for: url) {
+                Image(nsImage: Self.menuIcon(icon))
+            } else {
+                Image(systemName: "globe")
+            }
+        }
+        .labelStyle(.titleAndIcon)
+    }
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Window") {
@@ -28,6 +59,12 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("n")
             .disabled(model.map { !$0.canPerform(.newWindow) } ?? !application.canOpenWindow)
+            Button("New Private Window") {
+                if let model { _ = model.perform(.newPrivateWindow) }
+                else { _ = application.openPrivateWindow() }
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(model.map { !$0.canPerform(.newPrivateWindow) } ?? !application.canOpenWindow)
             Button("New Tab") { model?.perform(.presentCommandBar(.newTab)) }
                 .keyboardShortcut("t")
                 .disabled(model?.canPerform(.presentCommandBar(.newTab)) != true)
@@ -102,36 +139,82 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(model?.canPerform(.showDownloads) != true)
         }
-        CommandMenu("Tab") {
-            Menu("Split with Tab") {
+        CommandMenu("History") {
+            Button("Back") { model?.perform(.back) }.keyboardShortcut("[")
+                .disabled(model?.canPerform(.back) != true)
+            Button("Forward") { model?.perform(.forward) }.keyboardShortcut("]")
+                .disabled(model?.canPerform(.forward) != true)
+            Divider()
+            Button("Show All History") { model?.perform(.showHistory) }
+                .keyboardShortcut("y")
+                .disabled(model?.canPerform(.showHistory) != true)
+            Divider()
+            Button("Reopen Closed Tab") { model?.perform(.reopenLastTab) }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(model?.canPerform(.reopenLastTab) != true)
+            // Works with no window open, after closing the last one.
+            Button("Reopen Closed Window") {
+                if let model { _ = model.perform(.reopenClosedWindow) }
+                else { _ = application.reopenClosedWindow() }
+            }
+            .disabled(model.map { !$0.canPerform(.reopenClosedWindow) } ?? !application.canReopenClosedWindow)
+            Menu("Recently Closed") {
                 if let model {
-                    ForEach(model.openTabs.filter { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) }) { tab in
-                        Menu(tab.displayTitle) {
-                            Button("Place on Left") { model.perform(.splitTab(tab.id, .leading)) }
-                                .disabled(!model.canPerform(.splitTab(tab.id, .leading)))
-                            Button("Place on Right") { model.perform(.splitTab(tab.id, .trailing)) }
-                                .disabled(!model.canPerform(.splitTab(tab.id, .trailing)))
+                    ForEach(model.recentlyClosedTabs.prefix(Self.recentlyClosedTabLimit)) { tab in
+                        Button { model.perform(.reopenRecentlyClosedTab(tab.id)) } label: {
+                            pageItem(tab.displayTitle, url: tab.currentURL, model: model)
                         }
                     }
                 }
-            }
-            .disabled(model.map { model in !model.openTabs.contains { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) } } ?? true)
-            if let model, let group = model.coordinator.activeSplitGroup {
-                Button("Swap Sides") { model.perform(.swapSplit(group.id)) }
-                    .disabled(!model.canPerform(.swapSplit(group.id)))
-                Button("Focus Left Pane") { model.perform(.focusSplitPane(group.panes[0].id)) }
-                    .disabled(!model.canPerform(.focusSplitPane(group.panes[0].id)))
-                Button("Focus Right Pane") { model.perform(.focusSplitPane(group.panes[1].id)) }
-                    .disabled(!model.canPerform(.focusSplitPane(group.panes[1].id)))
-                Button("Remove Current Pane from Split") {
-                    if let pane = group.panes.first(where: { $0.tabID == model.coordinator.focusedTabID }) {
-                        model.perform(.removeSplitPane(pane.id))
+                if model?.recentlyClosedTabs.isEmpty == false, !application.recentlyClosedWindows.isEmpty { Divider() }
+                ForEach(application.recentlyClosedWindows) { closed in
+                    Button {
+                        if let model { _ = model.perform(.reopenRecentlyClosedWindow(closed.id)) }
+                        else { _ = application.reopenClosedWindow(closed.id) }
+                    } label: {
+                        Label("Window: \(Self.menuTitle(closed.title))", systemImage: "macwindow").labelStyle(.titleAndIcon)
                     }
+                    .disabled(model.map { !$0.canPerform(.reopenRecentlyClosedWindow(closed.id)) } ?? !application.canReopenClosedWindow(closed.id))
                 }
-                .disabled(!model.canPerform(.exitSplit(group.id)))
-                Button("Exit Split View") { model.perform(.exitSplit(group.id)) }
-                    .disabled(!model.canPerform(.exitSplit(group.id)))
             }
+            .disabled(model?.recentlyClosedTabs.isEmpty != false && application.recentlyClosedWindows.isEmpty)
+            // Today's pages, newest first, as in Safari. Private windows list none.
+            if let model, !model.recentlyVisited.isEmpty {
+                Divider()
+                ForEach(model.recentlyVisited, id: \.url) { page in
+                    Button { model.perform(.openHistoryPage(page.url)) } label: {
+                        pageItem(page.title.isEmpty ? (page.url.host ?? page.url.absoluteString) : page.title, url: page.url, model: model)
+                    }
+                    .disabled(!model.canPerform(.openHistoryPage(page.url)))
+                }
+            }
+            Divider()
+            Button("Clear History…") { model?.perform(.clearHistory) }
+                .disabled(model?.canPerform(.clearHistory) != true)
+        }
+        CommandMenu("Tab") {
+            Button("Next Tab") { model?.advanceTabSwitcher(1) }
+                .keyboardShortcut(.tab, modifiers: .control)
+                .disabled(model?.canPresentTabSwitcher != true)
+            Button("Previous Tab") { model?.advanceTabSwitcher(-1) }
+                .keyboardShortcut(.tab, modifiers: [.control, .shift])
+                .disabled(model?.canPresentTabSwitcher != true)
+            // Shortcuts in a submenu still work from anywhere, like Find's.
+            Menu("Go to Tab") {
+                ForEach(1...9, id: \.self) { number in
+                    Button(number == 9 ? "Select Last Tab" : "Select Tab \(number)") { model?.perform(.selectTabNumber(number)) }
+                        .keyboardShortcut(KeyEquivalent(Character(String(number))))
+                        .disabled(model?.canPerform(.selectTabNumber(number)) != true)
+                }
+            }
+            Divider()
+            Button("Reload Page") { model?.perform(.reload) }.keyboardShortcut("r")
+                .disabled(model?.canPerform(.reload) != true)
+            Button("Stop Loading") { model?.perform(.stop) }.keyboardShortcut(".")
+                .disabled(model?.canPerform(.stop) != true)
+            Button("Copy Current URL") { model?.perform(.copyCurrentURL) }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(model?.canPerform(.copyCurrentURL) != true)
             Divider()
             Button("Duplicate Tab") {
                 if let tab = model?.activeTab { model?.perform(.duplicateTab(tab.id)) }
@@ -151,18 +234,6 @@ struct BrowserCommands: Commands {
                 }
             }
             .disabled(model?.activeTab.map { model?.canPerform(.setMuted($0.id, model?.activePage?.isMuted != true)) == true } != true)
-            Button(model?.activeTab?.isFavorite == true ? "Remove from Favorites" : "Add to Favorites") {
-                if let tab = model?.activeTab { model?.perform(.setFavorite(tab.id, !tab.isFavorite)) }
-            }
-            .disabled(model?.activeTab.map { model?.canPerform(.setFavorite($0.id, !$0.isFavorite)) == true } != true)
-            Button(model?.activeTab?.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
-                if let tab = model?.activeTab { model?.perform(.setPinned(tab.id, tab.pinnedURL == nil)) }
-            }
-            .disabled(model?.activeTab.map { model?.canPerform(.setPinned($0.id, $0.pinnedURL == nil)) == true } != true)
-            Button("Reset to Pinned URL") {
-                if let id = model?.activeTab?.id { model?.perform(.resetPinnedTab(id)) }
-            }
-            .disabled(model?.activeTab.map { model?.canPerform(.resetPinnedTab($0.id)) == true } != true)
             Menu("Move Tab to Space") {
                 if let model, let tab = model.activeTab {
                     ForEach(model.coordinator.spaces) { space in
@@ -172,6 +243,66 @@ struct BrowserCommands: Commands {
                 }
             }
             .disabled(model?.activeTab == nil || model?.activeTab?.isFavorite == true || model?.canManageSpaces != true)
+            Divider()
+            Button(model?.activeTab?.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
+                if let tab = model?.activeTab { model?.perform(.setPinned(tab.id, tab.pinnedURL == nil)) }
+            }
+            .disabled(model?.activeTab.map { model?.canPerform(.setPinned($0.id, $0.pinnedURL == nil)) == true } != true)
+            Button("Reset to Pinned URL") {
+                if let id = model?.activeTab?.id { model?.perform(.resetPinnedTab(id)) }
+            }
+            .disabled(model?.activeTab.map { model?.canPerform(.resetPinnedTab($0.id)) == true } != true)
+            Button(model?.activeTab?.isFavorite == true ? "Remove from Favorites" : "Add to Favorites") {
+                if let tab = model?.activeTab { model?.perform(.setFavorite(tab.id, !tab.isFavorite)) }
+            }
+            .disabled(model?.activeTab.map { model?.canPerform(.setFavorite($0.id, !$0.isFavorite)) == true } != true)
+            Divider()
+            Menu("Split View") {
+                Menu("Split with Tab") {
+                    if let model {
+                        ForEach(model.openTabs.filter { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) }) { tab in
+                            Menu(tab.displayTitle) {
+                                Button("Place on Left") { model.perform(.splitTab(tab.id, .leading)) }
+                                    .disabled(!model.canPerform(.splitTab(tab.id, .leading)))
+                                Button("Place on Right") { model.perform(.splitTab(tab.id, .trailing)) }
+                                    .disabled(!model.canPerform(.splitTab(tab.id, .trailing)))
+                            }
+                        }
+                    }
+                }
+                .disabled(model.map { model in !model.openTabs.contains { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) } } ?? true)
+                if let model, let group = model.coordinator.activeSplitGroup {
+                    Divider()
+                    Button("Swap Sides") { model.perform(.swapSplit(group.id)) }
+                        .disabled(!model.canPerform(.swapSplit(group.id)))
+                    Button("Focus Left Pane") { model.perform(.focusSplitPane(group.panes[0].id)) }
+                        .disabled(!model.canPerform(.focusSplitPane(group.panes[0].id)))
+                    Button("Focus Right Pane") { model.perform(.focusSplitPane(group.panes[1].id)) }
+                        .disabled(!model.canPerform(.focusSplitPane(group.panes[1].id)))
+                    Button("Remove Current Pane from Split") {
+                        if let pane = group.panes.first(where: { $0.tabID == model.coordinator.focusedTabID }) {
+                            model.perform(.removeSplitPane(pane.id))
+                        }
+                    }
+                    .disabled(!model.canPerform(.exitSplit(group.id)))
+                    Button("Exit Split View") { model.perform(.exitSplit(group.id)) }
+                        .disabled(!model.canPerform(.exitSplit(group.id)))
+                }
+            }
+            .disabled(model.map { model in model.coordinator.activeSplitGroup == nil
+                && !model.openTabs.contains { model.canPerform(.splitTab($0.id, .leading)) || model.canPerform(.splitTab($0.id, .trailing)) } } ?? true)
+            Divider()
+            Button("Close Other Tabs") {
+                if let id = model?.activeTab?.id { model?.perform(.closeOtherTabs(id)) }
+            }
+            .keyboardShortcut("w", modifiers: [.command, .option])
+            .disabled(model?.activeTab.map { model?.canPerform(.closeOtherTabs($0.id)) == true } != true)
+            Button("Close Tabs Below") {
+                if let id = model?.activeTab?.id { model?.perform(.closeTabsBelow(id)) }
+            }
+            .disabled(model?.activeTab.map { model?.canPerform(.closeTabsBelow($0.id)) == true } != true)
+            Button("Clear Today Tabs") { model?.perform(.clearTodayTabs) }
+                .disabled(model?.canPerform(.clearTodayTabs) != true)
         }
         CommandMenu("Space") {
             Button("New Space…") { model?.perform(.newSpace) }
@@ -219,35 +350,6 @@ struct BrowserCommands: Commands {
             Button("Manage Profiles…") {
                 application.settingsSection = .profiles
                 openSettings()
-            }
-        }
-        CommandMenu("Navigate") {
-            Button("Copy Current URL") { model?.perform(.copyCurrentURL) }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
-                .disabled(model?.canPerform(.copyCurrentURL) != true)
-            Divider()
-            Button("Back") { model?.perform(.back) }.keyboardShortcut("[")
-                .disabled(model?.canPerform(.back) != true)
-            Button("Forward") { model?.perform(.forward) }.keyboardShortcut("]")
-                .disabled(model?.canPerform(.forward) != true)
-            Button("Reload") { model?.perform(.reload) }.keyboardShortcut("r")
-                .disabled(model?.canPerform(.reload) != true)
-            Button("Stop Loading") { model?.perform(.stop) }.keyboardShortcut(".")
-                .disabled(model?.canPerform(.stop) != true)
-            Divider()
-            Button("Reopen Closed Tab") { model?.perform(.reopenLastTab) }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
-                .disabled(model?.canPerform(.reopenLastTab) != true)
-            Button("Next Tab") { model?.advanceTabSwitcher(1) }
-                .keyboardShortcut(.tab, modifiers: .control)
-                .disabled(model?.canPresentTabSwitcher != true)
-            Button("Previous Tab") { model?.advanceTabSwitcher(-1) }
-                .keyboardShortcut(.tab, modifiers: [.control, .shift])
-                .disabled(model?.canPresentTabSwitcher != true)
-            ForEach(1...9, id: \.self) { number in
-                Button(number == 9 ? "Select Last Tab" : "Select Tab \(number)") { model?.perform(.selectTabNumber(number)) }
-                    .keyboardShortcut(KeyEquivalent(Character(String(number))))
-                    .disabled(model?.canPerform(.selectTabNumber(number)) != true)
             }
         }
         #if DEBUG

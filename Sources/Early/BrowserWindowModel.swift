@@ -53,6 +53,15 @@ final class BrowserWindowModel {
     let preferences: BrowserPreferences
     weak var application: EarlyAppDelegate?
     let isTesting: Bool
+    /// A private window: a temporary profile with a website data store kept
+    /// only in memory, no history, and nothing saved or restored.
+    let isPrivate: Bool
+    /// This profile's browsing history; nil records nothing.
+    let history: HistoryStore?
+    @ObservationIgnored private let now: @Sendable () -> Date
+    /// The address last recorded per tab, and the live page it came from.
+    @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID)] = [:]
+    @ObservationIgnored private var historyQueue: Task<Void, Never>?
     var submissionMessage: String?
     var commandBarIsComposing = false
     var notice: String?
@@ -67,6 +76,15 @@ final class BrowserWindowModel {
     }
     private(set) var pasteKind: PasteKind?
     @ObservationIgnored private var pasteKindChangeCount = -1
+    /// Show All History, and its Clear History choices.
+    var historyPresented = false
+    var clearHistoryPresented = false
+    /// Bumped when history or website data was cleared, so History reloads.
+    var historyRevision = 0
+    /// The pages most recently visited in this profile, newest first, for the
+    /// History menu; see `recentlyVisited`.
+    private(set) var recentPages: [HistoryPage] = []
+    static let recentPageLimit = 15
     /// Tabs whose language Apple's Translation can turn into the user's.
     var translationOffers: [UUID: TranslationOffer] = [:]
     /// The translation waiting for (or running in) the window's session.
@@ -130,7 +148,8 @@ final class BrowserWindowModel {
         sidebarWidth = SidebarWidth.clamped(sidebarWidth)
     }
     var onlineSuggestionsEnabled: Bool {
-        get { preferences.onlineSuggestions }
+        // Private windows need both settings; the private one is off by default.
+        get { preferences.onlineSuggestions && (!isPrivate || preferences.privateOnlineSuggestions) }
         set { preferences.onlineSuggestions = newValue; refreshSuggestions() }
     }
     var commandBarActionsEnabled: Bool {
@@ -141,11 +160,16 @@ final class BrowserWindowModel {
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
-         downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, searchProviders: [any CommandSearchProvider] = [],
+         downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, isPrivate: Bool = false,
+         history: HistoryStore? = nil,
+         searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
         self.isTesting = isTesting
+        self.isPrivate = isPrivate
+        self.history = isPrivate ? nil : history
+        self.now = now
         self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
         let service = GoogleSearchSuggestions()
         suggestions = SearchSuggestions { query in
@@ -158,7 +182,8 @@ final class BrowserWindowModel {
             #endif
             return try await service.fetch(query)
         }
-        commandSearch = CommandSearch(providers: searchProviders, now: now)
+        commandSearch = CommandSearch(providers: searchProviders + (history.map { [HistorySearchProvider(store: $0)] } ?? []),
+                                      now: now)
         coordinator = BrowserCoordinator(startup: startup, activeSpaceID: session.activeSpaceID,
             tabStore: TabStore(tabs: session.tabs, folders: session.folders), selectionBySpace: session.selectionBySpace,
             profileID: session.profileID, recentlyClosed: session.recentlyClosed, spaces: session.spaces,
@@ -166,7 +191,7 @@ final class BrowserWindowModel {
         persistence = sharedPersistence ?? SessionAutosaver(repository: repository, disabledReason: restorationError)
         // Tests drive pressure explicitly; host resource usage must not change
         // which fixture pages survive while assertions are running.
-        webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
+        webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting || isPrivate, input: input,
                                  websiteDataStore: websiteDataStore,
                                  downloads: downloads ?? (isTesting ? DownloadStore(directory: FileManager.default.temporaryDirectory
                                     .appending(path: "EarlyTestDownloads/\(UUID().uuidString)", directoryHint: .isDirectory)) : nil),
@@ -180,7 +205,11 @@ final class BrowserWindowModel {
             #endif
         }
         webViews.onMetadata = { [weak self] id, url, title in
-            guard let self, self.coordinator.updateMetadata(id, url: url, title: title) else { return }
+            guard let self else { return }
+            // A pin or Favorite reopened at its saved address changes none of
+            // its metadata, but it is still a visit.
+            if self.coordinator.tabStore.tab(id: id)?.isOpen == true { self.recordHistory(id, url: url, title: title) }
+            guard self.coordinator.updateMetadata(id, url: url, title: title) else { return }
             self.save()
         }
         webViews.onNewWindow = { [weak self] url, configuration in
@@ -222,6 +251,7 @@ final class BrowserWindowModel {
         }
         activateSelection()
         if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
+        refreshRecentPages()
         // The app installs the shared writer before publishing the first snapshot.
     }
 
@@ -284,9 +314,11 @@ final class BrowserWindowModel {
         if id == coordinator.focusedTabID { contentFocusRequest += 1 }
     }
 
-    /// Reader's links and accents in the active Space's theme.
+    /// Reader's links and accents in the active Space's theme. Reader follows
+    /// the page's appearance, so private windows use the neutral Space gray.
     var readerAccent: ReaderAccent {
-        ReaderAccent(light: splitTheme.focusBorder(isDark: false).hex, dark: splitTheme.focusBorder(isDark: true).hex)
+        let theme = isPrivate ? .space(.gray) : chromeTheme
+        return ReaderAccent(light: theme.focusBorder(isDark: false).hex, dark: theme.focusBorder(isDark: true).hex)
     }
 
     /// Show or leave Reader; focus follows to Reader's view or back to the page.
@@ -530,7 +562,8 @@ final class BrowserWindowModel {
     }
 
     func placeTab(_ id: UUID, in section: TabStore.Section, folderID: UUID? = nil, before: UUID? = nil) -> Bool {
-        guard coordinator.placeTab(id, in: section, folderID: folderID, before: before) else { return false }
+        // A private window has no saved pages to place a tab among.
+        guard !isPrivate || section == .regular, coordinator.placeTab(id, in: section, folderID: folderID, before: before) else { return false }
         save()
         return true
     }
@@ -652,6 +685,82 @@ final class BrowserWindowModel {
         save()
     }
 
+    /// A new address in a tab, or the same one in a newly loaded page (a
+    /// reopened pin), is a visit; a later title for it only names it. One
+    /// serial queue keeps a title from preceding its visit.
+    private func recordHistory(_ id: UUID, url: URL?, title: String?) {
+        guard let history, let url, HistoryStore.records(url), let page = webViews.pages[id] else { return }
+        let previous = historyQueue
+        let identity = page.instanceID
+        if let last = historyURLs[id], last.url == url, last.page == identity {
+            guard let title, !title.isEmpty else { return }
+            historyQueue = Task { await previous?.value; try? await history.updateTitle(url, title: title) }
+            refreshRecentPages()
+        } else {
+            if historyURLs.count > 500 {
+                let open = Set(coordinator.tabStore.tabs.filter(\.isOpen).map(\.id))
+                historyURLs = historyURLs.filter { open.contains($0.key) }
+            }
+            historyURLs[id] = (url, identity)
+            let date = now()
+            historyQueue = Task { await previous?.value; try? await history.record(url, title: title, at: date) }
+            refreshRecentPages()
+        }
+    }
+
+    /// Pages visited today, newest first: History's menu lists them.
+    var recentlyVisited: [HistoryPage] {
+        let today = Calendar.current.startOfDay(for: now())
+        return recentPages.filter { $0.lastVisit >= today }
+    }
+
+    /// Reloads the History menu's pages after the visits already queued.
+    func refreshRecentPages() {
+        guard let history else { return }
+        let previous = historyQueue
+        let since = Calendar.current.startOfDay(for: now())
+        historyQueue = Task { [weak self] in
+            await previous?.value
+            let pages = (try? await history.recentPages(since: since, limit: Self.recentPageLimit)) ?? []
+            guard let self, self.recentPages != pages else { return }
+            self.recentPages = pages
+            // Their site icons, from the cache when possible, for the menu.
+            for page in pages { self.webViews.favicons.request(page.url) }
+        }
+    }
+
+    /// The addresses of this window's tabs, pins and Favorites, open or not.
+    var sidebarURLs: [URL] { coordinator.tabStore.tabs.flatMap { [$0.currentURL, $0.pinnedURL].compactMap { $0 } } }
+
+    /// Waits for recorded visits to reach the store (tests and clearing).
+    func flushHistory() async { await historyQueue?.value }
+
+    /// Clears this profile's history and website data from the period's start,
+    /// with cached icons and thumbnails in every window of the profile.
+    func clearHistory(_ range: HistoryClearRange) async {
+        let since = range.start(now: now())
+        await flushHistory()
+        try? await history?.deleteVisits(since: since)
+        // Tabs, pins and Favorites in every window of the profile keep their icons.
+        let kept = application?.sidebarURLs(profileID: coordinator.profileID) ?? sidebarURLs
+        await webViews.clearWebsiteData(since: since, keepingIconsFor: kept)
+        historyURLs.removeAll()
+        historyRevision += 1
+        refreshRecentPages()
+        application?.didClearWebsiteData(profileID: coordinator.profileID, from: self)
+    }
+
+    /// Closes several Today tabs at once, keeping their pages reopenable.
+    func closeTodayTabs(_ ids: [UUID], keeping kept: UUID? = nil) {
+        let previousActive = coordinator.activeTabID
+        let previousVisible = coordinator.visibleTabIDs
+        let closed = coordinator.closeTodayTabs(ids, keeping: kept)
+        guard !closed.isEmpty else { return }
+        for id in closed { webViews.discard(tabID: id) }
+        if previousActive != coordinator.activeTabID || previousVisible != coordinator.visibleTabIDs { activateSelection() }
+        save()
+    }
+
     func deleteFolder(_ id: UUID) {
         let previousActive = coordinator.activeTabID
         guard let removed = coordinator.deleteFolder(id) else { return }
@@ -665,6 +774,17 @@ final class BrowserWindowModel {
         guard coordinator.reopenLastTab() != nil else { return }
         activateSelection()
         save()
+    }
+
+    func reopenClosedTab(_ id: UUID) {
+        guard coordinator.reopenClosedTab(id) != nil else { return }
+        activateSelection()
+        save()
+    }
+
+    /// History › Recently Closed: this window's closed tabs, newest first.
+    var recentlyClosedTabs: [BrowserTab] {
+        coordinator.recentlyClosed.reversed().map(\.tab).filter { canPerform(.reopenRecentlyClosedTab($0.id)) }
     }
 
     @discardableResult
@@ -703,7 +823,7 @@ final class BrowserWindowModel {
     }
 
     var canManageSpaces: Bool {
-        !spaceSwipeIsSettling && !sidebarInteractionInProgress && splitResize == nil && !folderEditorIsPresented && !hasVisibleDialog
+        !isPrivate && !spaceSwipeIsSettling && !sidebarInteractionInProgress && splitResize == nil && !folderEditorIsPresented && !hasVisibleDialog
             && renamingTabID == nil && spaceEditor == nil && spaceDeletionID == nil
     }
 
@@ -931,10 +1051,14 @@ final class BrowserWindowModel {
             && spaceDeletionID == nil && !hasVisibleDialog
     }
 
-    /// Drop targets and the focused pane share the current Space's theme.
-    var splitTheme: BrowserSpace.Color {
-        preferences.spaceThemes ? (coordinator.activeSpace?.color ?? .gray) : .gray
+    /// The chrome, drop targets and focused pane share the current Space's
+    /// theme. Private windows are always gray, with or without Space themes.
+    var chromeTheme: WindowTheme {
+        isPrivate ? .privateBrowsing : .space(preferences.spaceThemes ? (coordinator.activeSpace?.color ?? .gray) : .gray)
     }
+
+    /// Whether floating chrome, such as the command bar, wears the theme.
+    var tintsChrome: Bool { isPrivate || preferences.spaceThemes }
 
     func updateSplitPreview(for tabID: UUID, at point: CGPoint, in bounds: CGRect, leadingInset: CGFloat = 0) {
         guard canPreviewSplit, point.x.isFinite, point.y.isFinite,

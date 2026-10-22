@@ -53,6 +53,8 @@ private struct BrowserWindowRoot: View {
         Group {
             if let model = appDelegate.windowModel(windowID) {
                 BrowserWindowView(model: model)
+                    // Names the window in the Window menu and for VoiceOver.
+                    .navigationTitle(model.isPrivate ? "Early — Private" : "Early")
             } else {
                 Color(nsColor: .windowBackgroundColor)
                     .overlay(alignment: .topLeading) {

@@ -39,6 +39,29 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var dataStores: [UUID: WKWebsiteDataStore] = [:]
     /// Profile-owned download lists outlive every tab and window.
     @ObservationIgnored private var downloadStores: [UUID: DownloadStore] = [:]
+    /// Each profile's browsing history, beside the session file.
+    @ObservationIgnored private var historyStores: [UUID: HistoryStore] = [:]
+    /// All open private windows share one temporary profile and one website
+    /// data store kept only in memory, released with the last private window.
+    @ObservationIgnored private(set) var privateProfileID: UUID?
+    /// A recently closed window, listed in History › Recently Closed.
+    struct ClosedWindow: Identifiable {
+        let id = UUID()
+        let session: BrowserSession
+
+        /// Its first Today tab's title, and how many more it had.
+        var title: String {
+            let tabs = session.tabs.filter { $0.isOpen && $0.pinnedURL == nil && !$0.isFavorite }
+            let first = tabs.first?.displayTitle ?? "Window"
+            return tabs.count > 1 ? "\(first) and \(tabs.count - 1) More" : first
+        }
+    }
+
+    /// Recently closed ordinary windows with Today tabs, newest last. Never
+    /// private windows, and only for this run of the app.
+    private(set) var closedWindows: [ClosedWindow] = []
+    static let closedWindowLimit = 10
+    @ObservationIgnored private var privateDataStore: WKWebsiteDataStore?
     @ObservationIgnored private var isTerminating = false
     @ObservationIgnored private var applyingWorkspace = false
     @ObservationIgnored private var restoringFocus = false
@@ -114,7 +137,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         restoringFocus = !restored.isEmpty
         preferences.onChange = { [weak self] key in
             if key == "browserAppearance" { self?.applyAppearance() }
-            if key == "onlineSearchSuggestions" || key == "commandBarActions" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
+            if ["onlineSearchSuggestions", "privateSearchSuggestions", "commandBarActions"].contains(key) { self?.visibleModels.forEach { $0.refreshSuggestions() } }
             if key == "spaceSwipes" { self?.visibleModels.forEach { $0.cancelSpaceSwipePresentation() } }
         }
         applyAppearance()
@@ -140,7 +163,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     func openNewWindow(from source: BrowserWindowModel? = nil) -> UUID? {
         guard canOpenWindow, let workspace else { return nil }
         let template: BrowserSession
-        if let source {
+        // New Window from a private window opens an ordinary one.
+        if let source, !source.isPrivate {
             guard visibleModels.contains(where: { $0 === source }) else { return nil }
             template = source.coordinator.session
         } else {
@@ -154,7 +178,70 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return id
     }
 
+    /// Opens a private window: its only Space is named "Private", it records
+    /// no history, and nothing in it is saved, restored or kept on disk.
+    @discardableResult
+    func openPrivateWindow() -> UUID? {
+        guard canOpenWindow else { return nil }
+        let profile = privateProfileID ?? UUID()
+        privateProfileID = profile
+        let id = addWindow(session: .privateWindow(profileID: profile))
+        presentWindow?(id)
+        return id
+    }
+
+    func isPrivateProfile(_ id: UUID) -> Bool { privateProfileID == id }
+
+    var canReopenClosedWindow: Bool { canOpenWindow && !recentlyClosedWindows.isEmpty }
+
+    /// Closed windows whose profile still exists, newest first.
+    var recentlyClosedWindows: [ClosedWindow] {
+        closedWindows.reversed().filter { closed in profiles.contains { $0.id == closed.session.profileID } }
+    }
+
+    func canReopenClosedWindow(_ id: UUID) -> Bool {
+        canOpenWindow && recentlyClosedWindows.contains { $0.id == id }
+    }
+
+    /// Reopens one closed window, or the most recent whose profile still exists.
+    @discardableResult
+    func reopenClosedWindow(_ id: UUID? = nil) -> UUID? {
+        guard canOpenWindow else { return nil }
+        if let id {
+            guard canReopenClosedWindow(id), let index = closedWindows.firstIndex(where: { $0.id == id }) else { return nil }
+            return reopen(closedWindows.remove(at: index).session)
+        }
+        while let closed = closedWindows.popLast() {
+            if let reopened = reopen(closed.session) { return reopened }
+        }
+        return nil
+    }
+
+    private func reopen(_ closed: BrowserSession) -> UUID? {
+        guard let current = workspace?.session(for: closed.profileID) else { return nil }
+        let id = addWindow(session: closed.reopeningWindow(savedItemsFrom: current))
+        workspace?.activeProfileID = closed.profileID
+        saveAll()
+        presentWindow?(id)
+        return id
+    }
+
+    /// The last private window closed: its cookies, storage and download list go.
+    private func releasePrivateSessionIfUnused() {
+        guard let profile = privateProfileID,
+              !visibleModels.contains(where: { $0.coordinator.profileID == profile }) else { return }
+        privateProfileID = nil
+        privateDataStore = nil
+        downloadStores.removeValue(forKey: profile)?.cancelAll()
+    }
+
     private func websiteDataStore(for id: UUID) -> WKWebsiteDataStore {
+        if id == privateProfileID {
+            if let privateDataStore { return privateDataStore }
+            let store = WKWebsiteDataStore.nonPersistent()
+            privateDataStore = store
+            return store
+        }
         if let store = dataStores[id] { return store }
         let store = testing ? WKWebsiteDataStore.nonPersistent() : WKWebsiteDataStore(forIdentifier: id)
         dataStores[id] = store
@@ -167,6 +254,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let directory = testing ? FileManager.default.temporaryDirectory
             .appending(path: "EarlyTestDownloads/\(UUID().uuidString)", directoryHint: .isDirectory) : nil
         let store = DownloadStore(directory: directory)
+        store.recordsSourceAddresses = id != privateProfileID
         store.dataStoreProvider = { [weak self] in self?.websiteDataStore(for: id) }
         downloadStores[id] = store
         return store
@@ -174,11 +262,23 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     var hasActiveDownloads: Bool { downloadStores.values.contains { $0.hasActiveDownloads } }
 
+    private func historyFile(for id: UUID) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "History/\(id.uuidString).sqlite", directoryHint: .notDirectory)
+    }
+
+    func history(for id: UUID) -> HistoryStore? {
+        if let store = historyStores[id] { return store }
+        guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
+        let store = HistoryStore(fileURL: file)
+        historyStores[id] = store
+        return store
+    }
+
     private func makeModel(session: BrowserSession, startup: StartupContext = .returningSession) -> BrowserWindowModel {
         BrowserWindowModel(startup: startup, session: session, repository: repository!, input: input, isTesting: testing,
             restorationError: persistence?.error, defaults: defaults, sharedPersistence: persistence,
             websiteDataStore: websiteDataStore(for: session.profileID), downloads: downloads(for: session.profileID),
-            preferences: preferences)
+            preferences: preferences, isPrivate: isPrivateProfile(session.profileID), history: history(for: session.profileID))
     }
 
     @discardableResult private func addWindow(session: BrowserSession) -> UUID {
@@ -191,7 +291,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     private func attach(_ owner: BrowserWindowModel) {
         owner.application = self
-        owner.onSave = { [weak self] source in self?.save(source) }
+        // A private window is never written to the session file.
+        owner.onSave = owner.isPrivate ? nil : { [weak self] source in self?.save(source) }
         owner.onOpenWindow = { [weak self, weak owner] url, title in
             guard let self, let owner, !self.isTerminating, (try? owner.input.validate(url)) != nil,
                   self.visibleModels.contains(where: { $0 === owner }) else { return }
@@ -240,8 +341,27 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let workspace { persistence?.enqueue(workspace) }
     }
 
+    /// Every tab, pin and Favorite address in the profile's open windows.
+    func sidebarURLs(profileID: UUID) -> [URL] {
+        visibleModels.filter { $0.coordinator.profileID == profileID }.flatMap(\.sidebarURLs)
+    }
+
+    /// One window cleared the profile's shared website data; the others drop
+    /// icons of sites no longer in the sidebar and reload History.
+    func didClearWebsiteData(profileID: UUID, from source: BrowserWindowModel) {
+        let kept = sidebarURLs(profileID: profileID)
+        for target in visibleModels where target !== source && target.coordinator.profileID == profileID {
+            target.webViews.forgetClearedArtwork(keepingIconsFor: kept)
+            target.historyRevision += 1
+            target.refreshRecentPages()
+        }
+    }
+
     func focusedWindow(_ id: UUID?) {
-        guard !restoringFocus, let owner = windowModel(id), workspace?.activeProfileID != owner.coordinator.profileID else { return }
+        // Another window of the profile may have added to its history.
+        windowModel(id)?.refreshRecentPages()
+        guard !restoringFocus, let owner = windowModel(id), !owner.isPrivate,
+              workspace?.activeProfileID != owner.coordinator.profileID else { return }
         workspace?.activeProfileID = owner.coordinator.profileID
         saveAll()
     }
@@ -367,12 +487,14 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard workspace?.deleteProfile(id) == true else { return }
         dataStores.removeValue(forKey: id)
         downloadStores.removeValue(forKey: id)?.cancelAll()
+        let history = historyStores.removeValue(forKey: id)
         saveAll()
         guard await persistence?.flush() == true else {
             profileError = "The profile change could not be saved. Its website data was kept. \(persistence?.error ?? "")"
             return
         }
         for store in icons { await store.shutdown() }
+        try? await history?.removeFile()
         await Task.yield()
         await retryWebsiteDataCleanup()
     }
@@ -395,6 +517,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                         try await WKWebsiteDataStore.remove(forIdentifier: id)
                         try await FaviconStore.removeCache(for: id)
                     }
+                    if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
                     var remaining = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
                     remaining.removeAll { $0 == value }
                     defaults.set(remaining, forKey: "pendingProfileCleanup")
@@ -414,8 +537,17 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         closed.onOpenWindow = nil
         closed.onOpenSettings = nil
         closed.application = nil
+        let snapshot = closed.coordinator.session
+        if !closed.isPrivate, snapshot.hasTodayTabs {
+            closedWindows.append(ClosedWindow(session: snapshot))
+            closedWindows.removeFirst(max(0, closedWindows.count - Self.closedWindowLimit))
+        }
         closed.cancelCommandBarQueries()
         closed.webViews.discardAll()
+        if closed.isPrivate {
+            releasePrivateSessionIfUnused()
+            return
+        }
         if !visibleModels.contains(where: { $0.coordinator.profileID == profileID }),
            let index = workspace?.sessions.firstIndex(where: { $0.profileID == profileID }) {
             workspace?.sessions[index] = closed.coordinator.session.savedItemsOnly

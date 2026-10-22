@@ -105,3 +105,47 @@ public extension BrowserSpace.Color {
         return self == .gray ? neutral : swatch.blended(with: neutral, amount: isDark ? 0.18 : 0.22)
     }
 }
+
+/// The palette a window's chrome is drawn with: its Space's color, or the
+/// private-window gray that no Space or profile can choose.
+public enum WindowTheme: Hashable, Sendable {
+    case space(BrowserSpace.Color)
+    case privateBrowsing
+
+    /// A cool dark gray, lighter than the gray Space's dark chrome. It is the
+    /// same in both appearances, so private windows always draw their chrome
+    /// dark, with white text; pages keep Early's own appearance.
+    private static let privateTop = SpaceThemeRGB(red: 0.227, green: 0.227, blue: 0.251)
+    private static let privateBottom = SpaceThemeRGB(red: 0.180, green: 0.180, blue: 0.200)
+
+    public var swatch: SpaceThemeRGB {
+        switch self {
+        case .space(let color): color.swatch
+        case .privateBrowsing: SpaceThemeRGB(red: 0.60, green: 0.60, blue: 0.64)
+        }
+    }
+
+    public func chromeTop(isDark: Bool) -> SpaceThemeRGB {
+        switch self {
+        case .space(let color): color.chromeTop(isDark: isDark)
+        case .privateBrowsing: Self.privateTop
+        }
+    }
+
+    public func chromeBottom(isDark: Bool) -> SpaceThemeRGB {
+        switch self {
+        case .space(let color): color.chromeBottom(isDark: isDark)
+        case .privateBrowsing: Self.privateBottom
+        }
+    }
+
+    /// Private windows keep one silver edge against their dark gray chrome.
+    public func focusBorder(isDark: Bool, increasedContrast: Bool = false) -> SpaceThemeRGB {
+        switch self {
+        case .space(let color): return color.focusBorder(isDark: isDark, increasedContrast: increasedContrast)
+        case .privateBrowsing:
+            return increasedContrast ? SpaceThemeRGB(red: 0.831, green: 0.831, blue: 0.855)
+                : SpaceThemeRGB(red: 0.651, green: 0.651, blue: 0.682)
+        }
+    }
+}

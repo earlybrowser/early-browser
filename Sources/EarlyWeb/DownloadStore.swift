@@ -74,6 +74,10 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     @ObservationIgnored private var tracked: [ObjectIdentifier: DownloadItem] = [:]
     @ObservationIgnored private var reserved: Set<String> = []
 
+    /// Private windows' files keep their quarantine, which Gatekeeper needs,
+    /// but their addresses never reach LaunchServices' quarantine-event log.
+    public var recordsSourceAddresses = true
+
     public init(directory: URL? = nil) {
         if let directory {
             directoryProvider = { directory }
@@ -297,7 +301,8 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
                 if item.expectedBytes == nil { item.expectedBytes = Int64(size) }
             }
             // Gatekeeper and Finder treat the file as downloaded from the web.
-            Self.applyQuarantine(to: destination, source: item.sourceURL, origin: item.originURL)
+            let addresses = quarantineAddresses(for: item)
+            Self.applyQuarantine(to: destination, source: addresses.source, origin: addresses.origin)
         }
         item.state = .finished
         if item.listed { finishedRevision += 1 }
@@ -325,6 +330,10 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     }
 
     // MARK: Helpers
+
+    func quarantineAddresses(for item: DownloadItem) -> (source: URL?, origin: URL?) {
+        recordsSourceAddresses ? (item.sourceURL, item.originURL) : (nil, nil)
+    }
 
     private func synchronizeProgress(_ item: DownloadItem) {
         guard let progress = item.download?.progress else { return }

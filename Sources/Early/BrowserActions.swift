@@ -16,7 +16,7 @@ extension BrowserWindowModel {
         if case .dismissCommandBar = action { return coordinator.commandBar != nil }
         guard !sidebarInteractionInProgress, splitResize == nil, !spaceSwipeIsSettling,
               !folderEditorIsPresented, renamingTabID == nil, spaceEditor == nil,
-              spaceDeletionID == nil, !hasVisibleDialog, !documentPanelIsPresented else { return false }
+              spaceDeletionID == nil, !hasVisibleDialog, !documentPanelIsPresented, !historyPresented else { return false }
         switch action {
         case .presentCommandBar, .toggleSidebar:
             return true
@@ -52,15 +52,33 @@ extension BrowserWindowModel {
             return accessibleTab(id)?.isOpen == true
         case .closeActiveTab:
             return activeTab != nil
+        case .closeOtherTabs(let id):
+            return accessibleTab(id) != nil && !coordinator.todayTabIDs(otherThan: id).isEmpty
+        case .closeTabsBelow(let id):
+            return accessibleTab(id) != nil && !coordinator.todayTabIDs(below: id).isEmpty
+        case .clearTodayTabs:
+            return !coordinator.todayTabIDs.isEmpty
         case .reopenLastTab:
             guard let tab = coordinator.recentlyClosed.last?.tab else { return false }
             return tab.profileID == coordinator.profileID && ownsSpace(tab.spaceID)
+        case .reopenRecentlyClosedTab(let id):
+            guard let tab = coordinator.recentlyClosed.last(where: { $0.tab.id == id })?.tab else { return false }
+            return tab.profileID == coordinator.profileID && ownsSpace(tab.spaceID)
+        case .reopenClosedWindow:
+            return application?.canReopenClosedWindow == true
+        case .reopenRecentlyClosedWindow(let id):
+            return application?.canReopenClosedWindow(id) == true
+        case .showHistory, .clearHistory:
+            return history != nil
+        case .openHistoryPage(let url):
+            return history != nil && (try? input.validate(url)) != nil
         case .setPinned(let id, let pinned):
-            guard let tab = accessibleTab(id), !tab.isFavorite,
+            // Private windows keep no saved pages.
+            guard !isPrivate || !pinned, let tab = accessibleTab(id), !tab.isFavorite,
                   (tab.pinnedURL != nil) != pinned else { return false }
             return !pinned || tab.isOpen
         case .setFavorite(let id, let favorite):
-            guard let tab = accessibleTab(id), tab.isFavorite != favorite else { return false }
+            guard !isPrivate || !favorite, let tab = accessibleTab(id), tab.isFavorite != favorite else { return false }
             return !favorite || tab.pinnedURL != nil || tab.isOpen
         case .setMuted(let id, let muted):
             guard accessibleTab(id)?.isOpen == true, let page = webViews.pages[id] else { return false }
@@ -104,6 +122,9 @@ extension BrowserWindowModel {
             return activePage?.canGoBack == true
         case .forward:
             return activePage?.canGoForward == true
+        case .goToHistory(let offset):
+            guard let id = coordinator.focusedTabID, offset != 0 else { return false }
+            return webViews.historyList(id, forward: offset > 0, limit: abs(offset)).contains { $0.offset == offset }
         case .reload:
             return activePage != nil
         case .stop:
@@ -118,7 +139,7 @@ extension BrowserWindowModel {
             return (tab.isOpen || tab.pinnedURL != nil) && (try? input.validate(url)) != nil
         case .openSettings:
             return onOpenSettings != nil
-        case .newWindow:
+        case .newWindow, .newPrivateWindow:
             return application?.canOpenWindow == true
         case .showDownloads, .openFile:
             return true
@@ -177,7 +198,25 @@ extension BrowserWindowModel {
             guard exitSplit(id) else { return false }
         case .closeTab(let id): closeTab(id)
         case .closeActiveTab: closeActiveTab()
+        case .closeOtherTabs(let id): closeTodayTabs(coordinator.todayTabIDs(otherThan: id), keeping: id)
+        case .closeTabsBelow(let id): closeTodayTabs(coordinator.todayTabIDs(below: id), keeping: id)
+        case .clearTodayTabs: closeTodayTabs(coordinator.todayTabIDs)
         case .reopenLastTab: reopenLastTab()
+        case .reopenRecentlyClosedTab(let id): reopenClosedTab(id)
+        case .reopenClosedWindow:
+            guard application?.reopenClosedWindow() != nil else { return false }
+            restoreContentFocus = false
+        case .reopenRecentlyClosedWindow(let id):
+            guard application?.reopenClosedWindow(id) != nil else { return false }
+            restoreContentFocus = false
+        case .openHistoryPage(let url):
+            guard openLocations([url]) else { return false }
+        case .showHistory:
+            historyPresented = true
+            restoreContentFocus = false
+        case .clearHistory:
+            clearHistoryPresented = true
+            restoreContentFocus = false
         case .setPinned(let id, let pinned): setPinned(id, pinned: pinned)
         case .setFavorite(let id, let favorite): setFavorite(id, favorite: favorite)
         case .setMuted(let id, let muted):
@@ -212,6 +251,8 @@ extension BrowserWindowModel {
         case .copyCurrentURL: copyCurrentURL()
         case .back: back()
         case .forward: forward()
+        case .goToHistory(let offset):
+            guard let id = coordinator.focusedTabID, webViews.goToHistory(id, offset: offset) else { return false }
         case .reload: reload()
         case .stop: stop()
         case .toggleSidebar: preferences.sidebarAutoHides.toggle()
@@ -225,6 +266,9 @@ extension BrowserWindowModel {
             restoreContentFocus = false
         case .newWindow:
             guard application?.openNewWindow(from: self) != nil else { return false }
+            restoreContentFocus = false
+        case .newPrivateWindow:
+            guard application?.openPrivateWindow() != nil else { return false }
             restoreContentFocus = false
         case .showDownloads:
             downloadsPresented = true
@@ -326,6 +370,15 @@ extension BrowserWindowModel {
         }
         addAction("closeActiveTab", "Close Tab", .closeActiveTab, terms: ["close current tab"])
         addAction("reopenLastTab", "Reopen Closed Tab", .reopenLastTab, terms: ["restore closed tab", "undo close tab"])
+        addAction("reopenClosedWindow", "Reopen Closed Window", .reopenClosedWindow,
+                  terms: ["restore closed window", "undo close window"])
+        addAction("showHistory", "Show All History", .showHistory, terms: ["history", "browsing history", "visited pages"])
+        addAction("clearHistory", "Clear History…", .clearHistory, terms: ["clear history", "delete history", "clear cookies", "clear website data"])
+        addAction("clearToday", "Clear Today Tabs", .clearTodayTabs, terms: ["close all tabs", "clear tabs", "close today tabs"])
+        if let tab = activeTab {
+            addAction("closeOthers", "Close Other Tabs", .closeOtherTabs(tab.id), terms: ["close other tabs", "keep only this tab"])
+            addAction("closeBelow", "Close Tabs Below", .closeTabsBelow(tab.id), terms: ["close tabs below", "close tabs after"])
+        }
         addAction("copyCurrentURL", "Copy Current URL", .copyCurrentURL, terms: ["copy link", "copy address"])
         addAction("reload", "Reload Page", .reload, terms: ["refresh page"])
         addAction("stop", "Stop Loading", .stop, terms: ["cancel loading"])
@@ -335,6 +388,8 @@ extension BrowserWindowModel {
         addAction("newSpace", "New Space", .newSpace, terms: ["create space", "add space"])
         addAction("openSettings", "Open Settings", .openSettings, terms: ["settings", "preferences"])
         addAction("newWindow", "New Window", .newWindow, terms: ["open browser window"])
+        addAction("newPrivateWindow", "New Private Window", .newPrivateWindow,
+                  terms: ["private browsing", "incognito", "private window"])
         addAction("showDownloads", "Show Downloads", .showDownloads, terms: ["downloads", "download list", "downloaded files"])
         addAction("openFile", "Open File…", .openFile, terms: ["open file", "open local file", "open pdf"])
         addAction("printPage", "Print Page…", .printPage, terms: ["print", "print page"])
@@ -406,15 +461,21 @@ extension BrowserWindowModel {
         case .space: return "Switch Space"
         case .profile: return "Switch Profile"
         case .action: return "Command"
-        case .bookmark: return "Open Bookmark"
-        case .history: return "Open History"
+        case .history: return "History"
         }
     }
 
     /// Ranked tabs, pins, Favorites, and (when enabled) Spaces, profiles, and actions.
     var visibleCommandResults: [CommandSearchResult] {
-        commandBarActionsEnabled ? commandSearch.results
-            : commandSearch.results.filter { $0.candidate.kind.isTab || $0.candidate.kind == .bookmark || $0.candidate.kind == .history }
+        let results = commandBarActionsEnabled ? commandSearch.results
+            : commandSearch.results.filter { $0.candidate.kind.isTab || $0.candidate.kind == .history }
+        // A page that is already a tab, pin or Favorite is offered as that
+        // item, never again as history, even when it is not among the results.
+        let tabAddresses = Set((favorites + pinnedTabs + todayTabs).flatMap { [$0.currentURL, $0.pinnedURL].compactMap { $0 } }
+            .map(CommandSearchText.address))
+        return results.filter { result in
+            result.candidate.kind != .history || !tabAddresses.contains(CommandSearchText.address(result.candidate.detail ?? ""))
+        }
     }
 
     var selectedCommandResult: CommandSearchResult? {
@@ -488,7 +549,7 @@ extension BrowserWindowModel {
         case .space(let id): return perform(.switchSpace(id), source: source)
         case .profile(let id): return perform(.openProfile(id), source: source)
         case .action(let action): return perform(action, source: source)
-        case .page(let url, _):
+        case .page(let url):
             guard canPerform(.submit()) else { return false }
             let ok = submit(targetURL: url)
             if ok && source == .commandBar && coordinator.commandBar != nil {

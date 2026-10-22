@@ -49,6 +49,32 @@ private let iconPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAA
         #expect(store.image(for: url) == nil)
     }
 
+    @Test @MainActor func clearingKeepsTheIconsOfPagesStillInTheSidebar() async throws {
+        let store = FaviconStore { _, _, _ in iconPNG }
+        let kept = URL(string: "https://kept.invalid/page")!, cleared = URL(string: "https://cleared.invalid/page")!
+        store.request(kept)
+        store.request(cleared)
+        for _ in 0..<100 where store.image(for: kept) == nil || store.image(for: cleared) == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.image(for: kept) != nil && store.image(for: cleared) != nil)
+        store.forget(keeping: [URL(string: "https://kept.invalid/other")!])
+        #expect(store.image(for: kept) != nil, "A site still in the sidebar keeps its icon")
+        #expect(store.image(for: cleared) == nil)
+
+        // On disk, only the cleared site's file goes.
+        let profile = UUID()
+        let directory = try #require(FaviconStore.cacheDirectory(for: profile))
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let keptFile = directory.appendingPathComponent(FaviconLoader.fileName(for: "https://kept.invalid"))
+        let clearedFile = directory.appendingPathComponent(FaviconLoader.fileName(for: "https://cleared.invalid"))
+        for file in [keptFile, clearedFile] { try iconPNG.write(to: file) }
+        await FaviconStore.removeCachedIcons(for: profile, since: nil, keeping: [kept])
+        #expect(FileManager.default.fileExists(atPath: keptFile.path))
+        #expect(!FileManager.default.fileExists(atPath: clearedFile.path))
+    }
+
     @Test func fallbackAndProfileDiskCacheWorkWithoutCookies() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Early-Favicon-Test-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }

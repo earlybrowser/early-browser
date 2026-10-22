@@ -11,15 +11,15 @@ struct BrowserContentSurface: ViewModifier {
     enum Border: Equatable { case none, standard, focused }
     let cornerRadius: CGFloat
     let border: Border
-    let theme: BrowserSpace.Color
+    let theme: WindowTheme
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
     static func container(cornerRadius: CGFloat, split: Bool) -> Self {
-        Self(cornerRadius: split ? 0 : cornerRadius, border: split ? .none : .standard, theme: .gray)
+        Self(cornerRadius: split ? 0 : cornerRadius, border: split ? .none : .standard, theme: .space(.gray))
     }
 
-    static func pane(cornerRadius: CGFloat, split: Bool, focused: Bool, theme: BrowserSpace.Color = .gray) -> Self {
+    static func pane(cornerRadius: CGFloat, split: Bool, focused: Bool, theme: WindowTheme = .space(.gray)) -> Self {
         Self(cornerRadius: split ? cornerRadius : 0, border: split ? (focused ? .focused : .standard) : .none, theme: theme)
     }
 
@@ -77,6 +77,16 @@ struct SplitContentView: View {
                 if tabIDs.isEmpty {
                     if reduceTransparency || contrast == .increased { Color(nsColor: .windowBackgroundColor) }
                     else { Color.white.opacity(colorScheme == .dark ? 0.01 : 0.08) }
+                    if model.isPrivate {
+                        // Below the command bar, which opens near 40% of the height.
+                        // Pad inside the page-sized frame: padding outside it made
+                        // the notice taller than the page, covering the window's
+                        // border so a double-click there could not zoom.
+                        PrivateBrowsingNotice()
+                            .padding(.bottom, max(0, geometry.size.height * 0.08))
+                            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
+                            .allowsHitTesting(false)
+                    }
                 }
                 ForEach(tabIDs, id: \.self) { id in
                     let frame = frame(for: id, size: geometry.size, layout: layout)
@@ -169,6 +179,9 @@ struct SplitContentView: View {
                 .accessibilityIdentifier("browser.error")
             }
         }
+        // A private window's chrome is always dark; its pages, and the page
+        // area around them, keep Early's own light or dark appearance.
+        .environment(\.colorScheme, model.isPrivate ? ApplicationAppearance.shared.colorScheme : colorScheme)
         .overlay(alignment: .topLeading) {
             if let page, page.isLoading {
                 GeometryReader { geometry in
@@ -193,13 +206,13 @@ struct SplitContentView: View {
             }
         }
         .modifier(BrowserContentSurface.pane(cornerRadius: contentCornerRadius, split: split, focused: focused,
-                                            theme: model.splitTheme))
+                                            theme: model.chromeTheme))
         .overlay(alignment: .topLeading) {
             if page?.isReaderShown == true { ReaderBadge(model: model, tabID: id) }
         }
         .overlay(alignment: page?.hoveredLink?.avoidsLeadingCorner == true ? .bottomTrailing : .bottomLeading) {
             if let hover = page?.hoveredLink, page?.isFullscreen != true {
-                LinkPreview(hover: hover, theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome)
+                LinkPreview(hover: hover, theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome)
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -248,7 +261,7 @@ struct SplitContentView: View {
                 let proposal = model.coordinator.splitPlacement(for: sourceID, on: side)
                 let reuses = proposal?.reusesExistingPane == true
                 let name = side == .leading ? "left" : "right"
-                SplitDropCard(theme: model.splitTheme, side: side, highlighted: highlighted,
+                SplitDropCard(theme: model.chromeTheme, side: side, highlighted: highlighted,
                     title: reuses ? "Focus existing pane" : "\(model.coordinator.activeSplitGroup == nil ? "Add" : "Replace") \(name) split",
                     size: frame.size, allowsTransparency: model.preferences.translucentChrome)
                 .frame(width: frame.width, height: frame.height)
@@ -269,7 +282,7 @@ struct SplitDropCard: View {
     static let cornerRadius: CGFloat = 18
     static let borderInset: CGFloat = 9
     static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: cornerRadius, style: .continuous) }
-    let theme: BrowserSpace.Color
+    let theme: WindowTheme
     let side: BrowserSplitSide
     let highlighted: Bool
     let title: String
@@ -279,7 +292,7 @@ struct SplitDropCard: View {
 
     var body: some View {
         ZStack {
-            BrowserChromeBackground(spaceColor: theme, floating: true, allowsTransparency: allowsTransparency)
+            BrowserChromeBackground(theme: theme, floating: true, allowsTransparency: allowsTransparency)
                 .clipShape(Self.shape)
             Self.shape.fill(theme.tint.opacity(highlighted ? 0.16 : 0.06))
             Self.shape.strokeBorder(theme.tint.opacity(contrast == .increased ? 0.8 : (highlighted ? 0.5 : 0.25)), lineWidth: 1)

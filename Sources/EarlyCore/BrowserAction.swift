@@ -19,7 +19,19 @@ public enum BrowserAction: Equatable, Sendable {
     case exitSplit(UUID)
     case closeTab(UUID)
     case closeActiveTab
+    /// Today tabs only; pins, Favorites and folders stay. All are reopenable.
+    case closeOtherTabs(UUID)
+    case closeTabsBelow(UUID)
+    case clearTodayTabs
     case reopenLastTab
+    case reopenClosedWindow
+    /// One entry of History › Recently Closed, wherever it is in the list.
+    case reopenRecentlyClosedTab(UUID)
+    case reopenRecentlyClosedWindow(UUID)
+    case showHistory
+    case clearHistory
+    /// A page from the History menu or window, opened as a new Today tab.
+    case openHistoryPage(URL)
     case setPinned(UUID, Bool)
     case setFavorite(UUID, Bool)
     case setMuted(UUID, Bool)
@@ -40,6 +52,8 @@ public enum BrowserAction: Equatable, Sendable {
     case copyCurrentURL
     case back
     case forward
+    /// Jump within the focused page's back/forward list (negative is back).
+    case goToHistory(offset: Int)
     case reload
     case stop
     case toggleSidebar
@@ -47,6 +61,7 @@ public enum BrowserAction: Equatable, Sendable {
     case duplicateTab(UUID)
     case openSettings
     case newWindow
+    case newPrivateWindow
     case showDownloads
     case openFile
     case savePage

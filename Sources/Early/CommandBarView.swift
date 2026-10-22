@@ -104,8 +104,8 @@ struct CommandBarView: View {
         .frame(maxWidth: 560)
         .background(CommandBarCardAnchor(model: model))
         .background {
-            if model.preferences.spaceThemes, contrast != .increased {
-                BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray,
+            if model.tintsChrome, contrast != .increased {
+                BrowserChromeBackground(theme: model.chromeTheme,
                     floating: true, allowsTransparency: model.preferences.translucentChrome)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
             } else if reduceTransparency || !model.preferences.translucentChrome || contrast == .increased {
@@ -283,7 +283,7 @@ struct CommandBarView: View {
     }
 
     private func resultIconURL(for candidate: CommandSearchCandidate) -> URL? {
-        guard candidate.kind.isTab || candidate.kind == .bookmark || candidate.kind == .history else { return nil }
+        guard candidate.kind.isTab || candidate.kind == .history else { return nil }
         if case .tab(let id) = candidate.target, let tab = model.coordinator.tabStore.tab(id: id) {
             return tab.pinnedURL ?? tab.currentURL
         }
@@ -294,8 +294,8 @@ struct CommandBarView: View {
         switch candidate.kind {
         case .favorite: return "star.fill"
         case .pinnedTab: return "pin"
-        case .openTab, .history: return "globe"
-        case .bookmark: return "bookmark"
+        case .openTab: return "globe"
+        case .history: return "clock.arrow.circlepath"
         case .space: return "square.grid.2x2"
         case .profile: return "person.crop.circle"
         case .action:

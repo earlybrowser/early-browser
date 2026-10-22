@@ -47,6 +47,36 @@ public final class FaviconStore {
         }.value
     }
 
+    /// After website data is cleared, forgets artwork for every site except
+    /// those of `pageURLs` (the profile's tabs, pins and Favorites, which keep
+    /// their icons).
+    public func forget(keeping pageURLs: [URL]) {
+        let kept = Set(pageURLs.compactMap(Self.origin))
+        for (origin, task) in tasks where !kept.contains(origin) { task.cancel() }
+        tasks = tasks.filter { kept.contains($0.key) }
+        pending.removeAll { !kept.contains($0) }
+        requests = requests.filter { kept.contains($0.key) }
+        running = running.filter { kept.contains($0) }
+        images = images.filter { kept.contains($0.key) }
+        colors = colors.filter { kept.contains($0.key) }
+        order.removeAll { !kept.contains($0) }
+    }
+
+    /// Removes this profile's cached icons saved since `date` (nil: all),
+    /// except those of the sites of `pageURLs`.
+    public nonisolated static func removeCachedIcons(for profileID: UUID, since date: Date?, keeping pageURLs: [URL]) async {
+        guard let directory = cacheDirectory(for: profileID) else { return }
+        let kept = Set(pageURLs.compactMap(origin).map { FaviconLoader.fileName(for: $0) })
+        await Task.detached(priority: .utility) {
+            let files = (try? FileManager.default.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            for file in files where !kept.contains(file.lastPathComponent) {
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantFuture
+                if date.map({ modified >= $0 }) ?? true { try? FileManager.default.removeItem(at: file) }
+            }
+        }.value
+    }
+
     public func shutdown() async {
         stopped = true
         let outstanding = Array(tasks.values)
@@ -119,7 +149,7 @@ public final class FaviconStore {
         }
     }
 
-    static func origin(_ url: URL) -> String? {
+    nonisolated static func origin(_ url: URL) -> String? {
         guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: true),
               let scheme = parts.scheme?.lowercased(), ["http", "https"].contains(scheme),
               let host = parts.host?.lowercased(), !host.isEmpty,
@@ -214,9 +244,12 @@ actor FaviconLoader {
         return output as Data
     }
 
+    nonisolated static func fileName(for origin: String) -> String {
+        SHA256.hash(data: Data(origin.utf8)).map { String(format: "%02x", $0) }.joined() + ".png"
+    }
+
     private func file(_ origin: String) -> URL? {
-        let key = SHA256.hash(data: Data(origin.utf8)).map { String(format: "%02x", $0) }.joined()
-        return directory?.appendingPathComponent(key + ".png")
+        directory?.appendingPathComponent(Self.fileName(for: origin))
     }
 
     private func read(_ origin: String) -> Data? {

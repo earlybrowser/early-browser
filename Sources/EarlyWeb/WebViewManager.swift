@@ -8,6 +8,9 @@ import WebKit
 @MainActor @Observable
 public final class BrowserPage {
     public let view: WKWebView
+    /// Unique per live page; a reopened tab's new page never shares it (unlike
+    /// an object address, which a new page can reuse).
+    public let instanceID = UUID()
     public var isLoading = false
     public var isPlayingMedia = false
     public fileprivate(set) var isMuted = false
@@ -97,8 +100,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var translationMenuTitle: ((UUID) -> String?)?
     /// Translate or Show Original was chosen from the page menu.
     public var onTranslatePage: ((UUID) -> Void)?
-    private let profileID: UUID
-    private let ephemeral: Bool
+    let profileID: UUID
+    let ephemeral: Bool
     let input: NavigationInput
     private let configure: (WKWebViewConfiguration) -> Void
     private var store: WKWebsiteDataStore?
@@ -492,13 +495,47 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public func back(_ id: UUID) { navigateHistory(id, forward: false) }
     public func forward(_ id: UUID) { navigateHistory(id, forward: true) }
 
+    /// One entry in a tab's own back or forward list, nearest first.
+    public struct HistoryListEntry: Equatable, Identifiable, Sendable {
+        /// Steps from the current page: negative is back, positive forward.
+        public let offset: Int
+        public let title: String
+        public let url: URL
+        public var id: Int { offset }
+    }
+
+    /// The focused page's public WebKit back or forward list, nearest first.
+    public func historyList(_ id: UUID, forward: Bool, limit: Int = 15) -> [HistoryListEntry] {
+        guard let list = pages[id]?.view.backForwardList else { return [] }
+        let items = forward ? list.forwardList : Array(list.backList.reversed())
+        return items.prefix(limit).enumerated().map { index, item in
+            let title = item.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return HistoryListEntry(offset: forward ? index + 1 : -(index + 1),
+                                    title: title?.isEmpty == false ? title! : (item.url.host ?? item.url.absoluteString),
+                                    url: item.url)
+        }
+    }
+
+    /// Jumps straight to an entry of that list, like repeated Back or Forward.
+    @discardableResult
+    public func goToHistory(_ id: UUID, offset: Int) -> Bool {
+        guard offset != 0, let page = pages[id], let item = page.view.backForwardList.item(at: offset) else { return false }
+        navigateHistory(id) { $0.go(to: item) }
+        return true
+    }
+
     private func navigateHistory(_ id: UUID, forward: Bool) {
         guard let page = pages[id], forward ? page.view.canGoForward : page.view.canGoBack else { return }
+        navigateHistory(id) { forward ? $0.goForward() : $0.goBack() }
+    }
+
+    private func navigateHistory(_ id: UUID, using move: (WKWebView) -> WKNavigation?) {
+        guard let page = pages[id] else { return }
         cancelRecovery(id)
         page.automaticRecoveryAttempted = false
         page.processTerminated = false
         beginLoading(id)
-        let navigation = forward ? page.view.goForward() : page.view.goBack()
+        let navigation = move(page.view)
         page.activeNavigation = navigation.map(ObjectIdentifier.init)
         if navigation == nil {
             transition(id, .stopLoading)

@@ -8,7 +8,7 @@ import WebKit
 /// Wallpaper-aware chrome only. Loaded websites retain their normal opaque
 /// background and are never tinted or rendered through a transparency layer.
 struct BrowserChromeBackground: View {
-    var spaceColor: BrowserSpace.Color = .gray
+    var theme: WindowTheme = .space(.gray)
     var floating = false
     var allowsTransparency = true
     @Environment(\.colorScheme) private var colorScheme
@@ -23,13 +23,13 @@ struct BrowserChromeBackground: View {
             } else {
                 if !reduceTransparency && allowsTransparency { ChromeMaterial(floating: floating) }
                 if colorScheme == .dark, !reduceTransparency && allowsTransparency { Color.black.opacity(0.30) }
-                LinearGradient(colors: [spaceColor.chromeTop(isDark: colorScheme == .dark).color,
-                                        spaceColor.chromeBottom(isDark: colorScheme == .dark).color],
+                LinearGradient(colors: [theme.chromeTop(isDark: colorScheme == .dark).color,
+                                        theme.chromeBottom(isDark: colorScheme == .dark).color],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                     .opacity(reduceTransparency || !allowsTransparency ? 1 : (colorScheme == .dark ? 0.64 : 0.68))
             }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: spaceColor)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: theme)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: colorScheme)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -736,13 +736,34 @@ struct WindowControls: NSViewRepresentable {
     }
 }
 
+/// Chrome that moves the window like a title bar: drag to move, double-click
+/// for the user's System Settings choice (zoom by default, minimize, or nothing).
 struct WindowDragRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> DragView { DragView() }
     func updateNSView(_ view: DragView, context: Context) {}
+
+    enum DoubleClickAction: Equatable { case zoom, minimize, none }
+
+    /// The global "Double-click a window's title bar to" setting.
+    static func doubleClickAction(_ setting: String? = UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick")) -> DoubleClickAction {
+        switch setting {
+        case "Minimize": .minimize
+        case "None": .none
+        default: .zoom
+        }
+    }
+
     final class DragView: NSView {
         override func mouseDown(with event: NSEvent) {
-            if event.clickCount == 2 { window?.performZoom(nil) }
-            else { window?.performDrag(with: event) }
+            guard event.clickCount == 2 else {
+                window?.performDrag(with: event)
+                return
+            }
+            switch WindowDragRegion.doubleClickAction() {
+            case .zoom: window?.performZoom(nil)
+            case .minimize: window?.performMiniaturize(nil)
+            case .none: break
+            }
         }
     }
 }
