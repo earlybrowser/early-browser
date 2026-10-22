@@ -90,6 +90,10 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("-")
                 .disabled(model?.canPerform(.zoomOut) != true)
             Divider()
+            Button(model?.activePage?.isReaderShown == true ? "Hide Reader" : "Show Reader") { model?.perform(.toggleReader) }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(model?.canPerform(.toggleReader) != true)
+            Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(model?.canPerform(.showDownloads) != true)

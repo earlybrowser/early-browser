@@ -2332,6 +2332,22 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
+    func testReaderShowsArticlesAndReturnsToTheOriginalPage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/article")
+        expectPage(app, "Article")
+        let toggle = app.buttons["address.reader"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "Articles offer Reader in the address pill")
+        toggle.click()
+        let original = app.buttons["reader.original"]
+        XCTAssertTrue(original.waitForExistence(timeout: 10))
+        original.click()
+        XCTAssertTrue(original.waitForNonExistence(timeout: 5))
+        expectPage(app, "Article")
+        // Reader is a view of the same tab: no new tab or page view.
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
     func testDownloadsPanelAndOwnedPageMenus() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/download")

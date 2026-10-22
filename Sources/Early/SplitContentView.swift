@@ -137,7 +137,10 @@ struct SplitContentView: View {
             // Match the actual page, not the browser appearance: a dark site
             // in light chrome must not flash a white island during attachment.
             Color(nsColor: page?.view.underPageBackgroundColor ?? .textBackgroundColor)
-            WebContentView(view: page?.view, focusRequest: model.contentFocusRequest,
+            // Reader takes the page's place in the same host, so focus, clicks
+            // and pane routing work unchanged; leaving it reinstalls the page.
+            WebContentView(view: page?.isReaderShown == true ? model.webViews.readerView(for: id) ?? page?.view : page?.view,
+                focusRequest: model.contentFocusRequest,
                 canFocus: focused && model.coordinator.commandBar == nil && model.tabSwitcher == nil
                     && model.splitDropSourceID == nil && !model.hasVisibleDialog,
                 hasDialog: page?.hasDialog == true,
@@ -189,6 +192,9 @@ struct SplitContentView: View {
         }
         .modifier(BrowserContentSurface.pane(cornerRadius: contentCornerRadius, split: split, focused: focused,
                                             theme: model.splitTheme))
+        .overlay(alignment: .topLeading) {
+            if page?.isReaderShown == true { ReaderBadge(model: model, tabID: id) }
+        }
         .overlay(alignment: page?.hoveredLink?.avoidsLeadingCorner == true ? .bottomTrailing : .bottomLeading) {
             if let hover = page?.hoveredLink, page?.isFullscreen != true {
                 LinkPreview(hover: hover, theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome)

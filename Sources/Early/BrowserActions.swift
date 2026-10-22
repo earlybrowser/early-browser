@@ -134,6 +134,8 @@ extension BrowserWindowModel {
             return coordinator.focusedTabID.map { webViews.canFind($0) } == true
         case .findNext, .findPrevious:
             return coordinator.focusedTabID.map { webViews.canFindNext($0) } == true
+        case .toggleReader:
+            return coordinator.focusedTabID.map { webViews.canToggleReader($0) } == true
         }
     }
 
@@ -254,6 +256,10 @@ extension BrowserWindowModel {
             guard let id = coordinator.focusedTabID else { return false }
             useSelectionForFind(in: id)
             restoreContentFocus = false
+        case .toggleReader:
+            guard let id = coordinator.focusedTabID else { return false }
+            toggleReader(id)
+            restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
             dismissCommandBar(restoreFocus: restoreContentFocus && contentFocusRequest == previousFocusRequest)
@@ -329,6 +335,9 @@ extension BrowserWindowModel {
         addAction("savePage", "Save Page As…", .savePage, terms: ["save page", "save as", "save html"])
         addAction("exportPDF", "Export as PDF…", .exportPDF, terms: ["export pdf", "save as pdf", "pdf"])
         addAction("find", "Find on Page…", .find, terms: ["find", "search page", "find in page"])
+        let readerShown = activePage?.isReaderShown == true
+        addAction("reader", readerShown ? "Hide Reader" : "Show Reader", .toggleReader,
+                  terms: readerShown ? ["hide reader", "show original page"] : ["reader", "reader mode", "reading view"])
         addAction("zoomIn", "Zoom In", .zoomIn, terms: ["zoom in", "bigger", "enlarge page", "increase text size"])
         addAction("zoomOut", "Zoom Out", .zoomOut, terms: ["zoom out", "smaller", "shrink page", "decrease text size"])
         addAction("resetZoom", "Actual Size", .resetZoom, terms: ["reset zoom", "actual size", "100%"])

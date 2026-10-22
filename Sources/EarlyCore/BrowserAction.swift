@@ -59,4 +59,5 @@ public enum BrowserAction: Equatable, Sendable {
     case findNext
     case findPrevious
     case useSelectionForFind
+    case toggleReader
 }

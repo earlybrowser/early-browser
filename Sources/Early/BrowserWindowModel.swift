@@ -276,6 +276,26 @@ final class BrowserWindowModel {
         if id == coordinator.focusedTabID { contentFocusRequest += 1 }
     }
 
+    /// Reader's links and accents in the active Space's theme.
+    var readerAccent: ReaderAccent {
+        ReaderAccent(light: splitTheme.focusBorder(isDark: false).hex, dark: splitTheme.focusBorder(isDark: true).hex)
+    }
+
+    /// Show or leave Reader; focus follows to Reader's view or back to the page.
+    func toggleReader(_ id: UUID) {
+        guard let page = webViews.pages[id] else { return }
+        if page.isReaderShown {
+            webViews.hideReader(id)
+            if id == coordinator.focusedTabID { contentFocusRequest += 1 }
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self, await self.webViews.showReader(id, accent: self.readerAccent),
+                  id == self.coordinator.focusedTabID else { return }
+            self.contentFocusRequest += 1
+        }
+    }
+
     func useSelectionForFind(in id: UUID) {
         Task { @MainActor [weak self] in
             guard let self, let text = await self.webViews.findSelection(id),

@@ -34,13 +34,18 @@ public final class BrowserPage {
     /// The link under the pointer, for the pane's address preview.
     public internal(set) var hoveredLink: LinkHover?
     public internal(set) var isFullscreen = false
+    /// Readability judged this document an article.
+    public internal(set) var isReaderAvailable = false
+    public internal(set) var isPreparingReader = false
+    public internal(set) var isReaderShown = false
+    public internal(set) var readerArticle: ReaderArticle?
     /// The committed main document's MIME type, e.g. a viewed PDF.
     public fileprivate(set) var documentMIMEType: String?
     fileprivate var pendingDocumentMIMEType: String?
     fileprivate var observations: [NSKeyValueObservation] = []
     fileprivate var reportedURL: URL?
     var reportedTitle: String?
-    fileprivate var navigationGeneration = UUID()
+    var navigationGeneration = UUID()
     fileprivate var activeNavigation: ObjectIdentifier?
     fileprivate var policyCancellations: [NavigationPolicyCancellation] = []
     fileprivate init(view: WKWebView, url: URL) { self.view = view; requestedURL = url }
@@ -519,6 +524,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     private func releasePage(tabID: UUID, preservingSnapshot: Bool) {
         cancelRecovery(tabID)
+        hideReader(tabID)
         if preservingSnapshot { snapshots.cancelCapture(tabID: tabID) }
         else { snapshots.invalidate(tabID: tabID) }
         protections[tabID] = nil
@@ -668,6 +674,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             // Fence captures from the previous route just as a full load does.
             page.navigationGeneration = UUID()
             snapshots.invalidate(tabID: id)
+            // Reader stays open: scripts may rewrite the address while reading.
+            if !page.isReaderShown { checkReaderAvailability(id) }
         }
         let title = view.title
         if url != page.reportedURL || title != page.reportedTitle {
@@ -878,6 +886,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.pendingDocumentMIMEType = nil
         resetFindForNewDocument(id)
         pages[id]?.hoveredLink = nil
+        // Reader shows one document; a new one returns to the page.
+        hideReader(id)
+        pages[id]?.isReaderAvailable = false
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
@@ -893,6 +904,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         captureSnapshot(id)
         scheduleRetention()
         refreshFindAfterLoad(id)
+        checkReaderAvailability(id)
         guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected

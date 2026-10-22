@@ -58,6 +58,67 @@ struct PageToolsOverlay: View {
     }
 }
 
+/// Shown while a pane is in Reader: a clear way back to the original page.
+struct ReaderBadge: View {
+    @Bindable var model: BrowserWindowModel
+    let tabID: UUID
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        HStack(spacing: 8) {
+            Label("Reader", systemImage: "doc.plaintext")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+            Button("Show Original") { model.toggleReader(tabID) }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .browserKeyboardFocus(cornerRadius: 5)
+                .help("Return to the original page (Command-Shift-R)")
+                .accessibilityIdentifier("reader.original")
+        }
+        .padding(.horizontal, 10).frame(height: 30)
+        .modifier(PageToolSurface(theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome))
+        .padding(10)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reader.badge")
+    }
+}
+
+/// Page controls inside the sidebar address pill, shown only when they work.
+struct AddressPageButtons: View {
+    @Bindable var model: BrowserWindowModel
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    static func isVisible(for page: BrowserPage?) -> Bool {
+        guard let page else { return false }
+        return page.isReaderShown || page.isReaderAvailable
+    }
+
+    var body: some View {
+        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        HStack(spacing: 2) {
+            if let page = model.activePage, page.isReaderShown || page.isReaderAvailable {
+                Button { model.perform(.toggleReader) } label: {
+                    Image(systemName: page.isReaderShown ? "doc.plaintext.fill" : "doc.plaintext")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(page.isReaderShown ? AnyShapeStyle(tint) : AnyShapeStyle(.secondary))
+                .browserKeyboardFocus(cornerRadius: 6)
+                .disabled(!model.canPerform(.toggleReader))
+                .help(page.isReaderShown ? "Hide Reader (Command-Shift-R)" : "Show Reader (Command-Shift-R)")
+                .accessibilityLabel(page.isReaderShown ? "Hide Reader" : "Show Reader")
+                .accessibilityIdentifier("address.reader")
+            }
+        }
+    }
+}
+
 /// The hovered link's address, like Safari's status bar. Drawing only: the
 /// page keeps every click, and the preview hides while the page is fullscreen.
 struct LinkPreview: View {

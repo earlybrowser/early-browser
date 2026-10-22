@@ -2441,7 +2441,10 @@ struct BrowserWindowView: View {
                     .truncationMode(.middle)
                     .foregroundStyle(currentURL == nil ? .secondary : .primary)
                 Spacer(minLength: 0)
-                if currentURL != nil {
+                if AddressPageButtons.isVisible(for: model.activePage) {
+                    // Room for the page buttons drawn over this trailing edge.
+                    Color.clear.frame(width: 22, height: 1)
+                } else if currentURL != nil {
                     Image(systemName: "link")
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
@@ -2480,6 +2483,8 @@ struct BrowserWindowView: View {
         .accessibilityIdentifier("sidebar.addressBar")
         .help(currentURL.map { "\($0) — Open Location (Command-L)" }
               ?? "Search or enter a URL (Command-L)")
+        // Its own controls, outside the pill's single accessibility element.
+        .overlay(alignment: .trailing) { AddressPageButtons(model: model).padding(.trailing, 5) }
     }
 
     private var addressLabel: String {

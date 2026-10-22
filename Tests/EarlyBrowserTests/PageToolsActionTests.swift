@@ -139,6 +139,36 @@ struct PageToolsActionTests {
 
     private static let titles = [BrowserWindowModel.PasteKind.address.title, BrowserWindowModel.PasteKind.search.title]
 
+    @Test func readerIsOfferedForArticlesAndFocusMovesIntoReaderAndBack() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        let plain = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(plain)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!model.canPerform(.toggleReader), "A page that is not an article has no Reader")
+        #expect(!AddressPageButtons.isVisible(for: model.activePage))
+
+        #expect(model.openLocations([URL(string: "early-test://fixture/article")!]))
+        let id = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(id)
+        try await fixture.waitUntil("article") { model.webViews.pages[id]?.isReaderAvailable == true }
+        #expect(model.canPerform(.toggleReader) && AddressPageButtons.isVisible(for: model.activePage))
+        #expect(model.commandSearchCandidates().map(\.title).contains("Show Reader"))
+        let focus = model.contentFocusRequest
+        #expect(model.perform(.toggleReader))
+        try await fixture.waitUntil("reader") { model.webViews.pages[id]?.isReaderShown == true }
+        #expect(model.contentFocusRequest == focus + 1, "Focus moves into Reader")
+        #expect(model.webViews.readerView(for: id) != nil)
+        #expect(model.commandSearchCandidates().map(\.title).contains("Hide Reader"))
+        #expect(model.readerAccent.light.hasPrefix("#") && model.readerAccent.light.count == 7)
+
+        #expect(model.perform(.toggleReader))
+        #expect(model.webViews.pages[id]?.isReaderShown == false && model.contentFocusRequest == focus + 2)
+        #expect(model.webViews.readerView(for: id) == nil)
+    }
+
     @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {
         let fixture = Fixture(session: splitSession())
         defer { fixture.cleanup() }

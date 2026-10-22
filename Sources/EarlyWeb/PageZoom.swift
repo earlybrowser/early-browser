@@ -45,6 +45,7 @@ extension WebViewManager {
         guard let page = pages[id] else { return }
         page.zoom = zoom
         page.view.pageZoom = zoom
+        readerViews[id]?.pageZoom = zoom
         zoomChoices[id] = zoom == 1 ? nil : zoom
     }
 }

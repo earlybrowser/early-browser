@@ -87,6 +87,25 @@ final class TestPages: NSObject, WKURLSchemeHandler {
             """)
             return
         }
+        if url.path == "/article" {
+            // Long enough for Readability's article check; French for translation.
+            let paragraph = url.query == "lang=fr"
+                ? "Le navigateur reste calme pour que la page puisse parler. Les espaces rassemblent les onglets "
+                    + "d'un projet, les pages épinglées restent à leur place et la barre latérale se replie quand "
+                    + "on veut toute la fenêtre. La lecture devrait être pareille : un texte simple et des marges stables."
+                : "Early keeps the browser quiet so the page can speak. Spaces gather the tabs for one project, "
+                    + "pinned pages stay where you left them, and the sidebar folds away when you want the whole "
+                    + "window. Reading should feel the same: plain type, steady margins and nothing moving at the edges."
+            let language = url.query == "lang=fr" ? "fr" : "en"
+            respond(to: task, url: url, html: """
+            <!doctype html><html lang="\(language)"><head><title>Page Article</title></head>
+            <body style="font:18px -apple-system;padding:32px"><nav><a href="early-test://fixture/one">Home</a></nav>
+            <article><h1>Page Article</h1><p class="byline">By Early Tests</p>
+            \(Array(repeating: "<p>\(paragraph)</p>", count: 6).joined())
+            <p><a href="early-test://fixture/two">Continue to Two</a></p></article></body></html>
+            """)
+            return
+        }
         let name = url.path == "/two" ? "Two" : "One"
         let html = """
         <!doctype html><html><head><title>Page \(name)</title></head>
