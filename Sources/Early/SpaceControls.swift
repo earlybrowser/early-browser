@@ -16,14 +16,20 @@ extension SpaceThemeRGB {
 /// Original Early download artwork, shared with the website's download icons.
 /// Keep the 24-point geometry in sync with web/features-data.js and web/index.html.
 struct DownloadGlyph: Shape {
+    /// The circle and arrow can be drawn apart so the arrow can move alone.
+    enum Part { case all, circle, arrow }
+    var part = Part.all
+
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        path.addEllipse(in: CGRect(x: 3, y: 3, width: 18, height: 18))
-        path.move(to: CGPoint(x: 12, y: 7.75))
-        path.addLine(to: CGPoint(x: 12, y: 15.5))
-        path.move(to: CGPoint(x: 8.5, y: 12))
-        path.addLine(to: CGPoint(x: 12, y: 15.5))
-        path.addLine(to: CGPoint(x: 15.5, y: 12))
+        if part != .arrow { path.addEllipse(in: CGRect(x: 3, y: 3, width: 18, height: 18)) }
+        if part != .circle {
+            path.move(to: CGPoint(x: 12, y: 7.75))
+            path.addLine(to: CGPoint(x: 12, y: 15.5))
+            path.move(to: CGPoint(x: 8.5, y: 12))
+            path.addLine(to: CGPoint(x: 12, y: 15.5))
+            path.addLine(to: CGPoint(x: 15.5, y: 12))
+        }
         let scale = min(rect.width, rect.height) / 24
         return path.applying(CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
                                                tx: rect.midX - 12 * scale,

@@ -6,23 +6,24 @@ import EarlyWeb
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The footer's left-hand control, in the active Space's theme. A drop falls
-/// into the icon when a download starts, a ring traces its circle clockwise
-/// from zero as the transfer completes, and a shine marks the finish. These
-/// run only on those events; Reduce Motion uses a brief color fade instead.
+/// The footer's left-hand control, in the active Space's theme. When a download
+/// starts the icon grows and its arrow drops through the circle and bounces
+/// back in; a ring traces the circle clockwise from zero as the transfer
+/// completes; at the finish the icon bounces and shines. These run only on
+/// those events; Reduce Motion uses a brief color fade instead.
 struct DownloadsButton: View {
     @Bindable var model: BrowserWindowModel
     @State private var ringValue = 0.0
     @State private var ringOpacity = 1.0
     @State private var finishing = false
-    @State private var dropOffset: CGFloat = -12
-    @State private var dropOpacity = 0.0
-    @State private var rippleScale: CGFloat = 0.3
-    @State private var rippleOpacity = 0.0
+    @State private var scale: CGFloat = 1
+    @State private var glow = 0.0
+    @State private var arrowOffset: CGFloat = 0
+    @State private var startGeneration = 0
     @State private var shineOffset: CGFloat = -16
     @State private var shineOpacity = 0.0
     @State private var tint = 0.0
-    @State private var dropEndsAt = Date.distantPast
+    @State private var bounceEndsAt = Date.distantPast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
@@ -35,8 +36,8 @@ struct DownloadsButton: View {
         let theme = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         Button { model.perform(.showDownloads) } label: {
             ZStack {
-                DownloadGlyph().stroke(style: Self.glyphStroke)
-                DownloadGlyph().stroke(theme, style: Self.glyphStroke).opacity(tint)
+                glyph(.foreground)
+                glyph(theme).opacity(tint)
                 DownloadGlyph()
                     .stroke(LinearGradient(colors: [theme, .white.opacity(0.95), theme], startPoint: .leading, endPoint: .trailing),
                             style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
@@ -57,19 +58,10 @@ struct DownloadsButton: View {
                         .opacity(ringOpacity)
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: ringValue)
                 }
-                Circle()
-                    .stroke(theme, lineWidth: 1.25)
-                    .padding(4.5)
-                    .scaleEffect(rippleScale)
-                    .opacity(rippleOpacity)
-                DropletShape()
-                    .fill(theme)
-                    .frame(width: 4.5, height: 6.5)
-                    .offset(y: dropOffset)
-                    .opacity(dropOpacity)
             }
             .frame(width: 18, height: 18)
-            .shadow(color: theme.opacity(shineOpacity * 0.8), radius: 3)
+            .scaleEffect(scale)
+            .shadow(color: theme.opacity(max(shineOpacity * 0.8, glow)), radius: 3)
             .frame(width: 28, height: 28)
             .contentShape(Rectangle())
         }
@@ -91,6 +83,17 @@ struct DownloadsButton: View {
         }
     }
 
+    /// The circle stays still while the arrow, clipped to the circle's inside,
+    /// can leave through the bottom and fall back in from the top.
+    private func glyph<S: ShapeStyle>(_ style: S) -> some View {
+        ZStack {
+            DownloadGlyph(part: .circle).stroke(style, style: Self.glyphStroke)
+            DownloadGlyph(part: .arrow).stroke(style, style: Self.glyphStroke)
+                .offset(y: arrowOffset)
+                .mask { Circle().padding(DownloadArrowDrop.maskInset) }
+        }
+    }
+
     private var instant: Transaction {
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -100,25 +103,39 @@ struct DownloadsButton: View {
     private func started() {
         let latest = model.downloads.items.first
         announce(latest?.wasSaved == true ? "Saved \(latest?.filename ?? "file")" : "Download started")
+        startGeneration += 1
+        let generation = startGeneration
         guard !reduceMotion else { fadeTint(); return }
-        dropEndsAt = Date().addingTimeInterval(0.62)
-        withTransaction(instant) {
-            dropOffset = -12
-            dropOpacity = 1
-            rippleScale = 0.3
-            rippleOpacity = 0
+        bounceEndsAt = Date().addingTimeInterval(DownloadArrowDrop.duration)
+        // Grow in the theme color while the arrow drops out of the circle...
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) {
+            scale = DownloadArrowDrop.startScale
+            glow = 0.75
+            tint = 1
         }
-        withAnimation(.easeIn(duration: 0.26)) { dropOffset = 0 }
+        withAnimation(.easeIn(duration: 0.16)) { arrowOffset = DownloadArrowDrop.travel }
         Task { @MainActor in
+            // ...then falls back in from the top and bounces as it lands.
+            try? await Task.sleep(for: .milliseconds(160))
+            guard generation == startGeneration else { return }
+            withTransaction(instant) { arrowOffset = -DownloadArrowDrop.travel }
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.42)) { arrowOffset = 0 }
             try? await Task.sleep(for: .milliseconds(260))
-            withTransaction(instant) {
-                dropOpacity = 0
-                rippleOpacity = 0.85
+            guard generation == startGeneration else { return }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.45)) { scale = 1 }
+            withAnimation(.easeOut(duration: 0.45)) {
+                glow = 0
+                tint = 0
             }
-            withAnimation(.easeOut(duration: 0.36)) {
-                rippleScale = 1.3
-                rippleOpacity = 0
-            }
+        }
+    }
+
+    /// The finish: a quick grow that springs back, alongside the shine.
+    private func bounce() {
+        withAnimation(.spring(response: 0.2, dampingFraction: 0.55)) { scale = DownloadArrowDrop.finishScale }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(170))
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.45)) { scale = 1 }
         }
     }
 
@@ -131,8 +148,8 @@ struct DownloadsButton: View {
             return
         }
         Task { @MainActor in
-            // A save starts and finishes at once: let its drop land first.
-            let wait = dropEndsAt.timeIntervalSinceNow
+            // A save starts and finishes at once: let its bounce finish first.
+            let wait = bounceEndsAt.timeIntervalSinceNow
             if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
             if completesRing {
                 finishing = true
@@ -144,6 +161,7 @@ struct DownloadsButton: View {
                 shineOpacity = 1
             }
             withAnimation(.easeInOut(duration: 0.5)) { shineOffset = 16 }
+            bounce()
             try? await Task.sleep(for: .milliseconds(500))
             withAnimation(.easeOut(duration: 0.25)) {
                 shineOpacity = 0
@@ -190,21 +208,16 @@ enum DownloadRing {
     }
 }
 
-/// A small water drop: a pointed top over a round base.
-struct DropletShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let radius = rect.width / 2
-        let center = CGPoint(x: rect.midX, y: rect.maxY - radius)
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addQuadCurve(to: CGPoint(x: rect.maxX, y: center.y),
-                          control: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.45))
-        path.addArc(center: center, radius: radius, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
-        path.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.minY),
-                          control: CGPoint(x: rect.minX, y: rect.minY + rect.height * 0.45))
-        path.closeSubpath()
-        return path
-    }
+/// Start-of-download motion. The arrow travels far enough to be fully hidden by
+/// the mask at both ends, and the mask sits just inside the circle's stroke, so
+/// the arrow never crosses the ring.
+enum DownloadArrowDrop {
+    /// The 18-point icon's circle (inset 3 of 24) plus half its stroke.
+    static let maskInset: CGFloat = (3 + 1.75 / 2) * 18 / 24
+    static let travel: CGFloat = 11
+    static let startScale: CGFloat = 1.45
+    static let finishScale: CGFloat = 1.35
+    static let duration: TimeInterval = 0.8
 }
 
 /// Session download list for this profile. Clearing removes rows, not files.
