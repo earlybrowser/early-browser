@@ -15,9 +15,9 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Feature | Description | Status |
 | --- | --- | --- |
 | Native macOS interface | Light/dark translucent chrome, native window controls, and opaque website content. Solid surfaces respect Reduce Transparency and increased contrast. | Implemented. |
-| Vertical tabs | Organize pages in a resizable sidebar with an address bar, auto-hide, and edge-hover reveal. | Implemented. |
+| Vertical tabs | Organize pages in a resizable sidebar with an address bar, auto-hide, and edge-hover reveal. Clear Today tabs, or close the others, in one step. | Implemented. |
 | Command-bar navigation | Open URLs or Google searches, or Paste and Go from the address bar; new submissions from Favorites or pins open Today tabs without replacing saved pages. Typing or dismissing the bar never creates a tab. | Implemented. |
-| Tab search and commands | Find existing tabs, pins, and Favorites; switch Spaces or profiles; and run browser actions from the command bar. Saved pages reopen without duplicate tabs. | Implemented. |
+| Tab search and commands | Find existing tabs, pins, Favorites, and pages from your history; switch Spaces or profiles; and run browser actions from the command bar. Saved pages reopen without duplicate tabs. | Implemented. |
 | Search suggestions | Optional Google suggestions below local matches, with keyboard and mouse selection and a privacy control in Settings. | Implemented. |
 | Favorites and pins | Keep frequently visited sites as compact Favorites or named pins. Return a pin to its saved address and reopen closed pins on demand. | Implemented. |
 | Nested folders | Group and reorder tabs with up to two nesting levels. Folder drop previews reserve a single row without opening hidden contents. New subfolders appear inside their parent; deleting a folder removes its contents. | Implemented. |
@@ -26,7 +26,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Right-click menus | Page, link, image, and selected-text menus: download links, open, save, or copy images, search for selected text, and save or print the page. | Implemented. |
 | Quick renaming | Option-click a tab, Favorite, or folder to rename without opening it. Ordinary clicks open/toggle immediately; dragging still reorders items. | Implemented. |
 | Trackpad zoom | Native pinch-to-zoom and two-finger double-tap Smart Zoom. | Implemented. |
-| Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. Copy the current page URL with `⌘⇧C`. | Implemented. |
+| Browser navigation | Back and Forward with history lists (right-click or hold), Reload, Stop, tab shortcuts, Reopen Closed Tab or Window, and native website alerts, confirmations, and prompts. Copy the current page URL with `⌘⇧C`. | Implemented. |
 | Tab media controls | Click the speaker beside a tab’s icon to mute/unmute HTML audio or video without selecting it. Favorites keep their clean cards; use their context menu instead. Muting is also available in the command bar. | Implemented. |
 | Website fullscreen | Let compatible website players enter and exit fullscreen. | Implemented. |
 | Spaces and profiles | Named Spaces with icons and adaptive themes, plus separate profiles for cookies, logins, website data, and Favorites. | Implemented. |
@@ -41,7 +41,8 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Default browser | Choose Early as the default browser and handle externally opened links. | Planned. |
 | State portability | Export/import supported settings, windows, tabs, folders, pins, Favorites, and workspace metadata; exclude credentials and private sessions. | Planned. |
 | Developer tools | Inspect pages through supported WebKit developer facilities. | Planned. |
-| History and privacy | Search browsing history, use private sessions, manage permissions, and clear site data. Pins and Favorites are Early’s saved pages. | Planned. |
+| History and private windows | Browse and search history (`⌘Y`), clear history and website data by period, and open private windows (`⌘⇧N`) that keep nothing after closing. Pins and Favorites are Early’s saved pages. | Implemented. |
+| Site permissions and security | Manage camera, microphone, location, and notification permissions, see each site’s security, and control more from the address bar’s site controls. | Planned. |
 | GitHub live folders | Automatically collect pull requests and review requests in a folder linked to your GitHub account. | Planned. |
 | Picture in Picture | Watch compatible videos in a floating window, with an on/off preference. | Planned. |
 | Settings and customization | Native Settings for profiles, Space assignment, appearance, sidebar behavior, search suggestions, command-bar actions, and local session restoration. More customization is planned. | Partial. |

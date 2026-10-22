@@ -2356,6 +2356,58 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
+    func testBackListJumpsToAnEarlierPageAndClearRemovesTodayTabs() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        let back = app.buttons["navigation.back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.rightClick()
+        let earlier = app.menuItems["Page One"]
+        XCTAssertTrue(earlier.waitForExistence(timeout: 5), "Right-clicking Back lists the tab's history")
+        earlier.click()
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+
+        let clear = app.buttons["sidebar.clearToday"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 5))
+        clear.click()
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+    }
+
+    func testHistoryShowsVisitedPages() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        app.typeKey("y", modifierFlags: .command)
+        let list = app.descendants(matching: .any)["history.list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 10))
+        let visit = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'history.visit' AND label CONTAINS %@", "Page One")).firstMatch
+        XCTAssertTrue(visit.waitForExistence(timeout: 10), list.debugDescription)
+        app.buttons["Done"].click()
+        XCTAssertTrue(list.waitForNonExistence(timeout: 5))
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testPrivateWindowIsLabeledPrivateAndClosesWithoutTouchingTheNormalWindow() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        app.typeKey("n", modifierFlags: [.command, .shift])
+        let badge = app.descendants(matching: .any)["private.badge"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 10), "The private window's Space is named Private")
+        XCTAssertTrue(app.descendants(matching: .any)["private.notice"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.windows.count, 2)
+        app.typeKey(.escape, modifierFlags: [])
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        XCTAssertTrue(badge.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(app.windows.count, 1)
+        expectPage(app, "One")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
     func testDownloadsPanelAndOwnedPageMenus() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/download")
