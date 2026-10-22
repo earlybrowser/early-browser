@@ -3,6 +3,7 @@
 import AppKit
 import EarlyCore
 import EarlyWeb
+import SecurityInterface
 import SwiftUI
 
 /// The shared look of a pane's floating tools: the active Space's chrome with
@@ -111,7 +112,8 @@ struct SiteControlsGlyph: Shape {
 }
 
 /// The address pill's only icon. Its panel gathers the current page's working
-/// controls: Copy Link, Reader, Translate and Zoom.
+/// controls: Reader, Translate, Zoom, the site's permissions, Copy Link and
+/// the connection's security.
 struct SiteControlsButton: View {
     @Bindable var model: BrowserWindowModel
     @State private var presented = false
@@ -156,6 +158,11 @@ struct SiteControlsPanel: View {
     @Environment(\.colorSchemeContrast) private var contrast
 
     static func readerValue(_ page: BrowserPage) -> String { page.isReaderShown ? "On" : "Off" }
+
+    /// Location only where WebKit asks Early about it (macOS 27 and later).
+    static var permissions: [SitePermission] {
+        SitePermission.allCases.filter { $0 != .location || WebViewManager.offersLocation }
+    }
 
     static func translationValue(_ page: BrowserPage, title: String) -> String {
         switch page.translation {
@@ -205,6 +212,14 @@ struct SiteControlsPanel: View {
                     .help(page.zoom == 1 ? "Actual size" : "Return to actual size (Command-0)")
                 }
             }
+            if model.currentSiteOrigin != nil {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Permissions").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    ForEach(Self.permissions, id: \.self) { permission in
+                        SitePermissionRow(model: model, tabID: tabID, permission: permission, tint: tint)
+                    }
+                }
+            }
             Divider()
             Button {
                 model.perform(.copyCurrentURL)
@@ -221,6 +236,14 @@ struct SiteControlsPanel: View {
             .disabled(!model.canPerform(.copyCurrentURL))
             .help("Copy Current URL (Command-Shift-C)")
             .accessibilityIdentifier("siteControls.copyLink")
+            if let page, page.security != .none {
+                SiteSecurityRow(security: page.security, host: url?.host, hasCertificate: page.serverTrust != nil) {
+                    guard let trust = page.serverTrust else { return }
+                    dismiss()
+                    // After the popover closes, so the sheet attaches to the browser window.
+                    DispatchQueue.main.async { CertificatePanel.show(trust, in: page.view.window ?? NSApp.keyWindow) }
+                }
+            }
         }
         .padding(16)
         .frame(width: 280, alignment: .leading)
@@ -293,6 +316,142 @@ struct SiteControlRow<Trailing: View>: View {
             trailing()
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// One of the site's permissions: what it may use and whether it is in use.
+struct SitePermissionRow: View {
+    @Bindable var model: BrowserWindowModel
+    let tabID: UUID
+    let permission: SitePermission
+    let tint: Color
+
+    static func status(_ decision: SitePermissionDecision, inUse: Bool) -> String {
+        if inUse { return "In use" }
+        switch decision {
+        case .ask: return "Asks first"
+        case .allow: return "Allowed"
+        case .block: return "Blocked"
+        }
+    }
+
+    private var inUse: Bool {
+        let page = model.webViews.pages[tabID]
+        switch permission {
+        case .camera: return (page?.cameraCapture ?? .none) != .none
+        case .microphone: return (page?.microphoneCapture ?? .none) != .none
+        case .location: return false
+        }
+    }
+
+    var body: some View {
+        let decision = model.sitePermission(permission) ?? .ask
+        HStack(spacing: 10) {
+            Image(systemName: permission.symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(inUse ? AnyShapeStyle(tint) : AnyShapeStyle(.secondary))
+                .frame(width: 32, height: 32)
+                .background(inUse ? tint.opacity(0.18) : Color.primary.opacity(0.08), in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(permission.title).font(.system(size: 13, weight: .semibold))
+                Text(Self.status(decision, inUse: inUse)).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            if inUse {
+                Button("Stop") { model.webViews.stopCapture(permission, in: tabID) }
+                    .controlSize(.small)
+                    .help("Stop using the \(permission.title.lowercased()) in this tab")
+                    .accessibilityIdentifier("siteControls.stop.\(permission.rawValue)")
+            }
+            Picker(permission.title, selection: Binding(get: { decision }, set: { model.setSitePermission(permission, $0) })) {
+                ForEach(SitePermissionDecision.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+            .accessibilityLabel(permission.title)
+            .accessibilityIdentifier("siteControls.permission.\(permission.rawValue)")
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// The connection's security at the panel's foot; it opens the certificate.
+struct SiteSecurityRow: View {
+    let security: PageSecurity
+    let host: String?
+    let hasCertificate: Bool
+    let showCertificate: () -> Void
+
+    static func title(_ security: PageSecurity) -> String {
+        switch security {
+        case .secure: "Secure"
+        case .mixedContent, .notSecure: "Not Secure"
+        case .certificateProblem: "Certificate Problem"
+        case .localFile: "Local File"
+        case .none: ""
+        }
+    }
+
+    static func detail(_ security: PageSecurity, host: String?) -> String {
+        switch security {
+        case .secure: "Your connection to \(host ?? "this website") is encrypted."
+        case .mixedContent: "Parts of this page arrive without encryption."
+        case .notSecure: "This connection isn’t encrypted. Don’t enter passwords or payment details."
+        case .certificateProblem: "Early couldn’t verify this website’s identity, so it didn’t open the page."
+        case .localFile: "This page is a file on your Mac."
+        case .none: ""
+        }
+    }
+
+    static func symbol(_ security: PageSecurity) -> String {
+        switch security {
+        case .secure: "lock.fill"
+        case .mixedContent, .notSecure: "lock.slash.fill"
+        case .certificateProblem: "exclamationmark.triangle.fill"
+        case .localFile, .none: "doc.fill"
+        }
+    }
+
+    var body: some View {
+        Button(action: showCertificate) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: Self.symbol(security))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(security.isInsecure ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.title(security)).font(.system(size: 12, weight: .semibold))
+                    Text(Self.detail(security, host: host)).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if hasCertificate {
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .browserKeyboardFocus(cornerRadius: 6)
+        .disabled(!hasCertificate)
+        .help(hasCertificate ? "Show Certificate" : "")
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(hasCertificate ? "Shows the website’s certificate" : "")
+        .accessibilityIdentifier("siteControls.security")
+    }
+}
+
+/// macOS's own certificate sheet for the page's server trust.
+enum CertificatePanel {
+    @MainActor static func show(_ trust: SecTrust, in window: NSWindow?) {
+        guard let panel = SFCertificatePanel.shared() else { return }
+        if let window {
+            panel.beginSheet(for: window, modalDelegate: nil, didEnd: nil, contextInfo: nil, trust: trust, showGroup: false)
+        } else {
+            panel.runModal(for: trust, showGroup: false)
+        }
     }
 }
 

@@ -282,6 +282,9 @@ struct BrowserSettingsView: View {
             }
             Text("Space colors adapt to light and dark appearance. Accessibility settings for contrast and reduced transparency always take priority.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            SettingsCard {
+                SettingsToggle("Automatic Picture in Picture", detail: "When you switch away from a tab that’s playing a video, keep watching it in a floating window. It returns to the page when you come back.", isOn: $preferences.automaticPictureInPicture, identifier: "settings.automaticPictureInPicture")
+            }
         }
     }
 

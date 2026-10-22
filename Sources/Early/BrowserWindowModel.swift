@@ -58,6 +58,8 @@ final class BrowserWindowModel {
     let isPrivate: Bool
     /// This profile's browsing history; nil records nothing.
     let history: HistoryStore?
+    /// This profile's per-site camera, microphone and location choices.
+    let sitePermissions: SitePermissions
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The address last recorded per tab, and the live page it came from.
     @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID)] = [:]
@@ -161,7 +163,7 @@ final class BrowserWindowModel {
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
          downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, isPrivate: Bool = false,
-         history: HistoryStore? = nil,
+         history: HistoryStore? = nil, sitePermissions: SitePermissions? = nil,
          searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
@@ -169,6 +171,7 @@ final class BrowserWindowModel {
         self.isTesting = isTesting
         self.isPrivate = isPrivate
         self.history = isPrivate ? nil : history
+        self.sitePermissions = sitePermissions ?? SitePermissions(fileURL: nil)
         self.now = now
         self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
         let service = GoogleSearchSuggestions()
@@ -242,6 +245,8 @@ final class BrowserWindowModel {
             self.beginDownloadFlight()
         }
         webViews.onOpenFiles = { [weak self] in _ = self?.openLocations($0) }
+        webViews.sitePermissions = self.sitePermissions
+        webViews.automaticPictureInPicture = { [weak self] in self?.preferences.automaticPictureInPicture == true }
         webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }
         webViews.translationMenuTitle = { [weak self] in self?.translationTitle(for: $0) }
         webViews.onTranslatePage = { [weak self] in self?.toggleTranslation($0) }
@@ -421,6 +426,20 @@ final class BrowserWindowModel {
     }
 
     var currentPageURL: URL? { activePage?.view.url ?? activeTab?.currentURL }
+
+    /// The focused page's website, whose permissions Site Controls shows.
+    var currentSiteOrigin: String? { currentPageURL.flatMap(SitePermissions.origin(of:)) }
+
+    func sitePermission(_ permission: SitePermission) -> SitePermissionDecision? {
+        currentSiteOrigin.map { sitePermissions.decision(for: $0, permission) }
+    }
+
+    /// Blocking a camera or microphone in use stops it in the site's tabs.
+    func setSitePermission(_ permission: SitePermission, _ decision: SitePermissionDecision) {
+        guard let origin = currentSiteOrigin else { return }
+        sitePermissions.set(decision, for: [permission], origin: origin)
+        webViews.applySitePermissions()
+    }
 
     func copyCurrentURL() {
         guard let url = currentPageURL else { return }

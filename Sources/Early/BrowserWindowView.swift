@@ -2499,6 +2499,13 @@ struct BrowserWindowView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }
+                if let security = model.activePage?.security, security.isInsecure {
+                    Image(systemName: SiteSecurityRow.symbol(security))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .help(SiteSecurityRow.title(security))
+                        .accessibilityHidden(true)
+                }
                 Text(addressLabel)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -2539,6 +2546,7 @@ struct BrowserWindowView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: addressHovered)
         .accessibilityLabel("Address bar")
         .accessibilityValue(currentURL ?? "No active tab")
+        .accessibilityHint(model.activePage?.security.isInsecure == true ? SiteSecurityRow.title(model.activePage?.security ?? .none) : "")
         .accessibilityIdentifier("sidebar.addressBar")
         .help(currentURL.map { "\($0) — Open Location (Command-L)" }
               ?? "Search or enter a URL (Command-L)")

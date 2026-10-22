@@ -269,6 +269,27 @@ struct PageToolsActionTests {
         #expect(model.perform(.clearTodayTabs) && model.todayTabs.isEmpty && !model.canPerform(.clearTodayTabs))
     }
 
+    @Test func siteControlsDescribeSecurityAndPermissionsAndFollowThePictureInPictureSetting() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        #expect(model.currentSiteOrigin == nil && model.sitePermission(.camera) == nil, "Early's own pages have no permissions")
+
+        #expect(model.webViews.automaticPictureInPicture())
+        model.preferences.automaticPictureInPicture = false
+        #expect(!model.webViews.automaticPictureInPicture())
+        model.preferences.automaticPictureInPicture = true
+
+        #expect(SiteControlsPanel.permissions.contains(.location) == WebViewManager.offersLocation)
+        #expect(SiteControlsPanel.permissions.prefix(2) == [.camera, .microphone])
+        #expect(SitePermissionRow.status(.ask, inUse: false) == "Asks first" && SitePermissionRow.status(.block, inUse: false) == "Blocked")
+        #expect(SitePermissionRow.status(.allow, inUse: true) == "In use")
+        #expect(SiteSecurityRow.title(.secure) == "Secure" && SiteSecurityRow.title(.mixedContent) == "Not Secure")
+        #expect(SiteSecurityRow.detail(.secure, host: "example.com") == "Your connection to example.com is encrypted.")
+        #expect(SiteSecurityRow.symbol(.notSecure) == "lock.slash.fill" && SiteSecurityRow.symbol(.certificateProblem) == "exclamationmark.triangle.fill")
+    }
+
     @Test func recentlyClosedListsTabsNewestFirstAndReopensAnyOfThem() async throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }

@@ -14,8 +14,8 @@ public final class BrowserPage {
     public var isLoading = false
     public var isPlayingMedia = false
     public fileprivate(set) var isMuted = false
-    fileprivate var playingFrames: Set<String> = []
-    fileprivate var mediaFrames: [String: WKFrameInfo] = [:]
+    var playingFrames: Set<String> = []
+    var mediaFrames: [String: WKFrameInfo] = [:]
     fileprivate var muteRevision = 0
     public var progress = 0.0
     public var canGoBack = false
@@ -45,6 +45,14 @@ public final class BrowserPage {
     /// The page's language (BCP 47), detected from its text after loading.
     public internal(set) var language: String?
     public internal(set) var translation = PageTranslationPhase.original
+    /// The connection's trust, from WebKit's public secure-content state.
+    public internal(set) var security = PageSecurity.none
+    /// The certificate behind `security`, for the certificate panel.
+    public internal(set) var serverTrust: SecTrust?
+    /// A navigation refused for its certificate, until the next one starts.
+    var certificateFailure: CertificateFailure?
+    public internal(set) var cameraCapture = WKMediaCaptureState.none
+    public internal(set) var microphoneCapture = WKMediaCaptureState.none
     /// The committed main document's MIME type, e.g. a viewed PDF.
     public fileprivate(set) var documentMIMEType: String?
     fileprivate var pendingDocumentMIMEType: String?
@@ -55,6 +63,11 @@ public final class BrowserPage {
     fileprivate var activeNavigation: ObjectIdentifier?
     fileprivate var policyCancellations: [NavigationPolicyCancellation] = []
     fileprivate init(view: WKWebView, url: URL) { self.view = view; requestedURL = url }
+
+    struct CertificateFailure {
+        let url: URL?
+        let trust: SecTrust?
+    }
 }
 
 @MainActor @Observable
@@ -100,13 +113,23 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var translationMenuTitle: ((UUID) -> String?)?
     /// Translate or Show Original was chosen from the page menu.
     public var onTranslatePage: ((UUID) -> Void)?
+    /// The profile's per-site permission choices; nil denies every request.
+    public var sitePermissions: SitePermissions?
+    /// Whether a tab switched away from keeps its playing video in Picture in Picture.
+    public var automaticPictureInPicture: () -> Bool = { false }
+    /// Tabs whose video Early is moving, or moved, into Picture in Picture.
+    @ObservationIgnored var automaticPictureInPictureTabs: [UUID: AutomaticPictureInPicture] = [:]
+    /// Runs a page script and reports whether it returned true; tests observe it.
+    @ObservationIgnored var runPageScript: (WKWebView, String, WKFrameInfo?) async -> Bool = { view, script, frame in
+        (try? await view.callAsyncJavaScript(script, in: frame, contentWorld: .defaultClient)) as? Bool == true
+    }
     let profileID: UUID
     let ephemeral: Bool
     let input: NavigationInput
     private let configure: (WKWebViewConfiguration) -> Void
     private var store: WKWebsiteDataStore?
     private var identities: [ObjectIdentifier: UUID] = [:]
-    private var dialogs: [UUID: PendingDialog] = [:]
+    var dialogs: [UUID: PendingDialog] = [:]
     var documentPanels: [UUID: PendingPanel] = [:]
     private var controllerOwners: [ObjectIdentifier: Set<UUID>] = [:]
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
@@ -199,6 +222,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             for id in visibleTabIDs where pages[id]?.processTerminated == true { recoverIfNeeded(id) }
             return true
         }
+        updateAutomaticPictureInPicture(hidden: self.visibleTabIDs.subtracting(visibleTabIDs),
+                                        shown: visibleTabIDs.subtracting(self.visibleTabIDs))
         for id in self.visibleTabIDs.subtracting(visibleTabIDs) { captureSnapshot(id) }
         for id in visibleTabIDs.subtracting(self.visibleTabIDs) { retentionPolicy.recordUse(of: id) }
         if let focusedTabID, focusedTabID != self.focusedTabID { retentionPolicy.recordUse(of: focusedTabID) }
@@ -377,6 +402,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             view.observe(\.canGoForward) { _, _ in changed() },
             view.observe(\.cameraCaptureState) { _, _ in changed() },
             view.observe(\.microphoneCaptureState) { _, _ in changed() },
+            view.observe(\.hasOnlySecureContent) { _, _ in changed() },
+            view.observe(\.serverTrust) { _, _ in changed() },
             view.observe(\.fullscreenState) { _, _ in changed() }
         ]
         return page
@@ -439,6 +466,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     private func beginLoading(_ id: UUID) {
         guard let page = pages[id] else { return }
         page.failure = nil
+        page.certificateFailure = nil
         page.navigationNotice = nil
         page.policyCancellations.removeAll()
         page.activeNavigation = nil
@@ -590,6 +618,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         cancelDialog(tabID)
         cancelDocumentPanel(tabID)
         pages.removeValue(forKey: tabID)
+        automaticPictureInPictureTabs[tabID] = nil
         unregisterHandlers(page.view.configuration.userContentController, for: tabID)
         page.mediaFrames.removeAll()
         page.playingFrames.removeAll()
@@ -713,6 +742,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.canGoForward = view.canGoForward
         let fullscreen = view.fullscreenState != .notInFullscreen
         if page.isFullscreen != fullscreen { page.isFullscreen = fullscreen }
+        if page.cameraCapture != view.cameraCaptureState { page.cameraCapture = view.cameraCaptureState }
+        if page.microphoneCapture != view.microphoneCaptureState { page.microphoneCapture = view.microphoneCaptureState }
+        updateSecurity(page)
         if view.isLoading && page.failure == nil { transition(id, .startLoading) }
         else if !view.isLoading { transition(id, .stopLoading) }
         let url = view.url.flatMap { try? input.validate($0) }
@@ -1008,6 +1040,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             return
         }
         recordNavigation(.init(tabID: id, event: "failure", url: failingURL ?? page.requestedURL, isMainFrame: true, error: nsError))
+        if Self.isCertificateError(nsError) {
+            page.certificateFailure = .init(url: failingURL ?? page.requestedURL, trust: Self.peerTrust(nsError))
+        }
         page.failure = error.localizedDescription
         transition(id, .fail)
         refresh(id)
@@ -1110,16 +1145,15 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     private enum DialogKind { case alert, confirm, prompt(String) }
-    private struct PendingDialog {
+    struct PendingDialog {
         let alert: NSAlert
         let parent: NSWindow
-        let complete: (Bool, String?) -> Void
+        /// The button chosen, or nil when the dialog was dismissed without one.
+        let complete: (NSApplication.ModalResponse?, String?) -> Void
         let field: NSTextField?
     }
     private func showDialog(_ view: WKWebView, frame: WKFrameInfo, message: String, kind: DialogKind,
                             complete: @escaping (Bool, String?) -> Void) {
-        guard let id = identities[ObjectIdentifier(view)], let window = view.window,
-              window.attachedSheet == nil else { complete(false, nil); return }
         let alert = NSAlert()
         alert.messageText = "\(frame.request.url?.host ?? "Website") says"
         alert.informativeText = String(message.prefix(4000))
@@ -1137,6 +1171,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             alert.window.initialFirstResponder = inputField
             field = inputField
         }
+        presentAlert(alert, field: field, in: view) { response, value in complete(response == .alertFirstButtonReturn, value) }
+    }
+
+    /// One sheet per window: website dialogs and permission prompts alike.
+    func presentAlert(_ alert: NSAlert, field: NSTextField? = nil, in view: WKWebView,
+                      complete: @escaping (NSApplication.ModalResponse?, String?) -> Void) {
+        guard let id = identities[ObjectIdentifier(view)], let window = view.window,
+              window.attachedSheet == nil else { complete(nil, nil); return }
         dialogs[id] = PendingDialog(alert: alert, parent: window, complete: complete, field: field)
         // JavaScript is suspended until this sheet completes. Hide the blocked
         // page's accessibility subtree while the native modal owns interaction;
@@ -1147,7 +1189,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             guard let pending = self?.dialogs.removeValue(forKey: id) else { return }
             self?.pages[id]?.view.setAccessibilityHidden(false)
             self?.pages[id]?.hasDialog = false
-            pending.complete(response == .alertFirstButtonReturn, pending.field?.stringValue)
+            pending.complete(response, pending.field?.stringValue)
             self?.scheduleRetention()
         }
     }
@@ -1156,7 +1198,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.view.setAccessibilityHidden(false)
         pages[id]?.hasDialog = false
         pending.parent.endSheet(pending.alert.window)
-        pending.complete(false, nil)
+        pending.complete(nil, nil)
     }
 }
 
