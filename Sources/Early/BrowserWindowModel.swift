@@ -53,6 +53,11 @@ final class BrowserWindowModel {
     let preferences: BrowserPreferences
     weak var application: EarlyAppDelegate?
     let isTesting: Bool
+    /// This profile's browsing history; nil records nothing.
+    let history: HistoryStore?
+    @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored private var historyURLs: [UUID: URL] = [:]
+    @ObservationIgnored private var historyQueue: Task<Void, Never>?
     var submissionMessage: String?
     var commandBarIsComposing = false
     var notice: String?
@@ -141,11 +146,14 @@ final class BrowserWindowModel {
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
-         downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, searchProviders: [any CommandSearchProvider] = [],
+         downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, history: HistoryStore? = nil,
+         searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
         self.isTesting = isTesting
+        self.history = history
+        self.now = now
         self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
         let service = GoogleSearchSuggestions()
         suggestions = SearchSuggestions { query in
@@ -158,7 +166,8 @@ final class BrowserWindowModel {
             #endif
             return try await service.fetch(query)
         }
-        commandSearch = CommandSearch(providers: searchProviders, now: now)
+        commandSearch = CommandSearch(providers: searchProviders + (history.map { [HistorySearchProvider(store: $0)] } ?? []),
+                                      now: now)
         coordinator = BrowserCoordinator(startup: startup, activeSpaceID: session.activeSpaceID,
             tabStore: TabStore(tabs: session.tabs, folders: session.folders), selectionBySpace: session.selectionBySpace,
             profileID: session.profileID, recentlyClosed: session.recentlyClosed, spaces: session.spaces,
@@ -181,6 +190,7 @@ final class BrowserWindowModel {
         }
         webViews.onMetadata = { [weak self] id, url, title in
             guard let self, self.coordinator.updateMetadata(id, url: url, title: title) else { return }
+            self.recordHistory(id, url: url, title: title)
             self.save()
         }
         webViews.onNewWindow = { [weak self] url, configuration in
@@ -651,6 +661,28 @@ final class BrowserWindowModel {
         if previousActive != coordinator.activeTabID || previousVisible != coordinator.visibleTabIDs { activateSelection() }
         save()
     }
+
+    /// A new address in a tab is a visit; a later title for the same address
+    /// only names it. One serial queue keeps a title from preceding its visit.
+    private func recordHistory(_ id: UUID, url: URL?, title: String?) {
+        guard let history, let url, HistoryStore.records(url) else { return }
+        let previous = historyQueue
+        if historyURLs[id] == url {
+            guard let title, !title.isEmpty else { return }
+            historyQueue = Task { await previous?.value; try? await history.updateTitle(url, title: title) }
+        } else {
+            if historyURLs.count > 500 {
+                let open = Set(coordinator.tabStore.tabs.filter(\.isOpen).map(\.id))
+                historyURLs = historyURLs.filter { open.contains($0.key) }
+            }
+            historyURLs[id] = url
+            let date = now()
+            historyQueue = Task { await previous?.value; try? await history.record(url, title: title, at: date) }
+        }
+    }
+
+    /// Waits for recorded visits to reach the store (tests and clearing).
+    func flushHistory() async { await historyQueue?.value }
 
     /// Closes several Today tabs at once, keeping their pages reopenable.
     func closeTodayTabs(_ ids: [UUID], keeping kept: UUID? = nil) {

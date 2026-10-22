@@ -125,15 +125,15 @@ struct CommandSearchTests {
 
     @MainActor
     @Test func controllerCancelsStaleGenerationsBoundsProviderOutputAndPreservesSelectionByID() async throws {
-        let bookmarkURL = URL(string: "https://example.com/guide")!
+        let pageURL = URL(string: "https://example.com/guide")!
         let slow = StubProvider(delay: .milliseconds(80), items: [
-            CommandSearchCandidate(id: "page.slow", kind: .bookmark, target: .page(bookmarkURL, source: .bookmark),
-                title: "Swift Guide Bookmark", detail: bookmarkURL.absoluteString)
+            CommandSearchCandidate(id: "page.slow", kind: .history, target: .page(pageURL),
+                title: "Swift Guide Page", detail: pageURL.absoluteString)
         ])
         let failing = StubProvider(delay: .zero, items: [], shouldThrow: true)
         let overproducing = StubProvider(delay: .milliseconds(10), items: (0..<20).map {
             CommandSearchCandidate(id: "history.\($0)", kind: .history,
-                target: .page(bookmarkURL, source: .history), title: "Swift History \($0)")
+                target: .page(pageURL), title: "Swift History \($0)")
         })
         let search = CommandSearch(providers: [slow, failing, overproducing],
             limits: CommandSearchLimits(total: 6, tabs: 4, pages: 2, providerResults: 3),
@@ -151,7 +151,7 @@ struct CommandSearchTests {
 
         for _ in 0..<50 where search.isLoadingProviders { try await Task.sleep(for: .milliseconds(10)) }
         #expect(search.results.contains { $0.id == "page.slow" })
-        #expect(search.results.filter { $0.candidate.kind == .bookmark || $0.candidate.kind == .history }.count == 2)
+        #expect(search.results.filter { $0.candidate.kind == .history }.count == 2)
         #expect(!search.results.contains { $0.id == "tab.old" })
         #expect(search.selectedResult?.id == "tab.local")
 

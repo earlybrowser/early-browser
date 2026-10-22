@@ -425,15 +425,19 @@ extension BrowserWindowModel {
         case .space: return "Switch Space"
         case .profile: return "Switch Profile"
         case .action: return "Command"
-        case .bookmark: return "Open Bookmark"
-        case .history: return "Open History"
+        case .history: return "History"
         }
     }
 
     /// Ranked tabs, pins, Favorites, and (when enabled) Spaces, profiles, and actions.
     var visibleCommandResults: [CommandSearchResult] {
-        commandBarActionsEnabled ? commandSearch.results
-            : commandSearch.results.filter { $0.candidate.kind.isTab || $0.candidate.kind == .bookmark || $0.candidate.kind == .history }
+        let results = commandBarActionsEnabled ? commandSearch.results
+            : commandSearch.results.filter { $0.candidate.kind.isTab || $0.candidate.kind == .history }
+        // A page that is already a tab is offered once, as that tab.
+        let tabAddresses = Set(results.filter(\.candidate.kind.isTab).compactMap(\.candidate.detail).map(CommandSearchText.address))
+        return results.filter { result in
+            result.candidate.kind != .history || !tabAddresses.contains(CommandSearchText.address(result.candidate.detail ?? ""))
+        }
     }
 
     var selectedCommandResult: CommandSearchResult? {
@@ -507,7 +511,7 @@ extension BrowserWindowModel {
         case .space(let id): return perform(.switchSpace(id), source: source)
         case .profile(let id): return perform(.openProfile(id), source: source)
         case .action(let action): return perform(action, source: source)
-        case .page(let url, _):
+        case .page(let url):
             guard canPerform(.submit()) else { return false }
             let ok = submit(targetURL: url)
             if ok && source == .commandBar && coordinator.commandBar != nil {

@@ -15,7 +15,7 @@ struct PageToolsActionTests {
         let defaults: UserDefaults
         let model: BrowserWindowModel
 
-        init(session: BrowserSession = BrowserSession()) {
+        init(session: BrowserSession = BrowserSession(), history: HistoryStore? = nil) {
             _ = NSApplication.shared
             defaults = UserDefaults(suiteName: suite)!
             defaults.set(false, forKey: "onlineSearchSuggestions")
@@ -23,7 +23,7 @@ struct PageToolsActionTests {
             let repository = SessionRepository(fileURL: FileManager.default.temporaryDirectory
                 .appendingPathComponent("EarlyPageTools-\(UUID()).sqlite"), input: input)
             model = BrowserWindowModel(startup: .returningSession, session: session, repository: repository,
-                input: input, isTesting: true, restorationError: nil, defaults: defaults)
+                input: input, isTesting: true, restorationError: nil, defaults: defaults, history: history)
         }
 
         func cleanup() {
@@ -267,6 +267,44 @@ struct PageToolsActionTests {
         #expect(!model.canPerform(.closeOtherTabs(today[0])) && !model.canPerform(.closeTabsBelow(today[0])))
         #expect(model.perform(.reopenLastTab) && model.todayTabs.count == 2)
         #expect(model.perform(.clearTodayTabs) && model.todayTabs.isEmpty && !model.canPerform(.clearTodayTabs))
+    }
+
+    @Test func visitsAreRecordedAndTheCommandBarOffersHistoryButNotOpenTabsTwice() async throws {
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let fixture = Fixture(history: history)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        let one = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(one)
+        #expect(model.openLocations([URL(string: "early-test://fixture/two")!]))
+        let two = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(two)
+        try await fixture.waitUntil("titles") { model.coordinator.tabStore.tab(id: two)?.title == "Page Two" }
+        await model.flushHistory()
+        let visits = try await history.visits()
+        #expect(Set(visits.map(\.url.absoluteString)) == ["early-test://fixture/one", "early-test://fixture/two"])
+        #expect(visits.count == 2, "A title arriving later is not another visit")
+        #expect(try await history.search("page two", limit: 5).first?.title == "Page Two")
+
+        // An open tab appears once as that tab; a closed page comes from history.
+        model.closeTab(one)
+        model.presentCommandBar(.newTab)
+        model.updateQuery("page")
+        try await fixture.waitUntil("history results") {
+            !model.commandSearch.isRefreshing && !model.commandSearch.isLoadingProviders
+                && model.visibleCommandResults.contains { $0.candidate.kind == .history }
+        }
+        let results = model.visibleCommandResults
+        #expect(results.contains { $0.candidate.kind == .history && $0.candidate.detail == "early-test://fixture/one" })
+        #expect(!results.contains { $0.candidate.kind == .history && $0.candidate.detail == "early-test://fixture/two" })
+        #expect(results.contains { $0.candidate.kind == .openTab && $0.candidate.detail == "early-test://fixture/two" })
+        let page = try #require(results.first { $0.candidate.kind == .history })
+        #expect(model.commandResultBadge(for: page.candidate) == "History")
+        #expect(model.perform(page, source: .commandBar))
+        #expect(model.activeTab?.currentURL == URL(string: "early-test://fixture/one") && model.coordinator.commandBar == nil)
     }
 
     @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {

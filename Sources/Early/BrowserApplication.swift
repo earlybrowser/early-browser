@@ -39,6 +39,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var dataStores: [UUID: WKWebsiteDataStore] = [:]
     /// Profile-owned download lists outlive every tab and window.
     @ObservationIgnored private var downloadStores: [UUID: DownloadStore] = [:]
+    /// Each profile's browsing history, beside the session file.
+    @ObservationIgnored private var historyStores: [UUID: HistoryStore] = [:]
     @ObservationIgnored private var isTerminating = false
     @ObservationIgnored private var applyingWorkspace = false
     @ObservationIgnored private var restoringFocus = false
@@ -174,11 +176,23 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     var hasActiveDownloads: Bool { downloadStores.values.contains { $0.hasActiveDownloads } }
 
+    private func historyFile(for id: UUID) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "History/\(id.uuidString).sqlite", directoryHint: .notDirectory)
+    }
+
+    func history(for id: UUID) -> HistoryStore? {
+        if let store = historyStores[id] { return store }
+        guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
+        let store = HistoryStore(fileURL: file)
+        historyStores[id] = store
+        return store
+    }
+
     private func makeModel(session: BrowserSession, startup: StartupContext = .returningSession) -> BrowserWindowModel {
         BrowserWindowModel(startup: startup, session: session, repository: repository!, input: input, isTesting: testing,
             restorationError: persistence?.error, defaults: defaults, sharedPersistence: persistence,
             websiteDataStore: websiteDataStore(for: session.profileID), downloads: downloads(for: session.profileID),
-            preferences: preferences)
+            preferences: preferences, history: history(for: session.profileID))
     }
 
     @discardableResult private func addWindow(session: BrowserSession) -> UUID {
@@ -367,12 +381,14 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard workspace?.deleteProfile(id) == true else { return }
         dataStores.removeValue(forKey: id)
         downloadStores.removeValue(forKey: id)?.cancelAll()
+        let history = historyStores.removeValue(forKey: id)
         saveAll()
         guard await persistence?.flush() == true else {
             profileError = "The profile change could not be saved. Its website data was kept. \(persistence?.error ?? "")"
             return
         }
         for store in icons { await store.shutdown() }
+        try? await history?.removeFile()
         await Task.yield()
         await retryWebsiteDataCleanup()
     }
@@ -395,6 +411,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                         try await WKWebsiteDataStore.remove(forIdentifier: id)
                         try await FaviconStore.removeCache(for: id)
                     }
+                    if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
                     var remaining = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
                     remaining.removeAll { $0 == value }
                     defaults.set(remaining, forKey: "pendingProfileCleanup")
