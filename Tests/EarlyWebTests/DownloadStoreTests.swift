@@ -108,10 +108,10 @@ struct DownloadStoreTests {
         let source = URL(string: "early-test://fixture/source")!
         fixture.manager.load(source, in: fixture.tab)
         try await waitUntil("page") { !fixture.page.isLoading && fixture.page.view.title == "Source" }
-        for _ in 0..<2 {
+        for count in 1...2 {
             _ = try await fixture.page.view.evaluateJavaScript("document.getElementById('file').click()")
+            try await waitUntil("download \(count)") { fixture.store.items.filter { $0.state == .finished }.count == count }
         }
-        try await waitUntil("two downloads") { fixture.store.items.filter { $0.state == .finished }.count == 2 }
         #expect(Set(fixture.store.items.map(\.filename)) == ["note.txt", "note 2.txt"])
         #expect(fixture.page.view.url == source && fixture.page.requestedURL == source)
         #expect(fixture.page.failure == nil && fixture.page.navigationNotice == nil)
@@ -133,6 +133,76 @@ struct DownloadStoreTests {
         #expect(try String(contentsOf: chosen, encoding: .utf8) == "hello world")
         #expect(try String(contentsOf: neighbor, encoding: .utf8) == "keep")
         #expect(fixture.store.items.isEmpty && fixture.started.isEmpty)
+    }
+
+    @Test func stoppingKeepsThePartialFileAndResumeFinishesTheSameFile() async throws {
+        let body = Data((0..<600_000).map { UInt8($0 % 251) })
+        let server = try LocalHTTPServer(body: body, initialChunk: 120_000)
+        let fixture = Fixture()
+        defer { server.stop(); fixture.cleanup() }
+        #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id))
+        try await waitUntil("partial transfer") {
+            fixture.store.items.first.map { $0.state == .downloading && $0.completedBytes >= 120_000 } == true
+        }
+        let item = try #require(fixture.store.items.first)
+        let destination = try #require(item.destination)
+        fixture.store.stop(item)
+        #expect(item.state == .paused && !fixture.store.hasActiveDownloads)
+        #expect(!fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download), "A stopped transfer no longer holds the page")
+        try await waitUntil("resume data") { item.canResume }
+        #expect(FileManager.default.fileExists(atPath: destination.path), "Stopping keeps the partial file")
+        #expect(fixture.store.canReveal(item) && !fixture.store.fileExists(item))
+        fixture.store.clearInactive()
+        #expect(fixture.store.items.contains { $0 === item }, "Clear keeps a resumable transfer")
+
+        // Resuming works even after the source page is gone.
+        fixture.manager.discard(tabID: fixture.tab.id)
+        #expect(fixture.store.resume(item) && item.state == .downloading)
+        try await waitUntil("resumed") { item.state == .finished }
+        let resumed = try Data(contentsOf: destination)
+        #expect(item.destination == destination && resumed == body)
+        #expect(fixture.store.items.count == 1, "Resume continues the same row and file")
+    }
+
+    @Test func cancellingAStoppedTransferDeletesOnlyItsPartialFile() async throws {
+        let server = try LocalHTTPServer(body: Data(repeating: 7, count: 400_000), initialChunk: 80_000)
+        let fixture = Fixture()
+        defer { server.stop(); fixture.cleanup() }
+        #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id))
+        try await waitUntil("partial transfer") {
+            fixture.store.items.first.map { $0.state == .downloading && $0.completedBytes >= 80_000 } == true
+        }
+        let item = try #require(fixture.store.items.first)
+        let destination = try #require(item.destination)
+        fixture.store.stop(item)
+        try await waitUntil("resume data") { item.canResume }
+        fixture.store.cancel(item)
+        #expect(item.state == .cancelled && !item.canResume)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        fixture.store.remove(item)
+        #expect(fixture.store.items.isEmpty)
+    }
+
+    @Test func savedDocumentsAreListedAndPagesSaveAsStaticUTF8HTML() async throws {
+        let fixture = Fixture(page: "<meta charset='iso-8859-1'><meta http-equiv='refresh' content='0;url=https://example.com/away'>"
+            + "<script>document.title = 'changed'</script><p><a href='next.html'>Next</a> Café</p>")
+        defer { fixture.cleanup() }
+        let source = URL(string: "early-test://fixture/article/page")!
+        fixture.manager.load(source, in: fixture.tab)
+        try await waitUntil("page") { !fixture.page.isLoading && fixture.page.view.url == source }
+        try FileManager.default.createDirectory(at: fixture.directory, withIntermediateDirectories: true)
+        let destination = fixture.directory.appending(path: "Saved Page.html")
+        let before = fixture.store.startedRevision
+        fixture.manager.saveHTMLSnapshot(of: fixture.page.view, source: source, to: destination)
+        try await waitUntil("saved") { fixture.store.items.first?.destination == destination }
+        let html = try String(contentsOf: destination, encoding: .utf8)
+        #expect(html.hasPrefix("<!DOCTYPE html>") || html.hasPrefix("<!doctype html>"))
+        #expect(html.contains("<meta charset=\"utf-8\">") && html.contains("<base href=\"\(source.absoluteString)\">"))
+        #expect(!html.contains("<script") && !html.contains("http-equiv") && !html.contains("iso-8859-1"))
+        #expect(html.contains("href=\"next.html\"") && html.contains("Café"))
+        let item = try #require(fixture.store.items.first)
+        #expect(item.state == .finished && item.filename == "Saved Page.html" && fixture.store.fileExists(item))
+        #expect(fixture.store.startedRevision == before + 1, "The footer reacts to a saved file")
     }
 
     @Test func cancellingBeforeADestinationCreatesNoFileAndClearingKeepsFinishedFiles() async throws {

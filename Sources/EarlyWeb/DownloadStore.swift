@@ -5,13 +5,13 @@ import CoreServices
 import Observation
 import WebKit
 
-/// One file transfer. The app's per-profile list owns it, not a page, tab or
-/// window, so closing or discarding the source page never ends the transfer.
-/// Metadata lives only for this app session.
+/// One file transfer or saved document. The app's per-profile list owns it,
+/// not a page, tab or window, so closing or discarding the source page never
+/// ends the transfer. Metadata lives only for this app session.
 @MainActor @Observable
 public final class DownloadItem: Identifiable {
     public enum State: Equatable, Sendable {
-        case preparing, downloading, finished, failed, cancelled
+        case preparing, downloading, paused, finished, failed, cancelled
         public var isActive: Bool { self == .preparing || self == .downloading }
     }
 
@@ -24,16 +24,24 @@ public final class DownloadItem: Identifiable {
     public internal(set) var failureReason: String?
     public internal(set) var completedBytes: Int64 = 0
     public internal(set) var expectedBytes: Int64?
+    /// WebKit's data for continuing a stopped or interrupted transfer.
+    public internal(set) var resumeData: Data?
 
     public var fractionCompleted: Double? {
         guard let expectedBytes, expectedBytes > 0 else { return nil }
         return min(1, max(0, Double(completedBytes) / Double(expectedBytes)))
     }
 
+    /// A stopped or interrupted transfer that keeps its partial file.
+    public var canResume: Bool { (state == .paused || state == .failed) && resumeData != nil }
+
     @ObservationIgnored let originURL: URL?
     @ObservationIgnored let listed: Bool
     @ObservationIgnored let requestedDestination: URL?
     @ObservationIgnored var download: WKDownload?
+    /// A transient, never-displayed view that restarts a transfer when the
+    /// profile has no page open. Released when the transfer settles.
+    @ObservationIgnored var resumeHost: WKWebView?
     @ObservationIgnored var observations: [NSKeyValueObservation] = []
     @ObservationIgnored var onSettled: [(DownloadItem) -> Void] = []
 
@@ -46,14 +54,18 @@ public final class DownloadItem: Identifiable {
     }
 }
 
-/// Downloads for one browsing profile. WebKit continues each transfer in its
-/// network process; this list only chooses destinations, reports progress and
-/// lets the user cancel, open or reveal results.
+/// Downloads and saved documents for one browsing profile. WebKit continues
+/// each transfer in its network process; this list chooses destinations,
+/// reports progress and lets the user stop, resume, cancel, open or reveal.
 @MainActor @Observable
 public final class DownloadStore: NSObject, WKDownloadDelegate {
     public static let maximumListedItems = 100
 
     public private(set) var items: [DownloadItem] = []
+    /// Increments for every new listed download or saved file (footer feedback).
+    public private(set) var startedRevision = 0
+    /// The profile's website data store, used to resume a stopped transfer.
+    @ObservationIgnored public var dataStoreProvider: (() -> WKWebsiteDataStore?)?
     @ObservationIgnored private let directoryProvider: () -> URL
     @ObservationIgnored private var tracked: [ObjectIdentifier: DownloadItem] = [:]
     @ObservationIgnored private var reserved: Set<String> = []
@@ -87,6 +99,16 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     @discardableResult
     func adopt(_ download: WKDownload, source: URL?, origin: URL?, destination: URL? = nil, listed: Bool = true) -> DownloadItem {
         let item = DownloadItem(source: source, origin: origin, requestedDestination: destination, listed: listed)
+        attach(download, to: item)
+        if listed {
+            items.insert(item, at: 0)
+            trimList()
+            startedRevision += 1
+        }
+        return item
+    }
+
+    private func attach(_ download: WKDownload, to item: DownloadItem) {
         item.download = download
         tracked[ObjectIdentifier(download)] = item
         download.delegate = self
@@ -102,39 +124,110 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
             progress.observe(\.completedUnitCount) { _, _ in changed() },
             progress.observe(\.totalUnitCount) { _, _ in changed() }
         ]
-        if listed {
-            items.insert(item, at: 0)
-            trimList()
+    }
+
+    /// Lists a document Early wrote itself, such as a saved page or PDF.
+    @discardableResult
+    public func recordSavedFile(at destination: URL, source: URL?) -> DownloadItem {
+        let item = DownloadItem(source: source, origin: nil, requestedDestination: destination, listed: true)
+        item.destination = destination
+        item.state = .finished
+        if let size = try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+            item.completedBytes = Int64(size)
+            item.expectedBytes = Int64(size)
         }
+        items.insert(item, at: 0)
+        trimList()
+        startedRevision += 1
         return item
     }
 
-    /// Settles immediately: WebKit does not always report a cancelled download
-    /// as failed. A partial file is removed once WebKit has stopped writing it.
+    /// Stops a transfer and keeps its partial file so it can resume later, as
+    /// in Safari. A transfer WebKit cannot resume is cancelled instead.
+    public func stop(_ item: DownloadItem) {
+        guard item.state == .downloading, let download = item.download else {
+            cancel(item)
+            return
+        }
+        item.state = .paused
+        tracked.removeValue(forKey: ObjectIdentifier(download))
+        releaseTransfer(item)
+        download.cancel { [weak self, weak item] resumeData in
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, item.state == .paused else { return }
+                if let resumeData {
+                    item.resumeData = resumeData
+                } else {
+                    self.discardPartialFile(of: item)
+                    item.state = .cancelled
+                }
+            }
+        }
+    }
+
+    /// Continues a stopped or interrupted transfer into its original file.
+    @discardableResult
+    public func resume(_ item: DownloadItem) -> Bool {
+        guard item.canResume, let resumeData = item.resumeData else { return false }
+        let configuration = WKWebViewConfiguration()
+        if let store = dataStoreProvider?() { configuration.websiteDataStore = store }
+        let host = WKWebView(frame: .zero, configuration: configuration)
+        item.resumeHost = host
+        item.resumeData = nil
+        item.failureReason = nil
+        item.state = .downloading
+        if let destination = item.destination { reserved.insert(destination.standardizedFileURL.path) }
+        Task { @MainActor [weak self, weak item] in
+            let download = await host.resumeDownload(fromResumeData: resumeData)
+            guard let self, let item, item.state == .downloading else {
+                _ = await download.cancel()
+                return
+            }
+            self.attach(download, to: item)
+        }
+        return true
+    }
+
+    /// Fully cancels: an active transfer stops, and any partial file is deleted.
     public func cancel(_ item: DownloadItem) {
+        if item.canResume || item.state == .paused {
+            discardPartialFile(of: item)
+            item.resumeData = nil
+            item.state = .cancelled
+            return
+        }
         guard item.state.isActive else { return }
         item.state = .cancelled
         let partial = item.destination
         if let download = item.download {
             tracked.removeValue(forKey: ObjectIdentifier(download))
+            // Settles immediately: WebKit does not always report a cancelled
+            // download as failed. Remove the partial file once it stops writing.
             download.cancel { _ in
                 if let partial { try? FileManager.default.removeItem(at: partial) }
             }
         }
-        settle(item)
+        releaseTransfer(item)
+        releaseReservation(item)
     }
 
+    /// Quitting or deleting the profile ends every transfer and removes partial
+    /// files that could no longer be resumed.
     public func cancelAll() {
-        for item in Array(tracked.values) { cancel(item) }
+        for item in Array(tracked.values) + items where item.state.isActive || item.state == .paused || item.canResume {
+            cancel(item)
+        }
     }
 
-    /// Removes finished, failed and cancelled rows. Files are never deleted.
+    /// Removes finished, failed and cancelled rows. Files are never deleted;
+    /// stopped transfers stay so they can resume.
     public func clearInactive() {
-        items.removeAll { !$0.state.isActive }
+        items.removeAll { !$0.state.isActive && $0.state != .paused && !$0.canResume }
     }
 
     public func remove(_ item: DownloadItem) {
         guard !item.state.isActive else { return }
+        if item.state == .paused || item.canResume { cancel(item) }
         items.removeAll { $0 === item }
     }
 
@@ -143,8 +236,15 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         return FileManager.default.fileExists(atPath: destination.path)
     }
 
+    /// A finished file, or the partial file of a stopped transfer.
+    public func canReveal(_ item: DownloadItem) -> Bool {
+        guard item.state == .finished || item.state == .paused || item.canResume,
+              let destination = item.destination else { return false }
+        return FileManager.default.fileExists(atPath: destination.path)
+    }
+
     public func reveal(_ item: DownloadItem) {
-        guard fileExists(item), let destination = item.destination else { return }
+        guard canReveal(item), let destination = item.destination else { return }
         NSWorkspace.shared.activateFileViewerSelecting([destination])
     }
 
@@ -160,7 +260,9 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         guard let item = tracked[ObjectIdentifier(download)], item.state.isActive else { return nil }
         if response.expectedContentLength > 0 { item.expectedBytes = response.expectedContentLength }
         let destination: URL
-        if let requested = item.requestedDestination {
+        if let existing = item.destination {
+            destination = existing // A resumed transfer continues its own file.
+        } else if let requested = item.requestedDestination {
             // A save panel already confirmed replacing this exact file. WebKit
             // refuses an existing destination, so remove only that chosen file.
             if FileManager.default.fileExists(atPath: requested.path) {
@@ -191,23 +293,27 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
             Self.applyQuarantine(to: destination, source: item.sourceURL, origin: item.originURL)
         }
         item.state = .finished
-        settle(item)
+        releaseTransfer(item)
+        releaseReservation(item)
     }
 
     public func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         guard let item = tracked.removeValue(forKey: ObjectIdentifier(download)) else { return }
         let nsError = error as NSError
-        if item.state == .cancelled || (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) {
+        releaseTransfer(item)
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled && resumeData == nil {
             item.state = .cancelled
         } else {
             item.state = .failed
             item.failureReason = nsError.localizedDescription
+            if let resumeData {
+                // An interrupted transfer keeps its partial file for Resume.
+                item.resumeData = resumeData
+                return
+            }
         }
         // Never leave an incomplete file that looks like a finished download.
-        if let destination = item.destination, FileManager.default.fileExists(atPath: destination.path) {
-            try? FileManager.default.removeItem(at: destination)
-        }
-        settle(item)
+        discardPartialFile(of: item)
     }
 
     // MARK: Helpers
@@ -218,14 +324,27 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         if progress.totalUnitCount > 0 { item.expectedBytes = progress.totalUnitCount }
     }
 
-    private func settle(_ item: DownloadItem) {
-        if let destination = item.destination { reserved.remove(destination.standardizedFileURL.path) }
+    /// Ends the live transfer: progress observation, transient host and the
+    /// owner's callbacks (which release the source page's protection).
+    private func releaseTransfer(_ item: DownloadItem) {
         item.observations.forEach { $0.invalidate() }
         item.observations.removeAll()
         item.download = nil
+        item.resumeHost = nil
         let callbacks = item.onSettled
         item.onSettled.removeAll()
         callbacks.forEach { $0(item) }
+    }
+
+    private func releaseReservation(_ item: DownloadItem) {
+        if let destination = item.destination { reserved.remove(destination.standardizedFileURL.path) }
+    }
+
+    private func discardPartialFile(of item: DownloadItem) {
+        if let destination = item.destination, FileManager.default.fileExists(atPath: destination.path) {
+            try? FileManager.default.removeItem(at: destination)
+        }
+        releaseReservation(item)
     }
 
     private func trimList() {

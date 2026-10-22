@@ -111,6 +111,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         self.store = websiteDataStore
         precondition(snapshotCache == nil || snapshotCache?.profileID == profileID, "Snapshots belong to one profile")
         super.init()
+        // Resuming uses this profile's cookies and storage, never another's.
+        if self.downloads.dataStoreProvider == nil {
+            self.downloads.dataStoreProvider = { [weak self] in self?.websiteDataStore }
+        }
         if observesMemoryPressure {
             memoryMonitor = PageMemoryPressureMonitor { [weak self] pressure in
                 Task { @MainActor [weak self] in self?.handleMemoryPressure(pressure) }

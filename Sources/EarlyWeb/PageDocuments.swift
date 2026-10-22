@@ -123,23 +123,25 @@ extension WebViewManager {
             guard let self else { return }
             self.endDocumentPanel(id)
             guard response == .OK, let destination = panel?.url, let view = self.pages[id]?.view else { return }
+            let source = view.url
             view.createPDF { [weak self] result in
-                self?.write(result, to: destination, failure: "The PDF could not be saved.")
+                self?.write(result, to: destination, source: source, failure: "The PDF could not be saved.")
             }
         }
         return true
     }
 
-    /// Web pages save as a Web Archive; a viewed PDF saves its original file.
+    /// Web pages save as a standard HTML file; a viewed PDF saves its original
+    /// file. Both appear in Downloads like other saved files.
     @discardableResult
     public func savePage(_ id: UUID) -> Bool {
         guard canPresentDocumentPanel(for: id), let page = pages[id], let window = page.view.window,
               let url = page.view.url else { return false }
         let isPDF = page.documentMIMEType == "application/pdf"
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [isPDF ? .pdf : .webArchive]
+        panel.allowedContentTypes = [isPDF ? .pdf : .html]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = Self.documentName(for: page.view, extension: isPDF ? "pdf" : "webarchive")
+        panel.nameFieldStringValue = Self.documentName(for: page.view, extension: isPDF ? "pdf" : "html")
         beginDocumentPanel(id, window: window, sheet: panel)
         panel.beginSheetModal(for: window) { [weak self, weak panel] response in
             guard let self else { return }
@@ -148,35 +150,68 @@ extension WebViewManager {
             if isPDF {
                 self.saveOriginal(url, from: id, to: destination, failure: "The PDF could not be saved.")
             } else {
-                view.createWebArchiveData { [weak self] result in
-                    self?.write(result, to: destination, failure: "The page could not be saved.")
-                }
+                self.saveHTMLSnapshot(of: view, source: url, to: destination)
             }
         }
         return true
     }
 
-    func write(_ result: Result<Data, Error>, to destination: URL, failure: String) {
+    func write(_ result: Result<Data, Error>, to destination: URL, source: URL?, failure: String) {
         do {
             try result.get().write(to: destination, options: .atomic)
+            downloads.recordSavedFile(at: destination, source: source)
         } catch {
             onNotice?(failure)
         }
     }
 
-    /// An explicit save goes to the chosen file and is not added to Downloads.
+    /// A static copy of the current document: page scripts, refresh and
+    /// policy metadata are removed, links keep pointing at the website, and the
+    /// text is UTF-8. Typed form values are not part of the saved markup.
+    func saveHTMLSnapshot(of view: WKWebView, source: URL, to destination: URL) {
+        view.evaluateJavaScript(Self.htmlSnapshotScript, in: nil, in: Self.documentWorld) { [weak self] result in
+            guard let self else { return }
+            guard case .success(let value) = result, let html = value as? String else {
+                self.onNotice?("The page could not be saved.")
+                return
+            }
+            self.write(.success(Data(html.utf8)), to: destination, source: source, failure: "The page could not be saved.")
+        }
+    }
+
+    /// Isolated from the page's own scripts, which cannot alter the snapshot.
+    static let documentWorld = WKContentWorld.world(name: "Early.Documents")
+    static let htmlSnapshotScript = """
+    (() => {
+        const root = document.documentElement.cloneNode(true);
+        let head = root.querySelector('head');
+        if (!head) {
+            head = document.createElement('head');
+            root.insertBefore(head, root.firstChild);
+        }
+        root.querySelectorAll('script, noscript, base, meta[charset], meta[http-equiv]').forEach(node => node.remove());
+        const base = document.createElement('base');
+        base.href = document.baseURI;
+        head.insertBefore(base, head.firstChild);
+        const charset = document.createElement('meta');
+        charset.setAttribute('charset', 'utf-8');
+        head.insertBefore(charset, head.firstChild);
+        const doctype = document.doctype ? new XMLSerializer().serializeToString(document.doctype) : '<!DOCTYPE html>';
+        return doctype + '\\n' + root.outerHTML;
+    })()
+    """
+
+    /// An explicit save goes to the chosen file and appears in Downloads.
     private func saveOriginal(_ url: URL, from id: UUID, to destination: URL, failure: String) {
         if url.isFileURL {
             do {
                 if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
                 try FileManager.default.copyItem(at: url, to: destination)
+                downloads.recordSavedFile(at: destination, source: nil)
             } catch { onNotice?(failure) }
             return
         }
-        let started = startDownload(url, from: id, to: destination, listed: false) { [weak self] item in
-            if item.state == .failed { self?.onNotice?(failure) }
-        }
-        if !started { onNotice?(failure) }
+        if !startDownload(url, from: id, to: destination) { onNotice?(failure) }
     }
 
     static func documentName(for view: WKWebView, extension ext: String?) -> String {

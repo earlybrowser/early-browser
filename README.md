@@ -34,7 +34,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Thumbnail tab switcher | Preview open tabs in a compact strip; confirm a selection or cancel without changing the current page. Missing previews have a clear fallback. | Implemented. |
 | Split views | Resizable side-by-side pages, floating drag-to-split targets, and shared controls following the focused pane. Removing a pane keeps its tab open. | Implemented. |
 | Page lifecycle | Keep recent pages live, limit retained background pages, and reload released pages on selection. Protect visible panes, media, and editing; recover from page-process crashes with a bounded retry. | Implemented. |
-| Downloads and documents | Download files with progress, cancel, and Finder reveal from the sidebar footer. Upload files, print, view and save PDFs, save pages, and open local files or dropped links in new tabs. | Implemented. |
+| Downloads and documents | Download files from the sidebar footer with progress, stop and resume, and Finder reveal; saved pages and PDFs appear there too. Upload files, print, view PDFs, save pages as HTML, and open local files or dropped links in new tabs. | Implemented. |
 | Find and zoom | Find text on a page and adjust page zoom from the keyboard. | Planned. |
 | Reading tools | Reader Mode for supported articles and page translation. | Planned. |
 | Credentials and autofill | Integrate supported password managers, autofill, and passkeys through public platform facilities. | Planned. |

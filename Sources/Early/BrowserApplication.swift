@@ -167,6 +167,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let directory = testing ? FileManager.default.temporaryDirectory
             .appending(path: "EarlyTestDownloads/\(UUID().uuidString)", directoryHint: .isDirectory) : nil
         let store = DownloadStore(directory: directory)
+        store.dataStoreProvider = { [weak self] in self?.websiteDataStore(for: id) }
         downloadStores[id] = store
         return store
     }
@@ -470,7 +471,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 alert.addButton(withTitle: "Quit Anyway")
                 canQuit = alert.runModal() == .alertSecondButtonReturn
             }
-            if canQuit { self.visibleModels.forEach { $0.webViews.discardAll() } }
+            if canQuit {
+                // Stopped transfers cannot resume after quitting; remove their partial files.
+                self.downloadStores.values.forEach { $0.cancelAll() }
+                self.visibleModels.forEach { $0.webViews.discardAll() }
+            }
             else { self.isTerminating = false }
             sender.reply(toApplicationShouldTerminate: canQuit)
         }

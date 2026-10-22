@@ -91,8 +91,14 @@ struct BrowserDocumentActionTests {
         item.state = .finished
         #expect(DownloadStatus.text(for: item, fileExists: true).hasSuffix("— files.example.com"))
         #expect(DownloadStatus.text(for: item, fileExists: false) == "Moved or deleted")
+        item.state = .paused
+        #expect(DownloadStatus.text(for: item, fileExists: false) == "Stopping…")
+        item.resumeData = Data([1])
+        #expect(DownloadStatus.text(for: item, fileExists: false) == "Resume downloading" && item.canResume)
         item.state = .failed
-        #expect(DownloadStatus.text(for: item, fileExists: false) == "Failed")
+        #expect(DownloadStatus.text(for: item, fileExists: false) == "Interrupted — resume to try again")
+        item.resumeData = nil
+        #expect(DownloadStatus.text(for: item, fileExists: false) == "Failed" && !item.canResume)
         item.state = .cancelled
         #expect(DownloadStatus.text(for: item, fileExists: false) == "Cancelled")
         #expect(item.filename == "a.zip")
