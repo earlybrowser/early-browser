@@ -86,4 +86,54 @@ struct PageToolsActionTests {
         #expect(!PageShortcutMonitor.isZoomIn(characters: "=", modifiers: []), "Typing = in a page is never taken")
         #expect(!PageShortcutMonitor.isZoomIn(characters: "-", modifiers: .command))
     }
+
+    @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {
+        let fixture = Fixture(session: splitSession())
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let group = try #require(model.coordinator.activeSplitGroup)
+        let left = group.panes[0].tabID, right = group.panes[1].tabID
+        try await fixture.waitForLoad(left)
+        try await fixture.waitForLoad(right)
+        #expect(model.canPerform(.find) && !model.canPerform(.findNext), "Nothing to repeat yet")
+        #expect(model.perform(.focusSplitPane(group.panes[1].id)))
+        let request = model.findFocusRequest
+        #expect(model.perform(.find))
+        #expect(model.webViews.pages[right]?.find != nil && model.webViews.pages[left]?.find == nil)
+        #expect(model.findFocusRequest == request + 1)
+        model.webViews.updateFind(right, query: "page one")
+        try await fixture.waitUntil("search") { model.webViews.pages[right]?.find?.isSearching == false }
+        let state = try #require(model.webViews.pages[right]?.find)
+        #expect(state.matchCount == 1 && PageFindBar.status(for: state) == "1 of 1")
+        #expect(model.canPerform(.findNext) && model.perform(.findPrevious))
+        #expect(model.commandSearchCandidates().map(\.title).contains("Find on Page…"))
+
+        let focus = model.contentFocusRequest
+        model.closeFind(right)
+        #expect(model.webViews.pages[right]?.find == nil && model.contentFocusRequest == focus + 1)
+
+        // Use Selection for Find takes the page's selected text.
+        #expect(model.perform(.focusSplitPane(group.panes[0].id)))
+        _ = try await model.webViews.pages[left]?.view.evaluateJavaScript("""
+            const range = document.createRange(); range.selectNodeContents(document.querySelector('h1'));
+            getSelection().removeAllRanges(); getSelection().addRange(range); true
+            """)
+        #expect(model.perform(.useSelectionForFind))
+        try await fixture.waitUntil("selection") {
+            model.webViews.pages[left]?.find?.query == "Page One" && model.webViews.pages[left]?.find?.isSearching == false
+        }
+        #expect(model.webViews.pages[left]?.find?.matchCount == 1)
+
+        var empty = PageFindState(query: "")
+        #expect(PageFindBar.status(for: empty).isEmpty)
+        empty.query = "missing"
+        #expect(PageFindBar.status(for: empty) == "No matches")
+        empty.isSearching = true
+        #expect(PageFindBar.status(for: empty).isEmpty, "No verdict while the search runs")
+        var many = PageFindState(query: "word")
+        many.matchCount = PageFindState.matchLimit
+        many.currentIndex = 2
+        many.isCapped = true
+        #expect(PageFindBar.status(for: many) == "3 of 1000+")
+    }
 }

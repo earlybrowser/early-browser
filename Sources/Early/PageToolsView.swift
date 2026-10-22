@@ -39,6 +39,10 @@ struct PageToolsOverlay: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
+            if let find = model.webViews.pages[tabID]?.find {
+                PageFindBar(model: model, tabID: tabID, state: find)
+                    .transition(reduceMotion ? .identity : .opacity)
+            }
             if let notice = model.zoomNotice, notice.tabID == tabID {
                 ZoomNoticeView(zoom: notice.zoom, theme: model.splitTheme,
                                allowsTransparency: model.preferences.translucentChrome)
@@ -50,6 +54,112 @@ struct PageToolsOverlay: View {
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.zoomNotice?.id)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.webViews.pages[tabID]?.find != nil)
+    }
+}
+
+/// Find on page for one pane: live results as you type, Return/Shift-Return
+/// for next/previous, Escape to close and return focus to the page.
+struct PageFindBar: View {
+    @Bindable var model: BrowserWindowModel
+    let tabID: UUID
+    let state: PageFindState
+    @State private var text: String
+    @FocusState private var fieldFocused: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    init(model: BrowserWindowModel, tabID: UUID, state: PageFindState) {
+        self.model = model
+        self.tabID = tabID
+        self.state = state
+        _text = State(initialValue: state.query)
+    }
+
+    static func status(for state: PageFindState) -> String {
+        guard !state.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        guard state.matchCount > 0 else { return state.isSearching ? "" : "No matches" }
+        return "\((state.currentIndex ?? 0) + 1) of \(state.matchCount)\(state.isCapped ? "+" : "")"
+    }
+
+    var body: some View {
+        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        let status = Self.status(for: state)
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+                .padding(.leading, 2)
+                .accessibilityHidden(true)
+            TextField("Find on Page", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .frame(width: 160)
+                .focused($fieldFocused)
+                .onSubmit { step(backwards: NSEvent.modifierFlags.contains(.shift)) }
+                .onExitCommand { model.closeFind(tabID) }
+                .accessibilityLabel("Find on page")
+                .accessibilityValue(status)
+                .accessibilityIdentifier("find.field")
+            Text(status)
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityIdentifier("find.status")
+            Divider().frame(height: 16).padding(.horizontal, 2)
+            control("chevron.up", "Previous Match (Command-Shift-G)", identifier: "find.previous") { step(backwards: true) }
+                .disabled(state.matchCount == 0)
+            control("chevron.down", "Next Match (Command-G)", identifier: "find.next") { step(backwards: false) }
+                .disabled(state.matchCount == 0)
+            control("xmark", "Close Find (Escape)", identifier: "find.close") { model.closeFind(tabID) }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 34)
+        .modifier(PageToolSurface(theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Find on page")
+        .accessibilityIdentifier("find.bar")
+        .task(id: text) {
+            // Search as you type, after a short pause, without redoing the
+            // search a Use Selection or reopened bar already started.
+            guard text != model.webViews.pages[tabID]?.find?.query else { return }
+            do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
+            model.webViews.updateFind(tabID, query: text)
+        }
+        .onChange(of: state.query) { _, query in if query != text { text = query } }
+        .onChange(of: model.findFocusRequest) { focusField() }
+        .onAppear { focusField() }
+    }
+
+    private func step(backwards: Bool) {
+        // Return before the typing pause still shows the first match first.
+        if text != state.query { model.webViews.updateFind(tabID, query: text) }
+        else { model.webViews.findNext(tabID, backwards: backwards) }
+    }
+
+    private func focusField() {
+        guard model.coordinator.focusedTabID == tabID else { return }
+        DispatchQueue.main.async {
+            fieldFocused = true
+            // Command-F on an open bar selects the search to replace it.
+            DispatchQueue.main.async { NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil) }
+        }
+    }
+
+    private func control(_ symbol: String, _ help: String, identifier: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .browserKeyboardFocus(cornerRadius: 5)
+        .help(help)
+        .accessibilityLabel(help.components(separatedBy: " (").first ?? help)
+        .accessibilityIdentifier(identifier)
     }
 }
 

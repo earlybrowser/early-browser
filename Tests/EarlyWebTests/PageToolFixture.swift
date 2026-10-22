@@ -37,6 +37,8 @@ final class PageToolFixture {
         manager.reconcile(tabs: tabs)
         // Opened pages stay visible, so retention never discards them mid-test.
         manager.setPresentation(visibleTabIDs: Set(tabs.map(\.id)), focusedTabID: tab.id)
+        // A real viewport, so layout-dependent checks (visibility, scrolling) apply.
+        manager.prepare(tab).view.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         manager.load(url(path), in: tab)
         try await waitUntil("load \(path)") {
             guard let page = manager.pages[tab.id] else { return false }

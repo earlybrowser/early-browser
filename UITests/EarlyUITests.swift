@@ -2296,6 +2296,25 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "Two")
     }
 
+    func testFindBarCountsMatchesAndEscapeReturnsToThePage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        app.typeKey("f", modifierFlags: .command)
+        let field = app.textFields["find.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.click()
+        app.typeText("page one")
+        let counted = app.staticTexts.matching(NSPredicate(format: "identifier == 'find.status' AND (label == %@ OR value == %@)",
+                                                           "1 of 1", "1 of 1")).firstMatch
+        XCTAssertTrue(counted.waitForExistence(timeout: 5), app.staticTexts["find.status"].debugDescription)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(field.waitForNonExistence(timeout: 5))
+        // Closing never navigates, opens tabs or leaves the page unfocusable.
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        expectPage(app, "One")
+    }
+
     func testDownloadsPanelAndOwnedPageMenus() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/download")

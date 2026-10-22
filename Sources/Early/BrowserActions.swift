@@ -130,6 +130,10 @@ extension BrowserWindowModel {
             return coordinator.focusedTabID.map { webViews.canZoom($0, by: -1) } == true
         case .resetZoom:
             return coordinator.focusedTabID.map { webViews.canResetZoom($0) } == true
+        case .find, .useSelectionForFind:
+            return coordinator.focusedTabID.map { webViews.canFind($0) } == true
+        case .findNext, .findPrevious:
+            return coordinator.focusedTabID.map { webViews.canFindNext($0) } == true
         }
     }
 
@@ -239,6 +243,17 @@ extension BrowserWindowModel {
             guard changed, let zoom = webViews.pages[id]?.zoom else { return false }
             zoomNotice = ZoomNotice(tabID: id, zoom: zoom)
             restoreContentFocus = false
+        case .find:
+            guard let id = coordinator.focusedTabID, webViews.showFind(id) else { return false }
+            findFocusRequest += 1
+            restoreContentFocus = false
+        case .findNext, .findPrevious:
+            guard let id = coordinator.focusedTabID, webViews.findNext(id, backwards: action == .findPrevious) else { return false }
+            restoreContentFocus = false
+        case .useSelectionForFind:
+            guard let id = coordinator.focusedTabID else { return false }
+            useSelectionForFind(in: id)
+            restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
             dismissCommandBar(restoreFocus: restoreContentFocus && contentFocusRequest == previousFocusRequest)
@@ -313,6 +328,7 @@ extension BrowserWindowModel {
         addAction("printPage", "Print Page…", .printPage, terms: ["print", "print page"])
         addAction("savePage", "Save Page As…", .savePage, terms: ["save page", "save as", "save html"])
         addAction("exportPDF", "Export as PDF…", .exportPDF, terms: ["export pdf", "save as pdf", "pdf"])
+        addAction("find", "Find on Page…", .find, terms: ["find", "search page", "find in page"])
         addAction("zoomIn", "Zoom In", .zoomIn, terms: ["zoom in", "bigger", "enlarge page", "increase text size"])
         addAction("zoomOut", "Zoom Out", .zoomOut, terms: ["zoom out", "smaller", "shrink page", "decrease text size"])
         addAction("resetZoom", "Actual Size", .resetZoom, terms: ["reset zoom", "actual size", "100%"])

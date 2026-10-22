@@ -55,4 +55,8 @@ public enum BrowserAction: Equatable, Sendable {
     case zoomIn
     case zoomOut
     case resetZoom
+    case find
+    case findNext
+    case findPrevious
+    case useSelectionForFind
 }

@@ -59,6 +59,8 @@ final class BrowserWindowModel {
     var toast: Toast?
     var downloadsPresented = false
     var zoomNotice: ZoomNotice?
+    /// Command-F focuses the focused pane's find field, even if already open.
+    var findFocusRequest = 0
     /// Early's download icon flying from the clicked page point to the button.
     struct DownloadFlight: Identifiable, Equatable {
         let id = UUID()
@@ -210,6 +212,22 @@ final class BrowserWindowModel {
 
     var activePage: BrowserPage? { coordinator.focusedTabID.flatMap { webViews.pages[$0] } }
     var downloads: DownloadStore { webViews.downloads }
+
+    /// Escape or the close button: the match stays selected and the page,
+    /// not the sidebar, gets keyboard focus back.
+    func closeFind(_ id: UUID) {
+        webViews.hideFind(id)
+        if id == coordinator.focusedTabID { contentFocusRequest += 1 }
+    }
+
+    func useSelectionForFind(in id: UUID) {
+        Task { @MainActor [weak self] in
+            guard let self, let text = await self.webViews.findSelection(id),
+                  self.webViews.showFind(id) else { return }
+            self.webViews.updateFind(id, query: text)
+            self.findFocusRequest += 1
+        }
+    }
 
     func recordPagePress(at point: CGPoint, time: Date = Date()) {
         guard point.x.isFinite, point.y.isFinite else { return }

@@ -28,6 +28,9 @@ public final class BrowserPage {
     public var requestedURL: URL
     /// This tab's page zoom; 1 is actual size. Not remembered per site.
     public internal(set) var zoom = 1.0
+    /// The find bar's state; nil while it is closed.
+    public internal(set) var find: PageFindState?
+    var findRevision = 0
     /// The committed main document's MIME type, e.g. a viewed PDF.
     public fileprivate(set) var documentMIMEType: String?
     fileprivate var pendingDocumentMIMEType: String?
@@ -62,6 +65,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     private var muteChoices: Set<UUID> = []
     /// Zoom belongs to the tab, so it survives background discard and recovery.
     var zoomChoices: [UUID: Double] = [:]
+    /// Shared by this profile's tabs, like Safari's find string.
+    var lastFindQuery = ""
+    /// Reader's separate views, keyed by the tab they belong to.
+    var readerViews: [UUID: WKWebView] = [:]
     public var onMetadata: ((UUID, URL?, String?) -> Void)?
     public var onNewWindow: ((URL, WKWebViewConfiguration) -> WKWebView?)?
     public var onOpenBackgroundLink: ((URL) -> Void)?
@@ -855,6 +862,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.navigationNotice = nil
         pages[id]?.documentMIMEType = pages[id]?.pendingDocumentMIMEType
         pages[id]?.pendingDocumentMIMEType = nil
+        resetFindForNewDocument(id)
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
@@ -869,6 +877,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         refresh(id)
         captureSnapshot(id)
         scheduleRetention()
+        refreshFindAfterLoad(id)
         guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected
