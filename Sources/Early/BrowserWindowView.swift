@@ -16,6 +16,15 @@ private extension EnvironmentValues {
     }
 }
 
+/// AppKit exposes no public window corner radius. Keep content concentric with
+/// the system's standard titled-window corners instead of reading a private
+/// selector: 10 pt through macOS 15 and 16 pt from macOS 26.
+enum WindowCornerGeometry {
+    static func windowRadius(for version: OperatingSystemVersion) -> CGFloat {
+        version.majorVersion >= 26 ? 16 : 10
+    }
+}
+
 private struct BrowserSurfaceFrames: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
@@ -276,22 +285,8 @@ struct BrowserWindowView: View {
         folder.id != draggingTab && folder.isExpanded
     }
 
-    private static let windowCornerRadius: CGFloat = {
-        guard let tf = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        ).contentView?.superview else {
-            return 16
-        }
-        let sel = NSSelectorFromString("_getCachedDefaultWindowCornerRadius")
-        guard let method = class_getInstanceMethod(type(of: tf), sel) else { return 16 }
-        typealias FloatFunc = @convention(c) (AnyObject, Selector) -> CGFloat
-        let fn = unsafeBitCast(method_getImplementation(method), to: FloatFunc.self)
-        let r = fn(tf, sel)
-        return r > 0 ? r : 16
-    }()
+    private static let windowCornerRadius = WindowCornerGeometry.windowRadius(
+        for: ProcessInfo.processInfo.operatingSystemVersion)
 
     /// Root window padding is 6 pt. For the inner content border to be concentric
     /// with the window frame (constant 6 pt distance everywhere, including corner curves):
