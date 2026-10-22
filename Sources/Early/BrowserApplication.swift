@@ -41,6 +41,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var downloadStores: [UUID: DownloadStore] = [:]
     /// Each profile's browsing history, beside the session file.
     @ObservationIgnored private var historyStores: [UUID: HistoryStore] = [:]
+    /// All open private windows share one temporary profile and one website
+    /// data store kept only in memory, released with the last private window.
+    @ObservationIgnored private(set) var privateProfileID: UUID?
+    @ObservationIgnored private var privateDataStore: WKWebsiteDataStore?
     @ObservationIgnored private var isTerminating = false
     @ObservationIgnored private var applyingWorkspace = false
     @ObservationIgnored private var restoringFocus = false
@@ -116,7 +120,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         restoringFocus = !restored.isEmpty
         preferences.onChange = { [weak self] key in
             if key == "browserAppearance" { self?.applyAppearance() }
-            if key == "onlineSearchSuggestions" || key == "commandBarActions" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
+            if ["onlineSearchSuggestions", "privateSearchSuggestions", "commandBarActions"].contains(key) { self?.visibleModels.forEach { $0.refreshSuggestions() } }
             if key == "spaceSwipes" { self?.visibleModels.forEach { $0.cancelSpaceSwipePresentation() } }
         }
         applyAppearance()
@@ -142,7 +146,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     func openNewWindow(from source: BrowserWindowModel? = nil) -> UUID? {
         guard canOpenWindow, let workspace else { return nil }
         let template: BrowserSession
-        if let source {
+        // New Window from a private window opens an ordinary one.
+        if let source, !source.isPrivate {
             guard visibleModels.contains(where: { $0 === source }) else { return nil }
             template = source.coordinator.session
         } else {
@@ -156,7 +161,36 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return id
     }
 
+    /// Opens a private window: its only Space is named "Private", it records
+    /// no history, and nothing in it is saved, restored or kept on disk.
+    @discardableResult
+    func openPrivateWindow() -> UUID? {
+        guard canOpenWindow else { return nil }
+        let profile = privateProfileID ?? UUID()
+        privateProfileID = profile
+        let id = addWindow(session: .privateWindow(profileID: profile))
+        presentWindow?(id)
+        return id
+    }
+
+    func isPrivateProfile(_ id: UUID) -> Bool { privateProfileID == id }
+
+    /// The last private window closed: its cookies, storage and download list go.
+    private func releasePrivateSessionIfUnused() {
+        guard let profile = privateProfileID,
+              !visibleModels.contains(where: { $0.coordinator.profileID == profile }) else { return }
+        privateProfileID = nil
+        privateDataStore = nil
+        downloadStores.removeValue(forKey: profile)?.cancelAll()
+    }
+
     private func websiteDataStore(for id: UUID) -> WKWebsiteDataStore {
+        if id == privateProfileID {
+            if let privateDataStore { return privateDataStore }
+            let store = WKWebsiteDataStore.nonPersistent()
+            privateDataStore = store
+            return store
+        }
         if let store = dataStores[id] { return store }
         let store = testing ? WKWebsiteDataStore.nonPersistent() : WKWebsiteDataStore(forIdentifier: id)
         dataStores[id] = store
@@ -192,7 +226,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         BrowserWindowModel(startup: startup, session: session, repository: repository!, input: input, isTesting: testing,
             restorationError: persistence?.error, defaults: defaults, sharedPersistence: persistence,
             websiteDataStore: websiteDataStore(for: session.profileID), downloads: downloads(for: session.profileID),
-            preferences: preferences, history: history(for: session.profileID))
+            preferences: preferences, isPrivate: isPrivateProfile(session.profileID), history: history(for: session.profileID))
     }
 
     @discardableResult private func addWindow(session: BrowserSession) -> UUID {
@@ -205,7 +239,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     private func attach(_ owner: BrowserWindowModel) {
         owner.application = self
-        owner.onSave = { [weak self] source in self?.save(source) }
+        // A private window is never written to the session file.
+        owner.onSave = owner.isPrivate ? nil : { [weak self] source in self?.save(source) }
         owner.onOpenWindow = { [weak self, weak owner] url, title in
             guard let self, let owner, !self.isTerminating, (try? owner.input.validate(url)) != nil,
                   self.visibleModels.contains(where: { $0 === owner }) else { return }
@@ -264,7 +299,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func focusedWindow(_ id: UUID?) {
-        guard !restoringFocus, let owner = windowModel(id), workspace?.activeProfileID != owner.coordinator.profileID else { return }
+        guard !restoringFocus, let owner = windowModel(id), !owner.isPrivate,
+              workspace?.activeProfileID != owner.coordinator.profileID else { return }
         workspace?.activeProfileID = owner.coordinator.profileID
         saveAll()
     }
@@ -442,6 +478,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         closed.application = nil
         closed.cancelCommandBarQueries()
         closed.webViews.discardAll()
+        if closed.isPrivate {
+            releasePrivateSessionIfUnused()
+            return
+        }
         if !visibleModels.contains(where: { $0.coordinator.profileID == profileID }),
            let index = workspace?.sessions.firstIndex(where: { $0.profileID == profileID }) {
             workspace?.sessions[index] = closed.coordinator.session.savedItemsOnly

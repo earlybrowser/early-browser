@@ -189,3 +189,63 @@ struct ClearHistoryButtons: View {
         Button("Cancel", role: .cancel) {}
     }
 }
+
+// MARK: Private browsing
+
+/// What private browsing does and does not do, in plain words.
+enum PrivateBrowsing {
+    static let title = "Private Browsing"
+    static let explanation = "Early won’t add the pages you visit in private windows to History, and their cookies "
+        + "and website data are erased when you close the last private window. Private browsing doesn’t make you "
+        + "anonymous: websites, your network administrator and your internet provider can still see your activity. "
+        + "Files you download and pages you save stay on your Mac."
+}
+
+/// Shown in an empty private window, below the command bar.
+struct PrivateBrowsingNotice: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Label(PrivateBrowsing.title, systemImage: "theatermasks.fill").font(.headline)
+            Text(PrivateBrowsing.explanation)
+                .font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: 460)
+        .padding(24)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("private.notice")
+    }
+}
+
+/// The sidebar's private-window label, with the explanation on request.
+struct PrivateBrowsingBadge: View {
+    let name: String
+    @State private var explained = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Label(name, systemImage: "theatermasks.fill")
+                .font(.callout.weight(.semibold))
+            Spacer(minLength: 0)
+            Button { explained.toggle() } label: {
+                Image(systemName: "info.circle").frame(width: 22, height: 22).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .browserKeyboardFocus(cornerRadius: 6)
+            .help("About Private Browsing")
+            .accessibilityLabel("About Private Browsing")
+            .accessibilityIdentifier("private.info")
+            .popover(isPresented: $explained, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(PrivateBrowsing.title).font(.headline)
+                    Text(PrivateBrowsing.explanation).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(16).frame(width: 300)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("private.badge")
+    }
+}

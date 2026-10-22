@@ -53,6 +53,9 @@ final class BrowserWindowModel {
     let preferences: BrowserPreferences
     weak var application: EarlyAppDelegate?
     let isTesting: Bool
+    /// A private window: a temporary profile with a website data store kept
+    /// only in memory, no history, and nothing saved or restored.
+    let isPrivate: Bool
     /// This profile's browsing history; nil records nothing.
     let history: HistoryStore?
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -140,7 +143,8 @@ final class BrowserWindowModel {
         sidebarWidth = SidebarWidth.clamped(sidebarWidth)
     }
     var onlineSuggestionsEnabled: Bool {
-        get { preferences.onlineSuggestions }
+        // Private windows need both settings; the private one is off by default.
+        get { preferences.onlineSuggestions && (!isPrivate || preferences.privateOnlineSuggestions) }
         set { preferences.onlineSuggestions = newValue; refreshSuggestions() }
     }
     var commandBarActionsEnabled: Bool {
@@ -151,13 +155,15 @@ final class BrowserWindowModel {
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
-         downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, history: HistoryStore? = nil,
+         downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, isPrivate: Bool = false,
+         history: HistoryStore? = nil,
          searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
         self.isTesting = isTesting
-        self.history = history
+        self.isPrivate = isPrivate
+        self.history = isPrivate ? nil : history
         self.now = now
         self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
         let service = GoogleSearchSuggestions()
@@ -180,7 +186,7 @@ final class BrowserWindowModel {
         persistence = sharedPersistence ?? SessionAutosaver(repository: repository, disabledReason: restorationError)
         // Tests drive pressure explicitly; host resource usage must not change
         // which fixture pages survive while assertions are running.
-        webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
+        webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting || isPrivate, input: input,
                                  websiteDataStore: websiteDataStore,
                                  downloads: downloads ?? (isTesting ? DownloadStore(directory: FileManager.default.temporaryDirectory
                                     .appending(path: "EarlyTestDownloads/\(UUID().uuidString)", directoryHint: .isDirectory)) : nil),
@@ -545,7 +551,8 @@ final class BrowserWindowModel {
     }
 
     func placeTab(_ id: UUID, in section: TabStore.Section, folderID: UUID? = nil, before: UUID? = nil) -> Bool {
-        guard coordinator.placeTab(id, in: section, folderID: folderID, before: before) else { return false }
+        // A private window has no saved pages to place a tab among.
+        guard !isPrivate || section == .regular, coordinator.placeTab(id, in: section, folderID: folderID, before: before) else { return false }
         save()
         return true
     }
@@ -763,7 +770,7 @@ final class BrowserWindowModel {
     }
 
     var canManageSpaces: Bool {
-        !spaceSwipeIsSettling && !sidebarInteractionInProgress && splitResize == nil && !folderEditorIsPresented && !hasVisibleDialog
+        !isPrivate && !spaceSwipeIsSettling && !sidebarInteractionInProgress && splitResize == nil && !folderEditorIsPresented && !hasVisibleDialog
             && renamingTabID == nil && spaceEditor == nil && spaceDeletionID == nil
     }
 

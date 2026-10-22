@@ -77,6 +77,12 @@ struct SplitContentView: View {
                 if tabIDs.isEmpty {
                     if reduceTransparency || contrast == .increased { Color(nsColor: .windowBackgroundColor) }
                     else { Color.white.opacity(colorScheme == .dark ? 0.01 : 0.08) }
+                    if model.isPrivate {
+                        // Below the command bar, which opens near 40% of the height.
+                        PrivateBrowsingNotice()
+                            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
+                            .padding(.bottom, max(0, geometry.size.height * 0.08))
+                    }
                 }
                 ForEach(tabIDs, id: \.self) { id in
                     let frame = frame(for: id, size: geometry.size, layout: layout)

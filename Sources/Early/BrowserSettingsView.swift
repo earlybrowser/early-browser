@@ -348,6 +348,9 @@ struct BrowserSettingsView: View {
             Divider().padding(.vertical, 6)
             SettingsToggle("Online search suggestions", detail: "Send what you type in the command bar to Google for suggestions. Turn this off to keep typed queries local until you search.", isOn: $preferences.onlineSuggestions, identifier: "settings.onlineSuggestions")
             Divider().padding(.vertical, 6)
+            SettingsToggle("Suggestions in private windows", detail: "Also send what you type in a private window’s command bar to Google. Off by default, so private typing stays local until you search.", isOn: $preferences.privateOnlineSuggestions, identifier: "settings.privateOnlineSuggestions")
+                .disabled(!preferences.onlineSuggestions)
+            Divider().padding(.vertical, 6)
             SettingsToggle("Command bar actions", detail: "Include browser commands, Spaces, and profiles when searching in the command bar. Turn this off to show only matching tabs, pins, Favorites, and web suggestions.", isOn: $preferences.commandBarActions, identifier: "settings.commandBarActions")
         }
     }

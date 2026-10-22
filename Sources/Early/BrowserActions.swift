@@ -64,11 +64,12 @@ extension BrowserWindowModel {
         case .showHistory, .clearHistory:
             return history != nil
         case .setPinned(let id, let pinned):
-            guard let tab = accessibleTab(id), !tab.isFavorite,
+            // Private windows keep no saved pages.
+            guard !isPrivate || !pinned, let tab = accessibleTab(id), !tab.isFavorite,
                   (tab.pinnedURL != nil) != pinned else { return false }
             return !pinned || tab.isOpen
         case .setFavorite(let id, let favorite):
-            guard let tab = accessibleTab(id), tab.isFavorite != favorite else { return false }
+            guard !isPrivate || !favorite, let tab = accessibleTab(id), tab.isFavorite != favorite else { return false }
             return !favorite || tab.pinnedURL != nil || tab.isOpen
         case .setMuted(let id, let muted):
             guard accessibleTab(id)?.isOpen == true, let page = webViews.pages[id] else { return false }
@@ -129,7 +130,7 @@ extension BrowserWindowModel {
             return (tab.isOpen || tab.pinnedURL != nil) && (try? input.validate(url)) != nil
         case .openSettings:
             return onOpenSettings != nil
-        case .newWindow:
+        case .newWindow, .newPrivateWindow:
             return application?.canOpenWindow == true
         case .showDownloads, .openFile:
             return true
@@ -248,6 +249,9 @@ extension BrowserWindowModel {
         case .newWindow:
             guard application?.openNewWindow(from: self) != nil else { return false }
             restoreContentFocus = false
+        case .newPrivateWindow:
+            guard application?.openPrivateWindow() != nil else { return false }
+            restoreContentFocus = false
         case .showDownloads:
             downloadsPresented = true
             restoreContentFocus = false
@@ -364,6 +368,8 @@ extension BrowserWindowModel {
         addAction("newSpace", "New Space", .newSpace, terms: ["create space", "add space"])
         addAction("openSettings", "Open Settings", .openSettings, terms: ["settings", "preferences"])
         addAction("newWindow", "New Window", .newWindow, terms: ["open browser window"])
+        addAction("newPrivateWindow", "New Private Window", .newPrivateWindow,
+                  terms: ["private browsing", "incognito", "private window"])
         addAction("showDownloads", "Show Downloads", .showDownloads, terms: ["downloads", "download list", "downloaded files"])
         addAction("openFile", "Open File…", .openFile, terms: ["open file", "open local file", "open pdf"])
         addAction("printPage", "Print Page…", .printPage, terms: ["print", "print page"])

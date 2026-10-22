@@ -591,10 +591,13 @@ struct BrowserWindowView: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button("New Tab") { model.perform(.presentCommandBar(.newTab)) }
-            Button("New Folder") { editFolder(nil, parent: nil) }
-            Divider()
-            Button("New Space…") { model.perform(.newSpace) }
-            if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
+            // A private window has no saved pages, folders or other Spaces.
+            if !model.isPrivate {
+                Button("New Folder") { editFolder(nil, parent: nil) }
+                Divider()
+                Button("New Space…") { model.perform(.newSpace) }
+                if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
+            }
         }
         .background(SpaceSwipeMonitor(model: model,
             enabled: model.preferences.spaceSwipes && sidebarVisible && hiddenDragItemID == nil && resizeStartWidth == nil && !folderEditor))
@@ -707,15 +710,21 @@ struct BrowserWindowView: View {
         let showsPins = !pinIDs.isEmpty || (active && revealDropSections)
         let selection = model.coordinator.session.selectionBySpace[space.id]
         return VStack(alignment: .leading, spacing: 16) {
-            Text(space.name)
-                .font(.callout.weight(.medium)).foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .contentTransition(.opacity)
-                .accessibilityAddTraits(.isHeader)
-                .contextMenu {
-                    SpaceActions(model: model, space: space)
-                    Button("New Space…") { model.perform(.newSpace) }
-                }
+            if model.isPrivate {
+                PrivateBrowsingBadge(name: space.name)
+                    .padding(.horizontal, 8)
+                    .accessibilityAddTraits(.isHeader)
+            } else {
+                Text(space.name)
+                    .font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .contentTransition(.opacity)
+                    .accessibilityAddTraits(.isHeader)
+                    .contextMenu {
+                        SpaceActions(model: model, space: space)
+                        Button("New Space…") { model.perform(.newSpace) }
+                    }
+            }
             ScrollViewReader { scroll in
                 ScrollView {
                     // Pins and Today share a scroll region: many persistent pins
@@ -1078,7 +1087,7 @@ struct BrowserWindowView: View {
             }
             .disabled(!model.canPerform(.setMuted(tab.id, !page.isMuted)))
         }
-        if !tab.isFavorite {
+        if !tab.isFavorite && !model.isPrivate {
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
                     Button(space.name) { model.perform(.moveTab(tab.id, toSpace: space.id)) }
@@ -1099,12 +1108,14 @@ struct BrowserWindowView: View {
             .disabled(model.coordinator.tabStore.siblingIDs(of: tab).first == tab.id)
         Button("Move Down") { model.perform(.moveTabBy(tab.id, 1)) }
             .disabled(model.coordinator.tabStore.siblingIDs(of: tab).last == tab.id)
-        Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
-            model.perform(.setFavorite(tab.id, !tab.isFavorite))
-        }
-        if !tab.isFavorite {
-            Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
-                model.perform(.setPinned(tab.id, tab.pinnedURL == nil))
+        if !model.isPrivate {
+            Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                model.perform(.setFavorite(tab.id, !tab.isFavorite))
+            }
+            if !tab.isFavorite {
+                Button(tab.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
+                    model.perform(.setPinned(tab.id, tab.pinnedURL == nil))
+                }
             }
         }
         if tab.pinnedURL != nil {
@@ -1555,7 +1566,8 @@ struct BrowserWindowView: View {
 
     private func revealSavedSections() {
         guard !revealDropSections else { return }
-        withAnimation(folderDragAnimation) { revealDropSections = true }
+        // Private windows have no Pins or Favorites to drop into.
+        withAnimation(folderDragAnimation) { revealDropSections = !model.isPrivate }
     }
 
     private func endDrag() {
@@ -2200,10 +2212,10 @@ struct BrowserWindowView: View {
     }
 
     private func destinationSection(at point: CGPoint) -> TabStore.Section? {
-        if (!model.favorites.isEmpty || revealDropSections), dropAreas["favorites"]?.contains(point) == true { return .favorites }
+        if !model.isPrivate, (!model.favorites.isEmpty || revealDropSections), dropAreas["favorites"]?.contains(point) == true { return .favorites }
         guard let viewport = sectionFrames[false], viewport.contains(point),
               let regular = dropAreas["regular"] else { return nil }
-        return point.y >= regular.minY ? .regular : .pinned
+        return model.isPrivate || point.y >= regular.minY ? .regular : .pinned
     }
 
     private func groupPanel(active: Bool, dashed: Bool = false, isFolder: Bool = false) -> some View {

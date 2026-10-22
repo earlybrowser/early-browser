@@ -28,6 +28,12 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("n")
             .disabled(model.map { !$0.canPerform(.newWindow) } ?? !application.canOpenWindow)
+            Button("New Private Window") {
+                if let model { _ = model.perform(.newPrivateWindow) }
+                else { _ = application.openPrivateWindow() }
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(model.map { !$0.canPerform(.newPrivateWindow) } ?? !application.canOpenWindow)
             Button("New Tab") { model?.perform(.presentCommandBar(.newTab)) }
                 .keyboardShortcut("t")
                 .disabled(model?.canPerform(.presentCommandBar(.newTab)) != true)
