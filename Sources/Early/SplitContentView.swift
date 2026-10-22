@@ -189,6 +189,11 @@ struct SplitContentView: View {
         }
         .modifier(BrowserContentSurface.pane(cornerRadius: contentCornerRadius, split: split, focused: focused,
                                             theme: model.splitTheme))
+        .overlay(alignment: page?.hoveredLink?.avoidsLeadingCorner == true ? .bottomTrailing : .bottomLeading) {
+            if let hover = page?.hoveredLink, page?.isFullscreen != true {
+                LinkPreview(hover: hover, theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             // Clear of the split pane's remove button in the same corner.
             PageToolsOverlay(model: model, tabID: id)

@@ -58,6 +58,30 @@ struct PageToolsOverlay: View {
     }
 }
 
+/// The hovered link's address, like Safari's status bar. Drawing only: the
+/// page keeps every click, and the preview hides while the page is fullscreen.
+struct LinkPreview: View {
+    let hover: LinkHover
+    let theme: BrowserSpace.Color
+    let allowsTransparency: Bool
+
+    var body: some View {
+        Text(hover.url.absoluteString)
+            .font(.system(size: 12))
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .frame(maxWidth: 520, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .modifier(PageToolSurface(theme: theme, allowsTransparency: allowsTransparency))
+            .padding(8)
+            .allowsHitTesting(false)
+            .accessibilityLabel("Link address")
+            .accessibilityValue(hover.url.absoluteString)
+            .accessibilityIdentifier("page.linkPreview")
+    }
+}
+
 /// Find on page for one pane: live results as you type, Return/Shift-Return
 /// for next/previous, Escape to close and return focus to the page.
 struct PageFindBar: View {

@@ -31,6 +31,9 @@ public final class BrowserPage {
     /// The find bar's state; nil while it is closed.
     public internal(set) var find: PageFindState?
     var findRevision = 0
+    /// The link under the pointer, for the pane's address preview.
+    public internal(set) var hoveredLink: LinkHover?
+    public internal(set) var isFullscreen = false
     /// The committed main document's MIME type, e.g. a viewed PDF.
     public fileprivate(set) var documentMIMEType: String?
     fileprivate var pendingDocumentMIMEType: String?
@@ -82,7 +85,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onOpenSearch: ((String) -> Void)?
     private let profileID: UUID
     private let ephemeral: Bool
-    private let input: NavigationInput
+    let input: NavigationInput
     private let configure: (WKWebViewConfiguration) -> Void
     private var store: WKWebsiteDataStore?
     private var identities: [ObjectIdentifier: UUID] = [:]
@@ -381,6 +384,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             controller.addUserScript(WKUserScript(source: PageContextMenuObserver.script,
                 injectionTime: .atDocumentStart, forMainFrameOnly: false, in: PageContextMenuObserver.world))
         }
+        let hoverObserver = LinkHoverObserver()
+        hoverObserver.owner = self
+        controller.removeScriptMessageHandler(forName: LinkHoverObserver.name, contentWorld: LinkHoverObserver.world)
+        controller.add(hoverObserver, contentWorld: LinkHoverObserver.world, name: LinkHoverObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == LinkHoverObserver.script }) {
+            controller.addUserScript(WKUserScript(source: LinkHoverObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: LinkHoverObserver.world))
+        }
         let interactionObserver = PageInteractionObserver()
         interactionObserver.owner = self
         controller.removeScriptMessageHandler(forName: PageInteractionObserver.name, contentWorld: .defaultClient)
@@ -401,6 +412,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
         controller.removeScriptMessageHandler(forName: PageContextMenuObserver.name, contentWorld: PageContextMenuObserver.world)
         controller.removeScriptMessageHandler(forName: PageInteractionObserver.name, contentWorld: .defaultClient)
+        controller.removeScriptMessageHandler(forName: LinkHoverObserver.name, contentWorld: LinkHoverObserver.world)
     }
 
     private func beginLoading(_ id: UUID) {
@@ -643,6 +655,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.progress = view.estimatedProgress
         page.canGoBack = view.canGoBack
         page.canGoForward = view.canGoForward
+        let fullscreen = view.fullscreenState != .notInFullscreen
+        if page.isFullscreen != fullscreen { page.isFullscreen = fullscreen }
         if view.isLoading && page.failure == nil { transition(id, .startLoading) }
         else if !view.isLoading { transition(id, .stopLoading) }
         let url = view.url.flatMap { try? input.validate($0) }
@@ -863,6 +877,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.documentMIMEType = pages[id]?.pendingDocumentMIMEType
         pages[id]?.pendingDocumentMIMEType = nil
         resetFindForNewDocument(id)
+        pages[id]?.hoveredLink = nil
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {

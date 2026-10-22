@@ -2315,6 +2315,23 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "One")
     }
 
+    func testHoveringALinkPreviewsItsAddressWithoutTakingTheClick() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let link = app.webViews.links["Go to Two"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        link.hover()
+        let preview = app.staticTexts.matching(NSPredicate(
+            format: "identifier == 'page.linkPreview' AND (value CONTAINS %@ OR label CONTAINS %@)",
+            "fixture/two", "fixture/two")).firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5), app.staticTexts["page.linkPreview"].debugDescription)
+        // The preview never intercepts the click: the link still navigates.
+        link.click()
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
     func testDownloadsPanelAndOwnedPageMenus() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/download")
