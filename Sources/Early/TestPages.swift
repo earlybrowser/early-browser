@@ -76,6 +76,17 @@ final class TestPages: NSObject, WKURLSchemeHandler {
             task.didFailWithError(URLError(.notConnectedToInternet))
             return
         }
+        if url.path == "/download" {
+            // A data: download link: WebKit cannot download this test scheme itself.
+            respond(to: task, url: url, html: """
+            <!doctype html><html><head><title>Page Download</title></head>
+            <body style="font:18px -apple-system;padding:32px">
+            <h1>Page Download</h1>
+            <p><a id="note" download="early-note.txt" href="data:text/plain;base64,RWFybHkgZG93bmxvYWQ=">Download note</a></p>
+            <p style="height:300px">Plain page area</p></body></html>
+            """)
+            return
+        }
         let name = url.path == "/two" ? "Two" : "One"
         let html = """
         <!doctype html><html><head><title>Page \(name)</title></head>

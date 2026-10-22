@@ -5,6 +5,7 @@ import EarlyCore
 import EarlyWeb
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 @MainActor @Observable
@@ -16,14 +17,22 @@ final class BrowserWindowModel {
         }
     }
     struct Toast: Identifiable {
-        enum Kind { case copiedURL, newTab }
+        enum Kind { case copiedURL, newTab, downloadStarted }
         let id = UUID()
         let kind: Kind
         var message: String {
-            switch kind { case .copiedURL: "Copied Current URL"; case .newTab: "New Tab Created" }
+            switch kind {
+            case .copiedURL: "Copied Current URL"
+            case .newTab: "New Tab Created"
+            case .downloadStarted: "Download Started"
+            }
         }
         var accessibilityIdentifier: String {
-            switch kind { case .copiedURL: "browser.copiedURL"; case .newTab: "browser.newTabCreated" }
+            switch kind {
+            case .copiedURL: "browser.copiedURL"
+            case .newTab: "browser.newTabCreated"
+            case .downloadStarted: "browser.downloadStarted"
+            }
         }
     }
     struct SidebarReveal: Equatable {
@@ -42,6 +51,9 @@ final class BrowserWindowModel {
     var commandBarIsComposing = false
     var notice: String?
     var toast: Toast?
+    var downloadsPresented = false
+    /// Open File is a window-level sheet; page sheets use the page's dialog state.
+    var documentPanelIsPresented = false
     var sidebarIsHidden = false
     var sidebarReveal: SidebarReveal?
     var spaceEditor: SpaceEditor?
@@ -95,7 +107,7 @@ final class BrowserWindowModel {
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
-         preferences: BrowserPreferences? = nil, searchProviders: [any CommandSearchProvider] = [],
+         downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
@@ -122,6 +134,8 @@ final class BrowserWindowModel {
         // which fixture pages survive while assertions are running.
         webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
                                  websiteDataStore: websiteDataStore,
+                                 downloads: downloads ?? (isTesting ? DownloadStore(directory: FileManager.default.temporaryDirectory
+                                    .appending(path: "EarlyTestDownloads/\(UUID().uuidString)", directoryHint: .isDirectory)) : nil),
                                  observesMemoryPressure: !isTesting) { configuration in
             if let configureWebView {
                 configureWebView(configuration)
@@ -158,12 +172,57 @@ final class BrowserWindowModel {
         webViews.onClose = { [weak self] in self?.closeTab($0) }
         webViews.onOpenWindowLink = { [weak self] url in self?.onOpenWindow?(url, nil) }
         webViews.onNotice = { [weak self] in self?.notice = $0 }
+        webViews.onDownloadStarted = { [weak self] _ in
+            // The footer shows progress; confirm only when the sidebar is hidden.
+            guard let self, self.sidebarIsHidden else { return }
+            self.showToast(.downloadStarted)
+        }
+        webViews.onOpenFiles = { [weak self] in _ = self?.openLocations($0) }
+        webViews.onOpenSearch = { [weak self] text in
+            guard let self, let url = try? self.input.searchURL(for: text) else { return }
+            _ = self.openLocations([url])
+        }
         activateSelection()
         if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
         // The app installs the shared writer before publishing the first snapshot.
     }
 
     var activePage: BrowserPage? { coordinator.focusedTabID.flatMap { webViews.pages[$0] } }
+    var downloads: DownloadStore { webViews.downloads }
+
+    /// Dropped/opened files and addresses become new Today tabs in this Space;
+    /// they never replace a pinned or saved page. Each must be a valid address.
+    @discardableResult
+    func openLocations(_ urls: [URL]) -> Bool {
+        let valid = urls.compactMap { try? input.validate($0) }.prefix(10)
+        guard !valid.isEmpty else { return false }
+        if coordinator.commandBar != nil { dismissCommandBar(restoreFocus: false) }
+        for url in valid {
+            guard let id = coordinator.navigate(to: url, target: .newTab(spaceID: coordinator.activeSpaceID)),
+                  let tab = coordinator.tabStore.tab(id: id) else { continue }
+            webViews.load(url, in: tab)
+        }
+        notice = nil
+        contentFocusRequest += 1
+        save()
+        return true
+    }
+
+    func presentOpenFilePanel() {
+        guard let window = NSApp.keyWindow, window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.html, .pdf, .image, .plainText, .webArchive, .svg]
+        panel.prompt = "Open"
+        documentPanelIsPresented = true
+        panel.beginSheetModal(for: window) { [weak self, weak panel] response in
+            guard let self else { return }
+            self.documentPanelIsPresented = false
+            guard response == .OK, let urls = panel?.urls else { return }
+            self.openLocations(urls)
+        }
+    }
     var hasVisibleDialog: Bool { coordinator.visibleTabIDs.contains { webViews.pages[$0]?.hasDialog == true } }
     var activeTab: BrowserTab? { coordinator.focusedTabID.flatMap { coordinator.tabStore.tab(id: $0) } }
     var openTabs: [BrowserTab] {
@@ -199,7 +258,7 @@ final class BrowserWindowModel {
         showToast(.newTab)
     }
 
-    private func showToast(_ kind: Toast.Kind) {
+    func showToast(_ kind: Toast.Kind) {
         // A new identity restarts the confirmation lifetime on repeated actions.
         let confirmation = Toast(kind: kind)
         toast = confirmation

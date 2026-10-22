@@ -34,6 +34,9 @@ struct BrowserCommands: Commands {
             Button("Open Location…") { model?.perform(.presentCommandBar(.navigateCurrentTab)) }
                 .keyboardShortcut("l")
                 .disabled(model?.canPerform(.presentCommandBar(.navigateCurrentTab)) != true)
+            Button("Open File…") { model?.perform(.openFile) }
+                .keyboardShortcut("o")
+                .disabled(model?.canPerform(.openFile) != true)
         }
         CommandGroup(replacing: .saveItem) {
             Button(model == nil ? "Close Window" : "Close Tab") {
@@ -46,6 +49,22 @@ struct BrowserCommands: Commands {
             .keyboardShortcut("w")
             Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
+            Divider()
+            Button("Save Page As…") { model?.perform(.savePage) }
+                .keyboardShortcut("s")
+                .disabled(model?.canPerform(.savePage) != true)
+            Button("Export as PDF…") { model?.perform(.exportPDF) }
+                .disabled(model?.canPerform(.exportPDF) != true)
+        }
+        CommandGroup(replacing: .printItem) {
+            Button("Print…") { model?.perform(.printPage) }
+                .keyboardShortcut("p")
+                .disabled(model?.canPerform(.printPage) != true)
+        }
+        CommandGroup(after: .toolbar) {
+            Button("Show Downloads") { model?.perform(.showDownloads) }
+                .keyboardShortcut("l", modifiers: [.command, .option])
+                .disabled(model?.canPerform(.showDownloads) != true)
         }
         CommandMenu("Tab") {
             Menu("Split with Tab") {

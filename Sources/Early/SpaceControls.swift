@@ -54,14 +54,7 @@ struct SpaceFooter: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Reserved until the real downloads service is implemented.
-            DownloadGlyph()
-                .stroke(style: StrokeStyle(lineWidth: 1.75 * 18 / 24, lineCap: .round, lineJoin: .round))
-                .foregroundStyle(.secondary)
-                .frame(width: 18, height: 18)
-                .frame(width: 28, height: 28)
-                .accessibilityLabel("Downloads, not available yet")
-                .help("Downloads (not available yet)")
+            DownloadsButton(model: model)
             indicatorStrip
             Button { model.perform(.newSpace) } label: {
                 Image(systemName: "plus").frame(width: 28, height: 28)
@@ -278,7 +271,7 @@ struct SpaceFooter: View {
 
 /// Swipes briefly lock controls while settling. Keep their colors unchanged
 /// during that lock instead of PlainButtonStyle's dim/restore flash.
-private struct SpaceControlStyle: ButtonStyle {
+struct SpaceControlStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.opacity(configuration.isPressed ? 0.8 : 1)
     }

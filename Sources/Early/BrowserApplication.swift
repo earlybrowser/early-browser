@@ -37,6 +37,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var input = NavigationInput()
     @ObservationIgnored private var testing = false
     @ObservationIgnored private var dataStores: [UUID: WKWebsiteDataStore] = [:]
+    /// Profile-owned download lists outlive every tab and window.
+    @ObservationIgnored private var downloadStores: [UUID: DownloadStore] = [:]
     @ObservationIgnored private var isTerminating = false
     @ObservationIgnored private var applyingWorkspace = false
     @ObservationIgnored private var restoringFocus = false
@@ -66,7 +68,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                    value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) { suite = value }
                 #endif
                 let testing = suite != nil || isTesting
-                let input = NavigationInput(allowedSchemes: testing ? ["http", "https", "early-test"] : ["http", "https"])
+                let input = NavigationInput(allowedSchemes: testing ? ["http", "https", "file", "early-test"] : ["http", "https", "file"])
                 var directory = storageDirectory ?? URL.applicationSupportDirectory.appending(path: "Early", directoryHint: .isDirectory)
                 if storageDirectory == nil, let suite { directory.append(path: "UITests/\(suite)", directoryHint: .isDirectory) }
                 let repository = SessionRepository(fileURL: directory.appending(path: "session.sqlite"), input: input)
@@ -159,10 +161,23 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return store
     }
 
+    func downloads(for id: UUID) -> DownloadStore {
+        if let store = downloadStores[id] { return store }
+        // UI automation never writes into the user's Downloads folder.
+        let directory = testing ? FileManager.default.temporaryDirectory
+            .appending(path: "EarlyTestDownloads/\(UUID().uuidString)", directoryHint: .isDirectory) : nil
+        let store = DownloadStore(directory: directory)
+        downloadStores[id] = store
+        return store
+    }
+
+    var hasActiveDownloads: Bool { downloadStores.values.contains { $0.hasActiveDownloads } }
+
     private func makeModel(session: BrowserSession, startup: StartupContext = .returningSession) -> BrowserWindowModel {
         BrowserWindowModel(startup: startup, session: session, repository: repository!, input: input, isTesting: testing,
             restorationError: persistence?.error, defaults: defaults, sharedPersistence: persistence,
-            websiteDataStore: websiteDataStore(for: session.profileID), preferences: preferences)
+            websiteDataStore: websiteDataStore(for: session.profileID), downloads: downloads(for: session.profileID),
+            preferences: preferences)
     }
 
     @discardableResult private func addWindow(session: BrowserSession) -> UUID {
@@ -350,6 +365,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         guard workspace?.deleteProfile(id) == true else { return }
         dataStores.removeValue(forKey: id)
+        downloadStores.removeValue(forKey: id)?.cancelAll()
         saveAll()
         guard await persistence?.flush() == true else {
             profileError = "The profile change could not be saved. Its website data was kept. \(persistence?.error ?? "")"
@@ -432,6 +448,16 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let persistence else { return .terminateNow }
         guard !isTerminating else { return .terminateLater }
+        if hasActiveDownloads {
+            let count = downloadStores.values.reduce(0) { $0 + $1.activeCount }
+            let alert = NSAlert()
+            alert.messageText = count == 1 ? "A download is in progress" : "\(count) downloads are in progress"
+            alert.informativeText = "Quitting Early cancels \(count == 1 ? "it" : "them")."
+            alert.addButton(withTitle: "Continue Downloading")
+            alert.addButton(withTitle: "Quit")
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+            downloadStores.values.forEach { $0.cancelAll() }
+        }
         isTerminating = true
         saveAll()
         Task { @MainActor in

@@ -314,6 +314,11 @@ struct CommandBarView: View {
             case .duplicateTab: return "plus.square.on.square"
             case .openTabInNewWindow: return "macwindow.badge.plus"
             case .moveTab: return "arrow.right.square"
+            case .showDownloads: return "arrow.down.circle"
+            case .openFile: return "doc"
+            case .printPage: return "printer"
+            case .savePage: return "square.and.arrow.down"
+            case .exportPDF: return "doc.richtext"
             default: return "command"
             }
         }

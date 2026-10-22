@@ -3,15 +3,7 @@
 import Foundation
 
 enum NavigationResponseDisposition: String, Equatable {
-    case allow, download, unsupported, unsupportedSubframe
-
-    var notice: String? {
-        switch self {
-        case .allow, .unsupportedSubframe: nil
-        case .download: "This file needs download support, which is not available yet."
-        case .unsupported: "This response cannot be displayed by Early."
-        }
-    }
+    case allow, download, unsupportedSubframe
 
     static func classify(_ response: URLResponse, canShowMIMEType: Bool, isMainFrame: Bool) -> Self {
         let http = response as? HTTPURLResponse
@@ -23,10 +15,9 @@ enum NavigationResponseDisposition: String, Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let attachment = disposition == "attachment"
         if canShowMIMEType && !attachment { return .allow }
-        guard isMainFrame else { return .unsupportedSubframe }
-        let binaryTypes: Set<String> = ["application/octet-stream", "application/zip", "application/x-zip-compressed",
-            "application/gzip", "application/x-gzip", "application/x-apple-diskimage"]
-        return attachment || binaryTypes.contains(response.mimeType?.lowercased() ?? "") ? .download : .unsupported
+        // Like other browsers, a top-level attachment or a document Early cannot
+        // display is saved. Embedded frames never start a download by themselves.
+        return isMainFrame ? .download : .unsupportedSubframe
     }
 }
 

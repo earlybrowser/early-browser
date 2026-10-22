@@ -2279,7 +2279,8 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(linkMenu.menuItems["Open Link in New Window"].exists)
         XCTAssertTrue(linkMenu.menuItems["Share"].exists)
         XCTAssertTrue(linkMenu.menuItems["Copy Link"].exists)
-        for title in ["Download Linked File", "Services", "Share…"] {
+        XCTAssertTrue(linkMenu.menuItems["Download Linked File"].exists)
+        for title in ["Services", "Share…"] {
             XCTAssertFalse(linkMenu.menuItems[title].exists,
                            "Unsupported action is visible in the link menu: \(title)")
         }
@@ -2291,6 +2292,36 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(other.waitForExistence(timeout: 5))
         other.click()
         expectPage(app, "Two")
+    }
+
+    func testDownloadsPanelAndOwnedPageMenus() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/download")
+        expectPage(app, "Download")
+        let area = app.webViews.staticTexts["Plain page area"]
+        XCTAssertTrue(area.waitForExistence(timeout: 5))
+        area.rightClick()
+        let pageMenu = app.menus.containing(.menuItem, identifier: "Save Page As…").firstMatch
+        XCTAssertTrue(pageMenu.waitForExistence(timeout: 3))
+        for title in ["Back", "Forward", "Reload", "Print…"] {
+            XCTAssertTrue(pageMenu.menuItems[title].exists, "Missing page menu item: \(title)")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(pageMenu.exists)
+
+        app.webViews.links["Download note"].click()
+        let button = app.buttons["downloads.button"]
+        XCTAssertTrue(button.waitForExistence(timeout: 5))
+        let listed = NSPredicate(format: "value == %@", "1 in list")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: listed, object: button)], timeout: 10),
+                       .completed, button.debugDescription)
+        button.click()
+        XCTAssertTrue(app.descendants(matching: .any)["downloads.item.early-note.txt"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Show in Finder"].exists)
+        app.typeKey(.escape, modifierFlags: [])
+        // The download neither replaced the page nor opened another tab.
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        expectPage(app, "Download")
     }
 
     func testHiddenSidebarShowsNewTabConfirmationForLinks() {

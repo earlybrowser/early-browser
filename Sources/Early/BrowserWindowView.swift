@@ -97,7 +97,10 @@ struct BrowserWindowView: View {
     @State private var contentWindowFrame: CGRect = .zero
     @State private var sidebarWindowFrame: CGRect = .zero
     @FocusState private var focusedSidebarControl: SidebarControl?
-    private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered || model.sidebarInteractionInProgress || resizeStartWidth != nil }
+    private var sidebarVisible: Bool {
+        !sidebarAutoHides || sidebarHovered || model.sidebarInteractionInProgress || resizeStartWidth != nil
+            || model.downloadsPresented
+    }
     // GestureState can reset before onEnded. Keep preview identity until the
     // drop transaction has exchanged it for the settlement proxy.
     private var draggingTab: UUID? { dragSourceItem?.id }
@@ -308,9 +311,13 @@ struct BrowserWindowView: View {
             .background(surfaceFrame("content"))
             .modifier(BrowserContentSurface.container(cornerRadius: contentCornerRadius,
                 split: model.coordinator.activeSplitGroup != nil))
+            // A live page receives drops itself (upload areas keep working);
+            // empty content opens dropped files and links as new tabs.
+            .dropDestination(for: URL.self) { urls, _ in model.openLocations(urls) }
             .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
 
             sidebar
+                .dropDestination(for: URL.self) { urls, _ in model.openLocations(urls) }
                 .background(surfaceFrame("sidebar"))
                 .background {
                     if sidebarAutoHides {
