@@ -62,6 +62,17 @@ struct BrowserCommands: Commands {
                 .disabled(model?.canPerform(.printPage) != true)
         }
         CommandGroup(after: .toolbar) {
+            // Command-= also zooms in; see PageShortcutMonitor.
+            Button("Actual Size") { model?.perform(.resetZoom) }
+                .keyboardShortcut("0")
+                .disabled(model?.canPerform(.resetZoom) != true)
+            Button("Zoom In") { model?.perform(.zoomIn) }
+                .keyboardShortcut("+")
+                .disabled(model?.canPerform(.zoomIn) != true)
+            Button("Zoom Out") { model?.perform(.zoomOut) }
+                .keyboardShortcut("-")
+                .disabled(model?.canPerform(.zoomOut) != true)
+            Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(model?.canPerform(.showDownloads) != true)

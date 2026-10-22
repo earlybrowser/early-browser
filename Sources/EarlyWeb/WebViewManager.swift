@@ -26,6 +26,8 @@ public final class BrowserPage {
     fileprivate var automaticRecoveryAttempted = false
     fileprivate var awaitsNavigationCommit = false
     public var requestedURL: URL
+    /// This tab's page zoom; 1 is actual size. Not remembered per site.
+    public internal(set) var zoom = 1.0
     /// The committed main document's MIME type, e.g. a viewed PDF.
     public fileprivate(set) var documentMIMEType: String?
     fileprivate var pendingDocumentMIMEType: String?
@@ -58,6 +60,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public enum Protection: Hashable, Sendable { case interaction, download }
     private var protections: [UUID: [UUID: Protection]] = [:]
     private var muteChoices: Set<UUID> = []
+    /// Zoom belongs to the tab, so it survives background discard and recovery.
+    var zoomChoices: [UUID: Double] = [:]
     public var onMetadata: ((UUID, URL?, String?) -> Void)?
     public var onNewWindow: ((URL, WKWebViewConfiguration) -> WKWebView?)?
     public var onOpenBackgroundLink: ((URL) -> Void)?
@@ -145,6 +149,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         navigationDiagnostics.removeAll { !open.contains($0.tabID) }
         protections = protections.filter { open.contains($0.key) }
         muteChoices.formIntersection(open)
+        zoomChoices = zoomChoices.filter { open.contains($0.key) }
         for id in all where lifecycles[id] == nil { lifecycles[id] = PageLifecycle() }
         if let focusedTabID, open.contains(focusedTabID) {
             _ = setPresentation(visibleTabIDs: visibleTabIDs.intersection(open), focusedTabID: focusedTabID)
@@ -313,6 +318,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         view.uiDelegate = self
         let page = BrowserPage(view: view, url: tab.currentURL)
         if muteChoices.contains(tab.id) { page.isMuted = true; page.muteRevision = 1 }
+        if let zoom = zoomChoices[tab.id] {
+            page.zoom = zoom
+            view.pageZoom = zoom
+        }
         pages[tab.id] = page
         identities[ObjectIdentifier(view)] = tab.id
         transition(tab.id, .allocate)
@@ -486,6 +495,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         releasePage(tabID: tabID, preservingSnapshot: false)
         retentionPolicy.forget(tabID)
         muteChoices.remove(tabID)
+        zoomChoices[tabID] = nil
     }
 
     private func releasePage(tabID: UUID, preservingSnapshot: Bool) {

@@ -409,6 +409,7 @@ struct BrowserWindowView: View {
             if sidebarHovered != inside { sidebarHovered = inside }
         })
         .background(TabSwitcherKeyboardMonitor(model: model))
+        .background(PageShortcutMonitor(model: model))
         .background(BrowserWindowActivityMonitor(onCancel: {
             cancelledGestureItemID = dragGestureItemID
             model.cancelWindowInteractions()

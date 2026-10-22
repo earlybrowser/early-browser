@@ -190,6 +190,12 @@ struct SplitContentView: View {
         .modifier(BrowserContentSurface.pane(cornerRadius: contentCornerRadius, split: split, focused: focused,
                                             theme: model.splitTheme))
         .overlay(alignment: .topTrailing) {
+            // Clear of the split pane's remove button in the same corner.
+            PageToolsOverlay(model: model, tabID: id)
+                .padding(.top, 10)
+                .padding(.trailing, paneID == nil ? 10 : 40)
+        }
+        .overlay(alignment: .topTrailing) {
             if let paneID, hoveredTabID == id || page?.failure != nil {
                 Button { _ = model.perform(.removeSplitPane(paneID)) } label: {
                     Image(systemName: "xmark").font(.system(size: 10, weight: .medium))

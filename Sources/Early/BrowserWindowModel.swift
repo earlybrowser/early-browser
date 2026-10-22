@@ -35,6 +35,12 @@ final class BrowserWindowModel {
             }
         }
     }
+    /// A brief "125%" confirmation in the zoomed pane.
+    struct ZoomNotice: Identifiable, Equatable {
+        let id = UUID()
+        let tabID: UUID
+        let zoom: Double
+    }
     struct SidebarReveal: Equatable {
         let id = UUID()
         let spaceID: UUID
@@ -52,6 +58,7 @@ final class BrowserWindowModel {
     var notice: String?
     var toast: Toast?
     var downloadsPresented = false
+    var zoomNotice: ZoomNotice?
     /// Early's download icon flying from the clicked page point to the button.
     struct DownloadFlight: Identifiable, Equatable {
         let id = UUID()
