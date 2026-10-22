@@ -722,7 +722,10 @@ final class BrowserWindowModel {
         historyQueue = Task { [weak self] in
             await previous?.value
             let pages = (try? await history.recentPages(since: since, limit: Self.recentPageLimit)) ?? []
-            if let self, self.recentPages != pages { self.recentPages = pages }
+            guard let self, self.recentPages != pages else { return }
+            self.recentPages = pages
+            // Their site icons, from the cache when possible, for the menu.
+            for page in pages { self.webViews.favicons.request(page.url) }
         }
     }
 

@@ -28,6 +28,29 @@ struct BrowserCommands: Commands {
         return line.count > 60 ? String(line.prefix(59)).trimmingCharacters(in: .whitespaces) + "…" : line
     }
 
+    /// Menus draw an item's image at the image's own size.
+    static let menuIconSize = NSSize(width: 16, height: 16)
+
+    static func menuIcon(_ image: NSImage) -> NSImage {
+        let icon = (image.copy() as? NSImage) ?? image
+        icon.size = menuIconSize
+        return icon
+    }
+
+    /// A page in History's menu: its site icon, or a globe until one is known.
+    private func pageItem(_ title: String, url: URL, model: BrowserWindowModel) -> some View {
+        Label {
+            Text(Self.menuTitle(title))
+        } icon: {
+            if let icon = model.webViews.favicons.image(for: url) {
+                Image(nsImage: Self.menuIcon(icon))
+            } else {
+                Image(systemName: "globe")
+            }
+        }
+        .labelStyle(.titleAndIcon)
+    }
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Window") {
@@ -138,14 +161,18 @@ struct BrowserCommands: Commands {
             Menu("Recently Closed") {
                 if let model {
                     ForEach(model.recentlyClosedTabs.prefix(Self.recentlyClosedTabLimit)) { tab in
-                        Button(Self.menuTitle(tab.displayTitle)) { model.perform(.reopenRecentlyClosedTab(tab.id)) }
+                        Button { model.perform(.reopenRecentlyClosedTab(tab.id)) } label: {
+                            pageItem(tab.displayTitle, url: tab.currentURL, model: model)
+                        }
                     }
                 }
                 if model?.recentlyClosedTabs.isEmpty == false, !application.recentlyClosedWindows.isEmpty { Divider() }
                 ForEach(application.recentlyClosedWindows) { closed in
-                    Button("Window: \(Self.menuTitle(closed.title))") {
+                    Button {
                         if let model { _ = model.perform(.reopenRecentlyClosedWindow(closed.id)) }
                         else { _ = application.reopenClosedWindow(closed.id) }
+                    } label: {
+                        Label("Window: \(Self.menuTitle(closed.title))", systemImage: "macwindow").labelStyle(.titleAndIcon)
                     }
                     .disabled(model.map { !$0.canPerform(.reopenRecentlyClosedWindow(closed.id)) } ?? !application.canReopenClosedWindow(closed.id))
                 }
@@ -155,8 +182,8 @@ struct BrowserCommands: Commands {
             if let model, !model.recentlyVisited.isEmpty {
                 Divider()
                 ForEach(model.recentlyVisited, id: \.url) { page in
-                    Button(Self.menuTitle(page.title.isEmpty ? (page.url.host ?? page.url.absoluteString) : page.title)) {
-                        model.perform(.openHistoryPage(page.url))
+                    Button { model.perform(.openHistoryPage(page.url)) } label: {
+                        pageItem(page.title.isEmpty ? (page.url.host ?? page.url.absoluteString) : page.title, url: page.url, model: model)
                     }
                     .disabled(!model.canPerform(.openHistoryPage(page.url)))
                 }

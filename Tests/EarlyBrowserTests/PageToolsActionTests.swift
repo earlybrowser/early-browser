@@ -286,6 +286,9 @@ struct PageToolsActionTests {
         #expect(BrowserCommands.menuTitle(" Page\nOne ") == "Page One")
         let long = BrowserCommands.menuTitle(String(repeating: "a", count: 80))
         #expect(long.count == 60 && long.hasSuffix("…"), "Long titles stay short in menus")
+        let favicon = NSImage(size: NSSize(width: 64, height: 64))
+        #expect(BrowserCommands.menuIcon(favicon).size == NSSize(width: 16, height: 16) && favicon.size.width == 64,
+                "Site icons are drawn at menu size without changing the shared icon")
     }
 
     @Test func historyMenuListsTodaysPagesOnceNewestFirstAndOpensThemAsTabs() async throws {
