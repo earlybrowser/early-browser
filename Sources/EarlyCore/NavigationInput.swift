@@ -40,6 +40,18 @@ public struct NavigationInput: Sendable {
     }
 
     /// A provider suggestion is always a search, never permission to visit a URL.
+    /// Clipboard text as a one-line query for Paste and Go. An address copied
+    /// with line breaks (wrapped in an email or document) is joined again;
+    /// other text has every run of whitespace reduced to one space.
+    public static func pastedQuery(_ text: String, limit: Int = 2048) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let wrappedAddress = !trimmed.contains { $0 == " " || $0 == "\t" }
+        let query = wrappedAddress ? trimmed.filter { !$0.isNewline }
+            : trimmed.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return String(query.prefix(limit))
+    }
+
     public func searchURL(for query: String) throws -> URL {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NavigationInputError.empty }

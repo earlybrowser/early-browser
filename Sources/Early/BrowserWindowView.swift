@@ -2460,7 +2460,20 @@ struct BrowserWindowView: View {
         .buttonStyle(.plain)
         .focused($focusedSidebarControl, equals: .address)
         .focusEffectDisabled()
-        .onHover { addressHovered = $0 }
+        .onHover { hovering in
+            addressHovered = hovering
+            // A right-click always follows the pointer here: name the item first.
+            if hovering { model.refreshPasteKind() }
+        }
+        .onAppear { model.refreshPasteKind() }
+        .contextMenu {
+            if let kind = model.pasteKind {
+                Button(kind.title) { model.pasteAndGo(.navigateCurrentTab) }
+                    .disabled(!model.canPerform(.presentCommandBar(.navigateCurrentTab)))
+            }
+            Button("Copy Current URL") { model.perform(.copyCurrentURL) }
+                .disabled(!model.canPerform(.copyCurrentURL))
+        }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: addressHovered)
         .accessibilityLabel("Address bar")
         .accessibilityValue(currentURL ?? "No active tab")

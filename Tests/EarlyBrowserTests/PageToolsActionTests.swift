@@ -87,6 +87,58 @@ struct PageToolsActionTests {
         #expect(!PageShortcutMonitor.isZoomIn(characters: "-", modifiers: .command))
     }
 
+    @Test func pasteAndGoReadsTheClipboardOnlyWhenChosenAndFollowsTypedRules() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        // A private pasteboard: tests never read or replace the user's clipboard.
+        let pasteboard = NSPasteboard(name: .init("local.early.tests.paste.\(UUID())"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        model.refreshPasteKind(pasteboard)
+        #expect(model.pasteKind == nil, "No text, no item")
+        // An empty window starts with the New Tab command bar; nothing changes it.
+        let initial = model.coordinator.commandBar
+        #expect(!model.pasteAndGo(.newTab, pasteboard: pasteboard))
+        #expect(model.coordinator.commandBar == initial)
+
+        pasteboard.clearContents()
+        pasteboard.setString("early-test://fixture/\ntwo", forType: .string)
+        model.refreshPasteKind(pasteboard)
+        #expect(model.pasteKind != nil)
+        #expect(model.pasteKind(for: "early-test://fixture/two") == .address)
+        #expect(model.pasteKind(for: "best pasta recipe") == .search)
+        #expect(PageToolsActionTests.titles == ["Paste and Go", "Paste and Search"])
+
+        #expect(model.pasteAndGo(.newTab, pasteboard: pasteboard))
+        #expect(model.coordinator.commandBar == nil && model.todayTabs.count == 1)
+        #expect(model.activeTab?.currentURL == URL(string: "early-test://fixture/two"), "The wrapped address was joined")
+
+        pasteboard.clearContents()
+        pasteboard.setString("javascript:alert(1)", forType: .string)
+        #expect(!model.pasteAndGo(.newTab, pasteboard: pasteboard))
+        #expect(model.coordinator.commandBar?.query == "javascript:alert(1)" && model.submissionMessage != nil,
+                "A refused address stays in the bar with its message, as if typed")
+        #expect(model.todayTabs.count == 1)
+        model.dismissCommandBar()
+
+        // The command bar's own menu offers it after Paste, and only with a title.
+        let control = CommandBarInputControl()
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: ""))
+        control.pasteAndGoTitle = { "Paste and Go" }
+        control.addPasteAndGo(to: menu)
+        control.addPasteAndGo(to: menu)
+        #expect(menu.items.map(\.title) == ["Cut", "Paste", "Paste and Go"], "Inserted once, after Paste")
+        control.pasteAndGoTitle = { nil }
+        control.addPasteAndGo(to: menu)
+        #expect(menu.items.map(\.title) == ["Cut", "Paste"])
+        control.invalidate()
+    }
+
+    private static let titles = [BrowserWindowModel.PasteKind.address.title, BrowserWindowModel.PasteKind.search.title]
+
     @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {
         let fixture = Fixture(session: splitSession())
         defer { fixture.cleanup() }

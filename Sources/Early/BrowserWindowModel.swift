@@ -59,6 +59,14 @@ final class BrowserWindowModel {
     var toast: Toast?
     var downloadsPresented = false
     var zoomNotice: ZoomNotice?
+    /// What Paste and Go would do with the clipboard, without reading it; nil
+    /// hides the item because the clipboard holds no text.
+    enum PasteKind: Equatable {
+        case address, search
+        var title: String { self == .address ? "Paste and Go" : "Paste and Search" }
+    }
+    private(set) var pasteKind: PasteKind?
+    @ObservationIgnored private var pasteKindChangeCount = -1
     /// Command-F focuses the focused pane's find field, even if already open.
     var findFocusRequest = 0
     /// Early's download icon flying from the clicked page point to the button.
@@ -212,6 +220,54 @@ final class BrowserWindowModel {
 
     var activePage: BrowserPage? { coordinator.focusedTabID.flatMap { webViews.pages[$0] } }
     var downloads: DownloadStore { webViews.downloads }
+
+    /// Checks the clipboard's kind when it changed. Types and detected patterns
+    /// are metadata: reading them never shows macOS's paste permission alert.
+    func refreshPasteKind(_ pasteboard: NSPasteboard = .general) {
+        let change = pasteboard.changeCount
+        guard change != pasteKindChangeCount else { return }
+        pasteKindChangeCount = change
+        guard pasteboard.types?.contains(.string) == true else {
+            pasteKind = nil
+            return
+        }
+        if #available(macOS 15.4, *) {
+            if pasteKind == nil { pasteKind = .search }
+            let name = pasteboard.name
+            Task { @MainActor [weak self] in
+                let isAddress = await Task.detached {
+                    let patterns = try? await NSPasteboard(name: name).detectedPatterns(for: [\.probableWebURL])
+                    return patterns?.contains(\.probableWebURL) == true
+                }.value
+                guard let self, self.pasteKindChangeCount == change else { return }
+                self.pasteKind = isAddress ? .address : .search
+            }
+        } else {
+            // Before macOS 15.4 reading is the only way to tell, and never alerts.
+            pasteKind = pasteboard.string(forType: .string).flatMap { NavigationInput.pastedQuery($0) }.map(pasteKind(for:))
+        }
+    }
+
+    func pasteKind(for query: String) -> PasteKind {
+        guard let url = try? input.resolve(query), let search = try? input.searchURL(for: query) else { return .search }
+        return url == search ? .search : .address
+    }
+
+    /// Paste and Go / Paste and Search: the clipboard is read only now, when
+    /// chosen, and submitted exactly like a typed query. With an intent it opens
+    /// the command bar for it (the address pill); otherwise it uses the open
+    /// one. An address Early refuses stays in the bar with its message.
+    @discardableResult
+    func pasteAndGo(_ intent: CommandBarIntent? = nil, pasteboard: NSPasteboard = .general) -> Bool {
+        guard let text = pasteboard.string(forType: .string), let query = NavigationInput.pastedQuery(text) else { return false }
+        if let intent {
+            guard canPerform(.presentCommandBar(intent)) else { return false }
+            presentCommandBar(intent)
+        }
+        guard coordinator.commandBar != nil, coordinator.commandBar?.intent != .commandSearch else { return false }
+        updateQuery(query)
+        return submit()
+    }
 
     /// Escape or the close button: the match stays selected and the page,
     /// not the sidebar, gets keyboard focus back.
