@@ -251,6 +251,24 @@ struct PageToolsActionTests {
         view.cancelHold()
     }
 
+    @Test func tabCleanupClosesTodayTabsAndReleasesTheirPages() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let urls = ["one", "two", "article"].map { URL(string: "early-test://fixture/\($0)")! }
+        #expect(model.openLocations(urls))
+        let today = model.todayTabs.map(\.id)
+        #expect(today.count == 3 && model.webViews.liveViewCount == 3)
+        #expect(model.perform(.selectTab(today[0])))
+        let titles = model.commandSearchCandidates().map(\.title)
+        #expect(titles.contains("Close Other Tabs") && titles.contains("Close Tabs Below") && titles.contains("Clear Today Tabs"))
+        #expect(model.perform(.closeTabsBelow(today[0])))
+        #expect(model.todayTabs.map(\.id) == [today[0]] && model.webViews.liveViewCount == 1, "Closed pages are released")
+        #expect(!model.canPerform(.closeOtherTabs(today[0])) && !model.canPerform(.closeTabsBelow(today[0])))
+        #expect(model.perform(.reopenLastTab) && model.todayTabs.count == 2)
+        #expect(model.perform(.clearTodayTabs) && model.todayTabs.isEmpty && !model.canPerform(.clearTodayTabs))
+    }
+
     @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {
         let fixture = Fixture(session: splitSession())
         defer { fixture.cleanup() }

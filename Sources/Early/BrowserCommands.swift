@@ -133,6 +133,18 @@ struct BrowserCommands: Commands {
                     .disabled(!model.canPerform(.exitSplit(group.id)))
             }
             Divider()
+            Button("Close Other Tabs") {
+                if let id = model?.activeTab?.id { model?.perform(.closeOtherTabs(id)) }
+            }
+            .keyboardShortcut("w", modifiers: [.command, .option])
+            .disabled(model?.activeTab.map { model?.canPerform(.closeOtherTabs($0.id)) == true } != true)
+            Button("Close Tabs Below") {
+                if let id = model?.activeTab?.id { model?.perform(.closeTabsBelow(id)) }
+            }
+            .disabled(model?.activeTab.map { model?.canPerform(.closeTabsBelow($0.id)) == true } != true)
+            Button("Clear Today Tabs") { model?.perform(.clearTodayTabs) }
+                .disabled(model?.canPerform(.clearTodayTabs) != true)
+            Divider()
             Button("Duplicate Tab") {
                 if let tab = model?.activeTab { model?.perform(.duplicateTab(tab.id)) }
             }

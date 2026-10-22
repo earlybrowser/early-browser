@@ -652,6 +652,17 @@ final class BrowserWindowModel {
         save()
     }
 
+    /// Closes several Today tabs at once, keeping their pages reopenable.
+    func closeTodayTabs(_ ids: [UUID], keeping kept: UUID? = nil) {
+        let previousActive = coordinator.activeTabID
+        let previousVisible = coordinator.visibleTabIDs
+        let closed = coordinator.closeTodayTabs(ids, keeping: kept)
+        guard !closed.isEmpty else { return }
+        for id in closed { webViews.discard(tabID: id) }
+        if previousActive != coordinator.activeTabID || previousVisible != coordinator.visibleTabIDs { activateSelection() }
+        save()
+    }
+
     func deleteFolder(_ id: UUID) {
         let previousActive = coordinator.activeTabID
         guard let removed = coordinator.deleteFolder(id) else { return }

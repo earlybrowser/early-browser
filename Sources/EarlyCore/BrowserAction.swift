@@ -19,6 +19,10 @@ public enum BrowserAction: Equatable, Sendable {
     case exitSplit(UUID)
     case closeTab(UUID)
     case closeActiveTab
+    /// Today tabs only; pins, Favorites and folders stay. All are reopenable.
+    case closeOtherTabs(UUID)
+    case closeTabsBelow(UUID)
+    case clearTodayTabs
     case reopenLastTab
     case setPinned(UUID, Bool)
     case setFavorite(UUID, Bool)

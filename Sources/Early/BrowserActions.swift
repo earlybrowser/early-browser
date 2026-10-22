@@ -52,6 +52,12 @@ extension BrowserWindowModel {
             return accessibleTab(id)?.isOpen == true
         case .closeActiveTab:
             return activeTab != nil
+        case .closeOtherTabs(let id):
+            return accessibleTab(id) != nil && !coordinator.todayTabIDs(otherThan: id).isEmpty
+        case .closeTabsBelow(let id):
+            return accessibleTab(id) != nil && !coordinator.todayTabIDs(below: id).isEmpty
+        case .clearTodayTabs:
+            return !coordinator.todayTabIDs.isEmpty
         case .reopenLastTab:
             guard let tab = coordinator.recentlyClosed.last?.tab else { return false }
             return tab.profileID == coordinator.profileID && ownsSpace(tab.spaceID)
@@ -180,6 +186,9 @@ extension BrowserWindowModel {
             guard exitSplit(id) else { return false }
         case .closeTab(let id): closeTab(id)
         case .closeActiveTab: closeActiveTab()
+        case .closeOtherTabs(let id): closeTodayTabs(coordinator.todayTabIDs(otherThan: id), keeping: id)
+        case .closeTabsBelow(let id): closeTodayTabs(coordinator.todayTabIDs(below: id), keeping: id)
+        case .clearTodayTabs: closeTodayTabs(coordinator.todayTabIDs)
         case .reopenLastTab: reopenLastTab()
         case .setPinned(let id, let pinned): setPinned(id, pinned: pinned)
         case .setFavorite(let id, let favorite): setFavorite(id, favorite: favorite)
@@ -331,6 +340,11 @@ extension BrowserWindowModel {
         }
         addAction("closeActiveTab", "Close Tab", .closeActiveTab, terms: ["close current tab"])
         addAction("reopenLastTab", "Reopen Closed Tab", .reopenLastTab, terms: ["restore closed tab", "undo close tab"])
+        addAction("clearToday", "Clear Today Tabs", .clearTodayTabs, terms: ["close all tabs", "clear tabs", "close today tabs"])
+        if let tab = activeTab {
+            addAction("closeOthers", "Close Other Tabs", .closeOtherTabs(tab.id), terms: ["close other tabs", "keep only this tab"])
+            addAction("closeBelow", "Close Tabs Below", .closeTabsBelow(tab.id), terms: ["close tabs below", "close tabs after"])
+        }
         addAction("copyCurrentURL", "Copy Current URL", .copyCurrentURL, terms: ["copy link", "copy address"])
         addAction("reload", "Reload Page", .reload, terms: ["refresh page"])
         addAction("stop", "Stop Loading", .stop, terms: ["cancel loading"])

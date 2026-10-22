@@ -745,8 +745,30 @@ struct BrowserWindowView: View {
                                     .background(dropArea("pinnedEnd"))
                                     .accessibilityHidden(true)
                             case .divider:
-                                Divider().padding(.vertical, 8)
-                                    .background(dropArea("divider"))
+                                HStack(spacing: 6) {
+                                    VStack { Divider() }
+                                    if active && !model.todayTabs.isEmpty {
+                                        // Clears Today only; pins and folders stay, and
+                                        // Reopen Closed Tab brings pages back.
+                                        Button { model.perform(.clearTodayTabs) } label: {
+                                            Label("Clear", systemImage: "arrow.down")
+                                                .labelStyle(.titleAndIcon)
+                                                .font(.system(size: 11, weight: .medium))
+                                                .padding(.horizontal, 6).frame(height: 17)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(.secondary)
+                                        .browserKeyboardFocus(cornerRadius: 5)
+                                        .disabled(!model.canPerform(.clearTodayTabs))
+                                        .help("Close all Today tabs in this Space. Pins and Favorites stay.")
+                                        .accessibilityLabel("Clear Today Tabs")
+                                        .accessibilityIdentifier("sidebar.clearToday")
+                                    }
+                                }
+                                // The same 17 points as the plain divider it replaces.
+                                .frame(height: 17)
+                                .background(dropArea("divider"))
                             case .newTab:
                                 newTabButton
                                     .fixedSize(horizontal: false, vertical: true)
@@ -1085,6 +1107,12 @@ struct BrowserWindowView: View {
         Divider()
         Button("Close Tab") { model.perform(.closeTab(tab.id)) }
             .disabled(!tab.isOpen)
+        if tab.pinnedURL == nil && !tab.isFavorite {
+            Button("Close Other Tabs") { model.perform(.closeOtherTabs(tab.id)) }
+                .disabled(!model.canPerform(.closeOtherTabs(tab.id)))
+            Button("Close Tabs Below") { model.perform(.closeTabsBelow(tab.id)) }
+                .disabled(!model.canPerform(.closeTabsBelow(tab.id)))
+        }
     }
 
     private func emptySavedSectionTarget(_ title: String, preview: SidebarSavedSectionPreview,

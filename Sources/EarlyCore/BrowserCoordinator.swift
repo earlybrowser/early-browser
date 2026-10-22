@@ -538,6 +538,39 @@ public final class BrowserCoordinator {
         return id
     }
 
+    /// Today tabs in the active Space other than `id`, top to bottom.
+    public func todayTabIDs(otherThan id: UUID) -> [UUID] {
+        guard isTodayTab(id) else { return [] }
+        return tabStore.todayTabs(in: activeSpaceID).map(\.id).filter { $0 != id }
+    }
+
+    /// Today tabs below `id` in the active Space, top to bottom.
+    public func todayTabIDs(below id: UUID) -> [UUID] {
+        let today = tabStore.todayTabs(in: activeSpaceID).map(\.id)
+        guard let index = today.firstIndex(of: id) else { return [] }
+        return Array(today[(index + 1)...])
+    }
+
+    public var todayTabIDs: [UUID] { tabStore.todayTabs(in: activeSpaceID).map(\.id) }
+
+    private func isTodayTab(_ id: UUID) -> Bool {
+        tabStore.todayTabs(in: activeSpaceID).contains { $0.id == id }
+    }
+
+    /// Closes Today tabs only; pins, Favorites and folders are never touched.
+    /// Each joins reopen history, bottom first, so Reopen Closed Tab brings
+    /// them back from the top. `keeping` stays selected when it was kept.
+    @discardableResult
+    public func closeTodayTabs(_ ids: [UUID], keeping kept: UUID? = nil) -> [UUID] {
+        let today = Set(tabStore.todayTabs(in: activeSpaceID).map(\.id))
+        var closed: [UUID] = []
+        for id in ids.reversed() where today.contains(id) && id != kept {
+            if closeTab(id) != nil { closed.append(id) }
+        }
+        if let kept, !closed.isEmpty, tabStore.tab(id: kept)?.isOpen == true { selectOpenTab(kept) }
+        return closed
+    }
+
     @discardableResult
     public func reopenLastTab() -> UUID? {
         guard var closed = recentlyClosed.popLast() else { return nil }
