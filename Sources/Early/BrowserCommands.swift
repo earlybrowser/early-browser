@@ -93,6 +93,10 @@ struct BrowserCommands: Commands {
             Button(model?.activePage?.isReaderShown == true ? "Hide Reader" : "Show Reader") { model?.perform(.toggleReader) }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(model?.canPerform(.toggleReader) != true)
+            Button(model.flatMap { model in model.coordinator.focusedTabID.flatMap(model.translationTitle) } ?? "Translate Page") {
+                model?.perform(.toggleTranslation)
+            }
+            .disabled(model?.canPerform(.toggleTranslation) != true)
             Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }
                 .keyboardShortcut("l", modifiers: [.command, .option])

@@ -39,6 +39,9 @@ public final class BrowserPage {
     public internal(set) var isPreparingReader = false
     public internal(set) var isReaderShown = false
     public internal(set) var readerArticle: ReaderArticle?
+    /// The page's language (BCP 47), detected from its text after loading.
+    public internal(set) var language: String?
+    public internal(set) var translation = PageTranslationPhase.original
     /// The committed main document's MIME type, e.g. a viewed PDF.
     public fileprivate(set) var documentMIMEType: String?
     fileprivate var pendingDocumentMIMEType: String?
@@ -88,6 +91,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onOpenFiles: (([URL]) -> Void)?
     /// A selected-text search opens a new foreground tab.
     public var onOpenSearch: ((String) -> Void)?
+    /// A page's detected language changed (nil: a new document is loading).
+    public var onPageLanguage: ((UUID, String?) -> Void)?
+    /// The page menu's Translate title, from the window; nil leaves it out.
+    public var translationMenuTitle: ((UUID) -> String?)?
+    /// Translate or Show Original was chosen from the page menu.
+    public var onTranslatePage: ((UUID) -> Void)?
     private let profileID: UUID
     private let ephemeral: Bool
     let input: NavigationInput
@@ -322,6 +331,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             _ = self.openContextLink(url, in: view, background: true)
         }
         view.onInteractionEnded = { [weak self] in self?.scheduleRetention() }
+        view.pageTranslationTitle = { [weak self, weak view] in
+            guard let self, let view, let id = self.tabID(for: view) else { return nil }
+            return self.translationMenuTitle?(id)
+        }
         view.onContextAction = { [weak self, weak view] action in
             guard let self, let view else { return }
             self.performContextAction(action, in: view)
@@ -889,6 +902,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         // Reader shows one document; a new one returns to the page.
         hideReader(id)
         pages[id]?.isReaderAvailable = false
+        resetTranslationForNewDocument(id)
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
@@ -905,6 +919,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         scheduleRetention()
         refreshFindAfterLoad(id)
         checkReaderAvailability(id)
+        detectPageLanguage(id)
         guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected

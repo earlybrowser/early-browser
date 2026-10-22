@@ -410,6 +410,9 @@ struct BrowserWindowView: View {
         })
         .background(TabSwitcherKeyboardMonitor(model: model))
         .background(PageShortcutMonitor(model: model))
+        .background {
+            if #available(macOS 15.0, *) { PageTranslationHost(model: model) }
+        }
         .background(BrowserWindowActivityMonitor(onCancel: {
             cancelledGestureItemID = dragGestureItemID
             model.cancelWindowInteractions()
@@ -2441,9 +2444,11 @@ struct BrowserWindowView: View {
                     .truncationMode(.middle)
                     .foregroundStyle(currentURL == nil ? .secondary : .primary)
                 Spacer(minLength: 0)
-                if AddressPageButtons.isVisible(for: model.activePage) {
+                let pageButtons = AddressPageButtons.buttonCount(for: model.activePage,
+                    translatable: model.coordinator.focusedTabID.flatMap(model.translationTitle) != nil)
+                if pageButtons > 0 {
                     // Room for the page buttons drawn over this trailing edge.
-                    Color.clear.frame(width: 22, height: 1)
+                    Color.clear.frame(width: CGFloat(pageButtons * 28 - 6), height: 1)
                 } else if currentURL != nil {
                     Image(systemName: "link")
                         .foregroundStyle(.secondary)

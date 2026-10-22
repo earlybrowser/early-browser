@@ -136,6 +136,8 @@ extension BrowserWindowModel {
             return coordinator.focusedTabID.map { webViews.canFindNext($0) } == true
         case .toggleReader:
             return coordinator.focusedTabID.map { webViews.canToggleReader($0) } == true
+        case .toggleTranslation:
+            return coordinator.focusedTabID.flatMap { translationTitle(for: $0) } != nil
         }
     }
 
@@ -260,6 +262,10 @@ extension BrowserWindowModel {
             guard let id = coordinator.focusedTabID else { return false }
             toggleReader(id)
             restoreContentFocus = false
+        case .toggleTranslation:
+            guard let id = coordinator.focusedTabID else { return false }
+            toggleTranslation(id)
+            restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
             dismissCommandBar(restoreFocus: restoreContentFocus && contentFocusRequest == previousFocusRequest)
@@ -338,6 +344,9 @@ extension BrowserWindowModel {
         let readerShown = activePage?.isReaderShown == true
         addAction("reader", readerShown ? "Hide Reader" : "Show Reader", .toggleReader,
                   terms: readerShown ? ["hide reader", "show original page"] : ["reader", "reader mode", "reading view"])
+        if let id = coordinator.focusedTabID, let title = translationTitle(for: id) {
+            addAction("translate", title, .toggleTranslation, terms: ["translate", "translate page", "show original"])
+        }
         addAction("zoomIn", "Zoom In", .zoomIn, terms: ["zoom in", "bigger", "enlarge page", "increase text size"])
         addAction("zoomOut", "Zoom Out", .zoomOut, terms: ["zoom out", "smaller", "shrink page", "decrease text size"])
         addAction("resetZoom", "Actual Size", .resetZoom, terms: ["reset zoom", "actual size", "100%"])

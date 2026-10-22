@@ -169,6 +169,41 @@ struct PageToolsActionTests {
         #expect(model.webViews.readerView(for: id) == nil)
     }
 
+    @Test func translateIsOfferedOnlyForAnotherLanguageAndTogglesBackToTheOriginal() async throws {
+        #expect(BrowserWindowModel.needsTranslation(from: "fr", to: "en"))
+        #expect(!BrowserWindowModel.needsTranslation(from: "en-GB", to: "en"))
+        #expect(!BrowserWindowModel.needsTranslation(from: "zh-Hant", to: "zh"))
+        #expect(TranslationBadge.message(for: .original, pending: false, sourceName: "French") == nil)
+        #expect(TranslationBadge.message(for: .original, pending: true, sourceName: "French") == "Translating…")
+        #expect(TranslationBadge.message(for: .translated, pending: false, sourceName: "French") == "Translated from French")
+        #expect(TranslationBadge.message(for: .failed("x"), pending: false, sourceName: nil) == "Couldn’t translate this page")
+
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations([URL(string: "early-test://fixture/article?lang=fr")!]))
+        let id = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(id)
+        try await fixture.waitUntil("language") { model.webViews.pages[id]?.language == "fr" }
+        // Apple's language support varies by Mac; stand in for its answer.
+        model.translationOffers[id] = TranslationOffer(tabID: id, source: "fr", target: "en")
+        let title = "Translate to \(TranslationOffer.name("en"))"
+        #expect(model.translationTitle(for: id) == title && model.canPerform(.toggleTranslation))
+        #expect(model.commandSearchCandidates().map(\.title).contains(title))
+        #expect(model.webViews.translationMenuTitle?(id) == title, "The page menu uses the same title")
+
+        #expect(model.perform(.toggleTranslation))
+        #expect(model.translationRequest?.offer.tabID == id && model.translationTitle(for: id) == "Show Original")
+        #expect(model.perform(.toggleTranslation))
+        #expect(model.translationRequest == nil && model.translationTitle(for: id) == title)
+
+        // Reader shows the article instead, so Translate waits until it closes.
+        try await fixture.waitUntil("article") { model.webViews.pages[id]?.isReaderAvailable == true }
+        model.toggleReader(id)
+        try await fixture.waitUntil("reader") { model.webViews.pages[id]?.isReaderShown == true }
+        #expect(model.translationTitle(for: id) == nil && !model.canPerform(.toggleTranslation))
+    }
+
     @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {
         let fixture = Fixture(session: splitSession())
         defer { fixture.cleanup() }

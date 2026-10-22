@@ -67,6 +67,10 @@ final class BrowserWindowModel {
     }
     private(set) var pasteKind: PasteKind?
     @ObservationIgnored private var pasteKindChangeCount = -1
+    /// Tabs whose language Apple's Translation can turn into the user's.
+    var translationOffers: [UUID: TranslationOffer] = [:]
+    /// The translation waiting for (or running in) the window's session.
+    var translationRequest: TranslationRequest?
     /// Command-F focuses the focused pane's find field, even if already open.
     var findFocusRequest = 0
     /// Early's download icon flying from the clicked page point to the button.
@@ -209,6 +213,9 @@ final class BrowserWindowModel {
             self.beginDownloadFlight()
         }
         webViews.onOpenFiles = { [weak self] in _ = self?.openLocations($0) }
+        webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }
+        webViews.translationMenuTitle = { [weak self] in self?.translationTitle(for: $0) }
+        webViews.onTranslatePage = { [weak self] in self?.toggleTranslation($0) }
         webViews.onOpenSearch = { [weak self] text in
             guard let self, let url = try? self.input.searchURL(for: text) else { return }
             _ = self.openLocations([url])

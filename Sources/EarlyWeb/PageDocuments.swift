@@ -240,6 +240,7 @@ extension WebViewManager {
         case .saveImage(let url): saveImage(url, from: id)
         case .copyImage(let url): copyImage(url, from: id)
         case .searchSelection(let text): onOpenSearch?(text)
+        case .translatePage: onTranslatePage?(id)
         }
     }
 
