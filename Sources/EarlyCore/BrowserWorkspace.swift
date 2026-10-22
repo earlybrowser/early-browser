@@ -186,6 +186,24 @@ public extension BrowserSession {
         BrowserSession(profileID: profileID, activeSpaceID: activeSpaceID,
             tabs: tabs.filter { $0.pinnedURL != nil }.map(\.closedSavedCopy), folders: folders, spaces: spaces)
     }
+
+    /// Whether closing this window loses anything a new window would not have.
+    var hasTodayTabs: Bool { tabs.contains { $0.isOpen && $0.pinnedURL == nil && !$0.isFavorite } }
+
+    /// A closed window brought back: its own Today tabs, selection and split
+    /// layout, with the profile's current saved items and Spaces, which may
+    /// have changed since it closed. Tabs whose Space is gone are dropped.
+    func reopeningWindow(savedItemsFrom current: BrowserSession) -> BrowserSession {
+        let saved = current.savedItemsOnly
+        let spaceIDs = Set(saved.spaces.map(\.id))
+        let today = tabs.filter { $0.isOpen && $0.pinnedURL == nil && !$0.isFavorite && spaceIDs.contains($0.spaceID) }
+        let all = saved.tabs + today
+        let selection = selectionBySpace.filter { space, id in spaceIDs.contains(space) && today.contains { $0.id == id } }
+        let groups = BrowserSplitGroup.pruned(splitGroups, tabs: all, spaces: saved.spaces, profileID: profileID)
+        return BrowserSession(profileID: profileID, activeSpaceID: spaceIDs.contains(activeSpaceID) ? activeSpaceID : saved.activeSpaceID,
+            tabs: all, selectionBySpace: selection, folders: saved.folders, spaces: saved.spaces, splitGroups: groups,
+            focusedPaneByGroupID: focusedPaneByGroupID.filter { group, _ in groups.contains { $0.id == group } })
+    }
 }
 
 private extension BrowserTab {

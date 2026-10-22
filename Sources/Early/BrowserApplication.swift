@@ -44,6 +44,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// All open private windows share one temporary profile and one website
     /// data store kept only in memory, released with the last private window.
     @ObservationIgnored private(set) var privateProfileID: UUID?
+    /// Recently closed ordinary windows with Today tabs, newest last. Never
+    /// private windows, and only for this run of the app.
+    private(set) var closedWindows: [BrowserSession] = []
+    static let closedWindowLimit = 10
     @ObservationIgnored private var privateDataStore: WKWebsiteDataStore?
     @ObservationIgnored private var isTerminating = false
     @ObservationIgnored private var applyingWorkspace = false
@@ -174,6 +178,25 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func isPrivateProfile(_ id: UUID) -> Bool { privateProfileID == id }
+
+    var canReopenClosedWindow: Bool {
+        canOpenWindow && closedWindows.contains { closed in profiles.contains { $0.id == closed.profileID } }
+    }
+
+    /// Reopens the most recently closed window whose profile still exists.
+    @discardableResult
+    func reopenClosedWindow() -> UUID? {
+        guard canOpenWindow else { return nil }
+        while let closed = closedWindows.popLast() {
+            guard let current = workspace?.session(for: closed.profileID) else { continue }
+            let id = addWindow(session: closed.reopeningWindow(savedItemsFrom: current))
+            workspace?.activeProfileID = closed.profileID
+            saveAll()
+            presentWindow?(id)
+            return id
+        }
+        return nil
+    }
 
     /// The last private window closed: its cookies, storage and download list go.
     private func releasePrivateSessionIfUnused() {
@@ -476,6 +499,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         closed.onOpenWindow = nil
         closed.onOpenSettings = nil
         closed.application = nil
+        let snapshot = closed.coordinator.session
+        if !closed.isPrivate, snapshot.hasTodayTabs {
+            closedWindows.append(snapshot)
+            closedWindows.removeFirst(max(0, closedWindows.count - Self.closedWindowLimit))
+        }
         closed.cancelCommandBarQueries()
         closed.webViews.discardAll()
         if closed.isPrivate {

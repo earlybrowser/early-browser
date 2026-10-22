@@ -113,6 +113,43 @@ struct PrivateBrowsingTests {
         await fixture.cleanup()
     }
 
+    @Test func reopenClosedWindowRestoresTodayTabsButNeverPrivateOrEmptyWindows() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        #expect(!app.canReopenClosedWindow)
+        let id = try #require(app.openNewWindow())
+        let window = try #require(app.windowModel(id))
+        #expect(window.openLocations([URL(string: "early-test://fixture/one")!, URL(string: "early-test://fixture/two")!]))
+        let urls = window.todayTabs.map(\.currentURL)
+        app.closeWindow(id)
+        #expect(app.canReopenClosedWindow && app.closedWindows.count == 1)
+
+        // Windows with nothing of their own, and private windows, are not kept.
+        let empty = try #require(app.openNewWindow())
+        app.closeWindow(empty)
+        let privateID = try #require(app.openPrivateWindow())
+        #expect(app.windowModel(privateID)?.openLocations([URL(string: "early-test://fixture/one?private=1")!]) == true)
+        app.closeWindow(privateID)
+        #expect(app.closedWindows.count == 1)
+
+        #expect(app.model?.canPerform(.reopenClosedWindow) == true)
+        #expect(app.model?.commandSearchCandidates().map(\.title).contains("Reopen Closed Window") == true)
+        let reopenedID = try #require(app.reopenClosedWindow())
+        let reopened = try #require(app.windowModel(reopenedID))
+        #expect(reopened.todayTabs.map(\.currentURL) == urls && !reopened.isPrivate)
+        #expect(!app.canReopenClosedWindow && app.reopenClosedWindow() == nil)
+
+        for _ in 0..<(EarlyAppDelegate.closedWindowLimit + 2) {
+            let extra = try #require(app.openNewWindow())
+            _ = app.windowModel(extra)?.openLocations([URL(string: "early-test://fixture/one")!])
+            app.closeWindow(extra)
+        }
+        #expect(app.closedWindows.count == EarlyAppDelegate.closedWindowLimit, "The list is bounded")
+        fixture.opened.removeAll { $0 != reopenedID }
+        await fixture.cleanup()
+    }
+
     @Test func privateWindowsOfferNoSavedPagesSpacesOrOnlineSuggestionsByDefault() async throws {
         let fixture = Fixture()
         await fixture.start()

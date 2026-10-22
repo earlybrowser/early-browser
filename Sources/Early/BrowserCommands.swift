@@ -256,6 +256,12 @@ struct BrowserCommands: Commands {
             Button("Reopen Closed Tab") { model?.perform(.reopenLastTab) }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(model?.canPerform(.reopenLastTab) != true)
+            // Works with no window open, after closing the last one.
+            Button("Reopen Closed Window") {
+                if let model { _ = model.perform(.reopenClosedWindow) }
+                else { _ = application.reopenClosedWindow() }
+            }
+            .disabled(model.map { !$0.canPerform(.reopenClosedWindow) } ?? !application.canReopenClosedWindow)
             Divider()
             Button("Show All History") { model?.perform(.showHistory) }
                 .keyboardShortcut("y")

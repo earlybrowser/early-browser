@@ -61,6 +61,8 @@ extension BrowserWindowModel {
         case .reopenLastTab:
             guard let tab = coordinator.recentlyClosed.last?.tab else { return false }
             return tab.profileID == coordinator.profileID && ownsSpace(tab.spaceID)
+        case .reopenClosedWindow:
+            return application?.canReopenClosedWindow == true
         case .showHistory, .clearHistory:
             return history != nil
         case .setPinned(let id, let pinned):
@@ -193,6 +195,9 @@ extension BrowserWindowModel {
         case .closeTabsBelow(let id): closeTodayTabs(coordinator.todayTabIDs(below: id), keeping: id)
         case .clearTodayTabs: closeTodayTabs(coordinator.todayTabIDs)
         case .reopenLastTab: reopenLastTab()
+        case .reopenClosedWindow:
+            guard application?.reopenClosedWindow() != nil else { return false }
+            restoreContentFocus = false
         case .showHistory:
             historyPresented = true
             restoreContentFocus = false
@@ -352,6 +357,8 @@ extension BrowserWindowModel {
         }
         addAction("closeActiveTab", "Close Tab", .closeActiveTab, terms: ["close current tab"])
         addAction("reopenLastTab", "Reopen Closed Tab", .reopenLastTab, terms: ["restore closed tab", "undo close tab"])
+        addAction("reopenClosedWindow", "Reopen Closed Window", .reopenClosedWindow,
+                  terms: ["restore closed window", "undo close window"])
         addAction("showHistory", "Show All History", .showHistory, terms: ["history", "browsing history", "visited pages"])
         addAction("clearHistory", "Clear History…", .clearHistory, terms: ["clear history", "delete history", "clear cookies", "clear website data"])
         addAction("clearToday", "Clear Today Tabs", .clearTodayTabs, terms: ["close all tabs", "clear tabs", "close today tabs"])
