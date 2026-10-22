@@ -2133,13 +2133,15 @@ final class EarlyUITests: XCTestCase {
                        "Expected \(value): \(element.exists ? element.debugDescription : "missing")", file: file, line: line)
     }
 
-    private func expectStaticText(_ element: XCUIElement, _ text: String,
-                                  file: StaticString = #filePath, line: UInt = #line) {
-        // macOS versions expose static-text content through either AXValue or
-        // AXLabel. Still require the exact message, not just an existing toast.
-        let value = element.value as? String
-        XCTAssertTrue(value == text || element.label == text,
-                      "Expected static text: \(text). Element: \(element.debugDescription)", file: file, line: line)
+    /// Toasts last two seconds and CI accessibility snapshots are slow, so match
+    /// the identifier and exact message in one query: reading the text after a
+    /// separate existence check can find the toast already gone. macOS versions
+    /// expose static-text content through either AXValue or AXLabel.
+    private func expectToast(_ app: XCUIApplication, _ identifier: String, _ text: String,
+                             file: StaticString = #filePath, line: UInt = #line) {
+        let toast = app.staticTexts.matching(NSPredicate(format: "identifier == %@ AND (label == %@ OR value == %@)",
+                                                         identifier, text, text)).firstMatch
+        XCTAssertTrue(toast.waitForExistence(timeout: 3), "Expected toast: \(text)", file: file, line: line)
     }
 
     func testInvalidSubmissionDoesNotCreateTabOrView() {
@@ -2301,7 +2303,10 @@ final class EarlyUITests: XCTestCase {
         let area = app.webViews.staticTexts["Plain page area"]
         XCTAssertTrue(area.waitForExistence(timeout: 5))
         area.rightClick()
-        let pageMenu = app.menus.containing(.menuItem, identifier: "Save Page As…").firstMatch
+        // The File and navigation menus each own some of these titles; only the
+        // page menu has both Save Page As… and Reload.
+        let pageMenu = app.menus.containing(.menuItem, identifier: "Save Page As…")
+            .containing(.menuItem, identifier: "Reload").firstMatch
         XCTAssertTrue(pageMenu.waitForExistence(timeout: 3))
         for title in ["Back", "Forward", "Reload", "Print…"] {
             XCTAssertTrue(pageMenu.menuItems[title].exists, "Missing page menu item: \(title)")
@@ -2343,16 +2348,14 @@ final class EarlyUITests: XCTestCase {
             XCUIElement.perform(withKeyModifiers: .command) {
                 app.webViews.links[title].click()
             }
-            XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-            expectStaticText(confirmation, "New Tab Created")
+            expectToast(app, "browser.newTabCreated", "New Tab Created")
             expectRuntime(app, tabs: index + 3, views: index + 3, created: index + 3)
             expectPage(app, "One", sidebarHidden: true)
         }
         // Unmodified target=_blank links use the same confirmation while
         // retaining their normal foreground-tab behavior.
         app.webViews.links["Open new tab"].click()
-        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
-        expectStaticText(confirmation, "New Tab Created")
+        expectToast(app, "browser.newTabCreated", "New Tab Created")
         expectPage(app, "Two", sidebarHidden: true)
         expectRuntime(app, tabs: 5, views: 5, created: 5)
         XCTAssertTrue(confirmation.waitForNonExistence(timeout: 4))
