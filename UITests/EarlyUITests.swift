@@ -68,7 +68,7 @@ final class EarlyUITests: XCTestCase {
             let strip = app.descendants(matching: .any).matching(identifier: "tabSwitcher").firstMatch
 
             func showSwitcher() {
-                app.menuBarItems["Navigate"].click()
+                app.menuBarItems["Tab"].click()
                 visibleMenuAction("Next Tab")
                 XCTAssertTrue(strip.waitForExistence(timeout: 5))
                 XCTAssertTrue(firstCard.exists && secondCard.exists)
@@ -133,7 +133,8 @@ final class EarlyUITests: XCTestCase {
         let secondID = rows.allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
         pasteText("keep right", into: app.webViews.textFields["Saved text"], in: app)
         app.buttons[firstID].rightClick()
-        app.menuItems["Split View"].hover()
+        // The Tab menu has a Split View submenu too; use the open context menu's.
+        visibleMenuItem("Split View")?.hover()
         visibleMenuAction("Place on Left")
         let divider = app.descendants(matching: .any).matching(identifier: "split.divider").firstMatch
         XCTAssertTrue(divider.waitForExistence(timeout: 5))
@@ -151,7 +152,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: initiallyResized, object: nil)], timeout: 5), .completed)
         for reversed in [true, false] {
             app.buttons[firstID].rightClick()
-            app.menuItems["Split View"].hover()
+            visibleMenuItem("Split View")?.hover()
             XCTAssertTrue(app.menuItems["Swap Sides"].waitForExistence(timeout: 3))
             XCTAssertTrue(app.menuItems["Exit Split View"].exists)
             XCTAssertFalse(app.menuItems["Place on Left"].exists || app.menuItems["Place on Right"].exists)
@@ -175,6 +176,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(right.textFields["Saved text"].value as? String, "keep right")
         expectRuntime(app, tabs: 2, views: 2, created: 2)
         app.menuBarItems["Tab"].click()
+        app.menuBarItems["Tab"].menuItems["Split View"].hover()
         visibleMenuAction("Remove Current Pane from Split")
         XCTAssertTrue(divider.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons[firstID].exists && app.buttons[secondID].exists)
@@ -511,11 +513,17 @@ final class EarlyUITests: XCTestCase {
     }
 
     private func visibleMenuAction(_ title: String) {
+        visibleMenuItem(title)?.click()
+    }
+
+    /// Menu bar menus expose their items even while closed, so a title the
+    /// open menu shares with them must be found among the visible items.
+    private func visibleMenuItem(_ title: String) -> XCUIElement? {
         let items = XCUIApplication().menuItems.matching(identifier: title)
         XCTAssertTrue(items.firstMatch.waitForExistence(timeout: 3))
         let item = items.allElementsBoundByIndex.first { $0.isHittable }
-        XCTAssertNotNil(item, "No visible menu action: \(title)")
-        item?.click()
+        XCTAssertNotNil(item, "No visible menu item: \(title)")
+        return item
     }
 
     private func openSettings(_ app: XCUIApplication, section: String) {
@@ -2365,9 +2373,9 @@ final class EarlyUITests: XCTestCase {
         let back = app.buttons["navigation.back"]
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.rightClick()
-        let earlier = app.menuItems["Page One"]
-        XCTAssertTrue(earlier.waitForExistence(timeout: 5), "Right-clicking Back lists the tab's history")
-        earlier.click()
+        // History's menu also lists Page One as a page visited today.
+        XCTAssertTrue(app.menuItems["Page One"].waitForExistence(timeout: 5), "Right-clicking Back lists the tab's history")
+        visibleMenuAction("Page One")
         expectPage(app, "One")
         expectRuntime(app, tabs: 1, views: 1, created: 1)
 

@@ -63,6 +63,26 @@ struct HistoryStoreTests {
         #expect(try await history.search("early", limit: 5).isEmpty)
     }
 
+    @Test func recentPagesListEachPageOnceSinceADateByItsLatestVisit() async throws {
+        let history = store()
+        defer { Task { try? await history.removeFile() } }
+        let old = URL(string: "https://example.com/old")!
+        try await history.record(old, title: "Old", at: start.addingTimeInterval(-86_400))
+        try await history.record(swift, title: "Swift", at: start)
+        try await history.record(early, title: "Early", at: start.addingTimeInterval(60))
+        try await history.record(swift, title: nil, at: start.addingTimeInterval(120))
+        let pages = try await history.recentPages(since: start, limit: 10)
+        #expect(pages.map(\.url) == [swift, early], "Each page once, newest first; earlier days are left out")
+        #expect(pages.first?.title == "Swift" && pages.first?.visitCount == 2)
+        #expect(try await history.recentPages(since: start, limit: 1).map(\.url) == [swift])
+        #expect(try await history.recentPages(since: start, limit: 0).isEmpty)
+
+        // Deleting a page's latest visit moves it back to its earlier one.
+        let latest = try #require(try await history.visits(matching: "swift").first)
+        try await history.deleteVisits([latest.id])
+        #expect(try await history.recentPages(since: start, limit: 10).map(\.url) == [early, swift])
+    }
+
     @Test func oldVisitsExpireAndTheFileCanBeRemoved() async throws {
         let file = FileManager.default.temporaryDirectory.appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite")
         let history = HistoryStore(fileURL: file, retention: 60 * 60)

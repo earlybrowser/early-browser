@@ -163,6 +163,7 @@ struct HistoryView: View {
         Task {
             try? await history.deleteVisits(Array(ids))
             selection.subtract(ids)
+            model.refreshRecentPages()
             await load(appending: false)
         }
     }
@@ -173,6 +174,7 @@ struct HistoryView: View {
         Task {
             try? await history.deletePages(urls)
             selection.removeAll()
+            model.refreshRecentPages()
             await load(appending: false)
         }
     }

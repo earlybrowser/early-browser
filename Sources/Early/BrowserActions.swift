@@ -61,10 +61,17 @@ extension BrowserWindowModel {
         case .reopenLastTab:
             guard let tab = coordinator.recentlyClosed.last?.tab else { return false }
             return tab.profileID == coordinator.profileID && ownsSpace(tab.spaceID)
+        case .reopenRecentlyClosedTab(let id):
+            guard let tab = coordinator.recentlyClosed.last(where: { $0.tab.id == id })?.tab else { return false }
+            return tab.profileID == coordinator.profileID && ownsSpace(tab.spaceID)
         case .reopenClosedWindow:
             return application?.canReopenClosedWindow == true
+        case .reopenRecentlyClosedWindow(let id):
+            return application?.canReopenClosedWindow(id) == true
         case .showHistory, .clearHistory:
             return history != nil
+        case .openHistoryPage(let url):
+            return history != nil && (try? input.validate(url)) != nil
         case .setPinned(let id, let pinned):
             // Private windows keep no saved pages.
             guard !isPrivate || !pinned, let tab = accessibleTab(id), !tab.isFavorite,
@@ -195,9 +202,15 @@ extension BrowserWindowModel {
         case .closeTabsBelow(let id): closeTodayTabs(coordinator.todayTabIDs(below: id), keeping: id)
         case .clearTodayTabs: closeTodayTabs(coordinator.todayTabIDs)
         case .reopenLastTab: reopenLastTab()
+        case .reopenRecentlyClosedTab(let id): reopenClosedTab(id)
         case .reopenClosedWindow:
             guard application?.reopenClosedWindow() != nil else { return false }
             restoreContentFocus = false
+        case .reopenRecentlyClosedWindow(let id):
+            guard application?.reopenClosedWindow(id) != nil else { return false }
+            restoreContentFocus = false
+        case .openHistoryPage(let url):
+            guard openLocations([url]) else { return false }
         case .showHistory:
             historyPresented = true
             restoreContentFocus = false

@@ -81,6 +81,10 @@ final class BrowserWindowModel {
     var clearHistoryPresented = false
     /// Bumped when history or website data was cleared, so History reloads.
     var historyRevision = 0
+    /// The pages most recently visited in this profile, newest first, for the
+    /// History menu; see `recentlyVisited`.
+    private(set) var recentPages: [HistoryPage] = []
+    static let recentPageLimit = 15
     /// Tabs whose language Apple's Translation can turn into the user's.
     var translationOffers: [UUID: TranslationOffer] = [:]
     /// The translation waiting for (or running in) the window's session.
@@ -247,6 +251,7 @@ final class BrowserWindowModel {
         }
         activateSelection()
         if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
+        refreshRecentPages()
         // The app installs the shared writer before publishing the first snapshot.
     }
 
@@ -690,6 +695,7 @@ final class BrowserWindowModel {
         if let last = historyURLs[id], last.url == url, last.page == identity {
             guard let title, !title.isEmpty else { return }
             historyQueue = Task { await previous?.value; try? await history.updateTitle(url, title: title) }
+            refreshRecentPages()
         } else {
             if historyURLs.count > 500 {
                 let open = Set(coordinator.tabStore.tabs.filter(\.isOpen).map(\.id))
@@ -698,6 +704,25 @@ final class BrowserWindowModel {
             historyURLs[id] = (url, identity)
             let date = now()
             historyQueue = Task { await previous?.value; try? await history.record(url, title: title, at: date) }
+            refreshRecentPages()
+        }
+    }
+
+    /// Pages visited today, newest first: History's menu lists them.
+    var recentlyVisited: [HistoryPage] {
+        let today = Calendar.current.startOfDay(for: now())
+        return recentPages.filter { $0.lastVisit >= today }
+    }
+
+    /// Reloads the History menu's pages after the visits already queued.
+    func refreshRecentPages() {
+        guard let history else { return }
+        let previous = historyQueue
+        let since = Calendar.current.startOfDay(for: now())
+        historyQueue = Task { [weak self] in
+            await previous?.value
+            let pages = (try? await history.recentPages(since: since, limit: Self.recentPageLimit)) ?? []
+            if let self, self.recentPages != pages { self.recentPages = pages }
         }
     }
 
@@ -718,6 +743,7 @@ final class BrowserWindowModel {
         await webViews.clearWebsiteData(since: since, keepingIconsFor: kept)
         historyURLs.removeAll()
         historyRevision += 1
+        refreshRecentPages()
         application?.didClearWebsiteData(profileID: coordinator.profileID, from: self)
     }
 
@@ -745,6 +771,17 @@ final class BrowserWindowModel {
         guard coordinator.reopenLastTab() != nil else { return }
         activateSelection()
         save()
+    }
+
+    func reopenClosedTab(_ id: UUID) {
+        guard coordinator.reopenClosedTab(id) != nil else { return }
+        activateSelection()
+        save()
+    }
+
+    /// History › Recently Closed: this window's closed tabs, newest first.
+    var recentlyClosedTabs: [BrowserTab] {
+        coordinator.recentlyClosed.reversed().map(\.tab).filter { canPerform(.reopenRecentlyClosedTab($0.id)) }
     }
 
     @discardableResult

@@ -25,8 +25,13 @@ public enum BrowserAction: Equatable, Sendable {
     case clearTodayTabs
     case reopenLastTab
     case reopenClosedWindow
+    /// One entry of History › Recently Closed, wherever it is in the list.
+    case reopenRecentlyClosedTab(UUID)
+    case reopenRecentlyClosedWindow(UUID)
     case showHistory
     case clearHistory
+    /// A page from the History menu or window, opened as a new Today tab.
+    case openHistoryPage(URL)
     case setPinned(UUID, Bool)
     case setFavorite(UUID, Bool)
     case setMuted(UUID, Bool)

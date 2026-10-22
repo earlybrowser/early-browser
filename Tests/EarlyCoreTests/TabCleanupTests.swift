@@ -44,6 +44,19 @@ struct TabCleanupTests {
         #expect(coordinator.tabStore.todayTabs(in: space).map(\.id) == [today[0].id, today[1].id, today[2].id])
     }
 
+    @Test func anyRecentlyClosedTabReopensInPlaceWithoutTheNewerOnes() throws {
+        let today = ["a", "b", "c"].map { tab($0) }
+        let coordinator = coordinator(today, selected: today[0].id)
+        #expect(coordinator.closeTodayTabs([today[1].id]) == [today[1].id])
+        #expect(coordinator.closeTodayTabs([today[2].id]) == [today[2].id])
+        #expect(coordinator.reopenClosedTab(today[1].id) == today[1].id, "History › Recently Closed can pick an older tab")
+        #expect(coordinator.activeTabID == today[1].id)
+        #expect(coordinator.tabStore.todayTabs(in: space).map(\.id) == [today[0].id, today[1].id], "Back in its place")
+        #expect(coordinator.recentlyClosed.map(\.tab.id) == [today[2].id], "The newer closing stays listed")
+        #expect(coordinator.reopenClosedTab(today[1].id) == nil && coordinator.reopenClosedTab(UUID()) == nil)
+        #expect(coordinator.reopenLastTab() == today[2].id && coordinator.recentlyClosed.isEmpty)
+    }
+
     @Test func closeTabsBelowAndClearTodayLeavePinsSelected() throws {
         let pin = tab("pin", pinned: true)
         let today = ["a", "b", "c"].map { tab($0) }

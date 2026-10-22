@@ -44,9 +44,22 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// All open private windows share one temporary profile and one website
     /// data store kept only in memory, released with the last private window.
     @ObservationIgnored private(set) var privateProfileID: UUID?
+    /// A recently closed window, listed in History › Recently Closed.
+    struct ClosedWindow: Identifiable {
+        let id = UUID()
+        let session: BrowserSession
+
+        /// Its first Today tab's title, and how many more it had.
+        var title: String {
+            let tabs = session.tabs.filter { $0.isOpen && $0.pinnedURL == nil && !$0.isFavorite }
+            let first = tabs.first?.displayTitle ?? "Window"
+            return tabs.count > 1 ? "\(first) and \(tabs.count - 1) More" : first
+        }
+    }
+
     /// Recently closed ordinary windows with Today tabs, newest last. Never
     /// private windows, and only for this run of the app.
-    private(set) var closedWindows: [BrowserSession] = []
+    private(set) var closedWindows: [ClosedWindow] = []
     static let closedWindowLimit = 10
     @ObservationIgnored private var privateDataStore: WKWebsiteDataStore?
     @ObservationIgnored private var isTerminating = false
@@ -179,23 +192,38 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     func isPrivateProfile(_ id: UUID) -> Bool { privateProfileID == id }
 
-    var canReopenClosedWindow: Bool {
-        canOpenWindow && closedWindows.contains { closed in profiles.contains { $0.id == closed.profileID } }
+    var canReopenClosedWindow: Bool { canOpenWindow && !recentlyClosedWindows.isEmpty }
+
+    /// Closed windows whose profile still exists, newest first.
+    var recentlyClosedWindows: [ClosedWindow] {
+        closedWindows.reversed().filter { closed in profiles.contains { $0.id == closed.session.profileID } }
     }
 
-    /// Reopens the most recently closed window whose profile still exists.
+    func canReopenClosedWindow(_ id: UUID) -> Bool {
+        canOpenWindow && recentlyClosedWindows.contains { $0.id == id }
+    }
+
+    /// Reopens one closed window, or the most recent whose profile still exists.
     @discardableResult
-    func reopenClosedWindow() -> UUID? {
+    func reopenClosedWindow(_ id: UUID? = nil) -> UUID? {
         guard canOpenWindow else { return nil }
+        if let id {
+            guard canReopenClosedWindow(id), let index = closedWindows.firstIndex(where: { $0.id == id }) else { return nil }
+            return reopen(closedWindows.remove(at: index).session)
+        }
         while let closed = closedWindows.popLast() {
-            guard let current = workspace?.session(for: closed.profileID) else { continue }
-            let id = addWindow(session: closed.reopeningWindow(savedItemsFrom: current))
-            workspace?.activeProfileID = closed.profileID
-            saveAll()
-            presentWindow?(id)
-            return id
+            if let reopened = reopen(closed.session) { return reopened }
         }
         return nil
+    }
+
+    private func reopen(_ closed: BrowserSession) -> UUID? {
+        guard let current = workspace?.session(for: closed.profileID) else { return nil }
+        let id = addWindow(session: closed.reopeningWindow(savedItemsFrom: current))
+        workspace?.activeProfileID = closed.profileID
+        saveAll()
+        presentWindow?(id)
+        return id
     }
 
     /// The last private window closed: its cookies, storage and download list go.
@@ -325,10 +353,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         for target in visibleModels where target !== source && target.coordinator.profileID == profileID {
             target.webViews.forgetClearedArtwork(keepingIconsFor: kept)
             target.historyRevision += 1
+            target.refreshRecentPages()
         }
     }
 
     func focusedWindow(_ id: UUID?) {
+        // Another window of the profile may have added to its history.
+        windowModel(id)?.refreshRecentPages()
         guard !restoringFocus, let owner = windowModel(id), !owner.isPrivate,
               workspace?.activeProfileID != owner.coordinator.profileID else { return }
         workspace?.activeProfileID = owner.coordinator.profileID
@@ -508,7 +539,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         closed.application = nil
         let snapshot = closed.coordinator.session
         if !closed.isPrivate, snapshot.hasTodayTabs {
-            closedWindows.append(snapshot)
+            closedWindows.append(ClosedWindow(session: snapshot))
             closedWindows.removeFirst(max(0, closedWindows.count - Self.closedWindowLimit))
         }
         closed.cancelCommandBarQueries()

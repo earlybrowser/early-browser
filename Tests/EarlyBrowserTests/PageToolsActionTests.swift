@@ -269,6 +269,54 @@ struct PageToolsActionTests {
         #expect(model.perform(.clearTodayTabs) && model.todayTabs.isEmpty && !model.canPerform(.clearTodayTabs))
     }
 
+    @Test func recentlyClosedListsTabsNewestFirstAndReopensAnyOfThem() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations(["one", "two", "article"].map { URL(string: "early-test://fixture/\($0)")! }))
+        let today = model.todayTabs.map(\.id)
+        model.closeTab(today[0])
+        model.closeTab(today[1])
+        #expect(model.recentlyClosedTabs.map(\.id) == [today[1], today[0]])
+        #expect(model.perform(.reopenRecentlyClosedTab(today[0])))
+        #expect(model.activeTab?.id == today[0] && model.recentlyClosedTabs.map(\.id) == [today[1]])
+        #expect(!model.canPerform(.reopenRecentlyClosedTab(today[0])), "Reopened once")
+        #expect(model.perform(.reopenLastTab) && model.recentlyClosedTabs.isEmpty)
+
+        #expect(BrowserCommands.menuTitle(" Page\nOne ") == "Page One")
+        let long = BrowserCommands.menuTitle(String(repeating: "a", count: 80))
+        #expect(long.count == 60 && long.hasSuffix("…"), "Long titles stay short in menus")
+    }
+
+    @Test func historyMenuListsTodaysPagesOnceNewestFirstAndOpensThemAsTabs() async throws {
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let fixture = Fixture(history: history)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let one = URL(string: "early-test://fixture/one")!, two = URL(string: "early-test://fixture/two")!
+        #expect(model.recentlyVisited.isEmpty)
+        for url in [one, two] {
+            #expect(model.openLocations([url]))
+            try await fixture.waitForLoad(model.coordinator.focusedTabID)
+        }
+        try await fixture.waitUntil("menu pages") {
+            model.recentlyVisited.map(\.url) == [two, one] && model.recentlyVisited.first?.title == "Page Two"
+        }
+
+        // Opening one adds a Today tab and moves it to the top, listed once.
+        let tabs = model.todayTabs.count
+        #expect(model.canPerform(.openHistoryPage(one)))
+        #expect(model.perform(.openHistoryPage(one)))
+        #expect(model.todayTabs.count == tabs + 1 && model.activeTab?.currentURL == one)
+        try await fixture.waitUntil("revisited") { model.recentlyVisited.map(\.url) == [one, two] }
+        #expect(!model.canPerform(.openHistoryPage(URL(string: "javascript:alert(1)")!)))
+
+        await model.clearHistory(.all)
+        try await fixture.waitUntil("cleared") { model.recentlyVisited.isEmpty }
+    }
+
     @Test func visitsAreRecordedAndTheCommandBarOffersHistoryButNotOpenTabsTwice() async throws {
         let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
             .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))

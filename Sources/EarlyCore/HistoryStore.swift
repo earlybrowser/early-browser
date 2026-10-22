@@ -113,6 +113,18 @@ public actor HistoryStore {
         }
     }
 
+    /// Pages last visited since `date`, most recent first, for the History menu.
+    public func recentPages(since date: Date, limit: Int) throws -> [HistoryPage] {
+        guard limit > 0 else { return [] }
+        let sql = "SELECT url, title, last_visit, visit_count FROM pages WHERE last_visit >= ?1 "
+            + "ORDER BY last_visit DESC LIMIT \(min(limit, 500))"
+        return try Self.query(try open(), sql, [.real(date.timeIntervalSince1970)]) { row in
+            guard let url = URL(string: row.text(0)) else { return nil }
+            return HistoryPage(url: url, title: row.text(1), lastVisit: Date(timeIntervalSince1970: row.real(2)),
+                               visitCount: Int(row.integer(3)))
+        }
+    }
+
     /// Visits newest first, optionally filtered by words and older than `before`.
     public func visits(matching query: String = "", before: Date? = nil, limit: Int = 500) throws -> [HistoryVisit] {
         let words = Self.words(query)
@@ -227,6 +239,7 @@ public actor HistoryStore {
                     page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE, visited_at REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS visits_time ON visits(visited_at);
                 CREATE INDEX IF NOT EXISTS visits_page ON visits(page_id);
+                CREATE INDEX IF NOT EXISTS pages_recent ON pages(last_visit);
                 PRAGMA user_version=1;
                 """)
         } catch {

@@ -154,6 +154,33 @@ struct PrivateBrowsingTests {
         await fixture.cleanup()
     }
 
+    @Test func recentlyClosedWindowsAreListedNewestFirstAndAnyOfThemReopens() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        var closed: [UUID] = []
+        for pages in [["one", "two"], ["two"]] {
+            let id = try #require(app.openNewWindow())
+            let window = try #require(app.windowModel(id))
+            #expect(window.openLocations(pages.map { URL(string: "early-test://fixture/\($0)")! }))
+            try await fixture.waitUntil("titles") { window.todayTabs.allSatisfy { $0.title.hasPrefix("Page ") } }
+            app.closeWindow(id)
+            closed.append(id)
+        }
+        let listed = app.recentlyClosedWindows
+        #expect(listed.map(\.title) == ["Page Two", "Page One and 1 More"])
+        let older = try #require(listed.last)
+        let model = try #require(app.model)
+        #expect(model.canPerform(.reopenRecentlyClosedWindow(older.id)))
+        #expect(model.perform(.reopenRecentlyClosedWindow(older.id)))
+        let reopened = try #require(fixture.opened.last.flatMap { app.windowModel($0) })
+        #expect(reopened.todayTabs.map(\.title) == ["Page One", "Page Two"])
+        #expect(app.recentlyClosedWindows.map(\.id) == [listed[0].id], "The newer window stays listed")
+        #expect(!app.canReopenClosedWindow(older.id) && app.reopenClosedWindow(older.id) == nil)
+        fixture.opened.removeAll { closed.contains($0) }
+        await fixture.cleanup()
+    }
+
     @Test func everyBorderOfOrdinaryAndEmptyPrivateWindowsMovesAndZoomsTheWindow() async throws {
         let fixture = Fixture()
         await fixture.start()

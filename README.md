@@ -41,7 +41,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Default browser | Choose Early as the default browser and handle externally opened links. | Planned. |
 | State portability | Export/import supported settings, windows, tabs, folders, pins, Favorites, and workspace metadata; exclude credentials and private sessions. | Planned. |
 | Developer tools | Inspect pages through supported WebKit developer facilities. | Planned. |
-| History and private windows | Browse and search history (`⌘Y`), clear history and website data by period, and open private windows (`⌘⇧N`) that keep nothing after closing. Pins and Favorites are Early’s saved pages. | Implemented. |
+| History and private windows | Browse and search history (`⌘Y`), reopen today’s pages and recently closed tabs and windows from the History menu, clear history and website data by period, and open private windows (`⌘⇧N`) that keep nothing after closing. Pins and Favorites are Early’s saved pages. | Implemented. |
 | Site permissions and security | Manage camera, microphone, location, and notification permissions, see each site’s security, and control more from the address bar’s site controls. | Planned. |
 | GitHub live folders | Automatically collect pull requests and review requests in a folder linked to your GitHub account. | Planned. |
 | Picture in Picture | Watch compatible videos in a floating window, with an on/off preference. | Planned. |

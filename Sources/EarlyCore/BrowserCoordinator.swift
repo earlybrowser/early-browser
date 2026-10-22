@@ -573,7 +573,15 @@ public final class BrowserCoordinator {
 
     @discardableResult
     public func reopenLastTab() -> UUID? {
-        guard var closed = recentlyClosed.popLast() else { return nil }
+        guard let id = recentlyClosed.last?.tab.id else { return nil }
+        return reopenClosedTab(id)
+    }
+
+    /// Reopens one recently closed tab, not necessarily the last one closed.
+    @discardableResult
+    public func reopenClosedTab(_ id: UUID) -> UUID? {
+        guard let index = recentlyClosed.lastIndex(where: { $0.tab.id == id }) else { return nil }
+        var closed = recentlyClosed.remove(at: index)
         closed.tab.isOpen = true
         if tabStore.tab(id: closed.tab.id) != nil {
             tabStore.reopen(closed.tab.id)
