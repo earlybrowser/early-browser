@@ -33,7 +33,7 @@ struct PageToolsActionTests {
         }
 
         func waitUntil(_ label: String, _ condition: () -> Bool) async throws {
-            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
             while !condition() {
                 guard ContinuousClock.now < deadline else { throw Failure.timeout(label) }
                 try await Task.sleep(for: .milliseconds(20))

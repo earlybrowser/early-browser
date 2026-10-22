@@ -53,7 +53,8 @@ final class PageToolFixture {
         try await manager.pages[tab.id]?.view.evaluateJavaScript(script)
     }
 
-    func waitUntil(_ label: String, timeout: Duration = .seconds(5), _ condition: () -> Bool) async throws {
+    /// Generous for slower CI machines; a passing wait returns as soon as it holds.
+    func waitUntil(_ label: String, timeout: Duration = .seconds(10), _ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while !condition() {
             guard ContinuousClock.now < deadline else { throw Failure.timeout(label) }
