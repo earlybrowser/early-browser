@@ -226,6 +226,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let directory = testing ? FileManager.default.temporaryDirectory
             .appending(path: "EarlyTestDownloads/\(UUID().uuidString)", directoryHint: .isDirectory) : nil
         let store = DownloadStore(directory: directory)
+        store.recordsSourceAddresses = id != privateProfileID
         store.dataStoreProvider = { [weak self] in self?.websiteDataStore(for: id) }
         downloadStores[id] = store
         return store

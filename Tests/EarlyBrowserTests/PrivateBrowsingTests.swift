@@ -73,6 +73,8 @@ struct PrivateBrowsingTests {
         #expect(model.coordinator.spaces.map(\.name) == ["Private"] && model.coordinator.activeSpace?.color == .purple)
         #expect(model.history == nil && !model.canPerform(.showHistory), "Private windows record no history")
         #expect(!model.webViews.websiteDataStore.isPersistent)
+        #expect(!model.downloads.recordsSourceAddresses && normal.downloads.recordsSourceAddresses)
+        #expect(model.downloads !== normal.downloads, "Private downloads are listed apart")
         #expect(!app.profiles.contains { $0.id == profile }, "The private profile is never a saved profile")
 
         let second = try #require(app.openPrivateWindow())
