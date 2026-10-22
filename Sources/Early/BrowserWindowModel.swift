@@ -59,7 +59,8 @@ final class BrowserWindowModel {
     /// This profile's browsing history; nil records nothing.
     let history: HistoryStore?
     @ObservationIgnored private let now: @Sendable () -> Date
-    @ObservationIgnored private var historyURLs: [UUID: URL] = [:]
+    /// The address last recorded per tab, and the live page it came from.
+    @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID)] = [:]
     @ObservationIgnored private var historyQueue: Task<Void, Never>?
     var submissionMessage: String?
     var commandBarIsComposing = false
@@ -200,8 +201,11 @@ final class BrowserWindowModel {
             #endif
         }
         webViews.onMetadata = { [weak self] id, url, title in
-            guard let self, self.coordinator.updateMetadata(id, url: url, title: title) else { return }
-            self.recordHistory(id, url: url, title: title)
+            guard let self else { return }
+            // A pin or Favorite reopened at its saved address changes none of
+            // its metadata, but it is still a visit.
+            if self.coordinator.tabStore.tab(id: id)?.isOpen == true { self.recordHistory(id, url: url, title: title) }
+            guard self.coordinator.updateMetadata(id, url: url, title: title) else { return }
             self.save()
         }
         webViews.onNewWindow = { [weak self] url, configuration in
@@ -674,12 +678,14 @@ final class BrowserWindowModel {
         save()
     }
 
-    /// A new address in a tab is a visit; a later title for the same address
-    /// only names it. One serial queue keeps a title from preceding its visit.
+    /// A new address in a tab, or the same one in a newly loaded page (a
+    /// reopened pin), is a visit; a later title for it only names it. One
+    /// serial queue keeps a title from preceding its visit.
     private func recordHistory(_ id: UUID, url: URL?, title: String?) {
-        guard let history, let url, HistoryStore.records(url) else { return }
+        guard let history, let url, HistoryStore.records(url), let page = webViews.pages[id] else { return }
         let previous = historyQueue
-        if historyURLs[id] == url {
+        let identity = page.instanceID
+        if let last = historyURLs[id], last.url == url, last.page == identity {
             guard let title, !title.isEmpty else { return }
             historyQueue = Task { await previous?.value; try? await history.updateTitle(url, title: title) }
         } else {
@@ -687,7 +693,7 @@ final class BrowserWindowModel {
                 let open = Set(coordinator.tabStore.tabs.filter(\.isOpen).map(\.id))
                 historyURLs = historyURLs.filter { open.contains($0.key) }
             }
-            historyURLs[id] = url
+            historyURLs[id] = (url, identity)
             let date = now()
             historyQueue = Task { await previous?.value; try? await history.record(url, title: title, at: date) }
         }

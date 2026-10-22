@@ -307,6 +307,47 @@ struct PageToolsActionTests {
         #expect(model.activeTab?.currentURL == URL(string: "early-test://fixture/one") && model.coordinator.commandBar == nil)
     }
 
+    @Test func reopeningAFavoriteOrPinAtItsSavedAddressIsAVisit() async throws {
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let profile = UUID(), space = UUID()
+        let one = URL(string: "early-test://fixture/one")!, two = URL(string: "early-test://fixture/two")!
+        // Closed saved pages already carry their saved address and page title.
+        let favorite = BrowserTab(spaceID: space, profileID: profile, title: "Page One", currentURL: one,
+                                  pinnedURL: one, isOpen: false, pinnedTitle: "Page One", isFavorite: true)
+        let pin = BrowserTab(spaceID: space, profileID: profile, title: "Page Two", currentURL: two,
+                             pinnedURL: two, isOpen: false, pinnedTitle: "Page Two")
+        let fixture = Fixture(session: BrowserSession(profileID: profile, activeSpaceID: space, tabs: [favorite, pin]),
+                              history: history)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        for tab in [favorite, pin] {
+            #expect(model.perform(.selectTab(tab.id)))
+            try await fixture.waitForLoad(tab.id)
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        await model.flushHistory()
+        #expect(Set(try await history.visits().map(\.url)) == [one, two], "Opening a saved page records a visit")
+
+        // Closing the pin and opening it again later is another visit.
+        model.closeTab(pin.id)
+        #expect(model.perform(.selectTab(pin.id)))
+        try await fixture.waitForLoad(pin.id)
+        try await Task.sleep(for: .milliseconds(100))
+        await model.flushHistory()
+        #expect(try await history.visits().filter { $0.url == two }.count == 2)
+
+        // In the command bar the saved pages appear as themselves, not as history.
+        model.closeTab(pin.id)
+        model.closeTab(favorite.id)
+        model.presentCommandBar(.newTab)
+        model.updateQuery("page")
+        try await fixture.waitUntil("results") { !model.commandSearch.isRefreshing && !model.commandSearch.isLoadingProviders }
+        #expect(!model.visibleCommandResults.contains { $0.candidate.kind == .history })
+        #expect(model.visibleCommandResults.contains { $0.candidate.target == .tab(pin.id) })
+    }
+
     @Test func historyOpensAsAWindowSheetGroupsVisitsByDayAndClearsARange() async throws {
         let withoutHistory = Fixture()
         #expect(!withoutHistory.model.canPerform(.showHistory), "No history store, no History")

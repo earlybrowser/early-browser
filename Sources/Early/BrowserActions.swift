@@ -456,8 +456,10 @@ extension BrowserWindowModel {
     var visibleCommandResults: [CommandSearchResult] {
         let results = commandBarActionsEnabled ? commandSearch.results
             : commandSearch.results.filter { $0.candidate.kind.isTab || $0.candidate.kind == .history }
-        // A page that is already a tab is offered once, as that tab.
-        let tabAddresses = Set(results.filter(\.candidate.kind.isTab).compactMap(\.candidate.detail).map(CommandSearchText.address))
+        // A page that is already a tab, pin or Favorite is offered as that
+        // item, never again as history, even when it is not among the results.
+        let tabAddresses = Set((favorites + pinnedTabs + todayTabs).flatMap { [$0.currentURL, $0.pinnedURL].compactMap { $0 } }
+            .map(CommandSearchText.address))
         return results.filter { result in
             result.candidate.kind != .history || !tabAddresses.contains(CommandSearchText.address(result.candidate.detail ?? ""))
         }

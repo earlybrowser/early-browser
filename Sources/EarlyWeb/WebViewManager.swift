@@ -8,6 +8,9 @@ import WebKit
 @MainActor @Observable
 public final class BrowserPage {
     public let view: WKWebView
+    /// Unique per live page; a reopened tab's new page never shares it (unlike
+    /// an object address, which a new page can reuse).
+    public let instanceID = UUID()
     public var isLoading = false
     public var isPlayingMedia = false
     public fileprivate(set) var isMuted = false
