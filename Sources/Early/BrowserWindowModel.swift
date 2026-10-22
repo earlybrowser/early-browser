@@ -250,8 +250,9 @@ final class BrowserWindowModel {
                 self.pasteKind = isAddress ? .address : .search
             }
         } else {
-            // Before macOS 15.4 reading is the only way to tell, and never alerts.
-            pasteKind = pasteboard.string(forType: .string).flatMap { NavigationInput.pastedQuery($0) }.map(pasteKind(for:))
+            // Before macOS 15.4 only reading could tell, and hovering is not a
+            // reason to read the clipboard. Chosen text still searches.
+            pasteKind = .address
         }
     }
 
