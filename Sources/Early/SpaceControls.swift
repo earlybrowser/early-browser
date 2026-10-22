@@ -193,7 +193,9 @@ struct SpaceFooter: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Space switcher")
         .accessibilityIdentifier("space.strip")
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.20), value: model.coordinator.activeSpaceID)
+        .transaction { SpaceSwitchMotion.applyIndicatorPolicy(to: &$0) }
+        .animation(reduceMotion ? nil : .easeInOut(duration: SpaceSwitchMotion.indicatorDuration),
+                   value: model.coordinator.activeSpaceID)
         .transaction { $0.disablesAnimations = reduceMotion }
     }
 
@@ -209,7 +211,6 @@ struct SpaceFooter: View {
                 .opacity((contrast == .increased ? 0.8 : 0.55) + (contrast == .increased ? 0.2 : 0.45) * fill)
                 .frame(width: SpaceNavigation.footerItemWidth, height: 28)
                 .contentShape(Rectangle())
-                .overlay(alignment: .bottom) { BrowserSelectionMark(selected: selected) }
                 .overlay {
                     BrowserFocusOutline(focused: focusedSpace == space.id, cornerRadius: 6)
                 }

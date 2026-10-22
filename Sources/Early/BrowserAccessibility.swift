@@ -73,7 +73,7 @@ enum SidebarKeyboardResize {
     }
 }
 
-/// A non-color cue shared by Space dots and the icon picker.
+/// A non-color cue for the selected Space icon picker choice.
 struct BrowserSelectionMark: View {
     let selected: Bool
     @Environment(\.colorScheme) private var colorScheme

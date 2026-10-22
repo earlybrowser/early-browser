@@ -921,6 +921,68 @@ struct SplitPresentationTests {
         #expect(SpaceSwitchMotion.cancellationSettleDuration == 0.18)
     }
 
+    private struct SpaceChangeTransactionProbe: View {
+        final class Recorder { var swipeCommits: [Bool] = [] }
+        let model: BrowserWindowModel
+        let recorder: Recorder
+        var body: some View {
+            Text(model.coordinator.activeSpaceID.uuidString).transaction(value: model.coordinator.activeSpaceID) {
+                recorder.swipeCommits.append($0.isSpaceSwipeCommit)
+            }
+        }
+    }
+
+    @Test func swipeCommitsDoNotReplayTheFooterIndicatorWhileDirectSwitchesAnimate() async throws {
+        let indicator = Animation.easeInOut(duration: SpaceSwitchMotion.indicatorDuration)
+        var marked = Transaction(animation: indicator)
+        marked.isSpaceSwipeCommit = true
+        SpaceSwitchMotion.applyIndicatorPolicy(to: &marked)
+        var direct = Transaction(animation: indicator)
+        SpaceSwitchMotion.applyIndicatorPolicy(to: &direct)
+        #expect(marked.animation == nil && direct.animation == indicator)
+
+        // The real settled swipe must deliver its Space change in that marked
+        // transaction; an ordinary dot/menu/keyboard switch must not.
+        let fixture = Fixture(), model = fixture.model
+        let recorder = SpaceChangeTransactionProbe.Recorder()
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: AnyView(SpaceChangeTransactionProbe(model: model, recorder: recorder)))
+        window.contentView = hosting
+        hosting.frame.size = CGSize(width: 200, height: 100)
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            fixture.cleanup()
+        }
+        func waitForChange(to space: UUID) async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while model.coordinator.activeSpaceID != space || recorder.swipeCommits.isEmpty {
+                guard ContinuousClock.now < deadline else { throw LayoutFailure.timeout }
+                hosting.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        let next = try #require(model.createSpace(name: "Next"))
+        let last = try #require(model.createSpace(name: "Last"))
+        hosting.layoutSubtreeIfNeeded()
+        recorder.swipeCommits.removeAll()
+
+        model.updateSpaceSwipe(translation: -120)
+        model.finishSpaceSwipe(.next)
+        try await waitForChange(to: next)
+        #expect(recorder.swipeCommits.allSatisfy { $0 })
+        #expect(!model.spaceSwipeIsSettling && model.spaceSwipeProgress == 0)
+
+        recorder.swipeCommits.removeAll()
+        #expect(model.switchSpace(to: last))
+        try await waitForChange(to: last)
+        #expect(!recorder.swipeCommits.contains(true))
+        #expect(!window.isVisible)
+    }
+
     @Test func settledSpaceSwipesCommitOnceAndCanceledSwipesCannotReplaceANewerSelection() async throws {
         let fixture = Fixture(), model = fixture.model
         defer { fixture.cleanup() }

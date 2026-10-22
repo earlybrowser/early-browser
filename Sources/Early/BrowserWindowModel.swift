@@ -564,8 +564,7 @@ final class BrowserWindowModel {
             : nil
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || (spaceSwipeProgress == 0 && target == nil) {
             cancelSpaceSwipePresentation()
-            if let target { _ = switchSpace(to: target) }
-            else if action == .create { requestNewSpace() }
+            commitSpaceSwipe(to: target, action: action)
             return
         }
         let revision = UUID()
@@ -591,8 +590,18 @@ final class BrowserWindowModel {
             // Committing the Space outside that transaction lets the content
             // perform the same fade as a dot/menu/keyboard Space selection.
             guard contextMatches, self.canManageSpaces else { return }
-            if let target { _ = self.switchSpace(to: target) }
-            else if action == .create { self.requestNewSpace() }
+            self.commitSpaceSwipe(to: target, action: action)
+        }
+    }
+
+    /// Mark the commit so the footer indicator, already at the destination,
+    /// does not replay its selection animation from the reset swipe travel.
+    private func commitSpaceSwipe(to target: UUID?, action: SpaceSwipe.Action?) {
+        var commit = Transaction()
+        commit.isSpaceSwipeCommit = true
+        withTransaction(commit) {
+            if let target { _ = switchSpace(to: target) }
+            else if action == .create { requestNewSpace() }
         }
     }
 

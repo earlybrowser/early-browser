@@ -10,6 +10,26 @@ enum SpaceSwitchMotion {
     static let contentDuration = 0.08
     static let navigationSettleDuration = 0.08
     static let cancellationSettleDuration = 0.18
+    static let indicatorDuration = 0.20
+
+    /// A settled swipe has already moved the footer indicator to its
+    /// destination. Replaying the selection animation would start from the
+    /// reset swipe travel, briefly highlighting the previous Space again.
+    static func applyIndicatorPolicy(to transaction: inout Transaction) {
+        if transaction.isSpaceSwipeCommit { transaction.animation = nil }
+    }
+}
+
+private struct SpaceSwipeCommitKey: TransactionKey {
+    static let defaultValue = false
+}
+
+extension Transaction {
+    /// Marks the Space change that completes a trackpad swipe.
+    var isSpaceSwipeCommit: Bool {
+        get { self[SpaceSwipeCommitKey.self] }
+        set { self[SpaceSwipeCommitKey.self] = newValue }
+    }
 }
 
 /// AppKit chooses the performer for the current device, accessibility settings

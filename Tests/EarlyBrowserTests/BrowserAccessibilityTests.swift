@@ -144,7 +144,7 @@ struct BrowserAccessibilityTests {
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
-    func currentSpaceHasANonColorCueWithStableDimensions(_ scheme: ColorScheme) throws {
+    func selectedIconChoiceHasANonColorCueWithStableDimensions(_ scheme: ColorScheme) throws {
         func bitmap(selected: Bool) throws -> NSBitmapImageRep {
             let renderer = ImageRenderer(content: BrowserSelectionMark(selected: selected).environment(\.colorScheme, scheme))
             renderer.scale = 2
