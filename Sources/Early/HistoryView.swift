@@ -108,7 +108,9 @@ struct HistoryView: View {
     }
 
     private func row(_ visit: HistoryVisit) -> some View {
-        HStack(spacing: 10) {
+        let title = visit.title.isEmpty ? (visit.url.host ?? visit.url.absoluteString) : visit.title
+        let time = visit.visitedAt.formatted(date: .omitted, time: .shortened)
+        return HStack(spacing: 10) {
             Group {
                 if let icon = model.webViews.favicons.image(for: visit.url) {
                     Image(nsImage: icon).resizable().interpolation(.high)
@@ -118,15 +120,18 @@ struct HistoryView: View {
             }
             .frame(width: 16, height: 16)
             VStack(alignment: .leading, spacing: 1) {
-                Text(visit.title.isEmpty ? (visit.url.host ?? visit.url.absoluteString) : visit.title).lineLimit(1)
+                Text(title).lineLimit(1)
                 Text(visit.url.absoluteString).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 8)
-            Text(visit.visitedAt.formatted(date: .omitted, time: .shortened))
+            Text(time)
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
+        // One element per visit: the title is read first, then where and when.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue("\(visit.url.absoluteString), \(time)")
         .accessibilityIdentifier("history.visit")
     }
 

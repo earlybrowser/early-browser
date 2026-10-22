@@ -2384,7 +2384,9 @@ final class EarlyUITests: XCTestCase {
         app.typeKey("y", modifierFlags: .command)
         let list = app.descendants(matching: .any)["history.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 10))
-        let visit = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'history.visit' AND label CONTAINS %@", "Page One")).firstMatch
+        // macOS may report a row's text as its label or its value.
+        let visit = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'history.visit' AND (label CONTAINS %@ OR value CONTAINS %@)", "Page One", "Page One")).firstMatch
         XCTAssertTrue(visit.waitForExistence(timeout: 10), list.debugDescription)
         app.buttons["Done"].click()
         XCTAssertTrue(list.waitForNonExistence(timeout: 5))
