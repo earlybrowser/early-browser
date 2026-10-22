@@ -5,6 +5,7 @@ import EarlyCore
 import EarlyWeb
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 @MainActor @Observable
@@ -16,14 +17,22 @@ final class BrowserWindowModel {
         }
     }
     struct Toast: Identifiable {
-        enum Kind { case copiedURL, newTab }
+        enum Kind { case copiedURL, newTab, downloadStarted }
         let id = UUID()
         let kind: Kind
         var message: String {
-            switch kind { case .copiedURL: "Copied Current URL"; case .newTab: "New Tab Created" }
+            switch kind {
+            case .copiedURL: "Copied Current URL"
+            case .newTab: "New Tab Created"
+            case .downloadStarted: "Download Started"
+            }
         }
         var accessibilityIdentifier: String {
-            switch kind { case .copiedURL: "browser.copiedURL"; case .newTab: "browser.newTabCreated" }
+            switch kind {
+            case .copiedURL: "browser.copiedURL"
+            case .newTab: "browser.newTabCreated"
+            case .downloadStarted: "browser.downloadStarted"
+            }
         }
     }
     struct SidebarReveal: Equatable {
@@ -42,6 +51,22 @@ final class BrowserWindowModel {
     var commandBarIsComposing = false
     var notice: String?
     var toast: Toast?
+    var downloadsPresented = false
+    /// Early's download icon flying from the clicked page point to the button.
+    struct DownloadFlight: Identifiable, Equatable {
+        let id = UUID()
+        let start: CGPoint
+        let end: CGPoint
+    }
+    private(set) var downloadFlight: DownloadFlight?
+    /// Increments when a flight lands, so the button can react on arrival.
+    private(set) var downloadLandingRevision = 0
+    /// The Downloads button's frame in the window's top-left coordinate space.
+    var downloadsButtonFrame: CGRect?
+    @ObservationIgnored private var lastPagePress: (point: CGPoint, time: Date)?
+    @ObservationIgnored var prefersReducedMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    /// Open File is a window-level sheet; page sheets use the page's dialog state.
+    var documentPanelIsPresented = false
     var sidebarIsHidden = false
     var sidebarReveal: SidebarReveal?
     var spaceEditor: SpaceEditor?
@@ -95,7 +120,7 @@ final class BrowserWindowModel {
     init(startup: StartupContext, session: BrowserSession, repository: SessionRepository,
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
-         preferences: BrowserPreferences? = nil, searchProviders: [any CommandSearchProvider] = [],
+         downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
@@ -122,6 +147,8 @@ final class BrowserWindowModel {
         // which fixture pages survive while assertions are running.
         webViews = WebViewManager(profileID: session.profileID, ephemeral: isTesting, input: input,
                                  websiteDataStore: websiteDataStore,
+                                 downloads: downloads ?? (isTesting ? DownloadStore(directory: FileManager.default.temporaryDirectory
+                                    .appending(path: "EarlyTestDownloads/\(UUID().uuidString)", directoryHint: .isDirectory)) : nil),
                                  observesMemoryPressure: !isTesting) { configuration in
             if let configureWebView {
                 configureWebView(configuration)
@@ -158,12 +185,79 @@ final class BrowserWindowModel {
         webViews.onClose = { [weak self] in self?.closeTab($0) }
         webViews.onOpenWindowLink = { [weak self] url in self?.onOpenWindow?(url, nil) }
         webViews.onNotice = { [weak self] in self?.notice = $0 }
+        webViews.onDownloadStarted = { [weak self] _ in
+            guard let self else { return }
+            // The footer shows progress; confirm only when the sidebar is hidden.
+            if self.sidebarIsHidden { self.showToast(.downloadStarted) }
+            self.beginDownloadFlight()
+        }
+        webViews.onOpenFiles = { [weak self] in _ = self?.openLocations($0) }
+        webViews.onOpenSearch = { [weak self] text in
+            guard let self, let url = try? self.input.searchURL(for: text) else { return }
+            _ = self.openLocations([url])
+        }
         activateSelection()
         if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
         // The app installs the shared writer before publishing the first snapshot.
     }
 
     var activePage: BrowserPage? { coordinator.focusedTabID.flatMap { webViews.pages[$0] } }
+    var downloads: DownloadStore { webViews.downloads }
+
+    func recordPagePress(at point: CGPoint, time: Date = Date()) {
+        guard point.x.isFinite, point.y.isFinite else { return }
+        lastPagePress = (point, time)
+    }
+
+    /// Only a download that follows a recent page click flies, and only to a
+    /// visible Downloads button. Menu-started saves and Reduce Motion do not.
+    func beginDownloadFlight(now: Date = Date()) {
+        defer { lastPagePress = nil }
+        guard let press = lastPagePress, now.timeIntervalSince(press.time) <= 4, now >= press.time,
+              !sidebarIsHidden, !prefersReducedMotion(), let target = downloadsButtonFrame,
+              target.width > 0, target.height > 0 else { return }
+        downloadFlight = DownloadFlight(start: press.point, end: CGPoint(x: target.midX, y: target.midY))
+    }
+
+    func finishDownloadFlight(_ id: UUID) {
+        guard downloadFlight?.id == id else { return }
+        downloadFlight = nil
+        downloadLandingRevision += 1
+    }
+
+    /// Dropped/opened files and addresses become new Today tabs in this Space;
+    /// they never replace a pinned or saved page. Each must be a valid address.
+    @discardableResult
+    func openLocations(_ urls: [URL]) -> Bool {
+        let valid = urls.compactMap { try? input.validate($0) }.prefix(10)
+        guard !valid.isEmpty else { return false }
+        if coordinator.commandBar != nil { dismissCommandBar(restoreFocus: false) }
+        for url in valid {
+            guard let id = coordinator.navigate(to: url, target: .newTab(spaceID: coordinator.activeSpaceID)),
+                  let tab = coordinator.tabStore.tab(id: id) else { continue }
+            webViews.load(url, in: tab)
+        }
+        notice = nil
+        contentFocusRequest += 1
+        save()
+        return true
+    }
+
+    func presentOpenFilePanel() {
+        guard let window = NSApp.keyWindow, window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.html, .pdf, .image, .plainText, .webArchive, .svg]
+        panel.prompt = "Open"
+        documentPanelIsPresented = true
+        panel.beginSheetModal(for: window) { [weak self, weak panel] response in
+            guard let self else { return }
+            self.documentPanelIsPresented = false
+            guard response == .OK, let urls = panel?.urls else { return }
+            self.openLocations(urls)
+        }
+    }
     var hasVisibleDialog: Bool { coordinator.visibleTabIDs.contains { webViews.pages[$0]?.hasDialog == true } }
     var activeTab: BrowserTab? { coordinator.focusedTabID.flatMap { coordinator.tabStore.tab(id: $0) } }
     var openTabs: [BrowserTab] {
@@ -199,7 +293,7 @@ final class BrowserWindowModel {
         showToast(.newTab)
     }
 
-    private func showToast(_ kind: Toast.Kind) {
+    func showToast(_ kind: Toast.Kind) {
         // A new identity restarts the confirmation lifetime on repeated actions.
         let confirmation = Toast(kind: kind)
         toast = confirmation

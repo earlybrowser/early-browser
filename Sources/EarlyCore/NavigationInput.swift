@@ -52,6 +52,12 @@ public struct NavigationInput: Sendable {
         guard let scheme = url.scheme?.lowercased(), allowedSchemes.contains(scheme) else {
             throw NavigationInputError.unsupportedScheme
         }
+        if scheme == "file" {
+            // Local documents chosen by the user: a path, and no remote host.
+            guard url.isFileURL, url.path.hasPrefix("/"), url.path.count > 1,
+                  (url.host ?? "").isEmpty || url.host == "localhost" else { throw NavigationInputError.invalidAddress }
+            return url
+        }
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let host = parts.host, !host.isEmpty,
               !host.contains(where: { $0.isWhitespace }),

@@ -16,14 +16,20 @@ extension SpaceThemeRGB {
 /// Original Early download artwork, shared with the website's download icons.
 /// Keep the 24-point geometry in sync with web/features-data.js and web/index.html.
 struct DownloadGlyph: Shape {
+    /// The circle and arrow can be drawn apart so the arrow can move alone.
+    enum Part { case all, circle, arrow }
+    var part = Part.all
+
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        path.addEllipse(in: CGRect(x: 3, y: 3, width: 18, height: 18))
-        path.move(to: CGPoint(x: 12, y: 7.75))
-        path.addLine(to: CGPoint(x: 12, y: 15.5))
-        path.move(to: CGPoint(x: 8.5, y: 12))
-        path.addLine(to: CGPoint(x: 12, y: 15.5))
-        path.addLine(to: CGPoint(x: 15.5, y: 12))
+        if part != .arrow { path.addEllipse(in: CGRect(x: 3, y: 3, width: 18, height: 18)) }
+        if part != .circle {
+            path.move(to: CGPoint(x: 12, y: 7.75))
+            path.addLine(to: CGPoint(x: 12, y: 15.5))
+            path.move(to: CGPoint(x: 8.5, y: 12))
+            path.addLine(to: CGPoint(x: 12, y: 15.5))
+            path.addLine(to: CGPoint(x: 15.5, y: 12))
+        }
         let scale = min(rect.width, rect.height) / 24
         return path.applying(CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
                                                tx: rect.midX - 12 * scale,
@@ -54,14 +60,7 @@ struct SpaceFooter: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Reserved until the real downloads service is implemented.
-            DownloadGlyph()
-                .stroke(style: StrokeStyle(lineWidth: 1.75 * 18 / 24, lineCap: .round, lineJoin: .round))
-                .foregroundStyle(.secondary)
-                .frame(width: 18, height: 18)
-                .frame(width: 28, height: 28)
-                .accessibilityLabel("Downloads, not available yet")
-                .help("Downloads (not available yet)")
+            DownloadsButton(model: model)
             indicatorStrip
             Button { model.perform(.newSpace) } label: {
                 Image(systemName: "plus").frame(width: 28, height: 28)
@@ -278,7 +277,7 @@ struct SpaceFooter: View {
 
 /// Swipes briefly lock controls while settling. Keep their colors unchanged
 /// during that lock instead of PlainButtonStyle's dim/restore flash.
-private struct SpaceControlStyle: ButtonStyle {
+struct SpaceControlStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.opacity(configuration.isPressed ? 0.8 : 1)
     }

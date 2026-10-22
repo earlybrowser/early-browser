@@ -383,7 +383,7 @@ struct RuntimeRoutingTests {
         #expect(try await firstPage.view.evaluateJavaScript("document.getElementById('saved').value") as? String == "keep left")
     }
 
-    @Test func blockedDownloadHasNoFatalOverlayAndRetryUsesTheRequestedAddress() async throws {
+    @Test func undisplayableResponseKeepsThePageAndReloadDoesNotRepeatIt() async throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
         let model = fixture.model
@@ -391,16 +391,21 @@ struct RuntimeRoutingTests {
         #expect(model.perform(.submit()))
         let page = try #require(model.activePage)
         try await waitUntil { !page.isLoading && page.view.title == "Page One" }
+        let current = try #require(page.view.url)
         let target = URL(string: "early-test://fixture/unsupported")!
         #expect(model.perform(.presentCommandBar(.navigateCurrentTab)))
         model.updateQuery(target.absoluteString)
         #expect(model.perform(.submit()))
-        try await waitUntil("unsupported response") { page.navigationNotice != nil && !page.view.isLoading }
-        #expect(page.failure == nil && page.requestedURL == target)
-        #expect(model.webViews.navigationDiagnostics.contains { $0.event == "response-download" && $0.isMainFrame })
+        try await waitUntil("undisplayable response") {
+            !page.view.isLoading && model.webViews.navigationDiagnostics.contains { $0.event == "response-download" && $0.isMainFrame }
+        }
+        // WebKit cannot download this test scheme, so the response is cancelled;
+        // either way the visible page stays, without a fatal overlay or notice.
+        #expect(page.failure == nil && page.navigationNotice == nil)
+        #expect(page.view.url == current && page.requestedURL == current)
         fixture.pages.allowUnsupportedAsHTML = true
         #expect(model.perform(.reload))
-        try await waitUntil("retry target") { !page.isLoading && page.view.url == target && page.view.title == "Page One" }
+        try await waitUntil("reload current page") { !page.isLoading && page.view.url == current && page.view.title == "Page One" }
         #expect(page.failure == nil && page.navigationNotice == nil)
         #expect(model.webViews.creationCount == 1)
     }

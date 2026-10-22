@@ -499,7 +499,7 @@ public final class BrowserCoordinator {
         case .newTab(let space):
             guard space == activeSpaceID else { return nil }
             let tab = BrowserTab(spaceID: space, profileID: profileID,
-                                 title: url.host ?? url.absoluteString, currentURL: url)
+                                 title: url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString), currentURL: url)
             id = tab.id
             tabStore.insert(tab)
         }

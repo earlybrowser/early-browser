@@ -145,7 +145,8 @@ struct SplitContentView: View {
                 onInteraction: {
                     if model.coordinator.commandBar != nil { model.dismissCommandBar(restoreFocus: false) }
                     if let paneID { _ = model.focusPane(paneID, restoreFocus: false) }
-                })
+                },
+                onPress: { model.recordPagePress(at: $0) })
                 .accessibilityIdentifier("browser.pane.\(id)")
             if let error = page?.failure {
                 VStack(spacing: 12) {

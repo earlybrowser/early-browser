@@ -26,6 +26,9 @@ public final class BrowserPage {
     fileprivate var automaticRecoveryAttempted = false
     fileprivate var awaitsNavigationCommit = false
     public var requestedURL: URL
+    /// The committed main document's MIME type, e.g. a viewed PDF.
+    public fileprivate(set) var documentMIMEType: String?
+    fileprivate var pendingDocumentMIMEType: String?
     fileprivate var observations: [NSKeyValueObservation] = []
     fileprivate var reportedURL: URL?
     var reportedTitle: String?
@@ -44,6 +47,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public private(set) var focusedTabID: UUID?
     public let favicons: FaviconStore
     public let snapshots: PageSnapshotCache
+    /// Shared by every window of this profile and owned by the application.
+    public let downloads: DownloadStore
     public private(set) var retentionPolicy: PageRetentionPolicy
     /// Browser-owned interactions can temporarily defer eviction. Individual
     /// protection tokens let future download owners protect their source tab.
@@ -59,6 +64,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onOpenWindowLink: ((URL) -> Void)?
     public var onClose: ((UUID) -> Void)?
     public var onNotice: ((String) -> Void)?
+    public var onDownloadStarted: ((DownloadItem) -> Void)?
+    /// Local files from an unhandled page drop open as new tabs, never in place.
+    public var onOpenFiles: (([URL]) -> Void)?
+    /// A selected-text search opens a new foreground tab.
+    public var onOpenSearch: ((String) -> Void)?
     private let profileID: UUID
     private let ephemeral: Bool
     private let input: NavigationInput
@@ -66,6 +76,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     private var store: WKWebsiteDataStore?
     private var identities: [ObjectIdentifier: UUID] = [:]
     private var dialogs: [UUID: PendingDialog] = [:]
+    var documentPanels: [UUID: PendingPanel] = [:]
     private var controllerOwners: [ObjectIdentifier: Set<UUID>] = [:]
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
     @ObservationIgnored private var recoveryTasks: [UUID: Task<Void, Never>] = [:]
@@ -86,10 +97,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
                 websiteDataStore: WKWebsiteDataStore? = nil,
                 retentionPolicy: PageRetentionPolicy = PageRetentionPolicy(),
                 snapshotCache: PageSnapshotCache? = nil,
+                downloads: DownloadStore? = nil,
                 observesMemoryPressure: Bool = true,
                 configure: @escaping (WKWebViewConfiguration) -> Void = { _ in }) {
         self.profileID = profileID
         self.favicons = faviconStore ?? FaviconStore(profileID: profileID, ephemeral: ephemeral)
+        self.downloads = downloads ?? DownloadStore()
         self.retentionPolicy = retentionPolicy
         self.snapshots = snapshotCache ?? PageSnapshotCache(profileID: profileID)
         self.ephemeral = ephemeral
@@ -98,6 +111,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         self.store = websiteDataStore
         precondition(snapshotCache == nil || snapshotCache?.profileID == profileID, "Snapshots belong to one profile")
         super.init()
+        // Resuming uses this profile's cookies and storage, never another's.
+        if self.downloads.dataStoreProvider == nil {
+            self.downloads.dataStoreProvider = { [weak self] in self?.websiteDataStore }
+        }
         if observesMemoryPressure {
             memoryMonitor = PageMemoryPressureMonitor { [weak self] pressure in
                 Task { @MainActor [weak self] in self?.handleMemoryPressure(pressure) }
@@ -111,6 +128,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         return store!
     }
     public func existingView(for id: UUID) -> WKWebView? { pages[id]?.view }
+    func tabID(for view: WKWebView) -> UUID? { identities[ObjectIdentifier(view)] }
     public func lifecycle(for id: UUID) -> PageLifecycle { lifecycles[id] ?? PageLifecycle() }
     var registeredControllerCount: Int { controllerOwners.count }
 
@@ -167,7 +185,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         return true
     }
 
-    private func scheduleRetention() {
+    func scheduleRetention() {
         guard retentionTask == nil else { return }
         // Selection, metadata reconciliation and activation form one operation.
         // Wait until they all publish before deciding which page is background.
@@ -284,6 +302,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             _ = self.openContextLink(url, in: view, background: true)
         }
         view.onInteractionEnded = { [weak self] in self?.scheduleRetention() }
+        view.onContextAction = { [weak self, weak view] action in
+            guard let self, let view else { return }
+            self.performContextAction(action, in: view)
+        }
         view.allowsBackForwardNavigationGestures = true
         // Enables WebKit's native pinch and two-finger smart magnification.
         view.allowsMagnification = true
@@ -335,13 +357,13 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             controller.addUserScript(WKUserScript(source: MediaActivityObserver.script,
                 injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient))
         }
-        let linkObserver = LinkContextMenuObserver()
-        linkObserver.owner = self
-        controller.removeScriptMessageHandler(forName: LinkContextMenuObserver.name, contentWorld: LinkContextMenuObserver.world)
-        controller.add(linkObserver, contentWorld: LinkContextMenuObserver.world, name: LinkContextMenuObserver.name)
-        if !controller.userScripts.contains(where: { $0.source == LinkContextMenuObserver.script }) {
-            controller.addUserScript(WKUserScript(source: LinkContextMenuObserver.script,
-                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: LinkContextMenuObserver.world))
+        let menuObserver = PageContextMenuObserver()
+        menuObserver.owner = self
+        controller.removeScriptMessageHandler(forName: PageContextMenuObserver.name, contentWorld: PageContextMenuObserver.world)
+        controller.add(menuObserver, contentWorld: PageContextMenuObserver.world, name: PageContextMenuObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == PageContextMenuObserver.script }) {
+            controller.addUserScript(WKUserScript(source: PageContextMenuObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: PageContextMenuObserver.world))
         }
         let interactionObserver = PageInteractionObserver()
         interactionObserver.owner = self
@@ -361,7 +383,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         guard controllerOwners[identity]?.isEmpty == true else { return }
         controllerOwners[identity] = nil
         controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
-        controller.removeScriptMessageHandler(forName: LinkContextMenuObserver.name, contentWorld: LinkContextMenuObserver.world)
+        controller.removeScriptMessageHandler(forName: PageContextMenuObserver.name, contentWorld: PageContextMenuObserver.world)
         controller.removeScriptMessageHandler(forName: PageInteractionObserver.name, contentWorld: .defaultClient)
     }
 
@@ -387,7 +409,13 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.processTerminated = false
         page.requestedURL = url
         beginLoading(tab.id)
-        page.activeNavigation = page.view.load(URLRequest(url: url)).map(ObjectIdentifier.init)
+        page.activeNavigation = startNavigation(to: url, in: page.view).map(ObjectIdentifier.init)
+    }
+
+    /// Local documents receive read access to the chosen file only, which is
+    /// all the sandbox grants for a user-selected or dropped file.
+    private func startNavigation(to url: URL, in view: WKWebView) -> WKNavigation? {
+        url.isFileURL ? view.loadFileURL(url, allowingReadAccessTo: url) : view.load(URLRequest(url: url))
     }
 
     public func activate(_ tab: BrowserTab) {
@@ -406,7 +434,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let needsRequest = page.failure != nil || page.navigationNotice != nil || page.awaitsNavigationCommit || page.view.url == nil
         beginLoading(id)
         if needsRequest {
-            page.activeNavigation = page.view.load(URLRequest(url: page.requestedURL)).map(ObjectIdentifier.init)
+            page.activeNavigation = startNavigation(to: page.requestedURL, in: page.view).map(ObjectIdentifier.init)
         } else { page.activeNavigation = page.view.reload().map(ObjectIdentifier.init) }
     }
 
@@ -475,6 +503,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.view.setAllMediaPlaybackSuspended(true, completionHandler: nil)
         identities.removeValue(forKey: ObjectIdentifier(page.view))
         cancelDialog(tabID)
+        cancelDocumentPanel(tabID)
         pages.removeValue(forKey: tabID)
         unregisterHandlers(page.view.configuration.userContentController, for: tabID)
         page.mediaFrames.removeAll()
@@ -485,6 +514,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             view.cancelLinkMenu()
             view.onOpenWindowLink = nil
             view.onOpenBackgroundLink = nil
+            view.onContextAction = nil
             view.onInteractionEnded = nil
         }
         page.observations.forEach { $0.invalidate() }
@@ -515,13 +545,25 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     func contextLinkURL(href: String, in view: WKWebView) -> URL? {
         guard identities[ObjectIdentifier(view)] != nil, href.utf8.count <= 16384,
-              let url = URL(string: href), (try? input.validate(url)) != nil else { return nil }
+              let url = URL(string: href), (try? input.validate(url)) != nil,
+              !url.isFileURL || view.url?.isFileURL == true else { return nil }
         return url
     }
 
-    func showLinkContextMenu(href: String, in view: BrowserWebView) {
-        guard let url = contextLinkURL(href: href, in: view), view.window != nil else { return }
-        view.showLinkMenu(for: url)
+    func showContextMenu(link href: String?, image src: String?, selection: String?, in view: BrowserWebView) {
+        guard view.window != nil, tabID(for: view) != nil else { return }
+        var target = BrowserWebView.ContextTarget()
+        target.link = href.flatMap { contextLinkURL(href: $0, in: view) }
+        target.image = src.flatMap { contextImageURL($0) }
+        let text = selection?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !text.isEmpty { target.selection = String(text.prefix(4096)) }
+        view.showContextMenu(for: target)
+    }
+
+    /// Images can be opened, saved or copied only through the page's profile.
+    func contextImageURL(_ src: String) -> URL? {
+        guard src.utf8.count <= 16384, let url = URL(string: src), isDownloadable(url) else { return nil }
+        return url
     }
 
     @discardableResult
@@ -535,14 +577,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     @discardableResult
     func openContextLink(_ url: URL, in view: WKWebView, background: Bool) -> Bool {
         guard let id = identities[ObjectIdentifier(view)], let page = pages[id],
-              (try? input.validate(url)) != nil else { return false }
+              (try? input.validate(url)) != nil, !url.isFileURL || view.url?.isFileURL == true else { return false }
         if background {
             guard let onOpenBackgroundLink else { return false }
             onOpenBackgroundLink(url)
         } else {
             page.requestedURL = url
             beginLoading(id)
-            page.activeNavigation = view.load(URLRequest(url: url)).map(ObjectIdentifier.init)
+            page.activeNavigation = startNavigation(to: url, in: view).map(ObjectIdentifier.init)
         }
         return true
     }
@@ -609,15 +651,21 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
                         decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         let mainFrame = action.targetFrame?.isMainFrame ?? true
         guard let url = action.request.url else { decisionHandler(.cancel); return }
-        if (try? input.validate(url)) != nil {
-            if action.shouldPerformDownload {
-                if let id = identities[ObjectIdentifier(webView)] {
-                    cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: mainFrame ? NavigationResponseDisposition.download.notice : nil)
-                    recordNavigation(.init(tabID: id, event: "download-action", url: url, isMainFrame: mainFrame))
-                }
-                decisionHandler(.cancel)
-                return
+        if action.shouldPerformDownload, isDownloadable(url) {
+            if let id = identities[ObjectIdentifier(webView)] {
+                // WebKit ends the navigation once it becomes a download; that
+                // expected interruption is not a page failure.
+                cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
+                recordNavigation(.init(tabID: id, event: "download-action", url: url, isMainFrame: mainFrame))
             }
+            decisionHandler(.download)
+            return
+        }
+        if url.isFileURL {
+            decideLocalNavigation(to: url, action: action, in: webView, mainFrame: mainFrame, decisionHandler: decisionHandler)
+            return
+        }
+        if (try? input.validate(url)) != nil {
             if openCommandClickedLink(action, in: webView) {
                 decisionHandler(.cancel)
                 return
@@ -643,6 +691,37 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         }
     }
 
+    /// Web addresses are validated; data/blob documents are page-local files.
+    func isDownloadable(_ url: URL) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "data", "blob": true
+        case "http", "https": (try? input.validate(url)) != nil
+        default: false
+        }
+    }
+
+    /// Local documents load only from Early's own requests (Open File, drops,
+    /// restoration, reload), from another local page, or through history. A
+    /// web page can never open a local file.
+    private func decideLocalNavigation(to url: URL, action: WKNavigationAction, in webView: WKWebView, mainFrame: Bool,
+                                       decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        guard (try? input.validate(url)) != nil, let id = identities[ObjectIdentifier(webView)], let page = pages[id] else {
+            decisionHandler(.cancel)
+            return
+        }
+        let fromLocalPage = webView.url?.isFileURL == true
+        if page.requestedURL == url || fromLocalPage || action.navigationType == .backForward || action.navigationType == .reload {
+            if mainFrame { page.requestedURL = url }
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
+        // A file dropped on a page that does not accept it opens as a new tab,
+        // leaving a pinned or saved page in place.
+        if mainFrame, action.navigationType == .other { onOpenFiles?([url]) }
+    }
+
     public func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                         decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
         decisionHandler(navigationResponsePolicy(for: webView, response: response.response,
@@ -657,9 +736,81 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let disposition = NavigationResponseDisposition.classify(response, canShowMIMEType: canShowMIMEType, isMainFrame: isMainFrame)
         recordNavigation(.init(tabID: id, event: "response-\(disposition.rawValue)", url: response.url,
             status: (response as? HTTPURLResponse)?.statusCode, mimeType: response.mimeType, isMainFrame: isMainFrame))
-        guard disposition != .allow else { return .allow }
-        cancelForPolicy(id, url: response.url, mainFrame: isMainFrame, notice: disposition.notice)
-        return .cancel
+        guard disposition != .allow else {
+            if isMainFrame { pages[id]?.pendingDocumentMIMEType = response.mimeType?.lowercased() }
+            return .allow
+        }
+        // A download ends this navigation with WebKit's expected interruption;
+        // the current page stays as it was, without a notice or failure.
+        cancelForPolicy(id, url: response.url, mainFrame: isMainFrame, notice: nil)
+        if isMainFrame { keepCurrentDocument(id) }
+        return disposition == .download && response.url.map(isDownloadable) == true ? .download : .cancel
+    }
+
+    /// Reload must reload the page still on screen, not repeat a download.
+    private func keepCurrentDocument(_ id: UUID) {
+        guard let page = pages[id] else { return }
+        page.pendingDocumentMIMEType = nil
+        guard let current = page.view.url.flatMap({ try? input.validate($0) }) else { return }
+        page.requestedURL = current
+        page.awaitsNavigationCommit = false
+    }
+
+    public func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        adoptDownload(download, from: webView)
+        closeBlankPageAfterDownload(webView)
+    }
+
+    public func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        adoptDownload(download, from: webView)
+        closeBlankPageAfterDownload(webView)
+    }
+
+    /// A tab opened only for a download (a target-blank file link, or an address
+    /// that turned out to be a file) has nothing to show; close it as other
+    /// browsers do. The download continues.
+    private func closeBlankPageAfterDownload(_ view: WKWebView) {
+        guard let id = tabID(for: view), view.url == nil, !view.canGoBack else { return }
+        DispatchQueue.main.async { [weak self, weak view] in
+            guard let self, let view, self.pages[id]?.view === view, view.url == nil else { return }
+            self.onClose?(id)
+        }
+    }
+
+    /// Downloads outlive their page; while active they protect it from
+    /// background discard, because a blob/data source belongs to its document.
+    @discardableResult
+    func adoptDownload(_ download: WKDownload, from view: WKWebView?, destination: URL? = nil, listed: Bool = true,
+                       settled: ((DownloadItem) -> Void)? = nil) -> DownloadItem {
+        let id = view.flatMap { identities[ObjectIdentifier($0)] }
+        let origin = id.flatMap { pages[$0]?.view.url }
+        let item = downloads.adopt(download, source: download.originalRequest?.url, origin: origin,
+                                   destination: destination, listed: listed)
+        if let id, let token = protect(tabID: id, reason: .download) {
+            item.onSettled.append { [weak self] _ in self?.releaseProtection(tabID: id, token: token) }
+        }
+        if let settled { item.onSettled.append(settled) }
+        if listed { onDownloadStarted?(item) }
+        return item
+    }
+
+    /// Download Linked File, Save Image As and saving a viewed PDF.
+    @discardableResult
+    public func startDownload(_ url: URL, from tabID: UUID, to destination: URL? = nil, listed: Bool = true,
+                              settled: ((DownloadItem) -> Void)? = nil) -> Bool {
+        guard let page = pages[tabID], isDownloadable(url) else { return false }
+        // Adopt inside WebKit's callback. WebKit can ask for a destination right
+        // after it, and a delegate set from an awaited continuation may be too
+        // late: the download would then be dropped while it shows "Starting…".
+        page.view.startDownload(using: URLRequest(url: url)) { [weak self, weak view = page.view] download in
+            guard let self else { download.cancel { _ in }; return }
+            self.adoptDownload(download, from: view, destination: destination, listed: listed, settled: settled)
+        }
+        return true
+    }
+
+    func hasProtection(tabID: UUID, reason: Protection) -> Bool {
+        protections[tabID]?.values.contains(reason) == true
     }
 
     private func cancelForPolicy(_ id: UUID, url: URL?, mainFrame: Bool, notice: String?) {
@@ -692,6 +843,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.awaitsNavigationCommit = false
         pages[id]?.policyCancellations.removeAll()
         pages[id]?.navigationNotice = nil
+        pages[id]?.documentMIMEType = pages[id]?.pendingDocumentMIMEType
+        pages[id]?.pendingDocumentMIMEType = nil
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
@@ -803,7 +956,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             self.beginLoading(id)
             // Reload the last validated address as a GET; never replay POST
             // bodies, dialogs, or claim that dead form/JavaScript state survived.
-            page.activeNavigation = page.view.load(URLRequest(url: page.requestedURL)).map(ObjectIdentifier.init)
+            page.activeNavigation = startNavigation(to: page.requestedURL, in: page.view).map(ObjectIdentifier.init)
         }
     }
 
@@ -816,7 +969,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                         for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard identities[ObjectIdentifier(webView)] != nil,
-              let url = action.request.url, (try? input.validate(url)) != nil else { return nil }
+              let url = action.request.url, (try? input.validate(url)) != nil,
+              !url.isFileURL || webView.url?.isFileURL == true else { return nil }
         // Target-blank links may arrive through the new-window delegate first.
         // Returning nil consumes the gesture without creating a second tab.
         if openCommandClickedLink(action, in: webView) { return nil }
@@ -909,7 +1063,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 }
 
 /// The lock protects only this one flag; no UI work runs under the lock.
-private final class RefreshGate: @unchecked Sendable {
+final class RefreshGate: @unchecked Sendable {
     private let lock = NSLock()
     private var queued = false
 

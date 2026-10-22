@@ -14,7 +14,7 @@ struct BrowserWebViewTests {
         let url = URL(string: "https://example.com/page?query=one#section")!
         let menu = view.makeLinkMenu(for: url)
 
-        #expect(menu.items.map(\.title) == ["Open Link in New Tab", "Open Link in New Window", "Copy Link", "Share"])
+        #expect(menu.items.map(\.title) == ["Open Link in New Tab", "Open Link in New Window", "Download Linked File", "Copy Link", "Share"])
         #expect(!menu.autoenablesItems)
         #expect(!menu.allowsContextMenuPlugIns)
         if #available(macOS 15.2, *) {
@@ -25,7 +25,8 @@ struct BrowserWebViewTests {
             #expect(item.submenu == nil)
             #expect(item.isEnabled)
             #expect(item.target === view)
-            #expect(item.representedObject as? URL == url)
+            let value = item.representedObject
+            #expect(value as? URL == url || value as? BrowserWebView.ContextAction == .downloadLink(url))
         }
     }
 
@@ -35,6 +36,8 @@ struct BrowserWebViewTests {
         let first = URL(string: "https://example.com/first?query=one#section")!
         let second = URL(string: "https://example.com/second?query=two#other")!
         var opened: [URL] = [], background: [URL] = [], copied: [URL] = [], shared: [URL] = []
+        var actions: [BrowserWebView.ContextAction] = []
+        view.onContextAction = { actions.append($0) }
         view.onOpenWindowLink = { opened.append($0) }
         view.onOpenBackgroundLink = { background.append($0) }
         view.copyLink = { copied.append($0) } // Do not overwrite the user's clipboard.
@@ -44,11 +47,13 @@ struct BrowserWebViewTests {
 
         firstMenu.performActionForItem(at: 0)
         secondMenu.performActionForItem(at: 1)
-        firstMenu.performActionForItem(at: 2)
-        secondMenu.performActionForItem(at: 3)
+        secondMenu.performActionForItem(at: 2)
+        firstMenu.performActionForItem(at: 3)
+        secondMenu.performActionForItem(at: 4)
 
         #expect(opened == [second])
         #expect(background == [first])
+        #expect(actions == [.downloadLink(second)])
         #expect(copied == [first])
         #expect(shared == [second])
     }
@@ -104,20 +109,22 @@ struct BrowserWebViewTests {
         let page = manager.prepare(tab)
         let view = try #require(page.view as? BrowserWebView)
         let scripts = view.configuration.userContentController.userScripts
-        let bridge = try #require(scripts.first { $0.source == LinkContextMenuObserver.script })
+        let bridge = try #require(scripts.first { $0.source == PageContextMenuObserver.script })
 
-        #expect(scripts.filter { $0.source == LinkContextMenuObserver.script }.count == 1)
+        #expect(scripts.filter { $0.source == PageContextMenuObserver.script }.count == 1)
         #expect(bridge.injectionTime == .atDocumentStart)
         #expect(!bridge.isForMainFrameOnly)
-        #expect(LinkContextMenuObserver.world.name == "Early.LinkContextMenu")
+        #expect(PageContextMenuObserver.world.name == "Early.PageContextMenu")
         #expect(scripts.contains { $0.source == MediaActivityObserver.script })
         #expect(manager.prepare(tab) === page)
         #expect(view.onOpenWindowLink != nil)
         #expect(view.onOpenBackgroundLink != nil)
+        #expect(view.onContextAction != nil)
 
         manager.discardAll()
         #expect(view.onOpenWindowLink == nil)
         #expect(view.onOpenBackgroundLink == nil)
+        #expect(view.onContextAction == nil)
         #expect(manager.liveViewCount == 0)
     }
 }

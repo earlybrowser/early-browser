@@ -97,7 +97,10 @@ struct BrowserWindowView: View {
     @State private var contentWindowFrame: CGRect = .zero
     @State private var sidebarWindowFrame: CGRect = .zero
     @FocusState private var focusedSidebarControl: SidebarControl?
-    private var sidebarVisible: Bool { !sidebarAutoHides || sidebarHovered || model.sidebarInteractionInProgress || resizeStartWidth != nil }
+    private var sidebarVisible: Bool {
+        !sidebarAutoHides || sidebarHovered || model.sidebarInteractionInProgress || resizeStartWidth != nil
+            || model.downloadsPresented
+    }
     // GestureState can reset before onEnded. Keep preview identity until the
     // drop transaction has exchanged it for the settlement proxy.
     private var draggingTab: UUID? { dragSourceItem?.id }
@@ -308,9 +311,13 @@ struct BrowserWindowView: View {
             .background(surfaceFrame("content"))
             .modifier(BrowserContentSurface.container(cornerRadius: contentCornerRadius,
                 split: model.coordinator.activeSplitGroup != nil))
+            // A live page receives drops itself (upload areas keep working);
+            // empty content opens dropped files and links as new tabs.
+            .dropDestination(for: URL.self) { urls, _ in model.openLocations(urls) }
             .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
 
             sidebar
+                .dropDestination(for: URL.self) { urls, _ in model.openLocations(urls) }
                 .background(surfaceFrame("sidebar"))
                 .background {
                     if sidebarAutoHides {
@@ -372,9 +379,23 @@ struct BrowserWindowView: View {
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if let flight = model.downloadFlight {
+                DownloadFlightView(flight: flight,
+                                   theme: model.splitTheme.focusBorder(isDark: colorScheme == .dark,
+                                                                       increasedContrast: contrast == .increased).color) {
+                    model.finishDownloadFlight(flight.id)
+                }
+                .id(flight.id)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
         .onPreferenceChange(BrowserSurfaceFrames.self) { frames in
             if let content = frames["content"], contentWindowFrame != content { contentWindowFrame = content }
             if let sidebar = frames["sidebar"], sidebarWindowFrame != sidebar { sidebarWindowFrame = sidebar }
+        }
+        .onPreferenceChange(DownloadsButtonFrameKey.self) { frame in
+            if model.downloadsButtonFrame != frame { model.downloadsButtonFrame = frame }
         }
         // One shared surface for the outer frame and pinned sidebar. Only the
         // clipped page area is inset into it; no sidebar tint or seam on top.

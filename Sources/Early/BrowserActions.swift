@@ -16,7 +16,7 @@ extension BrowserWindowModel {
         if case .dismissCommandBar = action { return coordinator.commandBar != nil }
         guard !sidebarInteractionInProgress, splitResize == nil, !spaceSwipeIsSettling,
               !folderEditorIsPresented, renamingTabID == nil, spaceEditor == nil,
-              spaceDeletionID == nil, !hasVisibleDialog else { return false }
+              spaceDeletionID == nil, !hasVisibleDialog, !documentPanelIsPresented else { return false }
         switch action {
         case .presentCommandBar, .toggleSidebar:
             return true
@@ -120,6 +120,10 @@ extension BrowserWindowModel {
             return onOpenSettings != nil
         case .newWindow:
             return application?.canOpenWindow == true
+        case .showDownloads, .openFile:
+            return true
+        case .savePage, .exportPDF, .printPage:
+            return coordinator.focusedTabID.map { webViews.canPresentDocumentPanel(for: $0) } == true
         }
     }
 
@@ -208,6 +212,21 @@ extension BrowserWindowModel {
         case .newWindow:
             guard application?.openNewWindow(from: self) != nil else { return false }
             restoreContentFocus = false
+        case .showDownloads:
+            downloadsPresented = true
+            restoreContentFocus = false
+        case .openFile:
+            presentOpenFilePanel()
+            restoreContentFocus = false
+        case .savePage:
+            guard let id = coordinator.focusedTabID, webViews.savePage(id) else { return false }
+            restoreContentFocus = false
+        case .exportPDF:
+            guard let id = coordinator.focusedTabID, webViews.exportPDF(id) else { return false }
+            restoreContentFocus = false
+        case .printPage:
+            guard let id = coordinator.focusedTabID, webViews.printPage(id) else { return false }
+            restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
             dismissCommandBar(restoreFocus: restoreContentFocus && contentFocusRequest == previousFocusRequest)
@@ -277,6 +296,11 @@ extension BrowserWindowModel {
         addAction("newSpace", "New Space", .newSpace, terms: ["create space", "add space"])
         addAction("openSettings", "Open Settings", .openSettings, terms: ["settings", "preferences"])
         addAction("newWindow", "New Window", .newWindow, terms: ["open browser window"])
+        addAction("showDownloads", "Show Downloads", .showDownloads, terms: ["downloads", "download list", "downloaded files"])
+        addAction("openFile", "Open File…", .openFile, terms: ["open file", "open local file", "open pdf"])
+        addAction("printPage", "Print Page…", .printPage, terms: ["print", "print page"])
+        addAction("savePage", "Save Page As…", .savePage, terms: ["save page", "save as", "web archive"])
+        addAction("exportPDF", "Export as PDF…", .exportPDF, terms: ["export pdf", "save as pdf", "pdf"])
         if let group = coordinator.activeSplitGroup {
             addAction("swapSplit", "Swap Sides", .swapSplit(group.id), terms: ["swap split panes", "swap left and right"])
             addAction("exitSplit", "Exit Split View", .exitSplit(group.id), terms: ["unsplit", "single pane"])

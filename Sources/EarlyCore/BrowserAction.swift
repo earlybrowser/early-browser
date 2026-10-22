@@ -47,4 +47,9 @@ public enum BrowserAction: Equatable, Sendable {
     case duplicateTab(UUID)
     case openSettings
     case newWindow
+    case showDownloads
+    case openFile
+    case savePage
+    case exportPDF
+    case printPage
 }

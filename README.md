@@ -23,6 +23,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Nested folders | Group and reorder tabs with up to two nesting levels. Folder drop previews reserve a single row without opening hidden contents. New subfolders appear inside their parent; deleting a folder removes its contents. | Implemented. |
 | Session restoration | Restore tabs, saved pages, ordering, and selection after quitting. Folders start collapsed, and an empty session opens the command bar. | Implemented. |
 | Links and windows | Command-click links to open background tabs; copy or share links, and open links or tab copies in separate windows. Windows share saved items, not Today tabs. | Implemented. |
+| Right-click menus | Page, link, image, and selected-text menus: download links, open, save, or copy images, search for selected text, and save or print the page. | Implemented. |
 | Quick renaming | Option-click a tab, Favorite, or folder to rename without opening it. Ordinary clicks open/toggle immediately; dragging still reorders items. | Implemented. |
 | Trackpad zoom | Native pinch-to-zoom and two-finger double-tap Smart Zoom. | Implemented. |
 | Browser navigation | Back, Forward, Reload, Stop, tab shortcuts, and native website alerts, confirmations, and prompts. Copy the current page URL with `⌘⇧C`. | Implemented. |
@@ -33,13 +34,14 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Thumbnail tab switcher | Preview open tabs in a compact strip; confirm a selection or cancel without changing the current page. Missing previews have a clear fallback. | Implemented. |
 | Split views | Resizable side-by-side pages, floating drag-to-split targets, and shared controls following the focused pane. Removing a pane keeps its tab open. | Implemented. |
 | Page lifecycle | Keep recent pages live, limit retained background pages, and reload released pages on selection. Protect visible panes, media, and editing; recover from page-process crashes with a bounded retry. | Implemented. |
-| Downloads and page tools | Manage downloads, upload files, print, view PDFs, find text, and adjust zoom. | Planned. |
+| Downloads and documents | Download files from the sidebar footer with progress, stop and resume, and Finder reveal; saved pages and PDFs appear there too. Upload files, print, view PDFs, save pages as HTML, and open local files or dropped links in new tabs. | Implemented. |
+| Find and zoom | Find text on a page and adjust page zoom from the keyboard. | Planned. |
 | Reading tools | Reader Mode for supported articles and page translation. | Planned. |
 | Credentials and autofill | Integrate supported password managers, autofill, and passkeys through public platform facilities. | Planned. |
 | Default browser | Choose Early as the default browser and handle externally opened links. | Planned. |
 | State portability | Export/import supported settings, windows, tabs, folders, pins, Favorites, and workspace metadata; exclude credentials and private sessions. | Planned. |
 | Developer tools | Inspect pages through supported WebKit developer facilities. | Planned. |
-| History, bookmarks, and privacy | Search browsing history and bookmarks, use private sessions, manage permissions, and clear site data. | Planned. |
+| History and privacy | Search browsing history, use private sessions, manage permissions, and clear site data. Pins and Favorites are Early’s saved pages. | Planned. |
 | GitHub live folders | Automatically collect pull requests and review requests in a folder linked to your GitHub account. | Planned. |
 | Picture in Picture | Watch compatible videos in a floating window, with an on/off preference. | Planned. |
 | Settings and customization | Native Settings for profiles, Space assignment, appearance, sidebar behavior, search suggestions, command-bar actions, and local session restoration. More customization is planned. | Partial. |

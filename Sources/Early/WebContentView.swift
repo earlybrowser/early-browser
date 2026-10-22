@@ -1025,6 +1025,8 @@ struct WebContentView: NSViewRepresentable {
     let hasDialog: Bool
     var isResizing = false
     var onInteraction: (() -> Void)? = nil
+    /// A pointer press on the page, in the window's top-left coordinate space.
+    var onPress: ((CGPoint) -> Void)? = nil
 
     func makeNSView(context: Context) -> HostView { HostView() }
     static func dismantleNSView(_ host: HostView, coordinator: ()) { host.invalidate() }
@@ -1034,6 +1036,7 @@ struct WebContentView: NSViewRepresentable {
         host.canFocus = canFocus
         host.suppressAccessibilityChildren = hasDialog
         host.onInteraction = onInteraction
+        host.onPress = onPress
         guard host.focusRequest != focusRequest else { return }
         host.focusRequest = focusRequest
         DispatchQueue.main.async { [weak host] in
@@ -1057,6 +1060,7 @@ struct WebContentView: NSViewRepresentable {
         private weak var resizingView: WKWebView?
         private var backgroundObservation: NSKeyValueObservation?
         var onInteraction: (() -> Void)?
+        var onPress: ((CGPoint) -> Void)?
         private var interactionMonitor: Any?
 
         override init(frame: NSRect) {
@@ -1145,7 +1149,13 @@ struct WebContentView: NSViewRepresentable {
                     let hit = content?.hitTest(point)
                     interacts = self.containsPageView(hit)
                 }
-                if interacts { self.onInteraction?() }
+                if interacts {
+                    self.onInteraction?()
+                    if event.type != .keyDown, let content = window.contentView {
+                        let local = content.convert(event.locationInWindow, from: nil)
+                        self.onPress?(CGPoint(x: local.x, y: content.isFlipped ? local.y : content.bounds.height - local.y))
+                    }
+                }
                 return event // Never consume or duplicate a website event.
             }
         }
@@ -1186,6 +1196,7 @@ struct WebContentView: NSViewRepresentable {
             invalidated = true
             stopInteractionMonitor()
             onInteraction = nil
+            onPress = nil
             canFocus = false
             focusRequest = -1
             desired = nil

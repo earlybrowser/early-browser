@@ -38,11 +38,12 @@ struct NavigationResponsePolicyTests {
         #expect(NavigationResponseDisposition.classify(response("text/html", status: 404), canShowMIMEType: true, isMainFrame: true) == .allow)
     }
 
-    @Test func attachmentsBinaryDownloadsAndUnknownUnsupportedTypesAreDistinct() {
+    @Test func attachmentsAndUndisplayableTopLevelResponsesDownloadButEmbeddedOnesDoNot() {
         #expect(NavigationResponseDisposition.classify(response("text/html", disposition: " Attachment ; filename=page.html"), canShowMIMEType: true, isMainFrame: true) == .download)
         #expect(NavigationResponseDisposition.classify(response("application/octet-stream"), canShowMIMEType: false, isMainFrame: true) == .download)
-        #expect(NavigationResponseDisposition.classify(response("application/x-unknown"), canShowMIMEType: false, isMainFrame: true) == .unsupported)
-        #expect(NavigationResponseDisposition.classify(response(nil), canShowMIMEType: false, isMainFrame: true) == .unsupported)
+        #expect(NavigationResponseDisposition.classify(response("application/x-unknown"), canShowMIMEType: false, isMainFrame: true) == .download)
+        #expect(NavigationResponseDisposition.classify(response(nil), canShowMIMEType: false, isMainFrame: true) == .download)
+        #expect(NavigationResponseDisposition.classify(response("application/zip", disposition: "attachment"), canShowMIMEType: false, isMainFrame: false) == .unsupportedSubframe)
     }
 
     @Test func unsupportedSubframeIsQuietAndItsMatchingFailureCannotFailTheMainDocument() {
@@ -58,15 +59,16 @@ struct NavigationResponsePolicyTests {
         #expect(manager.navigationDiagnostics.last?.isMainFrame == false)
     }
 
-    @Test func intentionalMainFrameCancellationShowsOnlyItsNoticeAndNextNavigationClearsIt() {
+    @Test func mainFrameDownloadKeepsThePageWithoutANoticeOrFailure() {
         let (manager, tab, page) = fixture()
         defer { manager.discardAll() }
         #expect(manager.navigationResponsePolicy(for: page.view, response: response("application/zip"),
-            canShowMIMEType: false, isMainFrame: true) == .cancel)
-        #expect(page.navigationNotice == NavigationResponseDisposition.download.notice)
+            canShowMIMEType: false, isMainFrame: true) == .download)
+        #expect(page.navigationNotice == nil)
+        // WebKit ends the navigation that became a download; that is expected.
         manager.webView(page.view, didFailProvisionalNavigation: nil, withError: interruption(url))
         #expect(page.failure == nil && page.requestedURL == tab.currentURL)
-        #expect(page.navigationNotice != nil && manager.lifecycle(for: tab.id).state != .failed)
+        #expect(page.navigationNotice == nil && manager.lifecycle(for: tab.id).state != .failed)
         manager.webView(page.view, didStartProvisionalNavigation: nil)
         #expect(page.navigationNotice == nil && page.failure == nil)
         #expect(manager.navigationResponsePolicy(for: page.view, response: response("text/html"),
