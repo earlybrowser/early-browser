@@ -6,8 +6,8 @@ import EarlyCore
 import Testing
 import WebKit
 
-/// Menu construction, validation and dispatch with unshown views. Trusted
-/// right-clicks themselves are covered by the native UI suite.
+/// Menu construction, validation and dispatch with unshown views. Native
+/// right-click events go to an unshown window; the UI suite covers real ones.
 @Suite(.serialized) @MainActor
 struct PageContextMenuTests {
     private func titles(_ menu: NSMenu) -> [String] { menu.items.map { $0.isSeparatorItem ? "—" : $0.title } }
@@ -57,6 +57,47 @@ struct PageContextMenuTests {
         view.makeContextMenu(for: .init(selection: "early browser")).performActionForItem(at: 0)
         #expect(actions == [.openImageInNewTab(web), .saveImage(web), .copyImage(web), .reload, .searchSelection("early browser")])
         #expect(copied == [web])
+    }
+
+    @Test func rightClickOnAWordShowsTheTextMenuAndBlankSpaceThePageMenu() async throws {
+        _ = NSApplication.shared
+        let profile = UUID()
+        let manager = WebViewManager(profileID: profile, ephemeral: true,
+            input: NavigationInput(allowedSchemes: ["http", "https"]), observesMemoryPressure: false)
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Source", currentURL: URL(string: "https://example.com/source")!)
+        let view = try #require(manager.prepare(tab).view as? BrowserWebView)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 500, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        defer { manager.discardAll(); window.close() }
+        var shown: [[String]] = []
+        view.presentMenu = { menu, _ in shown.append(menu.items.map { $0.isSeparatorItem ? "—" : $0.title }) }
+        view.loadHTMLString("""
+            <body style="margin:0;font:20px -apple-system"><p id="text" style="margin:0;padding:8px">Plain page area</p>
+            <div style="height:300px"></div></body>
+            """, baseURL: URL(string: "https://example.com/source"))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while view.isLoading || view.url == nil {
+            guard ContinuousClock.now < deadline else { throw CancellationError() }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        func rightClick(atTop y: CGFloat) async throws -> [String]? {
+            let before = shown.count
+            let location = view.convert(CGPoint(x: 30, y: y), to: nil)
+            for type in [NSEvent.EventType.rightMouseDown, .rightMouseUp] {
+                let event = try #require(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+                type == .rightMouseDown ? view.rightMouseDown(with: event) : view.rightMouseUp(with: event)
+            }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while shown.count == before, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            return shown.count > before ? shown.last : nil
+        }
+        // WebKit's view is flipped: y is measured from the top.
+        #expect(try await rightClick(atTop: 20)?.first?.hasPrefix("Search with Google for") == true, "\(shown)")
+        #expect(try await rightClick(atTop: 200) == ["Back", "Forward", "Reload", "—", "Save Page As…", "Print…"], "\(shown)")
+        #expect(!window.isVisible)
     }
 
     @Test func managerValidatesTargetsBeforeShowingAMenu() throws {

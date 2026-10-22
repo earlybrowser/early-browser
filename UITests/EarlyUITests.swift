@@ -2302,7 +2302,9 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "Download")
         let area = app.webViews.staticTexts["Plain page area"]
         XCTAssertTrue(area.waitForExistence(timeout: 5))
-        area.rightClick()
+        // Right-clicking a word selects it and shows the text menu, as in
+        // Safari; the page menu belongs to the empty block below the text.
+        area.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).withOffset(CGVector(dx: 0, dy: 150)).rightClick()
         // The File and navigation menus each own some of these titles; only the
         // page menu has both Save Page As… and Reload.
         let pageMenu = app.menus.containing(.menuItem, identifier: "Save Page As…")
@@ -2312,7 +2314,7 @@ final class EarlyUITests: XCTestCase {
             XCTAssertTrue(pageMenu.menuItems[title].exists, "Missing page menu item: \(title)")
         }
         app.typeKey(.escape, modifierFlags: [])
-        XCTAssertFalse(pageMenu.exists)
+        XCTAssertTrue(pageMenu.waitForNonExistence(timeout: 3))
 
         app.webViews.links["Download note"].click()
         let button = app.buttons["downloads.button"]

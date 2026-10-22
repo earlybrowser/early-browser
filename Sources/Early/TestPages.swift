@@ -83,7 +83,7 @@ final class TestPages: NSObject, WKURLSchemeHandler {
             <body style="font:18px -apple-system;padding:32px">
             <h1>Page Download</h1>
             <p><a id="note" download="early-note.txt" href="data:text/plain;base64,RWFybHkgZG93bmxvYWQ=">Download note</a></p>
-            <p style="height:300px">Plain page area</p></body></html>
+            <p>Plain page area</p><div style="height:300px"></div></body></html>
             """)
             return
         }
