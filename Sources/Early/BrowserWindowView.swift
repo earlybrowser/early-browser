@@ -128,30 +128,42 @@ struct BrowserWindowView: View {
     /// An invisible 12 pt grab area over the visible boundary: the 6 pt gap and
     /// page outline beside a pinned sidebar, or a floating sidebar's own edge.
     private var sidebarResizeHandle: some View {
-        Color.clear
-            .frame(width: 12)
-            .contentShape(Rectangle())
-            .offset(x: sidebarAutoHides ? 6 : 9)
-            .onHover { inside in
-                (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
-            }
-            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                .onChanged { value in
-                    if resizeStartWidth == nil {
-                        resizeStartWidth = model.sidebarWidth
-                        model.sidebarInteractionInProgress = true
-                    }
-                    model.sidebarWidth = SidebarWidth.clamped((resizeStartWidth ?? model.sidebarWidth) + value.translation.width)
+        ZStack {
+            sidebarResizeControl
+            // The pointer area sits above the focusable control and outside the
+            // focus and accessibility systems, so a mouse drag cannot focus the
+            // edge or show its keyboard outline.
+            Color.clear
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
                 }
-                .onEnded { _ in
-                    resizeStartWidth = nil
-                    model.sidebarInteractionInProgress = false
-                    model.finishSidebarResize()
-                    NSCursor.arrow.set()
-                })
-            // Button-like focus: reachable by keyboard navigation, but a mouse
-            // drag must not focus the edge and show its keyboard outline.
-            .focusable(interactions: .activate)
+                .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        if resizeStartWidth == nil {
+                            resizeStartWidth = model.sidebarWidth
+                            model.sidebarInteractionInProgress = true
+                        }
+                        model.sidebarWidth = SidebarWidth.clamped((resizeStartWidth ?? model.sidebarWidth) + value.translation.width)
+                    }
+                    .onEnded { _ in
+                        resizeStartWidth = nil
+                        model.sidebarInteractionInProgress = false
+                        model.finishSidebarResize()
+                        NSCursor.arrow.set()
+                    })
+                .accessibilityHidden(true)
+        }
+        .frame(width: 12)
+        .offset(x: sidebarAutoHides ? 6 : 9)
+    }
+
+    /// The single keyboard and VoiceOver element for sidebar width.
+    private var sidebarResizeControl: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.001))
+            .contentShape(Rectangle())
+            .focusable()
             .browserKeyboardFocus(cornerRadius: 2)
             .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
                 guard let delta = SidebarKeyboardResize.delta(for: press.key, modifiers: press.modifiers) else { return .ignored }
