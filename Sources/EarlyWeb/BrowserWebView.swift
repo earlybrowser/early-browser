@@ -3,10 +3,40 @@
 import AppKit
 import WebKit
 
+/// WebKit re-sends a key-down that the page left unhandled through AppKit,
+/// whose final fallback is the unhandled-key alert. Websites often act on a
+/// plain key without preventing its default (YouTube's T toggles theater
+/// mode), and menus/key equivalents have already declined the re-sent event.
+/// Plain keys therefore end silently, as in other browsers. Command/Control
+/// shortcuts keep AppKit's standard path, including its alert for unassigned
+/// shortcuts, and Tab keeps window key-view navigation.
+enum UnhandledPageKey {
+    private static let tabKeyCode: UInt16 = 48
+
+    static func keepsStandardFallback(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        keyCode == tabKeyCode || !modifiers.intersection([.command, .control]).isEmpty
+    }
+}
+
 /// Early owns link-menu presentation. An ordinary native popup avoids AppKit's
 /// contextual-menu augmentation; non-link editing menus remain WebKit-native.
 @MainActor
 final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDelegate {
+    /// Key-downs already delivered to the page. WebKit re-sends the same event
+    /// object when the page declines it; weak entries vanish with the event.
+    private let pageKeyEvents = NSHashTable<NSEvent>(options: [.weakMemory, .objectPointerPersonality])
+
+    override func keyDown(with event: NSEvent) {
+        guard pageKeyEvents.contains(event) else {
+            pageKeyEvents.add(event)
+            super.keyDown(with: event)
+            return
+        }
+        pageKeyEvents.remove(event)
+        guard UnhandledPageKey.keepsStandardFallback(keyCode: event.keyCode, modifiers: event.modifierFlags) else { return }
+        super.keyDown(with: event)
+    }
+
     var onOpenWindowLink: ((URL) -> Void)?
     var onOpenBackgroundLink: ((URL) -> Void)?
     var shareLink: ((URL) -> Void)?
