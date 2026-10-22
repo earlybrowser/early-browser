@@ -85,17 +85,66 @@ struct BrowserAccessibilityTests {
     }
 
     @Test func sidebarArrowsAdjustOnlyTheirFocusedControlAndLeaveModifiedKeysAlone() {
-        #expect(SidebarKeyboardResize.delta(for: .leftArrow, modifiers: []) == -16)
-        #expect(SidebarKeyboardResize.delta(for: .rightArrow, modifiers: .shift) == 16)
-        for modifiers: EventModifiers in [.command, .control, .option, [.control, .option], [.command, .shift]] {
-            #expect(SidebarKeyboardResize.delta(for: .leftArrow, modifiers: modifiers) == nil)
-            #expect(SidebarKeyboardResize.delta(for: .rightArrow, modifiers: modifiers) == nil)
+        #expect(SidebarKeyboardResize.delta(forKeyCode: 123, modifiers: [.function, .numericPad]) == -16)
+        #expect(SidebarKeyboardResize.delta(forKeyCode: 124, modifiers: .shift) == 16)
+        for modifiers: NSEvent.ModifierFlags in [.command, .control, .option, [.control, .option], [.command, .shift]] {
+            #expect(SidebarKeyboardResize.delta(forKeyCode: 123, modifiers: modifiers) == nil)
+            #expect(SidebarKeyboardResize.delta(forKeyCode: 124, modifiers: modifiers) == nil)
         }
-        for key: KeyEquivalent in [.tab, .escape, .space, "t"] {
-            #expect(SidebarKeyboardResize.delta(for: key, modifiers: []) == nil)
+        for keyCode: UInt16 in [48, 53, 49, 17] { // Tab, Escape, Space, T
+            #expect(SidebarKeyboardResize.delta(forKeyCode: keyCode, modifiers: []) == nil)
         }
         #expect(SidebarWidth.clamped(SidebarWidth.minimum - 16) == SidebarWidth.minimum)
         #expect(SidebarWidth.clamped(SidebarWidth.maximum + 16) == SidebarWidth.maximum)
+    }
+
+    @Test func sidebarEdgeIsOneNativeSplitterThatPointerPressesCannotFocus() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let edge = SidebarResizeEdge.EdgeView(frame: CGRect(x: 237, y: 0, width: 12, height: 600))
+        try #require(window.contentView).addSubview(edge)
+        defer { edge.invalidate(); window.close() }
+        edge.configure(width: 240, increasedContrast: false)
+        var adjustments: [Double] = [], travel: [Double] = [], phases: [String] = []
+        edge.onAdjust = { adjustments.append($0) }
+        edge.onBegin = { phases.append("begin") }
+        edge.onResize = { travel.append($0) }
+        edge.onEnd = { phases.append("end") }
+
+        // One native element replaces the SwiftUI focusable view, which exposed two.
+        #expect(edge.isAccessibilityElement() && edge.accessibilityRole() == .splitter)
+        #expect(edge.accessibilityIdentifier() == "sidebar.resize" && edge.accessibilityLabel() == "Sidebar width")
+        #expect(edge.accessibilityValue() as? String == "240 points")
+        #expect(edge.accessibilityPerformIncrement() && edge.accessibilityPerformDecrement())
+        let arrow = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.function, .numericPad],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{F702}",
+            charactersIgnoringModifiers: "\u{F702}", isARepeat: false, keyCode: 123))
+        edge.keyDown(with: arrow)
+        #expect(adjustments == [16, -16, -16])
+
+        // A click or drag keeps the page's keyboard focus; keyboard navigation may focus it.
+        for press: NSEvent.EventType in [.leftMouseDown, .rightMouseDown, .otherMouseDown] {
+            #expect(!SidebarResizeEdge.EdgeView.acceptsFocus(during: press))
+        }
+        #expect(SidebarResizeEdge.EdgeView.acceptsFocus(during: .keyDown))
+        #expect(SidebarResizeEdge.EdgeView.acceptsFocus(during: nil))
+        #expect(edge.focusRingType == .none && edge.becomeFirstResponder() && edge.keyboardFocused)
+        #expect(edge.resignFirstResponder() && !edge.keyboardFocused)
+
+        edge.resetCursorRects()
+        let cursor = try #require(edge.resizeCursorRect)
+        #expect(abs(cursor.width - 12) < 0.001, "Native resize cursor covers the whole grab area: \(cursor)")
+        edge.beginResize(atWindowX: 243)
+        edge.updateResize(atWindowX: 283)
+        edge.endResize()
+        #expect(phases == ["begin", "end"] && travel == [40])
+
+        edge.beginResize(atWindowX: 243)
+        edge.invalidate()
+        #expect(phases == ["begin", "end", "begin", "end"], "Teardown ends an unfinished drag")
+        #expect(!edge.accessibilityPerformIncrement() && edge.resizeCursorRect == nil && !window.isVisible)
     }
 
     @Test func reducedMotionClearsInheritedAnimationsWithoutChangingNormalTransactions() {

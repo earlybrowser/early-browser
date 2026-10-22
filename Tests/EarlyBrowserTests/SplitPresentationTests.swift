@@ -470,6 +470,39 @@ struct SplitPresentationTests {
         #expect(model.coordinator.splitGroups.count == 1 && model.webViews.creationCount == 4)
     }
 
+    @Test func sidebarResizeEdgeIsOneNativeViewOverTheVisiblePageOutline() async throws {
+        let fixture = Fixture(), model = fixture.model
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: AnyView(BrowserWindowView(model: model).transaction { $0.disablesAnimations = true }))
+        window.contentView = hosting
+        hosting.frame.size = CGSize(width: 800, height: 600)
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            fixture.cleanup()
+        }
+        func edges(in view: NSView) -> [SidebarResizeEdge.EdgeView] {
+            ((view as? SidebarResizeEdge.EdgeView).map { [$0] } ?? []) + view.subviews.flatMap { edges(in: $0) }
+        }
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        hosting.layoutSubtreeIfNeeded()
+        let found = edges(in: hosting)
+        #expect(found.count == 1, "Exactly one resize element")
+        let edge = try #require(found.first)
+        // Pinned sidebar: the page outline starts after its 6 pt gap, so the
+        // 12 pt area spans 3 pt inside the sidebar through 2 pt past the outline.
+        let frame = edge.convert(edge.bounds, to: nil)
+        let windowInset: CGFloat = 6 // BrowserWindowView's frame around sidebar and page.
+        let sidebarTrailing = windowInset + CGFloat(model.sidebarWidth)
+        let outline = sidebarTrailing + 6
+        #expect(abs(frame.minX - (sidebarTrailing - 3)) < 0.5 && abs(frame.width - 12) < 0.5, "Edge frame: \(frame)")
+        #expect(frame.minX < outline && frame.maxX >= outline + 1, "The outline is inside the grab area: \(frame)")
+        #expect(abs(frame.minY - windowInset) < 0.5 && frame.height > 500, "Full-height grab area: \(frame)")
+    }
+
     @Test(arguments: [false, true])
     func freshDragSplitEnablesDividerWhenSidebarDragEndsWithoutASwap(animationsEnabled: Bool) async throws {
         let fixture = Fixture(), model = fixture.model

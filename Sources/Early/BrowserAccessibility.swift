@@ -67,9 +67,9 @@ extension View {
 }
 
 enum SidebarKeyboardResize {
-    static func delta(for key: KeyEquivalent, modifiers: EventModifiers) -> Double? {
+    static func delta(forKeyCode keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Double? {
         guard modifiers.intersection([.command, .control, .option]).isEmpty else { return nil }
-        return key == .leftArrow ? -16 : (key == .rightArrow ? 16 : nil)
+        return keyCode == 123 ? -16 : (keyCode == 124 ? 16 : nil) // Left/Right Arrow
     }
 }
 

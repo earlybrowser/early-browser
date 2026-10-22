@@ -757,6 +757,179 @@ enum SidebarRevealRegion {
     }
 }
 
+/// The sidebar width control: one native splitter element for VoiceOver and
+/// keyboard navigation, with a native resize cursor and pointer tracking. A
+/// SwiftUI focusable view exposed a duplicate accessibility element. A click
+/// or drag keeps the page's keyboard focus; only keyboard navigation focuses it.
+struct SidebarResizeEdge: NSViewRepresentable {
+    let width: Double
+    let onBegin: () -> Void
+    /// Horizontal pointer travel since the drag began, in points.
+    let onResize: (Double) -> Void
+    let onEnd: () -> Void
+    let onAdjust: (Double) -> Void
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func makeNSView(context: Context) -> EdgeView { EdgeView(frame: .zero) }
+    func updateNSView(_ view: EdgeView, context: Context) {
+        view.onBegin = onBegin
+        view.onResize = onResize
+        view.onEnd = onEnd
+        view.onAdjust = onAdjust
+        view.configure(width: width, increasedContrast: contrast == .increased)
+    }
+    static func dismantleNSView(_ view: EdgeView, coordinator: ()) { view.invalidate() }
+
+    final class EdgeView: NSView {
+        var onBegin: (() -> Void)?
+        var onResize: ((Double) -> Void)?
+        var onEnd: (() -> Void)?
+        var onAdjust: ((Double) -> Void)?
+        private var width = SidebarWidth.defaultValue
+        private var increasedContrast = false
+        private var dragAnchorX: CGFloat?
+        private var tracking: NSTrackingArea?
+        private var invalidated = false
+        private(set) var keyboardFocused = false
+        private(set) var resizeCursorRect: CGRect?
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            focusRingType = .none
+        }
+        required init?(coder: NSCoder) { return nil }
+
+        func configure(width: Double, increasedContrast: Bool) {
+            guard !invalidated else { return }
+            let changed = self.width != width
+            self.width = width
+            self.increasedContrast = increasedContrast
+            needsDisplay = true
+            if changed, window != nil { NSAccessibility.post(element: self, notification: .valueChanged) }
+        }
+
+        /// Keyboard navigation may focus the edge; a pointer press must not.
+        static func acceptsFocus(during eventType: NSEvent.EventType?) -> Bool {
+            guard let eventType else { return true }
+            return ![.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(eventType)
+        }
+
+        override var acceptsFirstResponder: Bool { !invalidated && Self.acceptsFocus(during: NSApp.currentEvent?.type) }
+        override var canBecomeKeyView: Bool { NSApp.isFullKeyboardAccessEnabled && super.canBecomeKeyView }
+        override func becomeFirstResponder() -> Bool {
+            guard !invalidated else { return false }
+            keyboardFocused = true
+            needsDisplay = true
+            return true
+        }
+        override func resignFirstResponder() -> Bool { keyboardFocused = false; needsDisplay = true; return true }
+
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            let region = bounds.intersection(visibleRect)
+            resizeCursorRect = !invalidated && !region.isEmpty ? region : nil
+            if let resizeCursorRect { addCursorRect(resizeCursorRect, cursor: .resizeLeftRight) }
+        }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let tracking { removeTrackingArea(tracking) }
+            tracking = nil
+            guard !invalidated else { return }
+            let area = NSTrackingArea(rect: .zero,
+                options: [.activeInKeyWindow, .inVisibleRect, .cursorUpdate, .enabledDuringMouseDrag],
+                owner: self, userInfo: nil)
+            addTrackingArea(area)
+            tracking = area
+        }
+        override func cursorUpdate(with event: NSEvent) { if !invalidated { NSCursor.resizeLeftRight.set() } }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard !invalidated else { return }
+            updateTrackingAreas()
+            window?.invalidateCursorRects(for: self)
+        }
+        override func layout() {
+            super.layout()
+            guard !invalidated else { return }
+            window?.invalidateCursorRects(for: self)
+        }
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow !== window { endResize() }
+            super.viewWillMove(toWindow: newWindow)
+        }
+
+        override func mouseDown(with event: NSEvent) { beginResize(atWindowX: event.locationInWindow.x) }
+        override func mouseDragged(with event: NSEvent) { updateResize(atWindowX: event.locationInWindow.x) }
+        override func mouseUp(with event: NSEvent) {
+            updateResize(atWindowX: event.locationInWindow.x)
+            endResize()
+            window?.invalidateCursorRects(for: self)
+        }
+
+        func beginResize(atWindowX x: CGFloat) {
+            guard !invalidated, x.isFinite, dragAnchorX == nil else { return }
+            dragAnchorX = x
+            onBegin?()
+        }
+        func updateResize(atWindowX x: CGFloat) {
+            guard let anchor = dragAnchorX, x.isFinite else { return }
+            onResize?(Double(x - anchor))
+        }
+        func endResize() {
+            guard dragAnchorX != nil else { return }
+            dragAnchorX = nil
+            onEnd?()
+        }
+
+        override func keyDown(with event: NSEvent) {
+            if !invalidated, let delta = SidebarKeyboardResize.delta(forKeyCode: event.keyCode, modifiers: event.modifierFlags) {
+                onAdjust?(delta)
+            } else if event.keyCode == 48, event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+                if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(self) }
+                else { window?.selectNextKeyView(self) }
+            } else { super.keyDown(with: event) }
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            // Invisible at rest, on hover and while dragging; keyboard focus
+            // draws the same compact neutral grip as the split divider.
+            guard keyboardFocused, !invalidated else { return }
+            let height = min(48.0, max(0, bounds.height - 16))
+            NSColor.labelColor.withAlphaComponent(increasedContrast ? 0.85 : 0.55).setFill()
+            NSBezierPath(roundedRect: CGRect(x: bounds.midX - 2, y: bounds.midY - height / 2,
+                width: 4, height: height), xRadius: 2, yRadius: 2).fill()
+        }
+
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
+        override func accessibilityLabel() -> String? { "Sidebar width" }
+        override func accessibilityIdentifier() -> String { "sidebar.resize" }
+        override func accessibilityValue() -> Any? { "\(Int(width)) points" }
+        override func accessibilityHelp() -> String? { "Use Left and Right Arrow to resize the sidebar" }
+        override func accessibilityOrientation() -> NSAccessibilityOrientation { .vertical }
+        override func isAccessibilityEnabled() -> Bool { !invalidated }
+        override func accessibilityPerformIncrement() -> Bool { adjust(16) }
+        override func accessibilityPerformDecrement() -> Bool { adjust(-16) }
+
+        private func adjust(_ delta: Double) -> Bool {
+            guard !invalidated, let onAdjust else { return false }
+            onAdjust(delta)
+            return true
+        }
+
+        func invalidate() {
+            endResize()
+            invalidated = true
+            if let tracking { removeTrackingArea(tracking) }
+            tracking = nil
+            discardCursorRects()
+            resizeCursorRect = nil
+            keyboardFocused = false
+            onBegin = nil; onResize = nil; onEnd = nil; onAdjust = nil
+        }
+    }
+}
+
 /// Track the stationary native window surface, including events delivered to
 /// WebKit children. SwiftUI hover regions can miss a second edge entry after
 /// their overlay/sidebar hierarchy changes. Never intercept or synthesize input.
