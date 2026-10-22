@@ -799,11 +799,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public func startDownload(_ url: URL, from tabID: UUID, to destination: URL? = nil, listed: Bool = true,
                               settled: ((DownloadItem) -> Void)? = nil) -> Bool {
         guard let page = pages[tabID], isDownloadable(url) else { return false }
-        let view = page.view
-        Task { @MainActor [weak self, weak view] in
-            guard let view else { return }
-            let download = await view.startDownload(using: URLRequest(url: url))
-            guard let self else { _ = await download.cancel(); return }
+        // Adopt inside WebKit's callback. WebKit can ask for a destination right
+        // after it, and a delegate set from an awaited continuation may be too
+        // late: the download would then be dropped while it shows "Starting…".
+        page.view.startDownload(using: URLRequest(url: url)) { [weak self, weak view = page.view] download in
+            guard let self else { download.cancel { _ in }; return }
             self.adoptDownload(download, from: view, destination: destination, listed: listed, settled: settled)
         }
         return true

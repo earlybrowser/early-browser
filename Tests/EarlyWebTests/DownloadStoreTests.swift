@@ -61,6 +61,11 @@ struct DownloadStoreTests {
         }
     }
 
+    /// Synchronous on purpose: nothing else on the main thread runs meanwhile.
+    private func blockMainThread(for seconds: TimeInterval) {
+        Thread.sleep(forTimeInterval: seconds)
+    }
+
     private let hello = URL(string: "data:text/plain;base64,aGVsbG8gd29ybGQ=")! // "hello world"
 
     @Test func filenamesAreSanitizedAndNeverReplaceExistingOrReservedFiles() {
@@ -101,6 +106,21 @@ struct DownloadStoreTests {
         let quarantine = try destination.resourceValues(forKeys: [.quarantinePropertiesKey]).quarantineProperties
         #expect(quarantine?[kLSQuarantineAgentNameKey as String] as? String == "Early")
         #expect(quarantine?[kLSQuarantineTypeKey as String] as? String == kLSQuarantineTypeWebDownload as String)
+    }
+
+    @Test func aBusyMainThreadCannotLoseTheDownloadBeforeItsDelegateIsSet() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        for count in 1...3 {
+            #expect(fixture.manager.startDownload(hello, from: fixture.tab.id))
+            // Let the request go out, then keep the main thread busy so WebKit's
+            // start and destination messages arrive together.
+            await Task.yield()
+            blockMainThread(for: 0.3)
+            try await waitUntil("download \(count)") {
+                fixture.store.items.count == count && fixture.store.items.allSatisfy { $0.state == .finished }
+            }
+        }
     }
 
     @Test func downloadLinksBecomeUniqueFilesWithoutChangingThePage() async throws {
@@ -160,6 +180,9 @@ struct DownloadStoreTests {
         // Resuming works even after the source page is gone.
         fixture.manager.discard(tabID: fixture.tab.id)
         #expect(fixture.store.resume(item) && item.state == .downloading)
+        // WebKit's finish may arrive while the main thread is busy.
+        await Task.yield()
+        blockMainThread(for: 0.3)
         try await waitUntil("resumed") { item.state == .finished }
         let resumed = try Data(contentsOf: destination)
         #expect(item.destination == destination && resumed == body)

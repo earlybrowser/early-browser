@@ -183,10 +183,11 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         item.failureReason = nil
         item.state = .downloading
         if let destination = item.destination { reserved.insert(destination.standardizedFileURL.path) }
-        Task { @MainActor [weak self, weak item] in
-            let download = await host.resumeDownload(fromResumeData: resumeData)
+        // Attach inside WebKit's callback, before it can report progress or the
+        // finish to a download that has no delegate yet (see `startDownload`).
+        host.resumeDownload(fromResumeData: resumeData) { [weak self, weak item] download in
             guard let self, let item, item.state == .downloading else {
-                _ = await download.cancel()
+                download.cancel { _ in }
                 return
             }
             self.attach(download, to: item)
