@@ -24,6 +24,8 @@ public enum BrowserAction: Equatable, Sendable {
     case closeTabsBelow(UUID)
     case clearTodayTabs
     case reopenLastTab
+    case showHistory
+    case clearHistory
     case setPinned(UUID, Bool)
     case setFavorite(UUID, Bool)
     case setMuted(UUID, Bool)

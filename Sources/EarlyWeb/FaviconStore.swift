@@ -47,6 +47,31 @@ public final class FaviconStore {
         }.value
     }
 
+    /// Forgets loaded artwork after website data is cleared; rows ask again.
+    public func forgetAll() {
+        tasks.values.forEach { $0.cancel() }
+        tasks.removeAll()
+        pending.removeAll()
+        requests.removeAll()
+        running.removeAll()
+        images.removeAll()
+        colors.removeAll()
+        order.removeAll()
+    }
+
+    /// Removes this profile's cached icons saved since `date` (nil: all).
+    public nonisolated static func removeCachedIcons(for profileID: UUID, since date: Date?) async {
+        guard let directory = cacheDirectory(for: profileID) else { return }
+        await Task.detached(priority: .utility) {
+            let files = (try? FileManager.default.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            for file in files {
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantFuture
+                if date.map({ modified >= $0 }) ?? true { try? FileManager.default.removeItem(at: file) }
+            }
+        }.value
+    }
+
     public func shutdown() async {
         stopped = true
         let outstanding = Array(tasks.values)

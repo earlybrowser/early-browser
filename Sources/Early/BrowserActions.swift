@@ -16,7 +16,7 @@ extension BrowserWindowModel {
         if case .dismissCommandBar = action { return coordinator.commandBar != nil }
         guard !sidebarInteractionInProgress, splitResize == nil, !spaceSwipeIsSettling,
               !folderEditorIsPresented, renamingTabID == nil, spaceEditor == nil,
-              spaceDeletionID == nil, !hasVisibleDialog, !documentPanelIsPresented else { return false }
+              spaceDeletionID == nil, !hasVisibleDialog, !documentPanelIsPresented, !historyPresented else { return false }
         switch action {
         case .presentCommandBar, .toggleSidebar:
             return true
@@ -61,6 +61,8 @@ extension BrowserWindowModel {
         case .reopenLastTab:
             guard let tab = coordinator.recentlyClosed.last?.tab else { return false }
             return tab.profileID == coordinator.profileID && ownsSpace(tab.spaceID)
+        case .showHistory, .clearHistory:
+            return history != nil
         case .setPinned(let id, let pinned):
             guard let tab = accessibleTab(id), !tab.isFavorite,
                   (tab.pinnedURL != nil) != pinned else { return false }
@@ -190,6 +192,12 @@ extension BrowserWindowModel {
         case .closeTabsBelow(let id): closeTodayTabs(coordinator.todayTabIDs(below: id), keeping: id)
         case .clearTodayTabs: closeTodayTabs(coordinator.todayTabIDs)
         case .reopenLastTab: reopenLastTab()
+        case .showHistory:
+            historyPresented = true
+            restoreContentFocus = false
+        case .clearHistory:
+            clearHistoryPresented = true
+            restoreContentFocus = false
         case .setPinned(let id, let pinned): setPinned(id, pinned: pinned)
         case .setFavorite(let id, let favorite): setFavorite(id, favorite: favorite)
         case .setMuted(let id, let muted):
@@ -340,6 +348,8 @@ extension BrowserWindowModel {
         }
         addAction("closeActiveTab", "Close Tab", .closeActiveTab, terms: ["close current tab"])
         addAction("reopenLastTab", "Reopen Closed Tab", .reopenLastTab, terms: ["restore closed tab", "undo close tab"])
+        addAction("showHistory", "Show All History", .showHistory, terms: ["history", "browsing history", "visited pages"])
+        addAction("clearHistory", "Clear History…", .clearHistory, terms: ["clear history", "delete history", "clear cookies", "clear website data"])
         addAction("clearToday", "Clear Today Tabs", .clearTodayTabs, terms: ["close all tabs", "clear tabs", "close today tabs"])
         if let tab = activeTab {
             addAction("closeOthers", "Close Other Tabs", .closeOtherTabs(tab.id), terms: ["close other tabs", "keep only this tab"])

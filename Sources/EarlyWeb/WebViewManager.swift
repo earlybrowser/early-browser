@@ -97,8 +97,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var translationMenuTitle: ((UUID) -> String?)?
     /// Translate or Show Original was chosen from the page menu.
     public var onTranslatePage: ((UUID) -> Void)?
-    private let profileID: UUID
-    private let ephemeral: Bool
+    let profileID: UUID
+    let ephemeral: Bool
     let input: NavigationInput
     private let configure: (WKWebViewConfiguration) -> Void
     private var store: WKWebsiteDataStore?

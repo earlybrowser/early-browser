@@ -19,6 +19,32 @@ public struct HistoryVisit: Identifiable, Equatable, Sendable {
     public let visitedAt: Date
 }
 
+/// The periods Clear History offers, as in Safari.
+public enum HistoryClearRange: String, CaseIterable, Identifiable, Sendable {
+    case lastHour, today, todayAndYesterday, all
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .lastHour: "the Last Hour"
+        case .today: "Today"
+        case .todayAndYesterday: "Today and Yesterday"
+        case .all: "All History"
+        }
+    }
+
+    /// The first moment cleared; nil clears everything.
+    public func start(now: Date, calendar: Calendar = .current) -> Date? {
+        switch self {
+        case .lastHour: now.addingTimeInterval(-3600)
+        case .today: calendar.startOfDay(for: now)
+        case .todayAndYesterday: calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: now))
+        case .all: nil
+        }
+    }
+}
+
 /// One profile's browsing history in its own SQLite file. All work runs on this
 /// actor, never the main actor. Private windows have no store at all.
 public actor HistoryStore {

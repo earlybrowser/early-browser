@@ -307,6 +307,40 @@ struct PageToolsActionTests {
         #expect(model.activeTab?.currentURL == URL(string: "early-test://fixture/one") && model.coordinator.commandBar == nil)
     }
 
+    @Test func historyOpensAsAWindowSheetGroupsVisitsByDayAndClearsARange() async throws {
+        let withoutHistory = Fixture()
+        #expect(!withoutHistory.model.canPerform(.showHistory), "No history store, no History")
+        withoutHistory.cleanup()
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let fixture = Fixture(history: history)
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let now = Date()
+        let old = URL(string: "https://example.com/old")!, recent = URL(string: "https://example.com/recent")!
+        try await history.record(old, title: "Old", at: now.addingTimeInterval(-3 * 86400))
+        try await history.record(recent, title: "Recent", at: now.addingTimeInterval(-60))
+
+        #expect(model.canPerform(.showHistory) && model.perform(.showHistory) && model.historyPresented)
+        #expect(!model.canPerform(.presentCommandBar(.newTab)), "History is modal for this window")
+        model.historyPresented = false
+        #expect(model.commandSearchCandidates().map(\.title).contains("Show All History"))
+        #expect(model.perform(.clearHistory) && model.clearHistoryPresented)
+        model.clearHistoryPresented = false
+
+        let sections = HistoryView.sections(try await history.visits(), now: now)
+        #expect(sections.map(\.title).first == "Today" && sections.count == 2)
+        #expect(sections.first?.visits.map(\.url) == [recent])
+
+        let revision = model.historyRevision
+        await model.clearHistory(.lastHour)
+        #expect(try await history.visits().map(\.url) == [old], "Only the chosen period is cleared")
+        #expect(model.historyRevision == revision + 1)
+        await model.clearHistory(.all)
+        #expect(try await history.visits().isEmpty)
+    }
+
     @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {
         let fixture = Fixture(session: splitSession())
         defer { fixture.cleanup() }

@@ -254,6 +254,15 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let workspace { persistence?.enqueue(workspace) }
     }
 
+    /// One window cleared the profile's shared website data; the others drop
+    /// their now-stale icons and thumbnails and reload History.
+    func didClearWebsiteData(profileID: UUID, from source: BrowserWindowModel) {
+        for target in visibleModels where target !== source && target.coordinator.profileID == profileID {
+            target.webViews.forgetClearedArtwork()
+            target.historyRevision += 1
+        }
+    }
+
     func focusedWindow(_ id: UUID?) {
         guard !restoringFocus, let owner = windowModel(id), workspace?.activeProfileID != owner.coordinator.profileID else { return }
         workspace?.activeProfileID = owner.coordinator.profileID

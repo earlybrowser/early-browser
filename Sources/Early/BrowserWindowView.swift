@@ -527,6 +527,15 @@ struct BrowserWindowView: View {
           }.padding(24).frame(width: 340).browserReducedMotion()
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
+        .sheet(isPresented: $model.historyPresented) { HistoryView(model: model) }
+        // Clear History from the menu without opening History first.
+        .confirmationDialog("Clear history and website data?",
+                            isPresented: Binding(get: { model.clearHistoryPresented && !model.historyPresented },
+                                                 set: { model.clearHistoryPresented = $0 })) {
+            ClearHistoryButtons(model: model)
+        } message: {
+            Text(ClearHistoryButtons.message)
+        }
         .onDisappear {
             model.cancelWindowInteractions()
             endDrag()

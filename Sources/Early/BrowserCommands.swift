@@ -250,6 +250,12 @@ struct BrowserCommands: Commands {
             Button("Reopen Closed Tab") { model?.perform(.reopenLastTab) }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(model?.canPerform(.reopenLastTab) != true)
+            Divider()
+            Button("Show All History") { model?.perform(.showHistory) }
+                .keyboardShortcut("y")
+                .disabled(model?.canPerform(.showHistory) != true)
+            Button("Clear History…") { model?.perform(.clearHistory) }
+                .disabled(model?.canPerform(.clearHistory) != true)
             Button("Next Tab") { model?.advanceTabSwitcher(1) }
                 .keyboardShortcut(.tab, modifiers: .control)
                 .disabled(model?.canPresentTabSwitcher != true)

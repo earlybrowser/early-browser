@@ -72,6 +72,11 @@ final class BrowserWindowModel {
     }
     private(set) var pasteKind: PasteKind?
     @ObservationIgnored private var pasteKindChangeCount = -1
+    /// Show All History, and its Clear History choices.
+    var historyPresented = false
+    var clearHistoryPresented = false
+    /// Bumped when history or website data was cleared, so History reloads.
+    var historyRevision = 0
     /// Tabs whose language Apple's Translation can turn into the user's.
     var translationOffers: [UUID: TranslationOffer] = [:]
     /// The translation waiting for (or running in) the window's session.
@@ -683,6 +688,18 @@ final class BrowserWindowModel {
 
     /// Waits for recorded visits to reach the store (tests and clearing).
     func flushHistory() async { await historyQueue?.value }
+
+    /// Clears this profile's history and website data from the period's start,
+    /// with cached icons and thumbnails in every window of the profile.
+    func clearHistory(_ range: HistoryClearRange) async {
+        let since = range.start(now: now())
+        await flushHistory()
+        try? await history?.deleteVisits(since: since)
+        await webViews.clearWebsiteData(since: since)
+        historyURLs.removeAll()
+        historyRevision += 1
+        application?.didClearWebsiteData(profileID: coordinator.profileID, from: self)
+    }
 
     /// Closes several Today tabs at once, keeping their pages reopenable.
     func closeTodayTabs(_ ids: [UUID], keeping kept: UUID? = nil) {
