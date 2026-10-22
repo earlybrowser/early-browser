@@ -309,9 +309,11 @@ final class BrowserWindowModel {
         if id == coordinator.focusedTabID { contentFocusRequest += 1 }
     }
 
-    /// Reader's links and accents in the active Space's theme.
+    /// Reader's links and accents in the active Space's theme. Reader follows
+    /// the page's appearance, so private windows use the neutral Space gray.
     var readerAccent: ReaderAccent {
-        ReaderAccent(light: splitTheme.focusBorder(isDark: false).hex, dark: splitTheme.focusBorder(isDark: true).hex)
+        let theme = isPrivate ? .space(.gray) : chromeTheme
+        return ReaderAccent(light: theme.focusBorder(isDark: false).hex, dark: theme.focusBorder(isDark: true).hex)
     }
 
     /// Show or leave Reader; focus follows to Reader's view or back to the page.
@@ -1009,10 +1011,14 @@ final class BrowserWindowModel {
             && spaceDeletionID == nil && !hasVisibleDialog
     }
 
-    /// Drop targets and the focused pane share the current Space's theme.
-    var splitTheme: BrowserSpace.Color {
-        preferences.spaceThemes ? (coordinator.activeSpace?.color ?? .gray) : .gray
+    /// The chrome, drop targets and focused pane share the current Space's
+    /// theme. Private windows are always gray, with or without Space themes.
+    var chromeTheme: WindowTheme {
+        isPrivate ? .privateBrowsing : .space(preferences.spaceThemes ? (coordinator.activeSpace?.color ?? .gray) : .gray)
     }
+
+    /// Whether floating chrome, such as the command bar, wears the theme.
+    var tintsChrome: Bool { isPrivate || preferences.spaceThemes }
 
     func updateSplitPreview(for tabID: UUID, at point: CGPoint, in bounds: CGRect, leadingInset: CGFloat = 0) {
         guard canPreviewSplit, point.x.isFinite, point.y.isFinite,

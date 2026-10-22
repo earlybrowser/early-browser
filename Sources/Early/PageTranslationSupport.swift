@@ -151,7 +151,7 @@ struct TranslationBadge: View {
 
     var body: some View {
         let pending = model.translationRequest?.offer.tabID == tabID
-        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        let tint = model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         if let message = Self.message(for: phase, pending: pending, sourceName: model.translationOffers[tabID]?.sourceName) {
             HStack(spacing: 8) {
                 if case .translating(let completed, let total) = phase, total > 0 {
@@ -175,7 +175,7 @@ struct TranslationBadge: View {
                 .accessibilityIdentifier("translation.original")
             }
             .padding(.horizontal, 10).frame(height: 30)
-            .modifier(PageToolSurface(theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome))
+            .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
             .help({ if case .failed(let reason) = phase { return reason } else { return message } }())
             .accessibilityElement(children: .contain)
             .accessibilityLabel(message)

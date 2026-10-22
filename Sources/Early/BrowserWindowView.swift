@@ -322,7 +322,7 @@ struct BrowserWindowView: View {
                 .background {
                     if sidebarAutoHides {
                         // Floating chrome must stay legible over web content.
-                        BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+                        BrowserChromeBackground(theme: model.chromeTheme,
                                                 floating: true, allowsTransparency: model.preferences.translucentChrome)
                     }
                 }
@@ -382,7 +382,7 @@ struct BrowserWindowView: View {
         .overlay(alignment: .topLeading) {
             if let flight = model.downloadFlight {
                 DownloadFlightView(flight: flight,
-                                   theme: model.splitTheme.focusBorder(isDark: colorScheme == .dark,
+                                   theme: model.chromeTheme.focusBorder(isDark: colorScheme == .dark,
                                                                        increasedContrast: contrast == .increased).color) {
                     model.finishDownloadFlight(flight.id)
                 }
@@ -399,12 +399,13 @@ struct BrowserWindowView: View {
         }
         // One shared surface for the outer frame and pinned sidebar. Only the
         // clipped page area is inset into it; no sidebar tint or seam on top.
-        .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
+        .background(BrowserChromeBackground(theme: model.chromeTheme,
                                             allowsTransparency: model.preferences.translucentChrome))
         // The thin chrome border around the sidebar and page behaves like a
         // title bar in every window (ordinary and private): drag to move,
         // double-click to zoom. The chrome above ignores clicks.
         .background(WindowDragRegion())
+        .background { if model.isPrivate { PrivateWindowAppearance() } }
         .background(BrowserWindowPointerMonitor { point in
             windowPointer.location = point
             guard sidebarAutoHides else { return }

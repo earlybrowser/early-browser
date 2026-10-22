@@ -123,7 +123,7 @@ public struct BrowserSession: Codable, Equatable, Sendable {
     /// A private window's session: one Space named "Private" and no saved
     /// pages. It belongs to a temporary profile that is never persisted.
     public static func privateWindow(profileID: UUID = UUID()) -> BrowserSession {
-        let space = BrowserSpace(profileID: profileID, name: "Private", color: .purple, icon: .symbol(.masks))
+        let space = BrowserSpace(profileID: profileID, name: "Private", color: .gray, icon: .symbol(.masks))
         return BrowserSession(profileID: profileID, activeSpaceID: space.id, spaces: [space])
     }
 

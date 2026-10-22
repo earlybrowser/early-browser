@@ -54,8 +54,8 @@ struct TabSwitcherView: View {
                 }
             }
             .background {
-                if model.preferences.spaceThemes, contrast != .increased {
-                    BrowserChromeBackground(spaceColor: model.coordinator.activeSpace?.color ?? .gray,
+                if model.tintsChrome, contrast != .increased {
+                    BrowserChromeBackground(theme: model.chromeTheme,
                         floating: true, allowsTransparency: model.preferences.translucentChrome)
                         .clipShape(RoundedRectangle(cornerRadius: 20))
                 } else if reduceTransparency || !model.preferences.translucentChrome || contrast == .increased {

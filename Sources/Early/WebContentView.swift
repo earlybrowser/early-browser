@@ -8,7 +8,7 @@ import WebKit
 /// Wallpaper-aware chrome only. Loaded websites retain their normal opaque
 /// background and are never tinted or rendered through a transparency layer.
 struct BrowserChromeBackground: View {
-    var spaceColor: BrowserSpace.Color = .gray
+    var theme: WindowTheme = .space(.gray)
     var floating = false
     var allowsTransparency = true
     @Environment(\.colorScheme) private var colorScheme
@@ -23,13 +23,13 @@ struct BrowserChromeBackground: View {
             } else {
                 if !reduceTransparency && allowsTransparency { ChromeMaterial(floating: floating) }
                 if colorScheme == .dark, !reduceTransparency && allowsTransparency { Color.black.opacity(0.30) }
-                LinearGradient(colors: [spaceColor.chromeTop(isDark: colorScheme == .dark).color,
-                                        spaceColor.chromeBottom(isDark: colorScheme == .dark).color],
+                LinearGradient(colors: [theme.chromeTop(isDark: colorScheme == .dark).color,
+                                        theme.chromeBottom(isDark: colorScheme == .dark).color],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                     .opacity(reduceTransparency || !allowsTransparency ? 1 : (colorScheme == .dark ? 0.64 : 0.68))
             }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: spaceColor)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: theme)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: colorScheme)
         .allowsHitTesting(false)
         .accessibilityHidden(true)

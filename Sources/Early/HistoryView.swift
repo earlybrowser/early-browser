@@ -249,3 +249,50 @@ struct PrivateBrowsingBadge: View {
         .accessibilityIdentifier("private.badge")
     }
 }
+
+/// Early's own light or dark appearance. Private windows draw their chrome
+/// light on the private gray, so their pages read it here, not from the window.
+@MainActor @Observable final class ApplicationAppearance {
+    static let shared = ApplicationAppearance()
+    private(set) var colorScheme: ColorScheme
+    @ObservationIgnored private var observation: NSKeyValueObservation?
+
+    private init() {
+        let application = NSApplication.shared
+        colorScheme = Self.colorScheme(of: application.effectiveAppearance)
+        observation = application.observe(\.effectiveAppearance) { @Sendable [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.update() }
+        }
+    }
+
+    private func update() {
+        let next = Self.colorScheme(of: NSApplication.shared.effectiveAppearance)
+        if colorScheme != next { colorScheme = next }
+    }
+
+    static func colorScheme(of appearance: NSAppearance) -> ColorScheme {
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light
+    }
+}
+
+/// Gives a private window the light appearance its gray chrome needs, in
+/// light and dark mode alike, including its menus, popovers and controls.
+struct PrivateWindowAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> AppearanceView { AppearanceView() }
+    func updateNSView(_ view: AppearanceView, context: Context) { view.apply() }
+
+    final class AppearanceView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+        }
+
+        func apply() {
+            guard let window, window.appearance?.name != .aqua else { return }
+            window.appearance = NSAppearance(named: .aqua)
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
+    }
+}

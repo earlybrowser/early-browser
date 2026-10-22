@@ -34,7 +34,7 @@ struct DownloadsButton: View {
     var body: some View {
         let store = model.downloads
         let active = store.hasActiveDownloads
-        let theme = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        let theme = model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         Button { model.perform(.showDownloads) } label: {
             ZStack {
                 glyph(.foreground)

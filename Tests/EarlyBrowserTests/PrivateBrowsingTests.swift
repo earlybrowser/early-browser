@@ -3,6 +3,7 @@
 import AppKit
 import EarlyCore
 @testable import EarlyBrowser
+import EarlyWeb
 import SwiftUI
 import Testing
 import WebKit
@@ -71,7 +72,7 @@ struct PrivateBrowsingTests {
         let model = try #require(app.windowModel(first))
         let profile = try #require(app.privateProfileID)
         #expect(model.isPrivate && model.coordinator.profileID == profile && !normal.isPrivate)
-        #expect(model.coordinator.spaces.map(\.name) == ["Private"] && model.coordinator.activeSpace?.color == .purple)
+        #expect(model.coordinator.spaces.map(\.name) == ["Private"] && model.coordinator.activeSpace?.color == .gray)
         #expect(model.history == nil && !model.canPerform(.showHistory), "Private windows record no history")
         #expect(!model.webViews.websiteDataStore.isPersistent)
         #expect(!model.downloads.recordsSourceAddresses && normal.downloads.recordsSourceAddresses)
@@ -181,6 +182,70 @@ struct PrivateBrowsingTests {
                 #expect(frame.hitTest(point) is WindowDragRegion.DragView,
                         "\(model.isPrivate ? "Private" : "Ordinary") border at \(point) belongs to the window, not \(frame.hitTest(point).map { String(describing: type(of: $0)) } ?? "nil")")
             }
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+        }
+        await fixture.cleanup()
+    }
+
+    @Test func privateChromeIsAlwaysLightGrayWhilePagesKeepEarlysAppearance() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let normal = try #require(app.model)
+        let id = try #require(app.openPrivateWindow())
+        let model = try #require(app.windowModel(id))
+        fixture.preferences.spaceThemes = false
+        #expect(model.chromeTheme == .privateBrowsing && model.tintsChrome, "Gray even without Space themes")
+        #expect(normal.chromeTheme == .space(.gray) && !normal.tintsChrome)
+        let gray = WindowTheme.space(.gray)
+        #expect(model.readerAccent == ReaderAccent(light: gray.focusBorder(isDark: false).hex, dark: gray.focusBorder(isDark: true).hex),
+                "Reader follows the page's appearance, not the private chrome")
+        fixture.preferences.spaceThemes = true
+
+        func scheme(_ view: NSView) -> NSAppearance.Name? { view.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) }
+        let previous = NSApp.appearance
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        for window in [model, normal] {
+            #expect(window.openLocations([URL(string: "early-test://fixture/one")!]))
+        }
+        var windows: [NSWindow] = []
+        var hosts: [NSHostingView<AnyView>] = []
+        for window in [model, normal] {
+            let native = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 700),
+                                  styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: true)
+            native.isReleasedWhenClosed = false
+            let hosting = NSHostingView(rootView: AnyView(BrowserWindowView(model: window).transaction { $0.disablesAnimations = true }))
+            native.contentView = hosting
+            hosting.frame.size = CGSize(width: 1000, height: 700)
+            windows.append(native)
+            hosts.append(hosting)
+        }
+        let page = try #require(model.coordinator.focusedTabID.flatMap { model.webViews.pages[$0]?.view })
+        let ordinaryPage = try #require(normal.coordinator.focusedTabID.flatMap { normal.webViews.pages[$0]?.view })
+        func settle(_ label: String, _ condition: () -> Bool) async throws {
+            try await fixture.waitUntil(label) {
+                hosts.forEach { $0.layoutSubtreeIfNeeded() }
+                return condition()
+            }
+        }
+
+        try await settle("dark page in light private chrome") { page.window === windows[0] && scheme(page) == .darkAqua }
+        #expect(windows[0].appearance?.name == .aqua && scheme(hosts[0]) == .aqua, "The private chrome stays light in dark mode")
+        try await settle("ordinary window follows dark mode") { ordinaryPage.window === windows[1] && scheme(ordinaryPage) == .darkAqua }
+        #expect(windows[1].appearance == nil && scheme(hosts[1]) == .darkAqua)
+
+        NSApp.appearance = NSAppearance(named: .aqua)
+        try await settle("light pages") { scheme(page) == .aqua && scheme(ordinaryPage) == .aqua }
+        #expect(scheme(hosts[0]) == .aqua)
+        #expect(scheme(hosts[1]) == .aqua)
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        try await settle("dark again") { scheme(page) == .darkAqua && scheme(ordinaryPage) == .darkAqua }
+        #expect(scheme(hosts[0]) == .aqua)
+
+        NSApp.appearance = previous
+        for (hosting, window) in zip(hosts, windows) {
             hosting.rootView = AnyView(EmptyView())
             hosting.layoutSubtreeIfNeeded()
             window.close()
