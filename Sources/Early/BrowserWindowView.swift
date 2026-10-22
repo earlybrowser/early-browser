@@ -16,6 +16,15 @@ private extension EnvironmentValues {
     }
 }
 
+/// AppKit exposes no public window corner radius. Keep content concentric with
+/// the system's standard titled-window corners instead of reading a private
+/// selector: 10 pt through macOS 15 and 16 pt from macOS 26.
+enum WindowCornerGeometry {
+    static func windowRadius(for version: OperatingSystemVersion) -> CGFloat {
+        version.majorVersion >= 26 ? 16 : 10
+    }
+}
+
 private struct BrowserSurfaceFrames: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
@@ -35,6 +44,7 @@ struct BrowserWindowView: View {
     @Bindable var model: BrowserWindowModel
     private var sidebarAutoHides: Bool { model.preferences.sidebarAutoHides }
     @State private var sidebarHovered = false
+    @FocusState private var revealFocused: Bool
     @State private var resizeStartWidth: Double?
     @State private var tabFrames: [UUID: CGRect] = [:]
     @State private var folderHitFrames: [UUID: CGRect] = [:]
@@ -115,40 +125,30 @@ struct BrowserWindowView: View {
         reduceMotion ? nil : .easeInOut(duration: 0.20)
     }
 
+    /// An invisible 12 pt grab area over the visible boundary: the 6 pt gap and
+    /// page outline beside a pinned sidebar, or a floating sidebar's own edge.
     private var sidebarResizeHandle: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(resizeStartWidth == nil ? 0.001 : 0.12))
-            .frame(width: 6)
-            .contentShape(Rectangle())
-            .offset(x: 3)
-            .onHover { inside in
-                (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
-            }
-            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                .onChanged { value in
-                    if resizeStartWidth == nil {
-                        resizeStartWidth = model.sidebarWidth
-                        model.sidebarInteractionInProgress = true
-                    }
-                    model.sidebarWidth = SidebarWidth.clamped((resizeStartWidth ?? model.sidebarWidth) + value.translation.width)
-                }
-                .onEnded { _ in
-                    resizeStartWidth = nil
-                    model.sidebarInteractionInProgress = false
-                    model.finishSidebarResize()
-                    NSCursor.arrow.set()
-                })
-            .accessibilityLabel("Sidebar width")
-            .accessibilityValue("\(Int(model.sidebarWidth)) points")
-            .accessibilityIdentifier("sidebar.resize")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: model.sidebarWidth = SidebarWidth.clamped(model.sidebarWidth + 16)
-                case .decrement: model.sidebarWidth = SidebarWidth.clamped(model.sidebarWidth - 16)
-                @unknown default: return
-                }
+        let overhang: CGFloat = sidebarAutoHides ? 6 : 9
+        return SidebarResizeEdge(width: model.sidebarWidth,
+            onBegin: {
+                resizeStartWidth = model.sidebarWidth
+                model.sidebarInteractionInProgress = true
+            },
+            onResize: { translation in
+                model.sidebarWidth = SidebarWidth.clamped((resizeStartWidth ?? model.sidebarWidth) + translation)
+            },
+            onEnd: {
+                resizeStartWidth = nil
+                model.sidebarInteractionInProgress = false
                 model.finishSidebarResize()
-            }
+            },
+            onAdjust: { delta in
+                model.sidebarWidth = SidebarWidth.clamped(model.sidebarWidth + delta)
+                model.finishSidebarResize()
+            })
+            .frame(width: 12)
+            // Layout, not a render offset: the native view's frame must match.
+            .alignmentGuide(HorizontalAlignment.trailing) { $0[HorizontalAlignment.trailing] - overhang }
     }
 
     // Pointer samples are not observable: redraw only when group membership
@@ -266,22 +266,8 @@ struct BrowserWindowView: View {
         folder.id != draggingTab && folder.isExpanded
     }
 
-    private static let windowCornerRadius: CGFloat = {
-        guard let tf = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        ).contentView?.superview else {
-            return 16
-        }
-        let sel = NSSelectorFromString("_getCachedDefaultWindowCornerRadius")
-        guard let method = class_getInstanceMethod(type(of: tf), sel) else { return 16 }
-        typealias FloatFunc = @convention(c) (AnyObject, Selector) -> CGFloat
-        let fn = unsafeBitCast(method_getImplementation(method), to: FloatFunc.self)
-        let r = fn(tf, sel)
-        return r > 0 ? r : 16
-    }()
+    private static let windowCornerRadius = WindowCornerGeometry.windowRadius(
+        for: ProcessInfo.processInfo.operatingSystemVersion)
 
     /// Root window padding is 6 pt. For the inner content border to be concentric
     /// with the window frame (constant 6 pt distance everywhere, including corner curves):
@@ -371,7 +357,7 @@ struct BrowserWindowView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
-                .transition(.opacity)
+                .transition(reduceMotion ? .identity : .opacity)
             }
         }
         .animation(sidebarMotion, value: sidebarAutoHides)
@@ -432,7 +418,7 @@ struct BrowserWindowView: View {
                     .allowsHitTesting(false)
                     .accessibilityLabel(toast.message)
                     .accessibilityIdentifier(toast.accessibilityIdentifier)
-                    .transition(.opacity)
+                    .transition(reduceMotion ? .identity : .opacity)
                     .task(id: toast.id) {
                         do { try await Task.sleep(for: .seconds(2)) } catch { return }
                         if model.toast?.id == toast.id { model.toast = nil }
@@ -442,12 +428,18 @@ struct BrowserWindowView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.toast != nil)
         .overlay(alignment: .leading) {
             if sidebarAutoHides && !sidebarVisible {
-                Color.clear
+                Button { sidebarHovered = true } label: { Color.clear }
+                    .buttonStyle(.plain)
                     .frame(width: SidebarRevealRegion.edgeWidth)
                     .contentShape(Rectangle())
-                    .onTapGesture { sidebarHovered = true }
+                    .focused($revealFocused)
+                    .onChange(of: revealFocused) { _, focused in
+                        if focused {
+                            sidebarHovered = true
+                            focusedSidebarControl = .address
+                        }
+                    }
                     .accessibilityLabel("Reveal sidebar")
-                    .accessibilityAddTraits(.isButton)
                     .accessibilityIdentifier("sidebar.reveal")
             }
         }
@@ -507,7 +499,7 @@ struct BrowserWindowView: View {
             .keyboardShortcut(.defaultAction)
             .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-          }.padding(24).frame(width: 340)
+          }.padding(24).frame(width: 340).browserReducedMotion()
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
         .onDisappear {
@@ -518,6 +510,7 @@ struct BrowserWindowView: View {
             model.save()
             model.webViews.discardAll()
         }
+        .browserReducedMotion()
     }
 
     private var sidebar: some View {
@@ -865,11 +858,13 @@ struct BrowserWindowView: View {
             }
             .buttonStyle(SidebarButtonStyle())
             .focused($focusedSidebarControl, equals: .tab(tab.id))
+            .focusEffectDisabled()
             .accessibilityIdentifier("tab.\(tab.id)")
             .accessibilityLabel(tab.displayTitle)
             .accessibilityValue(tabAccessibilityValue(tab))
             .accessibilityHint(tab.isOpen ? "Select tab. Option-click to rename. More actions in the context menu." : "Reopen saved tab. Option-click to rename.")
             .accessibilityAddTraits(selected ? .isSelected : [])
+            .modifier(BrowserTabAccessibilityActions(model: model, tab: tab))
             .help(tab.pinnedURL.map { "Pinned URL: \($0.absoluteString)\nCurrent URL: \(tab.currentURL.absoluteString)\(tab.isOpen ? "" : "\nClick to reopen")" }
                   ?? tab.currentURL.absoluteString)
             .highPriorityGesture(tabClickGesture(tab))
@@ -886,6 +881,7 @@ struct BrowserWindowView: View {
                 }
                     .buttonStyle(SidebarButtonStyle())
                     .focused($focusedSidebarControl, equals: .close(tab.id))
+                    .focusEffectDisabled()
                     .accessibilityIdentifier("tabClose.\(tab.id)")
                     .accessibilityLabel("Close \(tab.displayTitle)")
                     .help(tab.pinnedURL == nil ? "Close tab" : "Close page and keep pin")
@@ -905,12 +901,14 @@ struct BrowserWindowView: View {
         let hasMedia = showsMediaControl(tab)
         return tabRowContent(tab, selected: selected, requestsArtwork: requestsArtwork)
         .animation(reduceMotion || draggingTab != nil ? nil : .easeInOut(duration: 0.18), value: hasMedia)
-        .background(Color.primary.opacity(selected ? 0.08 : (hoveredTab == tab.id ? 0.04 : 0)))
+        .background(Color.primary.opacity(selected ? (contrast == .increased ? 0.18 : 0.08) : (hoveredTab == tab.id ? 0.04 : 0)))
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius)
-                .strokeBorder(focused ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
-                .allowsHitTesting(false)
+            BrowserFocusOutline(focused: focused, cornerRadius: cornerRadius)
+            if selected, contrast == .increased {
+                RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(.primary, lineWidth: 1)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
         }
         .onHover { updateTabHover(tab.id, hovering: $0) }
         .background(draggingTab == tab.id ? Color(nsColor: .windowBackgroundColor) : .clear,
@@ -980,6 +978,7 @@ struct BrowserWindowView: View {
         }
         .buttonStyle(SidebarButtonStyle())
         .focused($focusedSidebarControl, equals: .media(tab.id))
+        .focusEffectDisabled()
         .onHover { inside in
             if inside { hoveredMedia = tab.id }
             else if hoveredMedia == tab.id { hoveredMedia = nil }
@@ -994,13 +993,9 @@ struct BrowserWindowView: View {
     }
 
     private func tabAccessibilityValue(_ tab: BrowserTab) -> String {
-        let section = tab.isFavorite ? "Favorite" : "Pinned"
-        let base = tab.pinnedURL == nil ? "Today" : "\(section), \(tab.isOpen ? "open" : "closed")"
-        guard let page = model.webViews.pages[tab.id] else { return base }
-        let media = page.isMuted ? ", muted" : (page.isPlayingMedia ? ", media playing" : "")
-        if page.isLoading { return base + media + ", loading" }
-        if page.failure != nil { return base + media + ", load failed" }
-        return base + media
+        let page = model.webViews.pages[tab.id]
+        return BrowserTabAccessibility.value(for: tab, isLoading: page?.isLoading == true,
+            hasFailure: page?.failure != nil, isMuted: page?.isMuted == true, isPlayingMedia: page?.isPlayingMedia == true)
     }
 
     @ViewBuilder
@@ -1183,10 +1178,13 @@ struct BrowserWindowView: View {
         }
         .buttonStyle(.plain)
         .focused($focusedSidebarControl, equals: .favorite(tab.id))
+        .focusEffectDisabled()
         .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(focusedSidebarControl == .favorite(tab.id) ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
-                .allowsHitTesting(false)
+            BrowserFocusOutline(focused: focusedSidebarControl == .favorite(tab.id), cornerRadius: 9)
+            if selected, contrast == .increased {
+                RoundedRectangle(cornerRadius: 9).strokeBorder(.primary, lineWidth: 1)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
         }
         .onHover { updateTabHover(tab.id, hovering: $0) }
         .accessibilityIdentifier("favorite.\(tab.id)")
@@ -1194,6 +1192,7 @@ struct BrowserWindowView: View {
         .accessibilityValue(tabAccessibilityValue(tab))
         .accessibilityHint(tab.isOpen ? "Select favorite. Option-click to rename. More actions in the context menu." : "Reopen saved favorite. Option-click to rename.")
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .modifier(BrowserTabAccessibilityActions(model: model, tab: tab))
         .help("\(name)\n\((tab.pinnedURL ?? tab.currentURL).absoluteString)")
         .highPriorityGesture(tabClickGesture(tab))
         .opacity(hiddenDragItemID == tab.id ? 0 : 1)
@@ -1242,10 +1241,9 @@ struct BrowserWindowView: View {
             .buttonStyle(SidebarButtonStyle())
             .disabled(!canReset)
             .focused($focused)
+            .focusEffectDisabled()
             .overlay {
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(focused ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
-                    .allowsHitTesting(false)
+                BrowserFocusOutline(focused: focused)
             }
             .onHover { hovered = $0 }
             .accessibilityIdentifier("\(canReset ? "pinReset" : "pinSelect").\(tab.id)")
@@ -1340,6 +1338,7 @@ struct BrowserWindowView: View {
             }
             .buttonStyle(SidebarButtonStyle())
             .focused($focusedSidebarControl, equals: .folderToggle(folder.id))
+            .focusEffectDisabled()
             .accessibilityIdentifier("folderToggle.\(folder.id)")
             .accessibilityLabel("\(isFolderOpen(folder) ? "Collapse" : "Expand") \(folder.name)")
             .help("Click to expand or collapse. Option-click to rename.")
@@ -1356,10 +1355,17 @@ struct BrowserWindowView: View {
             }
             .buttonStyle(SidebarButtonStyle())
             .focused($focusedSidebarControl, equals: .folder(folder.id))
+            .focusEffectDisabled()
             .accessibilityIdentifier("folder.\(folder.id)")
             .accessibilityLabel(folder.name)
             .accessibilityValue(isFolderOpen(folder) ? "Expanded" : "Collapsed")
             .accessibilityHint("Click to expand or collapse. Option-click to rename.")
+            .accessibilityActions {
+                Button("Rename Folder") { editFolder(folder, parent: folder.parentID) }
+                if model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID) {
+                    Button("New Subfolder") { editFolder(nil, parent: folder.id) }
+                }
+            }
             .highPriorityGesture(folderClickGesture(folder))
         }
         .padding(.leading, PinnedIsland.leadingInset)
@@ -1369,9 +1375,8 @@ struct BrowserWindowView: View {
         // The anchored group panel owns the hover fill, including when closed.
         // A second header island leaves darker, mismatched corners over it.
         .overlay {
-            RoundedRectangle(cornerRadius: PinnedIsland.cornerRadius)
-                .strokeBorder(focusedSidebarControl == .folder(folder.id) || focusedSidebarControl == .folderToggle(folder.id) ? Color.primary.opacity(0.55) : .clear, lineWidth: 2)
-                .allowsHitTesting(false)
+            BrowserFocusOutline(focused: focusedSidebarControl == .folder(folder.id)
+                || focusedSidebarControl == .folderToggle(folder.id), cornerRadius: PinnedIsland.cornerRadius)
         }
         .onHover { hovering in
             if hovering { hoveredFolder = folder.id }
@@ -2333,6 +2338,7 @@ struct BrowserWindowView: View {
                 }
             }
             .padding(24).frame(width: 380)
+            .browserReducedMotion()
             .onAppear { focused = true }
         }
     }
@@ -2351,6 +2357,7 @@ struct BrowserWindowView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(SidebarButtonStyle())
+        .browserKeyboardFocus()
         .accessibilityIdentifier("sidebar.newTab")
         .help("Open the command bar (Command-T)")
     }
@@ -2364,6 +2371,7 @@ struct BrowserWindowView: View {
             } label: {
                 Image(systemName: "sidebar.left").frame(width: 32, height: 32)
             }
+            .browserKeyboardFocus(cornerRadius: 8)
             .accessibilityLabel(sidebarAutoHides ? "Keep sidebar visible" : "Auto-hide sidebar")
             .accessibilityValue(sidebarAutoHides ? "Auto-hide enabled" : "Always visible")
             .keyboardShortcut("s", modifiers: [.command, .shift])
@@ -2423,13 +2431,13 @@ struct BrowserWindowView: View {
             .background(Color.primary.opacity(contrast == .increased ? 0.12 : (addressHovered ? 0.085 : 0.055)),
                         in: RoundedRectangle(cornerRadius: 12))
             .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.primary.opacity(focusedSidebarControl == .address ? 0.55 : 0), lineWidth: 2)
+                BrowserFocusOutline(focused: focusedSidebarControl == .address, cornerRadius: 12)
             }
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
         .focused($focusedSidebarControl, equals: .address)
+        .focusEffectDisabled()
         .onHover { addressHovered = $0 }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: addressHovered)
         .accessibilityLabel("Address bar")
@@ -2467,6 +2475,7 @@ private struct NavigationButton: View {
             ReloadStopArtwork(isLoading: kind == .stop)
         }
         .buttonStyle(NavigationControlStyle(kind: kind, clickFeedback: clickFeedback))
+        .browserKeyboardFocus(cornerRadius: 8)
         .task(id: activation) {
             guard activation > 0 else { return }
             do {

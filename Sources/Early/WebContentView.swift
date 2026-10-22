@@ -107,10 +107,107 @@ struct TestWindowState: NSViewRepresentable {
 /// Keep the real AppKit controls for native glass rendering and window actions.
 /// A mouse-transparent overlay draws neutral circles only at rest. AppKit draws
 /// the glass and hover glyphs; each window has exactly one owning control host.
+/// Sidebar hosting requires verified compatibility hooks; without them, the
+/// window keeps AppKit's standard titlebar buttons.
 struct WindowControls: NSViewRepresentable {
-    func makeNSView(context: Context) -> ControlsHost { ControlsHost() }
+    func makeNSView(context: Context) -> ControlsHost { ControlsHost(frame: .zero) }
     func updateNSView(_ view: ControlsHost, context: Context) { view.synchronize() }
     static func dismantleNSView(_ view: ControlsHost, coordinator: ()) { view.detach() }
+
+    /// Hosting AppKit's titlebar buttons in the sidebar depends on undocumented
+    /// AppKit behavior. Each hook is verified before use; a missing or changed
+    /// required piece leaves the standard titlebar buttons in place instead.
+    @MainActor enum Compatibility {
+        /// The widget class whose titlebar position resets are locked, or nil
+        /// when this macOS lacks the expected private class or signatures.
+        static let lockedWidgetClass: AnyClass? = installHooks()
+
+        private static let pointType: Set = ["{CGPoint=dd}"]
+        private static let boolType: Set = ["B", "c"]
+
+        /// Accept a private method only when it returns void and takes exactly
+        /// these Objective-C argument types; never call a mismatched pointer.
+        static func matchesVoidSignature(_ method: Method, arguments: [Set<String>]) -> Bool {
+            guard Int(method_getNumberOfArguments(method)) == arguments.count + 2 else { return false }
+            let returnType = method_copyReturnType(method)
+            defer { free(returnType) }
+            guard String(cString: returnType) == "v" else { return false }
+            return arguments.indices.allSatisfy { index in
+                guard let type = method_copyArgumentType(method, UInt32(index + 2)) else { return false }
+                defer { free(type) }
+                return arguments[index].contains(String(cString: type))
+            }
+        }
+
+        /// Every standard button must be a widget whose position is locked.
+        static func canHost(_ buttons: [NSButton], lockedWidgetClass: AnyClass?) -> Bool {
+            guard let lockedWidgetClass else { return false }
+            return buttons.allSatisfy { $0.isKind(of: lockedWidgetClass) }
+        }
+
+        private static func installHooks() -> AnyClass? {
+            installFullscreenTitlebarHook()
+            guard let widgetClass = NSClassFromString("_NSThemeWidget") else { return nil }
+            let originSelector = #selector(NSView.setFrameOrigin(_:))
+            guard let originMethod = class_getInstanceMethod(widgetClass, originSelector),
+                  matchesVoidSignature(originMethod, arguments: [pointType]) else { return nil }
+            // The reentrant variant is optional, but a changed one would bypass the lock.
+            let reentrantSelector = NSSelectorFromString("setFrameOrigin:ignoreRentry:")
+            let reentrantMethod = class_getInstanceMethod(widgetClass, reentrantSelector)
+            if let reentrantMethod, !matchesVoidSignature(reentrantMethod, arguments: [pointType, boolType]) {
+                return nil
+            }
+
+            typealias SetOriginIMP = @convention(c) (AnyObject, Selector, NSPoint) -> Void
+            let origIMP = unsafeBitCast(method_getImplementation(originMethod), to: SetOriginIMP.self)
+            let block1: @convention(block) (NSView, NSPoint) -> Void = { view, pt in
+                if view.superview is ControlsContainer && !ControlsContainer.isPositioningButtons {
+                    return
+                }
+                origIMP(view, originSelector, pt)
+            }
+            // Install on the widget class itself, even if a future AppKit
+            // version inherits this method. Never replace NSView's method.
+            class_replaceMethod(widgetClass, originSelector, imp_implementationWithBlock(block1),
+                                method_getTypeEncoding(originMethod))
+
+            if let reentrantMethod {
+                typealias SetOriginIgnoreIMP = @convention(c) (AnyObject, Selector, NSPoint, Bool) -> Void
+                let origIMP = unsafeBitCast(method_getImplementation(reentrantMethod), to: SetOriginIgnoreIMP.self)
+                let block2: @convention(block) (NSView, NSPoint, Bool) -> Void = { view, pt, ignore in
+                    if view.superview is ControlsContainer && !ControlsContainer.isPositioningButtons {
+                        return
+                    }
+                    origIMP(view, reentrantSelector, pt, ignore)
+                }
+                class_replaceMethod(widgetClass, reentrantSelector, imp_implementationWithBlock(block2),
+                                    method_getTypeEncoding(reentrantMethod))
+            }
+            return widgetClass
+        }
+
+        /// In full-screen mode, AppKit generates an internal NSTitlebarBackgroundView
+        /// under the slide-down menu bar. Setting its layer opacity to 0 removes the grey
+        /// titlebar box completely without modifying window hierarchy or space transitions.
+        /// Cosmetic only: skipped, never forced, when that private view has changed.
+        private static func installFullscreenTitlebarHook() {
+            guard let bgClass = NSClassFromString("NSTitlebarBackgroundView") else { return }
+            let updateLayerSel = NSSelectorFromString("updateLayer")
+            guard let mUpdateLayer = class_getInstanceMethod(bgClass, updateLayerSel),
+                  matchesVoidSignature(mUpdateLayer, arguments: []) else { return }
+            typealias UpdateLayerIMP = @convention(c) (AnyObject, Selector) -> Void
+            let origUpdateLayer = unsafeBitCast(method_getImplementation(mUpdateLayer), to: UpdateLayerIMP.self)
+            let blockUpdateLayer: @convention(block) (NSView) -> Void = { view in
+                origUpdateLayer(view, updateLayerSel)
+                // This existing compatibility hook must never alter
+                // Settings, website sheets, or another app window.
+                guard ControlsHost.ownsControls(in: view.window) else { return }
+                view.layer?.opacity = view.window?.styleMask.contains(.fullScreen) == true ? 0 : 1
+            }
+            class_replaceMethod(bgClass, updateLayerSel, imp_implementationWithBlock(blockUpdateLayer),
+                                method_getTypeEncoding(mUpdateLayer))
+        }
+    }
 
     private final class ControlsContainer: NSView {
         private let idleDrawingMask = CALayer()
@@ -161,66 +258,6 @@ struct WindowControls: NSViewRepresentable {
         }
 
         static var isPositioningButtons = false
-        private static let swizzleOnce: Void = {
-            guard let widgetClass = NSClassFromString("_NSThemeWidget") else { return }
-
-            let sel1 = #selector(NSView.setFrameOrigin(_:))
-            if let m1 = class_getInstanceMethod(widgetClass, sel1) {
-                typealias SetOriginIMP = @convention(c) (AnyObject, Selector, NSPoint) -> Void
-                let origIMP = unsafeBitCast(method_getImplementation(m1), to: SetOriginIMP.self)
-                let block1: @convention(block) (NSView, NSPoint) -> Void = { view, pt in
-                    if view.superview is ControlsContainer && !ControlsContainer.isPositioningButtons {
-                        return
-                    }
-                    origIMP(view, sel1, pt)
-                }
-                // Install on the widget class itself, even if a future AppKit
-                // version inherits this method. Never replace NSView's method.
-                class_replaceMethod(widgetClass, sel1, imp_implementationWithBlock(block1), method_getTypeEncoding(m1))
-            }
-
-            let sel2 = NSSelectorFromString("setFrameOrigin:ignoreRentry:")
-            if let m2 = class_getInstanceMethod(widgetClass, sel2) {
-                typealias SetOriginIgnoreIMP = @convention(c) (AnyObject, Selector, NSPoint, Bool) -> Void
-                let origIMP = unsafeBitCast(method_getImplementation(m2), to: SetOriginIgnoreIMP.self)
-                let block2: @convention(block) (NSView, NSPoint, Bool) -> Void = { view, pt, ignore in
-                    if view.superview is ControlsContainer && !ControlsContainer.isPositioningButtons {
-                        return
-                    }
-                    origIMP(view, sel2, pt, ignore)
-                }
-                class_replaceMethod(widgetClass, sel2, imp_implementationWithBlock(block2), method_getTypeEncoding(m2))
-            }
-
-            // In full-screen mode, AppKit generates an internal NSTitlebarBackgroundView
-            // under the slide-down menu bar. Setting its layer opacity to 0 removes the grey
-            // titlebar box completely without modifying window hierarchy or space transitions.
-            if let bgClass = NSClassFromString("NSTitlebarBackgroundView") {
-                let updateLayerSel = NSSelectorFromString("updateLayer")
-                if let mUpdateLayer = class_getInstanceMethod(bgClass, updateLayerSel) {
-                    typealias UpdateLayerIMP = @convention(c) (AnyObject, Selector) -> Void
-                    let origUpdateLayer = unsafeBitCast(method_getImplementation(mUpdateLayer), to: UpdateLayerIMP.self)
-                    let blockUpdateLayer: @convention(block) (NSView) -> Void = { view in
-                        origUpdateLayer(view, updateLayerSel)
-                        // This existing compatibility hook must never alter
-                        // Settings, website sheets, or another app window.
-                        guard ControlsHost.ownsControls(in: view.window) else { return }
-                        view.layer?.opacity = view.window?.styleMask.contains(.fullScreen) == true ? 0 : 1
-                    }
-                    class_replaceMethod(bgClass, updateLayerSel, imp_implementationWithBlock(blockUpdateLayer), method_getTypeEncoding(mUpdateLayer))
-                }
-            }
-        }()
-
-        override init(frame: NSRect) {
-            Self.swizzleOnce
-            super.init(frame: frame)
-        }
-
-        required init?(coder: NSCoder) {
-            Self.swizzleOnce
-            super.init(coder: coder)
-        }
     }
 
     final class ControlsHost: NSView {
@@ -233,10 +270,31 @@ struct WindowControls: NSViewRepresentable {
             var current = window
             for _ in 0..<4 {
                 guard let candidate = current else { return false }
-                if owners.object(forKey: candidate) != nil { return true }
+                // A standard-controls fallback leaves AppKit's titlebar untouched.
+                if let owner = owners.object(forKey: candidate) { return owner.hosting != .standard }
                 current = candidate.parent
             }
             return false
+        }
+
+        /// Decided on first attachment, then kept: standard titlebar buttons
+        /// are this host's permanent fallback once any hook fails verification.
+        private enum Hosting { case undecided, sidebar, standard }
+        private var hosting = Hosting.undecided
+        private let lockedWidgetClass: AnyClass?
+
+        init(frame: NSRect, lockedWidgetClass: AnyClass?) {
+            self.lockedWidgetClass = lockedWidgetClass
+            super.init(frame: frame)
+        }
+
+        override convenience init(frame: NSRect) {
+            self.init(frame: frame, lockedWidgetClass: Compatibility.lockedWidgetClass)
+        }
+
+        required init?(coder: NSCoder) {
+            lockedWidgetClass = Compatibility.lockedWidgetClass
+            super.init(coder: coder)
         }
 
         private struct NativeControl {
@@ -367,7 +425,7 @@ struct WindowControls: NSViewRepresentable {
         }
 
         private func hideTitlebarContainer() {
-            guard ownsControls, let window = attachedWindow,
+            guard ownsControls, hosting != .standard, let window = attachedWindow,
                   let themeFrame = window.contentView?.superview else { return }
             for subview in themeFrame.subviews where subview.className == "NSTitlebarContainerView" {
                 if !titlebarVisibility.contains(where: { $0.view === subview }) {
@@ -401,6 +459,7 @@ struct WindowControls: NSViewRepresentable {
                 // host's sidebar coordinates. Retire it before moving buttons.
                 nativeControls = previous.nativeControls
                 titlebarVisibility = previous.titlebarVisibility
+                hosting = previous.hosting
                 previous.nativeControls.removeAll()
                 previous.titlebarVisibility.removeAll()
                 previous.appearanceOverlay.buttonFrames = []
@@ -450,6 +509,17 @@ struct WindowControls: NSViewRepresentable {
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.isMovableByWindowBackground = false
+            guard hosting != .standard else { return }
+            let kinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+            // Hiding AppKit's titlebar container prevents duplicate buttons, so
+            // it must exist before the first move. Fullscreen relocates it.
+            let titlebarAvailable = hosting == .sidebar || window.styleMask.contains(.fullScreen)
+                || findNativeTitlebarView() != nil
+            guard titlebarAvailable, Compatibility.canHost(kinds.compactMap { window.standardWindowButton($0) },
+                                                           lockedWidgetClass: lockedWidgetClass) else {
+                useStandardControls()
+                return
+            }
             hideTitlebarContainer()
 
             if nativeContainer.superview == nil { addSubview(nativeContainer) }
@@ -460,7 +530,7 @@ struct WindowControls: NSViewRepresentable {
 
             var currentButtons: [NativeControl] = []
             let defaultParent = findNativeTitlebarView()
-            for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            for kind in kinds {
                 guard let button = window.standardWindowButton(kind) else { continue }
                 let existing = nativeControls.first(where: { $0.button === button })
                 if button.superview !== nativeContainer {
@@ -507,6 +577,30 @@ struct WindowControls: NSViewRepresentable {
             }
             appearanceOverlay.isHidden = hasSheet
             layoutButtons()
+            if hosting == .undecided, !nativeControls.isEmpty {
+                guard hostedButtonsIgnoreRepositioning() else { useStandardControls(); return }
+                hosting = .sidebar
+            }
+        }
+
+        /// AppKit must be unable to move a hosted widget. This catches a lock
+        /// bypassed by a renamed hook or a widget subclass's own override.
+        private func hostedButtonsIgnoreRepositioning() -> Bool {
+            nativeControls.allSatisfy { control in
+                let button = control.button
+                guard button.superview === nativeContainer else { return true }
+                let origin = button.frame.origin
+                button.setFrameOrigin(NSPoint(x: origin.x + 1, y: origin.y + 1))
+                return button.frame.origin == origin
+            }
+        }
+
+        /// Leave AppKit's own buttons in its titlebar: ordinary controls on an
+        /// unexpected macOS version, never misplaced or duplicated ones.
+        private func useStandardControls() {
+            hosting = .standard
+            setHovered(false)
+            restore()
         }
 
         private func layoutButtons() {
@@ -660,6 +754,179 @@ enum SidebarRevealRegion {
         guard let point else { return false }
         // Keep the edge-to-panel gutter active only AFTER a real edge entry.
         return point.x >= 0 && point.x < (revealed ? sidebarWidth + 6 : edgeWidth)
+    }
+}
+
+/// The sidebar width control: one native splitter element for VoiceOver and
+/// keyboard navigation, with a native resize cursor and pointer tracking. A
+/// SwiftUI focusable view exposed a duplicate accessibility element. A click
+/// or drag keeps the page's keyboard focus; only keyboard navigation focuses it.
+struct SidebarResizeEdge: NSViewRepresentable {
+    let width: Double
+    let onBegin: () -> Void
+    /// Horizontal pointer travel since the drag began, in points.
+    let onResize: (Double) -> Void
+    let onEnd: () -> Void
+    let onAdjust: (Double) -> Void
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func makeNSView(context: Context) -> EdgeView { EdgeView(frame: .zero) }
+    func updateNSView(_ view: EdgeView, context: Context) {
+        view.onBegin = onBegin
+        view.onResize = onResize
+        view.onEnd = onEnd
+        view.onAdjust = onAdjust
+        view.configure(width: width, increasedContrast: contrast == .increased)
+    }
+    static func dismantleNSView(_ view: EdgeView, coordinator: ()) { view.invalidate() }
+
+    final class EdgeView: NSView {
+        var onBegin: (() -> Void)?
+        var onResize: ((Double) -> Void)?
+        var onEnd: (() -> Void)?
+        var onAdjust: ((Double) -> Void)?
+        private var width = SidebarWidth.defaultValue
+        private var increasedContrast = false
+        private var dragAnchorX: CGFloat?
+        private var tracking: NSTrackingArea?
+        private var invalidated = false
+        private(set) var keyboardFocused = false
+        private(set) var resizeCursorRect: CGRect?
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            focusRingType = .none
+        }
+        required init?(coder: NSCoder) { return nil }
+
+        func configure(width: Double, increasedContrast: Bool) {
+            guard !invalidated else { return }
+            let changed = self.width != width
+            self.width = width
+            self.increasedContrast = increasedContrast
+            needsDisplay = true
+            if changed, window != nil { NSAccessibility.post(element: self, notification: .valueChanged) }
+        }
+
+        /// Keyboard navigation may focus the edge; a pointer press must not.
+        static func acceptsFocus(during eventType: NSEvent.EventType?) -> Bool {
+            guard let eventType else { return true }
+            return ![.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(eventType)
+        }
+
+        override var acceptsFirstResponder: Bool { !invalidated && Self.acceptsFocus(during: NSApp.currentEvent?.type) }
+        override var canBecomeKeyView: Bool { NSApp.isFullKeyboardAccessEnabled && super.canBecomeKeyView }
+        override func becomeFirstResponder() -> Bool {
+            guard !invalidated else { return false }
+            keyboardFocused = true
+            needsDisplay = true
+            return true
+        }
+        override func resignFirstResponder() -> Bool { keyboardFocused = false; needsDisplay = true; return true }
+
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            let region = bounds.intersection(visibleRect)
+            resizeCursorRect = !invalidated && !region.isEmpty ? region : nil
+            if let resizeCursorRect { addCursorRect(resizeCursorRect, cursor: .resizeLeftRight) }
+        }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let tracking { removeTrackingArea(tracking) }
+            tracking = nil
+            guard !invalidated else { return }
+            let area = NSTrackingArea(rect: .zero,
+                options: [.activeInKeyWindow, .inVisibleRect, .cursorUpdate, .enabledDuringMouseDrag],
+                owner: self, userInfo: nil)
+            addTrackingArea(area)
+            tracking = area
+        }
+        override func cursorUpdate(with event: NSEvent) { if !invalidated { NSCursor.resizeLeftRight.set() } }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard !invalidated else { return }
+            updateTrackingAreas()
+            window?.invalidateCursorRects(for: self)
+        }
+        override func layout() {
+            super.layout()
+            guard !invalidated else { return }
+            window?.invalidateCursorRects(for: self)
+        }
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow !== window { endResize() }
+            super.viewWillMove(toWindow: newWindow)
+        }
+
+        override func mouseDown(with event: NSEvent) { beginResize(atWindowX: event.locationInWindow.x) }
+        override func mouseDragged(with event: NSEvent) { updateResize(atWindowX: event.locationInWindow.x) }
+        override func mouseUp(with event: NSEvent) {
+            updateResize(atWindowX: event.locationInWindow.x)
+            endResize()
+            window?.invalidateCursorRects(for: self)
+        }
+
+        func beginResize(atWindowX x: CGFloat) {
+            guard !invalidated, x.isFinite, dragAnchorX == nil else { return }
+            dragAnchorX = x
+            onBegin?()
+        }
+        func updateResize(atWindowX x: CGFloat) {
+            guard let anchor = dragAnchorX, x.isFinite else { return }
+            onResize?(Double(x - anchor))
+        }
+        func endResize() {
+            guard dragAnchorX != nil else { return }
+            dragAnchorX = nil
+            onEnd?()
+        }
+
+        override func keyDown(with event: NSEvent) {
+            if !invalidated, let delta = SidebarKeyboardResize.delta(forKeyCode: event.keyCode, modifiers: event.modifierFlags) {
+                onAdjust?(delta)
+            } else if event.keyCode == 48, event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+                if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(self) }
+                else { window?.selectNextKeyView(self) }
+            } else { super.keyDown(with: event) }
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            // Invisible at rest, on hover and while dragging; keyboard focus
+            // draws the same compact neutral grip as the split divider.
+            guard keyboardFocused, !invalidated else { return }
+            let height = min(48.0, max(0, bounds.height - 16))
+            NSColor.labelColor.withAlphaComponent(increasedContrast ? 0.85 : 0.55).setFill()
+            NSBezierPath(roundedRect: CGRect(x: bounds.midX - 2, y: bounds.midY - height / 2,
+                width: 4, height: height), xRadius: 2, yRadius: 2).fill()
+        }
+
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
+        override func accessibilityLabel() -> String? { "Sidebar width" }
+        override func accessibilityIdentifier() -> String { "sidebar.resize" }
+        override func accessibilityValue() -> Any? { "\(Int(width)) points" }
+        override func accessibilityHelp() -> String? { "Use Left and Right Arrow to resize the sidebar" }
+        override func accessibilityOrientation() -> NSAccessibilityOrientation { .vertical }
+        override func isAccessibilityEnabled() -> Bool { !invalidated }
+        override func accessibilityPerformIncrement() -> Bool { adjust(16) }
+        override func accessibilityPerformDecrement() -> Bool { adjust(-16) }
+
+        private func adjust(_ delta: Double) -> Bool {
+            guard !invalidated, let onAdjust else { return false }
+            onAdjust(delta)
+            return true
+        }
+
+        func invalidate() {
+            endResize()
+            invalidated = true
+            if let tracking { removeTrackingArea(tracking) }
+            tracking = nil
+            discardCursorRects()
+            resizeCursorRect = nil
+            keyboardFocused = false
+            onBegin = nil; onResize = nil; onEnd = nil; onAdjust = nil
+        }
     }
 }
 

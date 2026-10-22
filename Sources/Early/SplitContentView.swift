@@ -195,7 +195,9 @@ struct SplitContentView: View {
                         .frame(width: 24, height: 24)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
                 }
-                .buttonStyle(.plain).padding(6)
+                .buttonStyle(.plain)
+                .browserKeyboardFocus(cornerRadius: 6)
+                .padding(6)
                 .disabled(!model.canPerform(.removeSplitPane(paneID)))
                 .accessibilityLabel("Remove pane from split; keep tab open")
                 .accessibilityIdentifier("split.remove.\(paneID)")
@@ -205,6 +207,16 @@ struct SplitContentView: View {
         .onHover { hoveredTabID = $0 ? id : (hoveredTabID == id ? nil : hoveredTabID) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(split ? "\(focused ? "Focused p" : "P")ane: \(model.coordinator.tabStore.tab(id: id)?.displayTitle ?? "Page")" : "Web content")
+        .accessibilityActions {
+            if let paneID, let group = model.coordinator.activeSplitGroup {
+                if !focused {
+                    Button("Focus Pane") { _ = model.perform(.focusSplitPane(paneID)) }
+                }
+                Button("Remove Pane; Keep Tab Open") { _ = model.perform(.removeSplitPane(paneID)) }
+                Button("Swap Sides") { _ = model.perform(.swapSplit(group.id)) }
+                Button("Exit Split View") { _ = model.perform(.exitSplit(group.id)) }
+            }
+        }
     }
 
     private func splitDropTargets(_ targets: BrowserSplitDropTargets, sourceID: UUID) -> some View {

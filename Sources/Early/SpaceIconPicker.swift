@@ -61,10 +61,14 @@ struct SpaceIconPicker: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .browserKeyboardFocus()
+            .accessibilityLabel("Use default dot")
+            .accessibilityAddTraits(selection == nil ? .isSelected : [])
             .accessibilityIdentifier("space.icon.none")
         }
         .padding(18)
         .frame(width: 334)
+        .browserReducedMotion()
     }
 
     private func choice(_ icon: SpaceIcon, identifier: String) -> some View {
@@ -74,9 +78,11 @@ struct SpaceIconPicker: View {
         } label: {
             SpaceIconView(icon: icon, size: 15)
                 .frame(width: 32, height: 32)
+                .overlay(alignment: .bottom) { BrowserSelectionMark(selected: selection == icon) }
                 .contentShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(IconChoiceStyle(selected: selection == icon))
+        .browserKeyboardFocus()
         .accessibilityLabel(icon.accessibilityName)
         .accessibilityAddTraits(selection == icon ? .isSelected : [])
         .accessibilityIdentifier(identifier)
