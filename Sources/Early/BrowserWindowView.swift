@@ -125,12 +125,13 @@ struct BrowserWindowView: View {
         reduceMotion ? nil : .easeInOut(duration: 0.20)
     }
 
+    /// An invisible 12 pt grab area over the visible boundary: the 6 pt gap and
+    /// page outline beside a pinned sidebar, or a floating sidebar's own edge.
     private var sidebarResizeHandle: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(resizeStartWidth == nil ? 0.001 : 0.12))
-            .frame(width: 6)
+        Color.clear
+            .frame(width: 12)
             .contentShape(Rectangle())
-            .offset(x: 3)
+            .offset(x: sidebarAutoHides ? 6 : 9)
             .onHover { inside in
                 (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
             }
@@ -148,7 +149,9 @@ struct BrowserWindowView: View {
                     model.finishSidebarResize()
                     NSCursor.arrow.set()
                 })
-            .focusable()
+            // Button-like focus: reachable by keyboard navigation, but a mouse
+            // drag must not focus the edge and show its keyboard outline.
+            .focusable(interactions: .activate)
             .browserKeyboardFocus(cornerRadius: 2)
             .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
                 guard let delta = SidebarKeyboardResize.delta(for: press.key, modifiers: press.modifiers) else { return .ignored }
