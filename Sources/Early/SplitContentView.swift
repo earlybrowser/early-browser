@@ -79,9 +79,13 @@ struct SplitContentView: View {
                     else { Color.white.opacity(colorScheme == .dark ? 0.01 : 0.08) }
                     if model.isPrivate {
                         // Below the command bar, which opens near 40% of the height.
+                        // Pad inside the page-sized frame: padding outside it made
+                        // the notice taller than the page, covering the window's
+                        // border so a double-click there could not zoom.
                         PrivateBrowsingNotice()
-                            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
                             .padding(.bottom, max(0, geometry.size.height * 0.08))
+                            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
+                            .allowsHitTesting(false)
                     }
                 }
                 ForEach(tabIDs, id: \.self) { id in

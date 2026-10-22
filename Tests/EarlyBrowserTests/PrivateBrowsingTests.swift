@@ -3,6 +3,7 @@
 import AppKit
 import EarlyCore
 @testable import EarlyBrowser
+import SwiftUI
 import Testing
 import WebKit
 
@@ -149,6 +150,41 @@ struct PrivateBrowsingTests {
         }
         #expect(app.closedWindows.count == EarlyAppDelegate.closedWindowLimit, "The list is bounded")
         fixture.opened.removeAll { $0 != reopenedID }
+        await fixture.cleanup()
+    }
+
+    @Test func everyBorderOfOrdinaryAndEmptyPrivateWindowsMovesAndZoomsTheWindow() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let normal = try #require(app.model)
+        let privateID = try #require(app.openPrivateWindow())
+        let empty = try #require(app.windowModel(privateID))
+        #expect(empty.coordinator.tabStore.tabs.isEmpty, "Its explanation is showing")
+        for model in [normal, empty] {
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 700),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                  backing: .buffered, defer: true)
+            window.isReleasedWhenClosed = false
+            let hosting = NSHostingView(rootView: AnyView(BrowserWindowView(model: model).transaction { $0.disablesAnimations = true }))
+            window.contentView = hosting
+            hosting.frame.size = CGSize(width: 1000, height: 700)
+            hosting.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            hosting.layoutSubtreeIfNeeded()
+            let frame = try #require(hosting.superview)
+            let bounds = frame.bounds
+            // Inside the 6 pt chrome border on each side, past the few points at
+            // the outer edge that macOS keeps for resizing the window.
+            for point in [CGPoint(x: bounds.midX, y: bounds.maxY - 5), CGPoint(x: bounds.midX, y: 5),
+                          CGPoint(x: 5, y: bounds.midY), CGPoint(x: bounds.maxX - 5, y: bounds.midY)] {
+                #expect(frame.hitTest(point) is WindowDragRegion.DragView,
+                        "\(model.isPrivate ? "Private" : "Ordinary") border at \(point) belongs to the window, not \(frame.hitTest(point).map { String(describing: type(of: $0)) } ?? "nil")")
+            }
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+        }
         await fixture.cleanup()
     }
 
