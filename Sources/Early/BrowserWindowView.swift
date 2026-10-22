@@ -379,9 +379,23 @@ struct BrowserWindowView: View {
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if let flight = model.downloadFlight {
+                DownloadFlightView(flight: flight,
+                                   theme: model.splitTheme.focusBorder(isDark: colorScheme == .dark,
+                                                                       increasedContrast: contrast == .increased).color) {
+                    model.finishDownloadFlight(flight.id)
+                }
+                .id(flight.id)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
         .onPreferenceChange(BrowserSurfaceFrames.self) { frames in
             if let content = frames["content"], contentWindowFrame != content { contentWindowFrame = content }
             if let sidebar = frames["sidebar"], sidebarWindowFrame != sidebar { sidebarWindowFrame = sidebar }
+        }
+        .onPreferenceChange(DownloadsButtonFrameKey.self) { frame in
+            if model.downloadsButtonFrame != frame { model.downloadsButtonFrame = frame }
         }
         // One shared surface for the outer frame and pinned sidebar. Only the
         // clipped page area is inset into it; no sidebar tint or seam on top.

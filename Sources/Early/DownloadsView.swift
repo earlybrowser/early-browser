@@ -6,8 +6,9 @@ import EarlyWeb
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The footer's left-hand control, in the active Space's theme. When a download
-/// starts the icon grows and its arrow drops through the circle and bounces
+/// The footer's left-hand control, in the active Space's theme. A clicked
+/// download first flies in (see `DownloadFlightView`). When a download starts
+/// (or lands) the icon grows and its arrow drops through the circle and bounces
 /// back in; a ring traces the circle clockwise from zero as the transfer
 /// completes; at the finish the icon bounces and shines. These run only on
 /// those events; Reduce Motion uses a brief color fade instead.
@@ -76,7 +77,13 @@ struct DownloadsButton: View {
             guard !finishing else { return }
             ringValue = DownloadRing.next(current: ringValue, active: input.active, progress: input.progress)
         }
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(key: DownloadsButtonFrameKey.self, value: geometry.frame(in: .named("browserWindow")))
+            }
+        }
         .onChange(of: store.startedRevision) { started() }
+        .onChange(of: model.downloadLandingRevision) { playStart() }
         .onChange(of: store.finishedRevision) { finished() }
         .popover(isPresented: $model.downloadsPresented, arrowEdge: .top) {
             DownloadsPanel(store: store)
@@ -103,6 +110,15 @@ struct DownloadsButton: View {
     private func started() {
         let latest = model.downloads.items.first
         announce(latest?.wasSaved == true ? "Saved \(latest?.filename ?? "file")" : "Download started")
+        // A clicked download plays this when its flying icon lands instead.
+        guard model.downloadFlight == nil else {
+            bounceEndsAt = Date().addingTimeInterval(DownloadFlightPath.duration + DownloadArrowDrop.duration)
+            return
+        }
+        playStart()
+    }
+
+    private func playStart() {
         startGeneration += 1
         let generation = startGeneration
         guard !reduceMotion else { fadeTint(); return }
@@ -205,6 +221,83 @@ enum DownloadRing {
     static func next(current: Double, active: Bool, progress: Double?) -> Double {
         guard active else { return 0 }
         return max(current, min(1, max(0, progress ?? 0)))
+    }
+}
+
+struct DownloadsButtonFrameKey: PreferenceKey {
+    static let defaultValue: CGRect? = nil
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) { value = nextValue() ?? value }
+}
+
+/// Safari-style feedback with Early's own download icon: it arcs from the
+/// clicked page point into the Downloads button, shrinking to the button's icon
+/// size as it lands. A disc in the window color keeps it visible over any page.
+/// Drawing only; never interactive.
+struct DownloadFlightView: View {
+    let flight: BrowserWindowModel.DownloadFlight
+    let theme: Color
+    let landed: () -> Void
+    @State private var progress = 0.0
+
+    var body: some View {
+        let size = DownloadFlightPath.size
+        DownloadGlyph()
+            .stroke(theme, style: StrokeStyle(lineWidth: 1.75 * size / 24, lineCap: .round, lineJoin: .round))
+            .background {
+                Circle()
+                    .fill(.background)
+                    .overlay { Circle().fill(theme.opacity(0.12)) }
+                    .padding(size * 3 / 24)
+                    .shadow(color: .black.opacity(0.25), radius: 4, y: 1)
+            }
+            .frame(width: size, height: size)
+            .modifier(DownloadFlightPath(progress: progress, start: flight.start, end: flight.end))
+            .onAppear {
+                withAnimation(.timingCurve(0.3, 0, 0.3, 1, duration: DownloadFlightPath.duration),
+                              completionCriteria: .logicallyComplete) {
+                    progress = 1
+                } completion: {
+                    landed()
+                }
+            }
+    }
+}
+
+/// Position, scale and fade along a quadratic arc that rises above both ends.
+struct DownloadFlightPath: ViewModifier, Animatable {
+    nonisolated static let size: CGFloat = 34
+    /// Lands at the footer icon's 18-point size.
+    nonisolated static let endScale: CGFloat = 18 / size
+    static let duration: TimeInterval = 0.65
+
+    // SwiftUI interpolates this value outside the view's main-actor context.
+    nonisolated var progress: Double
+    let start: CGPoint
+    let end: CGPoint
+
+    nonisolated var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    nonisolated static func point(at t: Double, start: CGPoint, end: CGPoint) -> CGPoint {
+        let t = min(1, max(0, t))
+        // Stays inside the window when the click is near its top.
+        let control = CGPoint(x: (start.x + end.x) / 2, y: max(24, min(start.y, end.y) - 90))
+        let u = 1 - t
+        return CGPoint(x: u * u * start.x + 2 * u * t * control.x + t * t * end.x,
+                       y: u * u * start.y + 2 * u * t * control.y + t * t * end.y)
+    }
+
+    nonisolated static func scale(at t: Double) -> Double { 1 - (1 - endScale) * min(1, max(0, t)) }
+    /// Fades only at the very end, as the button's own icon takes over.
+    nonisolated static func opacity(at t: Double) -> Double { t < 0.85 ? 1 : max(0, (1 - t) / 0.15) }
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(Self.scale(at: progress))
+            .opacity(Self.opacity(at: progress))
+            .position(Self.point(at: progress, start: start, end: end))
     }
 }
 

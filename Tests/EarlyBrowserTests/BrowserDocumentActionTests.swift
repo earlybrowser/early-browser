@@ -89,6 +89,62 @@ struct BrowserDocumentActionTests {
         #expect(DownloadRing.next(current: 0.8, active: false, progress: 0.8) == 0, "The next burst starts again from zero")
     }
 
+    @Test func onlyARecentPageClickFliesToAVisibleDownloadsButton() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let item = DownloadItem(source: URL(string: "https://example.com/files/report.pdf"), origin: nil, requestedDestination: nil, listed: true)
+        let now = Date()
+        model.prefersReducedMotion = { false }
+        model.sidebarIsHidden = false
+        model.downloadsButtonFrame = CGRect(x: 20, y: 600, width: 28, height: 28)
+
+        model.beginDownloadFlight(now: now)
+        #expect(model.downloadFlight == nil, "No click, no flight")
+        model.recordPagePress(at: CGPoint(x: 500, y: 300), time: now.addingTimeInterval(-5))
+        model.beginDownloadFlight(now: now)
+        #expect(model.downloadFlight == nil, "A stale click does not fly")
+        model.recordPagePress(at: CGPoint(x: 500, y: 300), time: now.addingTimeInterval(-0.2))
+        model.sidebarIsHidden = true
+        model.beginDownloadFlight(now: now)
+        #expect(model.downloadFlight == nil, "No visible button to land on")
+        model.sidebarIsHidden = false
+        model.prefersReducedMotion = { true }
+        model.recordPagePress(at: CGPoint(x: 500, y: 300), time: now.addingTimeInterval(-0.2))
+        model.beginDownloadFlight(now: now)
+        #expect(model.downloadFlight == nil, "Reduce Motion skips the flight")
+        model.prefersReducedMotion = { false }
+
+        model.recordPagePress(at: CGPoint(x: 500, y: 300))
+        model.webViews.onDownloadStarted?(item)
+        let flight = try #require(model.downloadFlight)
+        #expect(flight.start == CGPoint(x: 500, y: 300) && flight.end == CGPoint(x: 34, y: 614))
+        model.beginDownloadFlight()
+        #expect(model.downloadFlight == flight, "Each click flies once")
+
+        model.finishDownloadFlight(UUID())
+        #expect(model.downloadFlight == flight && model.downloadLandingRevision == 0, "A stale landing is ignored")
+        model.finishDownloadFlight(flight.id)
+        #expect(model.downloadFlight == nil && model.downloadLandingRevision == 1)
+    }
+
+    @Test func flightArcsAboveBothEndsAndLandsAtTheButtonIconSize() {
+        let start = CGPoint(x: 600, y: 300)
+        let end = CGPoint(x: 30, y: 700)
+        #expect(DownloadFlightPath.point(at: 0, start: start, end: end) == start)
+        #expect(DownloadFlightPath.point(at: 1, start: start, end: end) == end)
+        #expect(DownloadFlightPath.point(at: 0.25, start: start, end: end).y < start.y, "Rises before falling")
+        let middle = DownloadFlightPath.point(at: 0.5, start: start, end: end)
+        #expect(middle.x < start.x && middle.x > end.x)
+        #expect(DownloadFlightPath.point(at: 2, start: start, end: end) == end, "Overshoot is clamped")
+        let nearTop = CGPoint(x: 600, y: 10)
+        #expect((0...10).allSatisfy { DownloadFlightPath.point(at: Double($0) / 10, start: nearTop, end: end).y >= 10 },
+                "A click near the top never arcs out of the window")
+        #expect(DownloadFlightPath.scale(at: 0) == 1)
+        #expect(abs(DownloadFlightPath.scale(at: 1) * DownloadFlightPath.size - 18) < 0.001, "Matches the footer icon")
+        #expect(DownloadFlightPath.opacity(at: 0.5) == 1 && DownloadFlightPath.opacity(at: 1) == 0)
+    }
+
     @Test func downloadStatusTextDescribesEachState() {
         let item = DownloadItem(source: URL(string: "https://files.example.com/a.zip"), origin: nil, requestedDestination: nil, listed: true)
         #expect(DownloadStatus.text(for: item, fileExists: false) == "Starting…")

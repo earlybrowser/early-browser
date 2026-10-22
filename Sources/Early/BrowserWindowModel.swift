@@ -52,6 +52,19 @@ final class BrowserWindowModel {
     var notice: String?
     var toast: Toast?
     var downloadsPresented = false
+    /// Early's download icon flying from the clicked page point to the button.
+    struct DownloadFlight: Identifiable, Equatable {
+        let id = UUID()
+        let start: CGPoint
+        let end: CGPoint
+    }
+    private(set) var downloadFlight: DownloadFlight?
+    /// Increments when a flight lands, so the button can react on arrival.
+    private(set) var downloadLandingRevision = 0
+    /// The Downloads button's frame in the window's top-left coordinate space.
+    var downloadsButtonFrame: CGRect?
+    @ObservationIgnored private var lastPagePress: (point: CGPoint, time: Date)?
+    @ObservationIgnored var prefersReducedMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     /// Open File is a window-level sheet; page sheets use the page's dialog state.
     var documentPanelIsPresented = false
     var sidebarIsHidden = false
@@ -173,9 +186,10 @@ final class BrowserWindowModel {
         webViews.onOpenWindowLink = { [weak self] url in self?.onOpenWindow?(url, nil) }
         webViews.onNotice = { [weak self] in self?.notice = $0 }
         webViews.onDownloadStarted = { [weak self] _ in
+            guard let self else { return }
             // The footer shows progress; confirm only when the sidebar is hidden.
-            guard let self, self.sidebarIsHidden else { return }
-            self.showToast(.downloadStarted)
+            if self.sidebarIsHidden { self.showToast(.downloadStarted) }
+            self.beginDownloadFlight()
         }
         webViews.onOpenFiles = { [weak self] in _ = self?.openLocations($0) }
         webViews.onOpenSearch = { [weak self] text in
@@ -189,6 +203,27 @@ final class BrowserWindowModel {
 
     var activePage: BrowserPage? { coordinator.focusedTabID.flatMap { webViews.pages[$0] } }
     var downloads: DownloadStore { webViews.downloads }
+
+    func recordPagePress(at point: CGPoint, time: Date = Date()) {
+        guard point.x.isFinite, point.y.isFinite else { return }
+        lastPagePress = (point, time)
+    }
+
+    /// Only a download that follows a recent page click flies, and only to a
+    /// visible Downloads button. Menu-started saves and Reduce Motion do not.
+    func beginDownloadFlight(now: Date = Date()) {
+        defer { lastPagePress = nil }
+        guard let press = lastPagePress, now.timeIntervalSince(press.time) <= 4, now >= press.time,
+              !sidebarIsHidden, !prefersReducedMotion(), let target = downloadsButtonFrame,
+              target.width > 0, target.height > 0 else { return }
+        downloadFlight = DownloadFlight(start: press.point, end: CGPoint(x: target.midX, y: target.midY))
+    }
+
+    func finishDownloadFlight(_ id: UUID) {
+        guard downloadFlight?.id == id else { return }
+        downloadFlight = nil
+        downloadLandingRevision += 1
+    }
 
     /// Dropped/opened files and addresses become new Today tabs in this Space;
     /// they never replace a pinned or saved page. Each must be a valid address.
