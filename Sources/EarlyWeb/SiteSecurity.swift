@@ -156,10 +156,16 @@ extension WebViewManager {
     /// coming back returns it to the page. Only videos Early moved come back.
     func updateAutomaticPictureInPicture(hidden: Set<UUID>, shown: Set<UUID>) {
         for id in shown {
-            // Still entering: the request below returns it once it lands.
-            guard case .entered(let frame) = automaticPictureInPictureTabs.removeValue(forKey: id),
-                  let view = pages[id]?.view else { continue }
-            Task { @MainActor [runPageScript] in _ = await runPageScript(view, Self.exitPictureInPictureScript, frame) }
+            guard let state = automaticPictureInPictureTabs.removeValue(forKey: id), let view = pages[id]?.view else { continue }
+            // Still entering: return it from every frame tried, in case the
+            // request stalled; one that lands later is returned by its task.
+            let frames: [WKFrameInfo?] = switch state {
+            case .entering(let frames): frames
+            case .entered(let frame): [frame]
+            }
+            Task { @MainActor [runPageScript] in
+                for frame in frames { _ = await runPageScript(view, Self.exitPictureInPictureScript, frame) }
+            }
         }
         guard Self.supportsPictureInPicture, automaticPictureInPicture() else { return }
         for id in hidden {
@@ -168,7 +174,7 @@ extension WebViewManager {
             // Each frame playing media, then the main frame if none is known.
             var frames: [WKFrameInfo?] = page.playingFrames.compactMap { page.mediaFrames[$0] }
             if frames.isEmpty { frames = [nil] }
-            automaticPictureInPictureTabs[id] = .entering
+            automaticPictureInPictureTabs[id] = .entering(frames)
             let view = page.view
             Task { @MainActor [weak self, runPageScript] in
                 var entered: WKFrameInfo??
@@ -191,7 +197,8 @@ extension WebViewManager {
 }
 
 enum AutomaticPictureInPicture {
-    case entering
+    /// Requested from these frames; nil is the main frame.
+    case entering([WKFrameInfo?])
     /// In Picture in Picture from this frame; nil is the main frame.
     case entered(WKFrameInfo?)
 }

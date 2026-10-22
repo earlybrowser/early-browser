@@ -100,11 +100,13 @@ struct SiteSecurityTests {
         #expect(scripts.runs.last?.script == WebViewManager.exitPictureInPictureScript)
         #expect(manager.automaticPictureInPictureTabs.isEmpty)
 
-        // Coming back before the video has moved out returns it as it lands.
+        // Coming back before the video has moved out returns it at once (the
+        // request may have stalled) and again if it lands afterwards.
         #expect(manager.setPresentation(visibleTabIDs: [other.id], focusedTabID: other.id))
         #expect(manager.setPresentation(visibleTabIDs: [video.id], focusedTabID: video.id))
-        try await fixture.waitUntil("returned while moving") { scripts.runs.count == 4 }
-        #expect(scripts.runs.suffix(2).map(\.script) == [WebViewManager.enterPictureInPictureScript, WebViewManager.exitPictureInPictureScript])
+        try await fixture.waitUntil("returned while moving") { scripts.runs.count == 5 }
+        #expect(Set(scripts.runs.suffix(3).map(\.script)) == [WebViewManager.enterPictureInPictureScript, WebViewManager.exitPictureInPictureScript])
+        #expect(scripts.runs.suffix(3).filter { $0.script == WebViewManager.exitPictureInPictureScript }.count == 2)
         #expect(manager.automaticPictureInPictureTabs.isEmpty)
 
         // Nothing moves when the setting is off, in fullscreen, or with nothing playing.
@@ -119,17 +121,17 @@ struct SiteSecurityTests {
         _ = manager.updateMediaActivity(in: page.view, token: "player", playing: false)
         #expect(manager.setPresentation(visibleTabIDs: [other.id], focusedTabID: other.id))
         try await Task.sleep(for: .milliseconds(100))
-        #expect(scripts.runs.count == 4 && manager.automaticPictureInPictureTabs.isEmpty)
+        #expect(scripts.runs.count == 5 && manager.automaticPictureInPictureTabs.isEmpty)
 
         // A video that cannot move out is not brought back later.
         _ = manager.updateMediaActivity(in: page.view, token: "player", playing: true)
         #expect(manager.setPresentation(visibleTabIDs: [video.id], focusedTabID: video.id))
         scripts.result = false
         #expect(manager.setPresentation(visibleTabIDs: [other.id], focusedTabID: other.id))
-        try await fixture.waitUntil("refused") { scripts.runs.count == 5 && manager.automaticPictureInPictureTabs.isEmpty }
+        try await fixture.waitUntil("refused") { scripts.runs.count == 6 && manager.automaticPictureInPictureTabs.isEmpty }
         #expect(manager.setPresentation(visibleTabIDs: [video.id], focusedTabID: video.id))
         try await Task.sleep(for: .milliseconds(100))
-        #expect(scripts.runs.count == 5)
+        #expect(scripts.runs.count == 6)
     }
 
     @Test func pagesAllowPictureInPictureAndItsScriptsRunWithoutAVideo() async throws {
