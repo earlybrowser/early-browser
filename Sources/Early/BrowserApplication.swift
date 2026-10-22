@@ -313,11 +313,17 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let workspace { persistence?.enqueue(workspace) }
     }
 
+    /// Every tab, pin and Favorite address in the profile's open windows.
+    func sidebarURLs(profileID: UUID) -> [URL] {
+        visibleModels.filter { $0.coordinator.profileID == profileID }.flatMap(\.sidebarURLs)
+    }
+
     /// One window cleared the profile's shared website data; the others drop
-    /// their now-stale icons and thumbnails and reload History.
+    /// icons of sites no longer in the sidebar and reload History.
     func didClearWebsiteData(profileID: UUID, from source: BrowserWindowModel) {
+        let kept = sidebarURLs(profileID: profileID)
         for target in visibleModels where target !== source && target.coordinator.profileID == profileID {
-            target.webViews.forgetClearedArtwork()
+            target.webViews.forgetClearedArtwork(keepingIconsFor: kept)
             target.historyRevision += 1
         }
     }

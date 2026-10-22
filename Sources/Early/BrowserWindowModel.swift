@@ -699,6 +699,9 @@ final class BrowserWindowModel {
         }
     }
 
+    /// The addresses of this window's tabs, pins and Favorites, open or not.
+    var sidebarURLs: [URL] { coordinator.tabStore.tabs.flatMap { [$0.currentURL, $0.pinnedURL].compactMap { $0 } } }
+
     /// Waits for recorded visits to reach the store (tests and clearing).
     func flushHistory() async { await historyQueue?.value }
 
@@ -708,7 +711,9 @@ final class BrowserWindowModel {
         let since = range.start(now: now())
         await flushHistory()
         try? await history?.deleteVisits(since: since)
-        await webViews.clearWebsiteData(since: since)
+        // Tabs, pins and Favorites in every window of the profile keep their icons.
+        let kept = application?.sidebarURLs(profileID: coordinator.profileID) ?? sidebarURLs
+        await webViews.clearWebsiteData(since: since, keepingIconsFor: kept)
         historyURLs.removeAll()
         historyRevision += 1
         application?.didClearWebsiteData(profileID: coordinator.profileID, from: self)

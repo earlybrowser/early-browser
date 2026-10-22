@@ -346,6 +346,8 @@ struct PageToolsActionTests {
         try await fixture.waitUntil("results") { !model.commandSearch.isRefreshing && !model.commandSearch.isLoadingProviders }
         #expect(!model.visibleCommandResults.contains { $0.candidate.kind == .history })
         #expect(model.visibleCommandResults.contains { $0.candidate.target == .tab(pin.id) })
+        // Clearing history keeps the icons of every tab, pin and Favorite.
+        #expect(Set(model.sidebarURLs).isSuperset(of: [one, two]))
     }
 
     @Test func historyOpensAsAWindowSheetGroupsVisitsByDayAndClearsARange() async throws {
