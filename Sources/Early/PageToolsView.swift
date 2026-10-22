@@ -90,56 +90,214 @@ struct ReaderBadge: View {
     }
 }
 
-/// Page controls inside the sidebar address pill, shown only when they work.
-struct AddressPageButtons: View {
+/// Original Early artwork for site controls: two sliders in a rounded square,
+/// on the same 24-point grid and stroke as the download icon.
+struct SiteControlsGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addRoundedRect(in: CGRect(x: 3, y: 3, width: 18, height: 18), cornerSize: CGSize(width: 4.5, height: 4.5))
+        // Each slider's track stops short of its knob instead of crossing it.
+        for (y, knob) in [(9.5, 10.0), (14.5, 14.0)] {
+            path.move(to: CGPoint(x: 7, y: y))
+            path.addLine(to: CGPoint(x: knob - 1.9, y: y))
+            path.move(to: CGPoint(x: knob + 1.9, y: y))
+            path.addLine(to: CGPoint(x: 17, y: y))
+            path.addEllipse(in: CGRect(x: knob - 1.9, y: y - 1.9, width: 3.8, height: 3.8))
+        }
+        let scale = min(rect.width, rect.height) / 24
+        return path.applying(CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+                                               tx: rect.midX - 12 * scale, ty: rect.midY - 12 * scale))
+    }
+}
+
+/// The address pill's only icon. Its panel gathers the current page's working
+/// controls: Copy Link, Reader, Translate and Zoom.
+struct SiteControlsButton: View {
     @Bindable var model: BrowserWindowModel
+    @State private var presented = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
-    static func isVisible(for page: BrowserPage?, translatable: Bool = false) -> Bool {
-        buttonCount(for: page, translatable: translatable) > 0
-    }
+    static func isVisible(for model: BrowserWindowModel) -> Bool { model.currentPageURL != nil }
 
-    static func buttonCount(for page: BrowserPage?, translatable: Bool) -> Int {
-        guard let page else { return 0 }
-        return (page.isReaderShown || page.isReaderAvailable ? 1 : 0) + (translatable ? 1 : 0)
+    /// Reader or a translation is on: the icon takes the theme color.
+    static func isActive(_ page: BrowserPage?) -> Bool {
+        page?.isReaderShown == true || page?.translation.isActive == true
     }
 
     var body: some View {
         let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
-        HStack(spacing: 2) {
-            if let page = model.activePage, page.isReaderShown || page.isReaderAvailable {
-                Button { model.perform(.toggleReader) } label: {
-                    Image(systemName: page.isReaderShown ? "doc.plaintext.fill" : "doc.plaintext")
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(width: 26, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(page.isReaderShown ? AnyShapeStyle(tint) : AnyShapeStyle(.secondary))
-                .browserKeyboardFocus(cornerRadius: 6)
-                .disabled(!model.canPerform(.toggleReader))
-                .help(page.isReaderShown ? "Hide Reader (Command-Shift-R)" : "Show Reader (Command-Shift-R)")
-                .accessibilityLabel(page.isReaderShown ? "Hide Reader" : "Show Reader")
-                .accessibilityIdentifier("address.reader")
+        if Self.isVisible(for: model), let id = model.coordinator.focusedTabID {
+            Button { presented.toggle() } label: {
+                SiteControlsGlyph()
+                    .stroke(style: StrokeStyle(lineWidth: 1.75 * 18 / 24, lineCap: .round, lineJoin: .round))
+                    .frame(width: 18, height: 18)
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
             }
-            if let id = model.coordinator.focusedTabID, let title = model.translationTitle(for: id) {
-                let active = title == "Show Original"
-                Button { model.perform(.toggleTranslation) } label: {
-                    Image(systemName: "translate")
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(width: 26, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(active ? AnyShapeStyle(tint) : AnyShapeStyle(.secondary))
-                .browserKeyboardFocus(cornerRadius: 6)
-                .help(title)
-                .accessibilityLabel(title)
-                .accessibilityIdentifier("address.translate")
+            .buttonStyle(.plain)
+            .foregroundStyle(Self.isActive(model.activePage) ? AnyShapeStyle(tint) : AnyShapeStyle(.secondary))
+            .browserKeyboardFocus(cornerRadius: 6)
+            .help("Site Controls")
+            .accessibilityLabel("Site Controls")
+            .accessibilityIdentifier("address.siteControls")
+            .popover(isPresented: $presented, arrowEdge: .bottom) {
+                SiteControlsPanel(model: model, tabID: id) { presented = false }
             }
         }
     }
+}
+
+struct SiteControlsPanel: View {
+    @Bindable var model: BrowserWindowModel
+    let tabID: UUID
+    let dismiss: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    static func readerValue(_ page: BrowserPage) -> String { page.isReaderShown ? "On" : "Off" }
+
+    static func translationValue(_ page: BrowserPage, title: String) -> String {
+        switch page.translation {
+        case .translating: return "Translating…"
+        case .translated: return "Translated"
+        case .original, .failed: return title.replacingOccurrences(of: "Translate ", with: "").capitalizedFirst
+        }
+    }
+
+    var body: some View {
+        let tint = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
+        let page = model.webViews.pages[tabID]
+        let url = model.currentPageURL
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(url?.host ?? url?.lastPathComponent ?? "Page").font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                Text(url?.absoluteString ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            if let page {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Page").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    if page.isReaderShown || page.isReaderAvailable {
+                        SiteControlRow(symbol: "doc.plaintext", title: "Reader", value: Self.readerValue(page),
+                                       active: page.isReaderShown, tint: tint, identifier: "siteControls.reader") {
+                            model.perform(.toggleReader)
+                            dismiss()
+                        }
+                        .disabled(!model.canPerform(.toggleReader))
+                    }
+                    if let title = model.translationTitle(for: tabID) {
+                        SiteControlRow(symbol: "translate", title: "Translate", value: Self.translationValue(page, title: title),
+                                       active: page.translation.isActive, tint: tint, identifier: "siteControls.translate") {
+                            model.perform(.toggleTranslation)
+                            dismiss()
+                        }
+                    }
+                    SiteControlRow(symbol: "plus.magnifyingglass", title: "Zoom", value: ZoomNoticeView.text(for: page.zoom),
+                                   active: page.zoom != 1, tint: tint, identifier: "siteControls.zoomReset") {
+                        model.perform(.resetZoom)
+                    } trailing: {
+                        HStack(spacing: 4) {
+                            zoomButton("minus", "Zoom Out", .zoomOut, identifier: "siteControls.zoomOut")
+                            zoomButton("plus", "Zoom In", .zoomIn, identifier: "siteControls.zoomIn")
+                        }
+                    }
+                    .help(page.zoom == 1 ? "Actual size" : "Return to actual size (Command-0)")
+                }
+            }
+            Divider()
+            Button {
+                model.perform(.copyCurrentURL)
+                dismiss()
+            } label: {
+                Label("Copy Link", systemImage: "link")
+                    .font(.system(size: 13, weight: .medium))
+                    .padding(.horizontal, 12).frame(height: 30)
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .browserKeyboardFocus(cornerRadius: 8)
+            .disabled(!model.canPerform(.copyCurrentURL))
+            .help("Copy Current URL (Command-Shift-C)")
+            .accessibilityIdentifier("siteControls.copyLink")
+        }
+        .padding(16)
+        .frame(width: 280, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("siteControls.panel")
+    }
+
+    private func zoomButton(_ symbol: String, _ label: String, _ action: BrowserAction, identifier: String) -> some View {
+        Button { model.perform(action) } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: 26, height: 26)
+                .background(Color.primary.opacity(0.08), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .browserKeyboardFocus(cornerRadius: 13)
+        .disabled(!model.canPerform(action))
+        .help(label)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+/// One control in the site panel: a round icon, a title and its current value.
+struct SiteControlRow<Trailing: View>: View {
+    let symbol: String
+    let title: String
+    let value: String
+    let active: Bool
+    let tint: Color
+    let identifier: String
+    let action: () -> Void
+    @ViewBuilder var trailing: () -> Trailing
+
+    init(symbol: String, title: String, value: String, active: Bool, tint: Color, identifier: String,
+         action: @escaping () -> Void, @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }) {
+        self.symbol = symbol
+        self.title = title
+        self.value = value
+        self.active = active
+        self.tint = tint
+        self.identifier = identifier
+        self.action = action
+        self.trailing = trailing
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: action) {
+                HStack(spacing: 10) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(active ? AnyShapeStyle(tint) : AnyShapeStyle(.secondary))
+                        .frame(width: 32, height: 32)
+                        .background(active ? tint.opacity(0.18) : Color.primary.opacity(0.08), in: Circle())
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(.system(size: 13, weight: .semibold))
+                        Text(value).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .browserKeyboardFocus(cornerRadius: 8)
+            .accessibilityLabel(title)
+            .accessibilityValue(value)
+            .accessibilityIdentifier(identifier)
+            trailing()
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private extension String {
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 
 /// The hovered link's address, like Safari's status bar. Drawing only: the

@@ -148,19 +148,23 @@ struct PageToolsActionTests {
         try await fixture.waitForLoad(plain)
         try await Task.sleep(for: .milliseconds(200))
         #expect(!model.canPerform(.toggleReader), "A page that is not an article has no Reader")
-        #expect(!AddressPageButtons.isVisible(for: model.activePage))
+        #expect(SiteControlsButton.isVisible(for: model) && !SiteControlsButton.isActive(model.activePage))
 
         #expect(model.openLocations([URL(string: "early-test://fixture/article")!]))
         let id = try #require(model.coordinator.focusedTabID)
         try await fixture.waitForLoad(id)
         try await fixture.waitUntil("article") { model.webViews.pages[id]?.isReaderAvailable == true }
-        #expect(model.canPerform(.toggleReader) && AddressPageButtons.isVisible(for: model.activePage))
+        #expect(model.canPerform(.toggleReader))
+        let page = try #require(model.webViews.pages[id])
+        #expect(SiteControlsPanel.readerValue(page) == "Off")
         #expect(model.commandSearchCandidates().map(\.title).contains("Show Reader"))
         let focus = model.contentFocusRequest
         #expect(model.perform(.toggleReader))
         try await fixture.waitUntil("reader") { model.webViews.pages[id]?.isReaderShown == true }
         #expect(model.contentFocusRequest == focus + 1, "Focus moves into Reader")
         #expect(model.webViews.readerView(for: id) != nil)
+        #expect(SiteControlsButton.isActive(page) && SiteControlsPanel.readerValue(page) == "On",
+                "The site controls icon takes the theme color while Reader is on")
         #expect(model.commandSearchCandidates().map(\.title).contains("Hide Reader"))
         #expect(model.readerAccent.light.hasPrefix("#") && model.readerAccent.light.count == 7)
 
@@ -192,6 +196,8 @@ struct PageToolsActionTests {
         #expect(model.commandSearchCandidates().map(\.title).contains(title))
         #expect(model.webViews.translationMenuTitle?(id) == title, "The page menu uses the same title")
 
+        let page = try #require(model.webViews.pages[id])
+        #expect(SiteControlsPanel.translationValue(page, title: title) == "To \(TranslationOffer.name("en"))")
         #expect(model.perform(.toggleTranslation))
         #expect(model.translationRequest?.offer.tabID == id && model.translationTitle(for: id) == "Show Original")
         #expect(model.perform(.toggleTranslation))

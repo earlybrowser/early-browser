@@ -2444,15 +2444,9 @@ struct BrowserWindowView: View {
                     .truncationMode(.middle)
                     .foregroundStyle(currentURL == nil ? .secondary : .primary)
                 Spacer(minLength: 0)
-                let pageButtons = AddressPageButtons.buttonCount(for: model.activePage,
-                    translatable: model.coordinator.focusedTabID.flatMap(model.translationTitle) != nil)
-                if pageButtons > 0 {
-                    // Room for the page buttons drawn over this trailing edge.
-                    Color.clear.frame(width: CGFloat(pageButtons * 28 - 6), height: 1)
-                } else if currentURL != nil {
-                    Image(systemName: "link")
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
+                if SiteControlsButton.isVisible(for: model) {
+                    // Room for the site controls drawn over this trailing edge.
+                    Color.clear.frame(width: 22, height: 1)
                 }
             }
             .font(.system(size: 14, weight: .medium))
@@ -2489,7 +2483,7 @@ struct BrowserWindowView: View {
         .help(currentURL.map { "\($0) — Open Location (Command-L)" }
               ?? "Search or enter a URL (Command-L)")
         // Its own controls, outside the pill's single accessibility element.
-        .overlay(alignment: .trailing) { AddressPageButtons(model: model).padding(.trailing, 5) }
+        .overlay(alignment: .trailing) { SiteControlsButton(model: model).padding(.trailing, 5) }
     }
 
     private var addressLabel: String {

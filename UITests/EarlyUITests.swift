@@ -2336,8 +2336,16 @@ final class EarlyUITests: XCTestCase {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/article")
         expectPage(app, "Article")
-        let toggle = app.buttons["address.reader"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "Articles offer Reader in the address pill")
+        let controls = app.buttons["address.siteControls"]
+        XCTAssertTrue(controls.waitForExistence(timeout: 10))
+        // The article check runs after loading; reopen until Reader is offered.
+        let toggle = app.buttons["siteControls.reader"]
+        for _ in 0..<5 where !toggle.exists {
+            controls.click()
+            if toggle.waitForExistence(timeout: 2) { break }
+            app.typeKey(.escape, modifierFlags: [])
+        }
+        XCTAssertTrue(toggle.exists, "Articles offer Reader in the site controls")
         toggle.click()
         let original = app.buttons["reader.original"]
         XCTAssertTrue(original.waitForExistence(timeout: 10))
