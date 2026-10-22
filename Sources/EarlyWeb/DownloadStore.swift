@@ -26,6 +26,8 @@ public final class DownloadItem: Identifiable {
     public internal(set) var expectedBytes: Int64?
     /// WebKit's data for continuing a stopped or interrupted transfer.
     public internal(set) var resumeData: Data?
+    /// A document Early wrote itself (Save Page As, Export as PDF).
+    public internal(set) var wasSaved = false
 
     public var fractionCompleted: Double? {
         guard let expectedBytes, expectedBytes > 0 else { return nil }
@@ -64,6 +66,8 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     public private(set) var items: [DownloadItem] = []
     /// Increments for every new listed download or saved file (footer feedback).
     public private(set) var startedRevision = 0
+    /// Increments when a listed download or saved file completes.
+    public private(set) var finishedRevision = 0
     /// The profile's website data store, used to resume a stopped transfer.
     @ObservationIgnored public var dataStoreProvider: (() -> WKWebsiteDataStore?)?
     @ObservationIgnored private let directoryProvider: () -> URL
@@ -132,6 +136,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         let item = DownloadItem(source: source, origin: nil, requestedDestination: destination, listed: true)
         item.destination = destination
         item.state = .finished
+        item.wasSaved = true
         if let size = try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize {
             item.completedBytes = Int64(size)
             item.expectedBytes = Int64(size)
@@ -139,6 +144,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         items.insert(item, at: 0)
         trimList()
         startedRevision += 1
+        finishedRevision += 1
         return item
     }
 
@@ -293,6 +299,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
             Self.applyQuarantine(to: destination, source: item.sourceURL, origin: item.originURL)
         }
         item.state = .finished
+        if item.listed { finishedRevision += 1 }
         releaseTransfer(item)
         releaseReservation(item)
     }

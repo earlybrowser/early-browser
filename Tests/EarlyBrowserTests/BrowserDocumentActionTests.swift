@@ -81,6 +81,22 @@ struct BrowserDocumentActionTests {
         #expect(model.toast?.kind == .downloadStarted && model.toast?.message == "Download Started")
     }
 
+    @Test func downloadRingStartsFromZeroOnlyGrowsAndNeverInventsProgress() {
+        #expect(DownloadRing.next(current: 0, active: true, progress: nil) == 0, "Unknown size shows no fake progress")
+        #expect(DownloadRing.next(current: 0, active: true, progress: 0.4) == 0.4)
+        #expect(DownloadRing.next(current: 0.6, active: true, progress: 0.3) == 0.6, "A newly added download cannot shrink the ring")
+        #expect(DownloadRing.next(current: 0.6, active: true, progress: 1.4) == 1)
+        #expect(DownloadRing.next(current: 0.8, active: false, progress: 0.8) == 0, "The next burst starts again from zero")
+    }
+
+    @Test func dropletHasAPointedTopAndStaysInsideItsFrame() {
+        let rect = CGRect(x: 0, y: 0, width: 4.5, height: 6.5)
+        let path = DropletShape().path(in: rect)
+        #expect(rect.insetBy(dx: -0.01, dy: -0.01).contains(path.boundingRect))
+        #expect(path.contains(CGPoint(x: rect.midX, y: rect.maxY - 1)), "Round base")
+        #expect(!path.contains(CGPoint(x: rect.minX + 0.3, y: rect.minY + 0.3)), "Pointed top")
+    }
+
     @Test func downloadStatusTextDescribesEachState() {
         let item = DownloadItem(source: URL(string: "https://files.example.com/a.zip"), origin: nil, requestedDestination: nil, listed: true)
         #expect(DownloadStatus.text(for: item, fileExists: false) == "Starting…")

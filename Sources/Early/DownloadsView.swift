@@ -6,38 +6,72 @@ import EarlyWeb
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The footer's left-hand control. Each new download or saved file makes the
-/// glyph pop; an accent ring over a faint track shows active progress.
+/// The footer's left-hand control, in the active Space's theme. A drop falls
+/// into the icon when a download starts, a ring traces its circle clockwise
+/// from zero as the transfer completes, and a shine marks the finish. These
+/// run only on those events; Reduce Motion uses a brief color fade instead.
 struct DownloadsButton: View {
     @Bindable var model: BrowserWindowModel
-    @State private var popped = false
-    @State private var spinning = false
+    @State private var ringValue = 0.0
+    @State private var ringOpacity = 1.0
+    @State private var finishing = false
+    @State private var dropOffset: CGFloat = -12
+    @State private var dropOpacity = 0.0
+    @State private var rippleScale: CGFloat = 0.3
+    @State private var rippleOpacity = 0.0
+    @State private var shineOffset: CGFloat = -16
+    @State private var shineOpacity = 0.0
+    @State private var tint = 0.0
+    @State private var dropEndsAt = Date.distantPast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private static let glyphStroke = StrokeStyle(lineWidth: 1.75 * 18 / 24, lineCap: .round, lineJoin: .round)
 
     var body: some View {
         let store = model.downloads
         let active = store.hasActiveDownloads
-        let progress = store.activeProgress
+        let theme = model.splitTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         Button { model.perform(.showDownloads) } label: {
-            DownloadGlyph()
-                .stroke(style: StrokeStyle(lineWidth: 1.75 * 18 / 24, lineCap: .round, lineJoin: .round))
-                .opacity(active ? 0.35 : 1)
-                .overlay {
-                    if active {
-                        ZStack {
-                            Circle().stroke(Color.primary.opacity(0.18), lineWidth: 2)
-                            Circle()
-                                .trim(from: 0, to: progress ?? 0.3)
-                                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.25, lineCap: .round))
-                                .rotationEffect(.degrees(-90 + (progress == nil && spinning ? 360 : 0)))
-                        }
-                        .padding(1)
+            ZStack {
+                DownloadGlyph().stroke(style: Self.glyphStroke)
+                DownloadGlyph().stroke(theme, style: Self.glyphStroke).opacity(tint)
+                DownloadGlyph()
+                    .stroke(LinearGradient(colors: [theme, .white.opacity(0.95), theme], startPoint: .leading, endPoint: .trailing),
+                            style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                    .mask {
+                        LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.5),
+                                               .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: 11)
+                            .offset(x: shineOffset)
                     }
+                    .opacity(shineOpacity)
+                if active || finishing {
+                    // Traces the glyph's own circle, so no separate track is drawn.
+                    Circle()
+                        .trim(from: 0, to: ringValue)
+                        .stroke(theme, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .padding(18 * 3 / 24)
+                        .opacity(ringOpacity)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: ringValue)
                 }
-                .frame(width: 18, height: 18)
-                .scaleEffect(popped ? 1.35 : 1)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+                Circle()
+                    .stroke(theme, lineWidth: 1.25)
+                    .padding(4.5)
+                    .scaleEffect(rippleScale)
+                    .opacity(rippleOpacity)
+                DropletShape()
+                    .fill(theme)
+                    .frame(width: 4.5, height: 6.5)
+                    .offset(y: dropOffset)
+                    .opacity(dropOpacity)
+            }
+            .frame(width: 18, height: 18)
+            .shadow(color: theme.opacity(shineOpacity * 0.8), radius: 3)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
         }
         .buttonStyle(SpaceControlStyle())
         .foregroundStyle(active ? .primary : .secondary)
@@ -46,30 +80,130 @@ struct DownloadsButton: View {
         .accessibilityValue(DownloadStatus.summary(for: store))
         .accessibilityIdentifier("downloads.button")
         .help("Downloads (⌥⌘L)")
-        .onChange(of: store.startedRevision) { pop() }
-        .onChange(of: active && progress == nil, initial: true) { _, unknownSize in spin(unknownSize) }
+        .onChange(of: DownloadRing.Input(active: active, progress: store.activeProgress)) { _, input in
+            guard !finishing else { return }
+            ringValue = DownloadRing.next(current: ringValue, active: input.active, progress: input.progress)
+        }
+        .onChange(of: store.startedRevision) { started() }
+        .onChange(of: store.finishedRevision) { finished() }
         .popover(isPresented: $model.downloadsPresented, arrowEdge: .top) {
             DownloadsPanel(store: store)
         }
     }
 
-    private func pop() {
-        guard !reduceMotion else { return }
-        withAnimation(.spring(response: 0.2, dampingFraction: 0.45)) { popped = true }
+    private var instant: Transaction {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        return transaction
+    }
+
+    private func started() {
+        let latest = model.downloads.items.first
+        announce(latest?.wasSaved == true ? "Saved \(latest?.filename ?? "file")" : "Download started")
+        guard !reduceMotion else { fadeTint(); return }
+        dropEndsAt = Date().addingTimeInterval(0.62)
+        withTransaction(instant) {
+            dropOffset = -12
+            dropOpacity = 1
+            rippleScale = 0.3
+            rippleOpacity = 0
+        }
+        withAnimation(.easeIn(duration: 0.26)) { dropOffset = 0 }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(220))
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.6)) { popped = false }
+            try? await Task.sleep(for: .milliseconds(260))
+            withTransaction(instant) {
+                dropOpacity = 0
+                rippleOpacity = 0.85
+            }
+            withAnimation(.easeOut(duration: 0.36)) {
+                rippleScale = 1.3
+                rippleOpacity = 0
+            }
         }
     }
 
-    /// Only an unknown-size transfer turns; Reduce Motion keeps it still.
-    private func spin(_ unknownSize: Bool) {
-        guard unknownSize, !reduceMotion else {
-            withAnimation(nil) { spinning = false }
+    private func finished() {
+        if model.downloads.items.first?.wasSaved != true { announce("Download finished") }
+        let completesRing = !model.downloads.hasActiveDownloads
+        guard !reduceMotion else {
+            fadeTint()
+            if completesRing { withTransaction(instant) { ringValue = 0 } }
             return
         }
-        spinning = false
-        withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { spinning = true }
+        Task { @MainActor in
+            // A save starts and finishes at once: let its drop land first.
+            let wait = dropEndsAt.timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            if completesRing {
+                finishing = true
+                ringValue = 1
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            withTransaction(instant) {
+                shineOffset = -16
+                shineOpacity = 1
+            }
+            withAnimation(.easeInOut(duration: 0.5)) { shineOffset = 16 }
+            try? await Task.sleep(for: .milliseconds(500))
+            withAnimation(.easeOut(duration: 0.25)) {
+                shineOpacity = 0
+                if completesRing { ringOpacity = 0 }
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard completesRing else { return }
+            withTransaction(instant) {
+                finishing = false
+                ringOpacity = 1
+                ringValue = DownloadRing.next(current: 0, active: model.downloads.hasActiveDownloads,
+                                              progress: model.downloads.activeProgress)
+            }
+        }
+    }
+
+    /// Reduce Motion: a brief theme-colored fade, with no movement.
+    private func fadeTint() {
+        withAnimation(.easeOut(duration: 0.2)) { tint = 1 }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            withAnimation(.easeIn(duration: 0.35)) { tint = 0 }
+        }
+    }
+
+    private func announce(_ message: String) {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        NSAccessibility.post(element: window, notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+    }
+}
+
+/// The ring starts at zero for each burst of downloads and only grows. An
+/// unknown total stays at zero rather than inventing progress.
+enum DownloadRing {
+    struct Input: Equatable {
+        let active: Bool
+        let progress: Double?
+    }
+
+    static func next(current: Double, active: Bool, progress: Double?) -> Double {
+        guard active else { return 0 }
+        return max(current, min(1, max(0, progress ?? 0)))
+    }
+}
+
+/// A small water drop: a pointed top over a round base.
+struct DropletShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let radius = rect.width / 2
+        let center = CGPoint(x: rect.midX, y: rect.maxY - radius)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX, y: center.y),
+                          control: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.45))
+        path.addArc(center: center, radius: radius, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+        path.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.minY),
+                          control: CGPoint(x: rect.minX, y: rect.minY + rect.height * 0.45))
+        path.closeSubpath()
+        return path
     }
 }
 

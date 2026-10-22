@@ -97,6 +97,7 @@ struct DownloadStoreTests {
         #expect(fixture.started.count == 1 && protectedWhileActive, "The page is protected while its download runs")
         #expect(!fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download))
         #expect(!fixture.store.hasActiveDownloads && item.sourceURL == nil, "data: sources are not kept")
+        #expect(fixture.store.startedRevision == 1 && fixture.store.finishedRevision == 1, "The footer reacts to start and finish")
         let quarantine = try destination.resourceValues(forKeys: [.quarantinePropertiesKey]).quarantineProperties
         #expect(quarantine?[kLSQuarantineAgentNameKey as String] as? String == "Early")
         #expect(quarantine?[kLSQuarantineTypeKey as String] as? String == kLSQuarantineTypeWebDownload as String)
@@ -133,6 +134,7 @@ struct DownloadStoreTests {
         #expect(try String(contentsOf: chosen, encoding: .utf8) == "hello world")
         #expect(try String(contentsOf: neighbor, encoding: .utf8) == "keep")
         #expect(fixture.store.items.isEmpty && fixture.started.isEmpty)
+        #expect(fixture.store.startedRevision == 0 && fixture.store.finishedRevision == 0, "An internal save stays quiet")
     }
 
     @Test func stoppingKeepsThePartialFileAndResumeFinishesTheSameFile() async throws {
@@ -202,7 +204,8 @@ struct DownloadStoreTests {
         #expect(html.contains("href=\"next.html\"") && html.contains("Café"))
         let item = try #require(fixture.store.items.first)
         #expect(item.state == .finished && item.filename == "Saved Page.html" && fixture.store.fileExists(item))
-        #expect(fixture.store.startedRevision == before + 1, "The footer reacts to a saved file")
+        #expect(fixture.store.startedRevision == before + 1 && fixture.store.finishedRevision == 1, "A save starts and finishes at once")
+        #expect(item.wasSaved)
     }
 
     @Test func cancellingBeforeADestinationCreatesNoFileAndClearingKeepsFinishedFiles() async throws {
