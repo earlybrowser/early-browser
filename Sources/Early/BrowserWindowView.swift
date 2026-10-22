@@ -401,6 +401,10 @@ struct BrowserWindowView: View {
         // clipped page area is inset into it; no sidebar tint or seam on top.
         .background(BrowserChromeBackground(spaceColor: model.preferences.spaceThemes ? (model.coordinator.activeSpace?.color ?? .gray) : .gray,
                                             allowsTransparency: model.preferences.translucentChrome))
+        // The thin chrome border around the sidebar and page behaves like a
+        // title bar in every window (ordinary and private): drag to move,
+        // double-click to zoom. The chrome above ignores clicks.
+        .background(WindowDragRegion())
         .background(BrowserWindowPointerMonitor { point in
             windowPointer.location = point
             guard sidebarAutoHides else { return }

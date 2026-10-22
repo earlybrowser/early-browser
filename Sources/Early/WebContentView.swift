@@ -736,13 +736,34 @@ struct WindowControls: NSViewRepresentable {
     }
 }
 
+/// Chrome that moves the window like a title bar: drag to move, double-click
+/// for the user's System Settings choice (zoom by default, minimize, or nothing).
 struct WindowDragRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> DragView { DragView() }
     func updateNSView(_ view: DragView, context: Context) {}
+
+    enum DoubleClickAction: Equatable { case zoom, minimize, none }
+
+    /// The global "Double-click a window's title bar to" setting.
+    static func doubleClickAction(_ setting: String? = UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick")) -> DoubleClickAction {
+        switch setting {
+        case "Minimize": .minimize
+        case "None": .none
+        default: .zoom
+        }
+    }
+
     final class DragView: NSView {
         override func mouseDown(with event: NSEvent) {
-            if event.clickCount == 2 { window?.performZoom(nil) }
-            else { window?.performDrag(with: event) }
+            guard event.clickCount == 2 else {
+                window?.performDrag(with: event)
+                return
+            }
+            switch WindowDragRegion.doubleClickAction() {
+            case .zoom: window?.performZoom(nil)
+            case .minimize: window?.performMiniaturize(nil)
+            case .none: break
+            }
         }
     }
 }
