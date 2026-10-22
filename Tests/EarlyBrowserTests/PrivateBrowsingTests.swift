@@ -189,7 +189,7 @@ struct PrivateBrowsingTests {
         await fixture.cleanup()
     }
 
-    @Test func privateChromeIsAlwaysLightGrayWhilePagesKeepEarlysAppearance() async throws {
+    @Test func privateChromeIsAlwaysDarkGrayWhilePagesKeepEarlysAppearance() async throws {
         let fixture = Fixture()
         await fixture.start()
         let app = fixture.application
@@ -206,7 +206,7 @@ struct PrivateBrowsingTests {
 
         func scheme(_ view: NSView) -> NSAppearance.Name? { view.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) }
         let previous = NSApp.appearance
-        NSApp.appearance = NSAppearance(named: .darkAqua)
+        NSApp.appearance = NSAppearance(named: .aqua)
         for window in [model, normal] {
             #expect(window.openLocations([URL(string: "early-test://fixture/one")!]))
         }
@@ -231,18 +231,18 @@ struct PrivateBrowsingTests {
             }
         }
 
-        try await settle("dark page in light private chrome") { page.window === windows[0] && scheme(page) == .darkAqua }
-        #expect(windows[0].appearance?.name == .aqua && scheme(hosts[0]) == .aqua, "The private chrome stays light in dark mode")
-        try await settle("ordinary window follows dark mode") { ordinaryPage.window === windows[1] && scheme(ordinaryPage) == .darkAqua }
-        #expect(windows[1].appearance == nil && scheme(hosts[1]) == .darkAqua)
+        try await settle("light page in dark private chrome") { page.window === windows[0] && scheme(page) == .aqua }
+        #expect(windows[0].appearance?.name == .darkAqua && scheme(hosts[0]) == .darkAqua, "The private chrome stays dark in light mode")
+        try await settle("ordinary window follows light mode") { ordinaryPage.window === windows[1] && scheme(ordinaryPage) == .aqua }
+        #expect(windows[1].appearance == nil && scheme(hosts[1]) == .aqua)
 
-        NSApp.appearance = NSAppearance(named: .aqua)
-        try await settle("light pages") { scheme(page) == .aqua && scheme(ordinaryPage) == .aqua }
-        #expect(scheme(hosts[0]) == .aqua)
-        #expect(scheme(hosts[1]) == .aqua)
         NSApp.appearance = NSAppearance(named: .darkAqua)
-        try await settle("dark again") { scheme(page) == .darkAqua && scheme(ordinaryPage) == .darkAqua }
-        #expect(scheme(hosts[0]) == .aqua)
+        try await settle("dark pages") { scheme(page) == .darkAqua && scheme(ordinaryPage) == .darkAqua }
+        #expect(scheme(hosts[0]) == .darkAqua)
+        #expect(scheme(hosts[1]) == .darkAqua)
+        NSApp.appearance = NSAppearance(named: .aqua)
+        try await settle("light again") { scheme(page) == .aqua && scheme(ordinaryPage) == .aqua }
+        #expect(scheme(hosts[0]) == .darkAqua)
 
         NSApp.appearance = previous
         for (hosting, window) in zip(hosts, windows) {

@@ -112,16 +112,16 @@ public enum WindowTheme: Hashable, Sendable {
     case space(BrowserSpace.Color)
     case privateBrowsing
 
-    /// A cool mid-light gray between Early's light and dark chrome. It is the
+    /// A cool dark gray, lighter than the gray Space's dark chrome. It is the
     /// same in both appearances, so private windows always draw their chrome
-    /// light, with dark text; pages keep Early's own appearance.
-    private static let privateTop = SpaceThemeRGB(red: 0.690, green: 0.690, blue: 0.714)
-    private static let privateBottom = SpaceThemeRGB(red: 0.635, green: 0.635, blue: 0.659)
+    /// dark, with white text; pages keep Early's own appearance.
+    private static let privateTop = SpaceThemeRGB(red: 0.227, green: 0.227, blue: 0.251)
+    private static let privateBottom = SpaceThemeRGB(red: 0.180, green: 0.180, blue: 0.200)
 
     public var swatch: SpaceThemeRGB {
         switch self {
         case .space(let color): color.swatch
-        case .privateBrowsing: SpaceThemeRGB(red: 0.43, green: 0.43, blue: 0.46)
+        case .privateBrowsing: SpaceThemeRGB(red: 0.60, green: 0.60, blue: 0.64)
         }
     }
 
@@ -139,13 +139,13 @@ public enum WindowTheme: Hashable, Sendable {
         }
     }
 
-    /// Private windows keep one dark graphite edge against their gray chrome.
+    /// Private windows keep one silver edge against their dark gray chrome.
     public func focusBorder(isDark: Bool, increasedContrast: Bool = false) -> SpaceThemeRGB {
         switch self {
         case .space(let color): return color.focusBorder(isDark: isDark, increasedContrast: increasedContrast)
         case .privateBrowsing:
-            return increasedContrast ? SpaceThemeRGB(red: 0.122, green: 0.122, blue: 0.137)
-                : SpaceThemeRGB(red: 0.282, green: 0.282, blue: 0.306)
+            return increasedContrast ? SpaceThemeRGB(red: 0.831, green: 0.831, blue: 0.855)
+                : SpaceThemeRGB(red: 0.651, green: 0.651, blue: 0.682)
         }
     }
 }

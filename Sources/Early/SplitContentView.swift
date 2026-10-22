@@ -179,7 +179,7 @@ struct SplitContentView: View {
                 .accessibilityIdentifier("browser.error")
             }
         }
-        // A private window's chrome is always light; its pages, and the page
+        // A private window's chrome is always dark; its pages, and the page
         // area around them, keep Early's own light or dark appearance.
         .environment(\.colorScheme, model.isPrivate ? ApplicationAppearance.shared.colorScheme : colorScheme)
         .overlay(alignment: .topLeading) {

@@ -251,7 +251,7 @@ struct PrivateBrowsingBadge: View {
 }
 
 /// Early's own light or dark appearance. Private windows draw their chrome
-/// light on the private gray, so their pages read it here, not from the window.
+/// dark on the private gray, so their pages read it here, not from the window.
 @MainActor @Observable final class ApplicationAppearance {
     static let shared = ApplicationAppearance()
     private(set) var colorScheme: ColorScheme
@@ -275,7 +275,7 @@ struct PrivateBrowsingBadge: View {
     }
 }
 
-/// Gives a private window the light appearance its gray chrome needs, in
+/// Gives a private window the dark appearance its gray chrome needs, in
 /// light and dark mode alike, including its menus, popovers and controls.
 struct PrivateWindowAppearance: NSViewRepresentable {
     func makeNSView(context: Context) -> AppearanceView { AppearanceView() }
@@ -288,8 +288,8 @@ struct PrivateWindowAppearance: NSViewRepresentable {
         }
 
         func apply() {
-            guard let window, window.appearance?.name != .aqua else { return }
-            window.appearance = NSAppearance(named: .aqua)
+            guard let window, window.appearance?.name != .darkAqua else { return }
+            window.appearance = NSAppearance(named: .darkAqua)
         }
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }

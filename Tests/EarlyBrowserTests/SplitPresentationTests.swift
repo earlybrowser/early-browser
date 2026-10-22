@@ -713,10 +713,10 @@ struct SplitPresentationTests {
         let red = try sample(.space(.red)), blue = try sample(.space(.blue))
         #expect(red.redComponent > red.blueComponent + 0.04)
         #expect(blue.blueComponent > blue.redComponent + 0.04)
-        // The private gray is the same mid-light gray in either appearance.
+        // The private gray is the same dark gray in either appearance.
         let gray = try sample(.privateBrowsing)
         #expect(abs(gray.redComponent - gray.blueComponent) < 0.05 && abs(gray.redComponent - gray.greenComponent) < 0.05)
-        #expect((0.5...0.8).contains(gray.greenComponent))
+        #expect((0.15...0.4).contains(gray.greenComponent))
     }
 
     @Test func eitherVisibleDialogBlocksSplitFocusAndPreviewAndForeignWindowStaysUntouched() throws {
