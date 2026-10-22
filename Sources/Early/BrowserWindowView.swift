@@ -2403,10 +2403,12 @@ struct BrowserWindowView: View {
             .accessibilityIdentifier("sidebar.toggle")
             .help("Toggle sidebar auto-hide (Command-Shift-S). Reveal at the left edge.")
             Spacer(minLength: 0)
-            NavigationButton(kind: .back) { model.perform(.back) }
+            NavigationButton(kind: .back, history: { historyEntries(forward: false) },
+                             onHistory: { model.perform(.goToHistory(offset: $0)) }) { model.perform(.back) }
                 .disabled(model.activePage?.canGoBack != true)
                 .accessibilityLabel("Back").accessibilityIdentifier("navigation.back")
-            NavigationButton(kind: .forward) { model.perform(.forward) }
+            NavigationButton(kind: .forward, history: { historyEntries(forward: true) },
+                             onHistory: { model.perform(.goToHistory(offset: $0)) }) { model.perform(.forward) }
                 .disabled(model.activePage?.canGoForward != true)
                 .accessibilityLabel("Forward").accessibilityIdentifier("navigation.forward")
             NavigationButton(kind: model.activePage?.isLoading == true ? .stop : .reload) {
@@ -2421,6 +2423,10 @@ struct BrowserWindowView: View {
         .foregroundStyle(.secondary)
         .buttonStyle(.plain)
         .background(WindowDragRegion())
+    }
+
+    private func historyEntries(forward: Bool) -> [WebViewManager.HistoryListEntry] {
+        model.coordinator.focusedTabID.map { model.webViews.historyList($0, forward: forward) } ?? []
     }
 
     private var currentURL: String? {
@@ -2500,20 +2506,25 @@ struct BrowserWindowView: View {
 /// Activation feedback never delays the action or the actual Reload/Stop state.
 private struct NavigationButton: View {
     let kind: NavigationControlStyle.Kind
+    /// Back and Forward list the tab's history on right-click or press-and-hold.
+    var history: (() -> [WebViewManager.HistoryListEntry])? = nil
+    var onHistory: (Int) -> Void = { _ in }
     let action: () -> Void
     @State private var activation = 0
     @State private var clickFeedback = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
-        Button {
-            clickFeedback = !reduceMotion
-            activation += 1
-            action()
-        } label: {
+        Button { activate() } label: {
             ReloadStopArtwork(isLoading: kind == .stop)
         }
         .buttonStyle(NavigationControlStyle(kind: kind, clickFeedback: clickFeedback))
+        .overlay {
+            if let history, isEnabled {
+                HistoryMenuOverlay(onClick: activate, entries: history, onSelect: onHistory)
+            }
+        }
         .browserKeyboardFocus(cornerRadius: 8)
         .task(id: activation) {
             guard activation > 0 else { return }
@@ -2522,6 +2533,91 @@ private struct NavigationButton: View {
                 clickFeedback = false
             } catch { /* A newer activation or disappearing view cancels feedback. */ }
         }
+    }
+
+    private func activate() {
+        clickFeedback = !reduceMotion
+        activation += 1
+        action()
+    }
+}
+
+/// Native press-and-hold and right-click for Back and Forward. A click shorter
+/// than the hold delay is an ordinary Back/Forward; keyboard and VoiceOver use
+/// the SwiftUI button underneath.
+struct HistoryMenuOverlay: NSViewRepresentable {
+    let onClick: () -> Void
+    let entries: () -> [WebViewManager.HistoryListEntry]
+    let onSelect: (Int) -> Void
+
+    func makeNSView(context: Context) -> HistoryMenuView { HistoryMenuView() }
+    func updateNSView(_ view: HistoryMenuView, context: Context) {
+        view.onClick = onClick
+        view.entries = entries
+        view.onSelect = onSelect
+    }
+    static func dismantleNSView(_ view: HistoryMenuView, coordinator: ()) { view.cancelHold() }
+
+    final class HistoryMenuView: NSView {
+        static let holdDelay: TimeInterval = 0.4
+        var onClick: () -> Void = {}
+        var entries: () -> [WebViewManager.HistoryListEntry] = { [] }
+        var onSelect: (Int) -> Void = { _ in }
+        private var hold: Timer?
+        private var showedMenu = false
+
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func isAccessibilityElement() -> Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            showedMenu = false
+            cancelHold()
+            hold = Timer.scheduledTimer(withTimeInterval: Self.holdDelay, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.showMenu() }
+            }
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            let wasHolding = hold != nil
+            cancelHold()
+            if wasHolding, !showedMenu, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick() }
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            cancelHold()
+            showMenu()
+        }
+
+        func cancelHold() {
+            hold?.invalidate()
+            hold = nil
+        }
+
+        func makeMenu() -> NSMenu? {
+            let list = entries()
+            guard !list.isEmpty else { return nil }
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            for entry in list {
+                let item = NSMenuItem(title: entry.title, action: #selector(choose(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = entry.offset
+                item.toolTip = entry.url.absoluteString
+                menu.addItem(item)
+            }
+            return menu
+        }
+
+        private func showMenu() {
+            cancelHold()
+            guard let menu = makeMenu() else { return }
+            showedMenu = true
+            // Just below the button.
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: isFlipped ? bounds.maxY + 4 : -4), in: self)
+        }
+
+        @objc private func choose(_ sender: NSMenuItem) { onSelect(sender.tag) }
     }
 }
 

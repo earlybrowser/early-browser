@@ -104,6 +104,9 @@ extension BrowserWindowModel {
             return activePage?.canGoBack == true
         case .forward:
             return activePage?.canGoForward == true
+        case .goToHistory(let offset):
+            guard let id = coordinator.focusedTabID, offset != 0 else { return false }
+            return webViews.historyList(id, forward: offset > 0, limit: abs(offset)).contains { $0.offset == offset }
         case .reload:
             return activePage != nil
         case .stop:
@@ -212,6 +215,8 @@ extension BrowserWindowModel {
         case .copyCurrentURL: copyCurrentURL()
         case .back: back()
         case .forward: forward()
+        case .goToHistory(let offset):
+            guard let id = coordinator.focusedTabID, webViews.goToHistory(id, offset: offset) else { return false }
         case .reload: reload()
         case .stop: stop()
         case .toggleSidebar: preferences.sidebarAutoHides.toggle()

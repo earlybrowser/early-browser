@@ -210,6 +210,47 @@ struct PageToolsActionTests {
         #expect(model.translationTitle(for: id) == nil && !model.canPerform(.toggleTranslation))
     }
 
+    @Test func backAndForwardListsJumpWithinTheFocusedTabAndAClickStillNavigates() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        let id = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(id)
+        #expect(!model.canPerform(.goToHistory(offset: -1)))
+        model.presentCommandBar(.navigateCurrentTab)
+        model.updateQuery("early-test://fixture/two")
+        #expect(model.submit())
+        try await fixture.waitUntil("two") {
+            model.webViews.pages[id]?.view.url == URL(string: "early-test://fixture/two") && model.webViews.pages[id]?.isLoading == false
+        }
+        #expect(model.canPerform(.goToHistory(offset: -1)) && !model.canPerform(.goToHistory(offset: -2)))
+        #expect(!model.canPerform(.goToHistory(offset: 1)) && !model.canPerform(.goToHistory(offset: 0)))
+
+        let view = HistoryMenuOverlay.HistoryMenuView()
+        view.frame = CGRect(x: 0, y: 0, width: 28, height: 28)
+        view.entries = { model.webViews.historyList(id, forward: false) }
+        var selected: [Int] = [], clicks = 0
+        view.onSelect = { selected.append($0) }
+        view.onClick = { clicks += 1 }
+        let menu = try #require(view.makeMenu())
+        #expect(menu.items.map(\.title) == ["Page One"] && menu.items.map(\.tag) == [-1])
+        menu.performActionForItem(at: 0)
+        #expect(selected == [-1])
+        view.entries = { [] }
+        #expect(view.makeMenu() == nil, "No list, no menu")
+
+        // A short click is an ordinary Back, not a menu.
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(with: type, location: CGPoint(x: 10, y: 10), modifierFlags: [],
+                timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            type == .leftMouseDown ? view.mouseDown(with: event) : view.mouseUp(with: event)
+        }
+        #expect(clicks == 1)
+        #expect(!view.mouseDownCanMoveWindow, "Pressing Back never drags the window")
+        view.cancelHold()
+    }
+
     @Test func findOpensForTheFocusedPaneOnlyAndClosingReturnsFocusToThePage() async throws {
         let fixture = Fixture(session: splitSession())
         defer { fixture.cleanup() }

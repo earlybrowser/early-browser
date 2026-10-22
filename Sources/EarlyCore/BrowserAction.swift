@@ -40,6 +40,8 @@ public enum BrowserAction: Equatable, Sendable {
     case copyCurrentURL
     case back
     case forward
+    /// Jump within the focused page's back/forward list (negative is back).
+    case goToHistory(offset: Int)
     case reload
     case stop
     case toggleSidebar
