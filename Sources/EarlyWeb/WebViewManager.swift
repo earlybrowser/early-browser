@@ -26,13 +26,29 @@ public final class BrowserPage {
     fileprivate var automaticRecoveryAttempted = false
     fileprivate var awaitsNavigationCommit = false
     public var requestedURL: URL
+    /// This tab's page zoom; 1 is actual size. Not remembered per site.
+    public internal(set) var zoom = 1.0
+    /// The find bar's state; nil while it is closed.
+    public internal(set) var find: PageFindState?
+    var findRevision = 0
+    /// The link under the pointer, for the pane's address preview.
+    public internal(set) var hoveredLink: LinkHover?
+    public internal(set) var isFullscreen = false
+    /// Readability judged this document an article.
+    public internal(set) var isReaderAvailable = false
+    public internal(set) var isPreparingReader = false
+    public internal(set) var isReaderShown = false
+    public internal(set) var readerArticle: ReaderArticle?
+    /// The page's language (BCP 47), detected from its text after loading.
+    public internal(set) var language: String?
+    public internal(set) var translation = PageTranslationPhase.original
     /// The committed main document's MIME type, e.g. a viewed PDF.
     public fileprivate(set) var documentMIMEType: String?
     fileprivate var pendingDocumentMIMEType: String?
     fileprivate var observations: [NSKeyValueObservation] = []
     fileprivate var reportedURL: URL?
     var reportedTitle: String?
-    fileprivate var navigationGeneration = UUID()
+    var navigationGeneration = UUID()
     fileprivate var activeNavigation: ObjectIdentifier?
     fileprivate var policyCancellations: [NavigationPolicyCancellation] = []
     fileprivate init(view: WKWebView, url: URL) { self.view = view; requestedURL = url }
@@ -58,6 +74,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public enum Protection: Hashable, Sendable { case interaction, download }
     private var protections: [UUID: [UUID: Protection]] = [:]
     private var muteChoices: Set<UUID> = []
+    /// Zoom belongs to the tab, so it survives background discard and recovery.
+    var zoomChoices: [UUID: Double] = [:]
+    /// Shared by this profile's tabs, like Safari's find string.
+    var lastFindQuery = ""
+    /// Reader's separate views, keyed by the tab they belong to.
+    var readerViews: [UUID: WKWebView] = [:]
     public var onMetadata: ((UUID, URL?, String?) -> Void)?
     public var onNewWindow: ((URL, WKWebViewConfiguration) -> WKWebView?)?
     public var onOpenBackgroundLink: ((URL) -> Void)?
@@ -69,9 +91,15 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onOpenFiles: (([URL]) -> Void)?
     /// A selected-text search opens a new foreground tab.
     public var onOpenSearch: ((String) -> Void)?
+    /// A page's detected language changed (nil: a new document is loading).
+    public var onPageLanguage: ((UUID, String?) -> Void)?
+    /// The page menu's Translate title, from the window; nil leaves it out.
+    public var translationMenuTitle: ((UUID) -> String?)?
+    /// Translate or Show Original was chosen from the page menu.
+    public var onTranslatePage: ((UUID) -> Void)?
     private let profileID: UUID
     private let ephemeral: Bool
-    private let input: NavigationInput
+    let input: NavigationInput
     private let configure: (WKWebViewConfiguration) -> Void
     private var store: WKWebsiteDataStore?
     private var identities: [ObjectIdentifier: UUID] = [:]
@@ -145,6 +173,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         navigationDiagnostics.removeAll { !open.contains($0.tabID) }
         protections = protections.filter { open.contains($0.key) }
         muteChoices.formIntersection(open)
+        zoomChoices = zoomChoices.filter { open.contains($0.key) }
         for id in all where lifecycles[id] == nil { lifecycles[id] = PageLifecycle() }
         if let focusedTabID, open.contains(focusedTabID) {
             _ = setPresentation(visibleTabIDs: visibleTabIDs.intersection(open), focusedTabID: focusedTabID)
@@ -302,6 +331,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             _ = self.openContextLink(url, in: view, background: true)
         }
         view.onInteractionEnded = { [weak self] in self?.scheduleRetention() }
+        view.pageTranslationTitle = { [weak self, weak view] in
+            guard let self, let view, let id = self.tabID(for: view) else { return nil }
+            return self.translationMenuTitle?(id)
+        }
         view.onContextAction = { [weak self, weak view] action in
             guard let self, let view else { return }
             self.performContextAction(action, in: view)
@@ -313,6 +346,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         view.uiDelegate = self
         let page = BrowserPage(view: view, url: tab.currentURL)
         if muteChoices.contains(tab.id) { page.isMuted = true; page.muteRevision = 1 }
+        if let zoom = zoomChoices[tab.id] {
+            page.zoom = zoom
+            view.pageZoom = zoom
+        }
         pages[tab.id] = page
         identities[ObjectIdentifier(view)] = tab.id
         transition(tab.id, .allocate)
@@ -365,6 +402,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             controller.addUserScript(WKUserScript(source: PageContextMenuObserver.script,
                 injectionTime: .atDocumentStart, forMainFrameOnly: false, in: PageContextMenuObserver.world))
         }
+        let hoverObserver = LinkHoverObserver()
+        hoverObserver.owner = self
+        controller.removeScriptMessageHandler(forName: LinkHoverObserver.name, contentWorld: LinkHoverObserver.world)
+        controller.add(hoverObserver, contentWorld: LinkHoverObserver.world, name: LinkHoverObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == LinkHoverObserver.script }) {
+            controller.addUserScript(WKUserScript(source: LinkHoverObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: LinkHoverObserver.world))
+        }
         let interactionObserver = PageInteractionObserver()
         interactionObserver.owner = self
         controller.removeScriptMessageHandler(forName: PageInteractionObserver.name, contentWorld: .defaultClient)
@@ -385,6 +430,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
         controller.removeScriptMessageHandler(forName: PageContextMenuObserver.name, contentWorld: PageContextMenuObserver.world)
         controller.removeScriptMessageHandler(forName: PageInteractionObserver.name, contentWorld: .defaultClient)
+        controller.removeScriptMessageHandler(forName: LinkHoverObserver.name, contentWorld: LinkHoverObserver.world)
     }
 
     private func beginLoading(_ id: UUID) {
@@ -486,10 +532,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         releasePage(tabID: tabID, preservingSnapshot: false)
         retentionPolicy.forget(tabID)
         muteChoices.remove(tabID)
+        zoomChoices[tabID] = nil
     }
 
     private func releasePage(tabID: UUID, preservingSnapshot: Bool) {
         cancelRecovery(tabID)
+        hideReader(tabID)
         if preservingSnapshot { snapshots.cancelCapture(tabID: tabID) }
         else { snapshots.invalidate(tabID: tabID) }
         protections[tabID] = nil
@@ -626,6 +674,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.progress = view.estimatedProgress
         page.canGoBack = view.canGoBack
         page.canGoForward = view.canGoForward
+        let fullscreen = view.fullscreenState != .notInFullscreen
+        if page.isFullscreen != fullscreen { page.isFullscreen = fullscreen }
         if view.isLoading && page.failure == nil { transition(id, .startLoading) }
         else if !view.isLoading { transition(id, .stopLoading) }
         let url = view.url.flatMap { try? input.validate($0) }
@@ -637,6 +687,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             // Fence captures from the previous route just as a full load does.
             page.navigationGeneration = UUID()
             snapshots.invalidate(tabID: id)
+            // Reader stays open: scripts may rewrite the address while reading.
+            if !page.isReaderShown { checkReaderAvailability(id) }
         }
         let title = view.title
         if url != page.reportedURL || title != page.reportedTitle {
@@ -845,6 +897,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.navigationNotice = nil
         pages[id]?.documentMIMEType = pages[id]?.pendingDocumentMIMEType
         pages[id]?.pendingDocumentMIMEType = nil
+        resetFindForNewDocument(id)
+        pages[id]?.hoveredLink = nil
+        // Reader shows one document; a new one returns to the page.
+        hideReader(id)
+        pages[id]?.isReaderAvailable = false
+        resetTranslationForNewDocument(id)
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
@@ -859,6 +917,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         refresh(id)
         captureSnapshot(id)
         scheduleRetention()
+        refreshFindAfterLoad(id)
+        checkReaderAvailability(id)
+        detectPageLanguage(id)
         guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected

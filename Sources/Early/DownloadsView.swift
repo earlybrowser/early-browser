@@ -51,11 +51,13 @@ struct DownloadsButton: View {
                     .opacity(shineOpacity)
                 if active || finishing {
                     // Traces the glyph's own circle, so no separate track is drawn.
+                    // A steady theme glow keeps a running download easy to spot.
                     Circle()
                         .trim(from: 0, to: ringValue)
                         .stroke(theme, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                         .padding(18 * 3 / 24)
+                        .shadow(color: theme.opacity(DownloadRing.glowOpacity), radius: DownloadRing.glowRadius)
                         .opacity(ringOpacity)
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: ringValue)
                 }
@@ -213,6 +215,8 @@ struct DownloadsButton: View {
 /// The ring starts at zero for each burst of downloads and only grows. An
 /// unknown total stays at zero rather than inventing progress.
 enum DownloadRing {
+    static let glowOpacity = 0.85
+    static let glowRadius: CGFloat = 3
     struct Input: Equatable {
         let active: Bool
         let progress: Double?

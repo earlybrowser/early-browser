@@ -12,7 +12,8 @@ let package = Package(
     ],
     targets: [
         .target(name: "EarlyCore"),
-        .target(name: "EarlyWeb", dependencies: ["EarlyCore"]),
+        // Reader Mode's extraction: Mozilla Readability, unmodified (Apache-2.0).
+        .target(name: "EarlyWeb", dependencies: ["EarlyCore"], resources: [.copy("Resources/Readability")]),
         // Compile the native application layer without its executable entry
         // point so lifecycle/settings integration can be tested without UI automation.
         .target(name: "EarlyBrowser", dependencies: ["EarlyCore", "EarlyWeb"], path: "Sources/Early", exclude: ["EarlyApp.swift"]),

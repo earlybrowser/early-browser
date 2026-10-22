@@ -16,7 +16,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | --- | --- | --- |
 | Native macOS interface | Light/dark translucent chrome, native window controls, and opaque website content. Solid surfaces respect Reduce Transparency and increased contrast. | Implemented. |
 | Vertical tabs | Organize pages in a resizable sidebar with an address bar, auto-hide, and edge-hover reveal. | Implemented. |
-| Command-bar navigation | Open URLs or Google searches; new submissions from Favorites or pins open Today tabs without replacing saved pages. Typing or dismissing the bar never creates a tab. | Implemented. |
+| Command-bar navigation | Open URLs or Google searches, or Paste and Go from the address bar; new submissions from Favorites or pins open Today tabs without replacing saved pages. Typing or dismissing the bar never creates a tab. | Implemented. |
 | Tab search and commands | Find existing tabs, pins, and Favorites; switch Spaces or profiles; and run browser actions from the command bar. Saved pages reopen without duplicate tabs. | Implemented. |
 | Search suggestions | Optional Google suggestions below local matches, with keyboard and mouse selection and a privacy control in Settings. | Implemented. |
 | Favorites and pins | Keep frequently visited sites as compact Favorites or named pins. Return a pin to its saved address and reopen closed pins on demand. | Implemented. |
@@ -35,8 +35,8 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Split views | Resizable side-by-side pages, floating drag-to-split targets, and shared controls following the focused pane. Removing a pane keeps its tab open. | Implemented. |
 | Page lifecycle | Keep recent pages live, limit retained background pages, and reload released pages on selection. Protect visible panes, media, and editing; recover from page-process crashes with a bounded retry. | Implemented. |
 | Downloads and documents | Download files from the sidebar footer with progress, stop and resume, and Finder reveal; saved pages and PDFs appear there too. Upload files, print, view PDFs, save pages as HTML, and open local files or dropped links in new tabs. | Implemented. |
-| Find and zoom | Find text on a page and adjust page zoom from the keyboard. | Planned. |
-| Reading tools | Reader Mode for supported articles and page translation. | Planned. |
+| Find and zoom | Find text on a page with a match count, and zoom each tab from the keyboard or View menu. | Implemented. |
+| Reading tools | Reader Mode for articles, on-device page translation (macOS 15 and later), and link addresses previewed on hover. | Implemented. |
 | Credentials and autofill | Integrate supported password managers, autofill, and passkeys through public platform facilities. | Planned. |
 | Default browser | Choose Early as the default browser and handle externally opened links. | Planned. |
 | State portability | Export/import supported settings, windows, tabs, folders, pins, Favorites, and workspace metadata; exclude credentials and private sessions. | Planned. |
@@ -128,6 +128,7 @@ Package and native UI tests run in GitHub Actions on pull requests and pushes to
 
 ## License
 
-[Mozilla Public License 2.0 (MPL-2.0)](LICENSE).
+[Mozilla Public License 2.0 (MPL-2.0)](LICENSE). Reader Mode includes
+[Mozilla Readability](Sources/EarlyWeb/Resources/Readability) under the Apache License 2.0.
 
 Copyright (c) 2026 rangaNP.

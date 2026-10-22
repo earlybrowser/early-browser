@@ -35,6 +35,12 @@ final class BrowserWindowModel {
             }
         }
     }
+    /// A brief "125%" confirmation in the zoomed pane.
+    struct ZoomNotice: Identifiable, Equatable {
+        let id = UUID()
+        let tabID: UUID
+        let zoom: Double
+    }
     struct SidebarReveal: Equatable {
         let id = UUID()
         let spaceID: UUID
@@ -52,6 +58,21 @@ final class BrowserWindowModel {
     var notice: String?
     var toast: Toast?
     var downloadsPresented = false
+    var zoomNotice: ZoomNotice?
+    /// What Paste and Go would do with the clipboard, without reading it; nil
+    /// hides the item because the clipboard holds no text.
+    enum PasteKind: Equatable {
+        case address, search
+        var title: String { self == .address ? "Paste and Go" : "Paste and Search" }
+    }
+    private(set) var pasteKind: PasteKind?
+    @ObservationIgnored private var pasteKindChangeCount = -1
+    /// Tabs whose language Apple's Translation can turn into the user's.
+    var translationOffers: [UUID: TranslationOffer] = [:]
+    /// The translation waiting for (or running in) the window's session.
+    var translationRequest: TranslationRequest?
+    /// Command-F focuses the focused pane's find field, even if already open.
+    var findFocusRequest = 0
     /// Early's download icon flying from the clicked page point to the button.
     struct DownloadFlight: Identifiable, Equatable {
         let id = UUID()
@@ -192,6 +213,9 @@ final class BrowserWindowModel {
             self.beginDownloadFlight()
         }
         webViews.onOpenFiles = { [weak self] in _ = self?.openLocations($0) }
+        webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }
+        webViews.translationMenuTitle = { [weak self] in self?.translationTitle(for: $0) }
+        webViews.onTranslatePage = { [weak self] in self?.toggleTranslation($0) }
         webViews.onOpenSearch = { [weak self] text in
             guard let self, let url = try? self.input.searchURL(for: text) else { return }
             _ = self.openLocations([url])
@@ -203,6 +227,91 @@ final class BrowserWindowModel {
 
     var activePage: BrowserPage? { coordinator.focusedTabID.flatMap { webViews.pages[$0] } }
     var downloads: DownloadStore { webViews.downloads }
+
+    /// Checks the clipboard's kind when it changed. Types and detected patterns
+    /// are metadata: reading them never shows macOS's paste permission alert.
+    func refreshPasteKind(_ pasteboard: NSPasteboard = .general) {
+        let change = pasteboard.changeCount
+        guard change != pasteKindChangeCount else { return }
+        pasteKindChangeCount = change
+        guard pasteboard.types?.contains(.string) == true else {
+            pasteKind = nil
+            return
+        }
+        if #available(macOS 15.4, *) {
+            if pasteKind == nil { pasteKind = .search }
+            let name = pasteboard.name
+            Task { @MainActor [weak self] in
+                let isAddress = await Task.detached {
+                    let patterns = try? await NSPasteboard(name: name).detectedPatterns(for: [\.probableWebURL])
+                    return patterns?.contains(\.probableWebURL) == true
+                }.value
+                guard let self, self.pasteKindChangeCount == change else { return }
+                self.pasteKind = isAddress ? .address : .search
+            }
+        } else {
+            // Before macOS 15.4 only reading could tell, and hovering is not a
+            // reason to read the clipboard. Chosen text still searches.
+            pasteKind = .address
+        }
+    }
+
+    func pasteKind(for query: String) -> PasteKind {
+        guard let url = try? input.resolve(query), let search = try? input.searchURL(for: query) else { return .search }
+        return url == search ? .search : .address
+    }
+
+    /// Paste and Go / Paste and Search: the clipboard is read only now, when
+    /// chosen, and submitted exactly like a typed query. With an intent it opens
+    /// the command bar for it (the address pill); otherwise it uses the open
+    /// one. An address Early refuses stays in the bar with its message.
+    @discardableResult
+    func pasteAndGo(_ intent: CommandBarIntent? = nil, pasteboard: NSPasteboard = .general) -> Bool {
+        guard let text = pasteboard.string(forType: .string), let query = NavigationInput.pastedQuery(text) else { return false }
+        if let intent {
+            guard canPerform(.presentCommandBar(intent)) else { return false }
+            presentCommandBar(intent)
+        }
+        guard coordinator.commandBar != nil, coordinator.commandBar?.intent != .commandSearch else { return false }
+        updateQuery(query)
+        return submit()
+    }
+
+    /// Escape or the close button: the match stays selected and the page,
+    /// not the sidebar, gets keyboard focus back.
+    func closeFind(_ id: UUID) {
+        webViews.hideFind(id)
+        if id == coordinator.focusedTabID { contentFocusRequest += 1 }
+    }
+
+    /// Reader's links and accents in the active Space's theme.
+    var readerAccent: ReaderAccent {
+        ReaderAccent(light: splitTheme.focusBorder(isDark: false).hex, dark: splitTheme.focusBorder(isDark: true).hex)
+    }
+
+    /// Show or leave Reader; focus follows to Reader's view or back to the page.
+    func toggleReader(_ id: UUID) {
+        guard let page = webViews.pages[id] else { return }
+        if page.isReaderShown {
+            webViews.hideReader(id)
+            if id == coordinator.focusedTabID { contentFocusRequest += 1 }
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self, await self.webViews.showReader(id, accent: self.readerAccent),
+                  id == self.coordinator.focusedTabID else { return }
+            self.contentFocusRequest += 1
+        }
+    }
+
+    func useSelectionForFind(in id: UUID) {
+        Task { @MainActor [weak self] in
+            guard let self, let text = await self.webViews.findSelection(id),
+                  self.webViews.showFind(id) else { return }
+            self.webViews.updateFind(id, query: text)
+            self.findFocusRequest += 1
+        }
+    }
 
     func recordPagePress(at point: CGPoint, time: Date = Date()) {
         guard point.x.isFinite, point.y.isFinite else { return }

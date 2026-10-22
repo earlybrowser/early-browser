@@ -133,11 +133,16 @@ struct SplitContentView: View {
     private func pane(_ id: UUID, paneID: UUID?, split: Bool) -> some View {
         let page = model.webViews.pages[id]
         let focused = model.coordinator.focusedTabID == id
+        // Reader takes the page's place in the same host, so focus, clicks and
+        // pane routing work unchanged; leaving it reinstalls the page.
+        let hosted = page?.isReaderShown == true ? model.webViews.readerView(for: id) ?? page?.view : page?.view
         return ZStack {
-            // Match the actual page, not the browser appearance: a dark site
-            // in light chrome must not flash a white island during attachment.
-            Color(nsColor: page?.view.underPageBackgroundColor ?? .textBackgroundColor)
-            WebContentView(view: page?.view, focusRequest: model.contentFocusRequest,
+            // Match the hosted document, not the browser appearance: a dark site
+            // in light chrome must not flash a white island during attachment,
+            // and its rounded corners must not show another page's color.
+            Color(nsColor: hosted?.underPageBackgroundColor ?? .textBackgroundColor)
+            WebContentView(view: hosted,
+                focusRequest: model.contentFocusRequest,
                 canFocus: focused && model.coordinator.commandBar == nil && model.tabSwitcher == nil
                     && model.splitDropSourceID == nil && !model.hasVisibleDialog,
                 hasDialog: page?.hasDialog == true,
@@ -189,6 +194,20 @@ struct SplitContentView: View {
         }
         .modifier(BrowserContentSurface.pane(cornerRadius: contentCornerRadius, split: split, focused: focused,
                                             theme: model.splitTheme))
+        .overlay(alignment: .topLeading) {
+            if page?.isReaderShown == true { ReaderBadge(model: model, tabID: id) }
+        }
+        .overlay(alignment: page?.hoveredLink?.avoidsLeadingCorner == true ? .bottomTrailing : .bottomLeading) {
+            if let hover = page?.hoveredLink, page?.isFullscreen != true {
+                LinkPreview(hover: hover, theme: model.splitTheme, allowsTransparency: model.preferences.translucentChrome)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            // Clear of the split pane's remove button in the same corner.
+            PageToolsOverlay(model: model, tabID: id)
+                .padding(.top, 10)
+                .padding(.trailing, paneID == nil ? 10 : 40)
+        }
         .overlay(alignment: .topTrailing) {
             if let paneID, hoveredTabID == id || page?.failure != nil {
                 Button { _ = model.perform(.removeSplitPane(paneID)) } label: {

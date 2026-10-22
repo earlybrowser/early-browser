@@ -2296,6 +2296,66 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "Two")
     }
 
+    func testFindBarCountsMatchesAndEscapeReturnsToThePage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        app.typeKey("f", modifierFlags: .command)
+        let field = app.textFields["find.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.click()
+        app.typeText("page one")
+        let counted = app.staticTexts.matching(NSPredicate(format: "identifier == 'find.status' AND (label == %@ OR value == %@)",
+                                                           "1 of 1", "1 of 1")).firstMatch
+        XCTAssertTrue(counted.waitForExistence(timeout: 5), app.staticTexts["find.status"].debugDescription)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(field.waitForNonExistence(timeout: 5))
+        // Closing never navigates, opens tabs or leaves the page unfocusable.
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+        expectPage(app, "One")
+    }
+
+    func testHoveringALinkPreviewsItsAddressWithoutTakingTheClick() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let link = app.webViews.links["Go to Two"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        link.hover()
+        let preview = app.staticTexts.matching(NSPredicate(
+            format: "identifier == 'page.linkPreview' AND (value CONTAINS %@ OR label CONTAINS %@)",
+            "fixture/two", "fixture/two")).firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5), app.staticTexts["page.linkPreview"].debugDescription)
+        // The preview never intercepts the click: the link still navigates.
+        link.click()
+        expectPage(app, "Two")
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testReaderShowsArticlesAndReturnsToTheOriginalPage() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/article")
+        expectPage(app, "Article")
+        let controls = app.buttons["address.siteControls"]
+        XCTAssertTrue(controls.waitForExistence(timeout: 10))
+        // The article check runs after loading; reopen until Reader is offered.
+        let toggle = app.buttons["siteControls.reader"]
+        for _ in 0..<5 where !toggle.exists {
+            controls.click()
+            if toggle.waitForExistence(timeout: 2) { break }
+            app.typeKey(.escape, modifierFlags: [])
+        }
+        XCTAssertTrue(toggle.exists, "Articles offer Reader in the site controls")
+        toggle.click()
+        let original = app.buttons["reader.original"]
+        XCTAssertTrue(original.waitForExistence(timeout: 10))
+        original.click()
+        XCTAssertTrue(original.waitForNonExistence(timeout: 5))
+        expectPage(app, "Article")
+        // Reader is a view of the same tab: no new tab or page view.
+        expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
     func testDownloadsPanelAndOwnedPageMenus() {
         let app = launchFreshApp()
         navigate(app, to: "early-test://fixture/download")

@@ -17,6 +17,9 @@ struct CommandBarInput: NSViewRepresentable {
     var onCancel: () -> Void = {}
     var onMoveSelection: (Int) -> Bool = { _ in false }
     var onCompleteSuggestion: () -> String? = { nil }
+    /// Paste and Go's title for the clipboard, or nil to leave it out.
+    var pasteAndGoTitle: () -> String? = { nil }
+    var onPasteAndGo: () -> Void = {}
 
     func makeNSView(context: Context) -> CommandBarInputControl {
         let control = CommandBarInputControl()
@@ -33,6 +36,8 @@ struct CommandBarInput: NSViewRepresentable {
         control.onCancel = onCancel
         control.onMoveSelection = onMoveSelection
         control.onCompleteSuggestion = onCompleteSuggestion
+        control.pasteAndGoTitle = pasteAndGoTitle
+        control.onPasteAndGo = onPasteAndGo
         control.canFocus = canFocus
         control.maximumHeight = maxHeight
         control.prepareForFocusRequest(focusRequest)
@@ -58,6 +63,8 @@ final class CommandBarInputControl: NSView, NSTextViewDelegate {
     var onCancel: () -> Void = {}
     var onMoveSelection: (Int) -> Bool = { _ in false }
     var onCompleteSuggestion: () -> String? = { nil }
+    var pasteAndGoTitle: () -> String? = { nil }
+    var onPasteAndGo: () -> Void = {}
     var canFocus: () -> Bool = { true }
     var maximumHeight: CGFloat = 120 {
         didSet { if maximumHeight != oldValue { needsLayout = true } }
@@ -196,6 +203,29 @@ final class CommandBarInputControl: NSView, NSTextViewDelegate {
         textView.scrollRangeToVisible(textView.selectedRange())
     }
 
+    /// The editor's own menu keeps every native item; Paste and Go follows Paste.
+    func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+        addPasteAndGo(to: menu)
+        return menu
+    }
+
+    func addPasteAndGo(to menu: NSMenu) {
+        let identifier = NSUserInterfaceItemIdentifier("commandBar.pasteAndGo")
+        menu.items.filter { $0.identifier == identifier }.forEach(menu.removeItem)
+        guard !isComposing, let title = pasteAndGoTitle() else { return }
+        let item = NSMenuItem(title: title, action: #selector(pasteAndGo(_:)), keyEquivalent: "")
+        item.target = self
+        item.identifier = identifier
+        if let paste = menu.items.firstIndex(where: { $0.action == #selector(NSText.paste(_:)) }) {
+            menu.insertItem(item, at: paste + 1)
+        } else {
+            menu.insertItem(.separator(), at: 0)
+            menu.insertItem(item, at: 0)
+        }
+    }
+
+    @objc private func pasteAndGo(_ sender: NSMenuItem) { onPasteAndGo() }
+
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         handleCommand(commandSelector, modifiers: NSApp.currentEvent?.modifierFlags ?? [])
     }
@@ -321,6 +351,8 @@ final class CommandBarInputControl: NSView, NSTextViewDelegate {
         onCancel = {}
         onMoveSelection = { _ in false }
         onCompleteSuggestion = { nil }
+        pasteAndGoTitle = { nil }
+        onPasteAndGo = {}
         canFocus = { false }
     }
 }

@@ -11,6 +11,10 @@ extension BrowserSpace.Color {
 
 extension SpaceThemeRGB {
     var color: SwiftUI.Color { Color(.sRGB, red: red, green: green, blue: blue, opacity: 1) }
+    var hex: String {
+        let channel = { (value: Double) in Int((min(max(value, 0), 1) * 255).rounded()) }
+        return String(format: "#%02x%02x%02x", channel(red), channel(green), channel(blue))
+    }
 }
 
 /// Original Early download artwork, shared with the website's download icons.

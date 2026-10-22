@@ -409,6 +409,10 @@ struct BrowserWindowView: View {
             if sidebarHovered != inside { sidebarHovered = inside }
         })
         .background(TabSwitcherKeyboardMonitor(model: model))
+        .background(PageShortcutMonitor(model: model))
+        .background {
+            if #available(macOS 15.0, *) { PageTranslationHost(model: model) }
+        }
         .background(BrowserWindowActivityMonitor(onCancel: {
             cancelledGestureItemID = dragGestureItemID
             model.cancelWindowInteractions()
@@ -2440,10 +2444,9 @@ struct BrowserWindowView: View {
                     .truncationMode(.middle)
                     .foregroundStyle(currentURL == nil ? .secondary : .primary)
                 Spacer(minLength: 0)
-                if currentURL != nil {
-                    Image(systemName: "link")
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
+                if SiteControlsButton.isVisible(for: model) {
+                    // Room for the site controls drawn over this trailing edge.
+                    Color.clear.frame(width: 22, height: 1)
                 }
             }
             .font(.system(size: 14, weight: .medium))
@@ -2459,13 +2462,28 @@ struct BrowserWindowView: View {
         .buttonStyle(.plain)
         .focused($focusedSidebarControl, equals: .address)
         .focusEffectDisabled()
-        .onHover { addressHovered = $0 }
+        .onHover { hovering in
+            addressHovered = hovering
+            // A right-click always follows the pointer here: name the item first.
+            if hovering { model.refreshPasteKind() }
+        }
+        .onAppear { model.refreshPasteKind() }
+        .contextMenu {
+            if let kind = model.pasteKind {
+                Button(kind.title) { model.pasteAndGo(.navigateCurrentTab) }
+                    .disabled(!model.canPerform(.presentCommandBar(.navigateCurrentTab)))
+            }
+            Button("Copy Current URL") { model.perform(.copyCurrentURL) }
+                .disabled(!model.canPerform(.copyCurrentURL))
+        }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: addressHovered)
         .accessibilityLabel("Address bar")
         .accessibilityValue(currentURL ?? "No active tab")
         .accessibilityIdentifier("sidebar.addressBar")
         .help(currentURL.map { "\($0) — Open Location (Command-L)" }
               ?? "Search or enter a URL (Command-L)")
+        // Its own controls, outside the pill's single accessibility element.
+        .overlay(alignment: .trailing) { SiteControlsButton(model: model).padding(.trailing, 5) }
     }
 
     private var addressLabel: String {

@@ -36,6 +36,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         case downloadLink(URL)
         case openImageInNewTab(URL), saveImage(URL), copyImage(URL)
         case searchSelection(String)
+        case translatePage
     }
 
     /// Key-downs already delivered to the page. WebKit re-sends the same event
@@ -54,6 +55,8 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     }
 
     var onOpenWindowLink: ((URL) -> Void)?
+    /// "Translate to …" or "Show Original" for the page menu; nil leaves it out.
+    var pageTranslationTitle: (() -> String?)?
     var onOpenBackgroundLink: ((URL) -> Void)?
     var onContextAction: ((ContextAction) -> Void)?
     var shareLink: ((URL) -> Void)?
@@ -125,6 +128,9 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
                 item("Save Page As…", perform, ContextAction.savePage, enabled: url != nil),
                 item("Print…", perform, ContextAction.printPage, enabled: url != nil)
             ])
+            if let title = pageTranslationTitle?() {
+                sections.append([item(title, perform, ContextAction.translatePage)])
+            }
         }
         for (index, section) in sections.enumerated() {
             if index > 0 { menu.addItem(.separator()) }

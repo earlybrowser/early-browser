@@ -46,7 +46,9 @@ struct CommandBarView: View {
                 ), focusRequest: focusRequest,
                     maxHeight: layout.maximumInputHeight,
                     canFocus: { model.coordinator.commandBar != nil && model.coordinator.commandBarFocusRequest == focusRequest },
-                    onHeightChange: { inputHeight = $0 }, onFocusChange: { _ in },
+                    onHeightChange: { inputHeight = $0 }, onFocusChange: { focused in
+                        if focused { model.refreshPasteKind() }
+                    },
                     onCompositionChange: { composing in
                         model.commandBarIsComposing = composing
                         if !composing { model.refreshSuggestions() }
@@ -58,7 +60,10 @@ struct CommandBarView: View {
                         guard !model.commandBarIsComposing, model.coordinator.commandBar != nil,
                               model.selectedCommandResult == nil else { return nil }
                         return model.suggestions.selectedSuggestion
-                    })
+                    },
+                    // Command search lists commands; it has nothing to paste into.
+                    pasteAndGoTitle: { model.coordinator.commandBar?.intent == .commandSearch ? nil : model.pasteKind?.title },
+                    onPasteAndGo: { model.pasteAndGo() })
                 .frame(height: min(inputHeight, layout.maximumInputHeight))
                 Button {
                     model.perform(.dismissCommandBar(restoreFocus: true), source: .commandBar)

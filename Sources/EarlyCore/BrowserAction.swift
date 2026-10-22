@@ -52,4 +52,13 @@ public enum BrowserAction: Equatable, Sendable {
     case savePage
     case exportPDF
     case printPage
+    case zoomIn
+    case zoomOut
+    case resetZoom
+    case find
+    case findNext
+    case findPrevious
+    case useSelectionForFind
+    case toggleReader
+    case toggleTranslation
 }

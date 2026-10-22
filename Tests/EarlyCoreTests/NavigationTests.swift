@@ -5,6 +5,13 @@ import Testing
 @testable import EarlyCore
 
 struct NavigationTests {
+    @Test func pastedTextBecomesOneLineQueryAndWrappedAddressesAreJoined() {
+        #expect(NavigationInput.pastedQuery("  https://exam\nple.com/a\r\nb \n") == "https://example.com/ab")
+        #expect(NavigationInput.pastedQuery("best pasta\n recipe\tfor two") == "best pasta recipe for two")
+        #expect(NavigationInput.pastedQuery(" \n\t ") == nil)
+        #expect(NavigationInput.pastedQuery(String(repeating: "a", count: 3000))?.count == 2048)
+    }
+
     @Test @MainActor func backgroundTabPreservesSelectionAndCommandBar() throws {
         let coordinator = BrowserCoordinator(startup: .firstLaunch)
         let originalURL = URL(string: "https://example.com/current")!

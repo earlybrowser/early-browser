@@ -18,6 +18,13 @@ struct DownloadGlyphTests {
         #expect(wide.boundingRect == CGRect(x: 25, y: 23, width: 18, height: 18))
     }
 
+    @Test func siteControlsArtworkSharesTheTwentyFourPointGrid() {
+        let path = SiteControlsGlyph().path(in: CGRect(x: 0, y: 0, width: 24, height: 24))
+        #expect(path.boundingRect == CGRect(x: 3, y: 3, width: 18, height: 18))
+        let footer = SiteControlsGlyph().path(in: CGRect(x: 0, y: 0, width: 18, height: 18))
+        #expect(footer.boundingRect == CGRect(x: 2.25, y: 2.25, width: 13.5, height: 13.5))
+    }
+
     @Test func circleAndArrowPartsLineUpWithTheWholeArtwork() {
         let rect = CGRect(x: 0, y: 0, width: 24, height: 24)
         #expect(DownloadGlyph(part: .circle).path(in: rect).boundingRect == CGRect(x: 3, y: 3, width: 18, height: 18))

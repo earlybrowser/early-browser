@@ -124,6 +124,20 @@ extension BrowserWindowModel {
             return true
         case .savePage, .exportPDF, .printPage:
             return coordinator.focusedTabID.map { webViews.canPresentDocumentPanel(for: $0) } == true
+        case .zoomIn:
+            return coordinator.focusedTabID.map { webViews.canZoom($0, by: 1) } == true
+        case .zoomOut:
+            return coordinator.focusedTabID.map { webViews.canZoom($0, by: -1) } == true
+        case .resetZoom:
+            return coordinator.focusedTabID.map { webViews.canResetZoom($0) } == true
+        case .find, .useSelectionForFind:
+            return coordinator.focusedTabID.map { webViews.canFind($0) } == true
+        case .findNext, .findPrevious:
+            return coordinator.focusedTabID.map { webViews.canFindNext($0) } == true
+        case .toggleReader:
+            return coordinator.focusedTabID.map { webViews.canToggleReader($0) } == true
+        case .toggleTranslation:
+            return coordinator.focusedTabID.flatMap { translationTitle(for: $0) } != nil
         }
     }
 
@@ -227,6 +241,31 @@ extension BrowserWindowModel {
         case .printPage:
             guard let id = coordinator.focusedTabID, webViews.printPage(id) else { return false }
             restoreContentFocus = false
+        case .zoomIn, .zoomOut, .resetZoom:
+            guard let id = coordinator.focusedTabID else { return false }
+            let changed = action == .resetZoom ? webViews.resetZoom(id) : webViews.zoom(id, by: action == .zoomIn ? 1 : -1)
+            guard changed, let zoom = webViews.pages[id]?.zoom else { return false }
+            zoomNotice = ZoomNotice(tabID: id, zoom: zoom)
+            restoreContentFocus = false
+        case .find:
+            guard let id = coordinator.focusedTabID, webViews.showFind(id) else { return false }
+            findFocusRequest += 1
+            restoreContentFocus = false
+        case .findNext, .findPrevious:
+            guard let id = coordinator.focusedTabID, webViews.findNext(id, backwards: action == .findPrevious) else { return false }
+            restoreContentFocus = false
+        case .useSelectionForFind:
+            guard let id = coordinator.focusedTabID else { return false }
+            useSelectionForFind(in: id)
+            restoreContentFocus = false
+        case .toggleReader:
+            guard let id = coordinator.focusedTabID else { return false }
+            toggleReader(id)
+            restoreContentFocus = false
+        case .toggleTranslation:
+            guard let id = coordinator.focusedTabID else { return false }
+            toggleTranslation(id)
+            restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
             dismissCommandBar(restoreFocus: restoreContentFocus && contentFocusRequest == previousFocusRequest)
@@ -299,8 +338,18 @@ extension BrowserWindowModel {
         addAction("showDownloads", "Show Downloads", .showDownloads, terms: ["downloads", "download list", "downloaded files"])
         addAction("openFile", "Open File…", .openFile, terms: ["open file", "open local file", "open pdf"])
         addAction("printPage", "Print Page…", .printPage, terms: ["print", "print page"])
-        addAction("savePage", "Save Page As…", .savePage, terms: ["save page", "save as", "web archive"])
+        addAction("savePage", "Save Page As…", .savePage, terms: ["save page", "save as", "save html"])
         addAction("exportPDF", "Export as PDF…", .exportPDF, terms: ["export pdf", "save as pdf", "pdf"])
+        addAction("find", "Find on Page…", .find, terms: ["find", "search page", "find in page"])
+        let readerShown = activePage?.isReaderShown == true
+        addAction("reader", readerShown ? "Hide Reader" : "Show Reader", .toggleReader,
+                  terms: readerShown ? ["hide reader", "show original page"] : ["reader", "reader mode", "reading view"])
+        if let id = coordinator.focusedTabID, let title = translationTitle(for: id) {
+            addAction("translate", title, .toggleTranslation, terms: ["translate", "translate page", "show original"])
+        }
+        addAction("zoomIn", "Zoom In", .zoomIn, terms: ["zoom in", "bigger", "enlarge page", "increase text size"])
+        addAction("zoomOut", "Zoom Out", .zoomOut, terms: ["zoom out", "smaller", "shrink page", "decrease text size"])
+        addAction("resetZoom", "Actual Size", .resetZoom, terms: ["reset zoom", "actual size", "100%"])
         if let group = coordinator.activeSplitGroup {
             addAction("swapSplit", "Swap Sides", .swapSplit(group.id), terms: ["swap split panes", "swap left and right"])
             addAction("exitSplit", "Exit Split View", .exitSplit(group.id), terms: ["unsplit", "single pane"])

@@ -56,12 +56,48 @@ struct BrowserCommands: Commands {
             Button("Export as PDF…") { model?.perform(.exportPDF) }
                 .disabled(model?.canPerform(.exportPDF) != true)
         }
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Menu("Find") {
+                Button("Find…") { model?.perform(.find) }
+                    .keyboardShortcut("f")
+                    .disabled(model?.canPerform(.find) != true)
+                Button("Find Next") { model?.perform(.findNext) }
+                    .keyboardShortcut("g")
+                    .disabled(model?.canPerform(.findNext) != true)
+                Button("Find Previous") { model?.perform(.findPrevious) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                    .disabled(model?.canPerform(.findPrevious) != true)
+                Button("Use Selection for Find") { model?.perform(.useSelectionForFind) }
+                    .keyboardShortcut("e")
+                    .disabled(model?.canPerform(.useSelectionForFind) != true)
+            }
+        }
         CommandGroup(replacing: .printItem) {
             Button("Print…") { model?.perform(.printPage) }
                 .keyboardShortcut("p")
                 .disabled(model?.canPerform(.printPage) != true)
         }
         CommandGroup(after: .toolbar) {
+            // Command-= also zooms in; see PageShortcutMonitor.
+            Button("Actual Size") { model?.perform(.resetZoom) }
+                .keyboardShortcut("0")
+                .disabled(model?.canPerform(.resetZoom) != true)
+            Button("Zoom In") { model?.perform(.zoomIn) }
+                .keyboardShortcut("+")
+                .disabled(model?.canPerform(.zoomIn) != true)
+            Button("Zoom Out") { model?.perform(.zoomOut) }
+                .keyboardShortcut("-")
+                .disabled(model?.canPerform(.zoomOut) != true)
+            Divider()
+            Button(model?.activePage?.isReaderShown == true ? "Hide Reader" : "Show Reader") { model?.perform(.toggleReader) }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(model?.canPerform(.toggleReader) != true)
+            Button(model.flatMap { model in model.coordinator.focusedTabID.flatMap(model.translationTitle) } ?? "Translate Page") {
+                model?.perform(.toggleTranslation)
+            }
+            .disabled(model?.canPerform(.toggleTranslation) != true)
+            Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(model?.canPerform(.showDownloads) != true)
