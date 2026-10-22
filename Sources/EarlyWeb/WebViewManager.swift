@@ -342,6 +342,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             configuration.websiteDataStore = websiteDataStore
             configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
             configuration.preferences.isElementFullscreenEnabled = true
+            Self.enablePictureInPicture(configuration.preferences)
             configure(configuration)
             configuration.applicationNameForUserAgent = BrowserUserAgent.applicationName
         }

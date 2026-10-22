@@ -132,10 +132,13 @@ struct SiteSecurityTests {
         #expect(scripts.runs.count == 5)
     }
 
-    @Test func pictureInPictureScriptsRunInPagesWithoutAVideo() async throws {
+    @Test func pagesAllowPictureInPictureAndItsScriptsRunWithoutAVideo() async throws {
         let fixture = PageToolFixture(pages: ["one": "<title>One</title><p>No video here</p>"])
         defer { fixture.cleanup() }
         let view = try fixture.page(try await fixture.open("one")).view
+        // macOS 26 and 27 WebKit both have the preference; without it nothing is set.
+        #expect(WebViewManager.supportsPictureInPicture)
+        #expect(view.configuration.preferences.value(forKey: WebViewManager.pictureInPicturePreference) as? Bool == true)
         for script in [WebViewManager.enterPictureInPictureScript, WebViewManager.exitPictureInPictureScript] {
             let result = try await view.callAsyncJavaScript(script, contentWorld: .defaultClient)
             #expect(result as? Bool == false, "Valid JavaScript that finds nothing to do")

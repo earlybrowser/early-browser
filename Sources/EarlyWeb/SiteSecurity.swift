@@ -122,6 +122,19 @@ extension WebViewManager {
 // MARK: Automatic Picture in Picture
 
 extension WebViewManager {
+    /// macOS has no public switch for Picture in Picture in a web view (the
+    /// configuration property is iOS-only). WebKit's own preference, the one
+    /// Safari uses, enables it; it is set only where WebKit still has it, so a
+    /// WebKit without it simply offers no Picture in Picture.
+    static let pictureInPicturePreference = "allowsPictureInPictureMediaPlayback"
+    public static let supportsPictureInPicture =
+        WKPreferences().responds(to: NSSelectorFromString("_setAllowsPictureInPictureMediaPlayback:"))
+
+    static func enablePictureInPicture(_ preferences: WKPreferences) {
+        guard supportsPictureInPicture else { return }
+        preferences.setValue(true, forKey: pictureInPicturePreference)
+    }
+
     /// The largest playing video goes into Picture in Picture. Scripts run by
     /// the app count as a user action, so no click is needed.
     static let enterPictureInPictureScript = """
@@ -148,7 +161,7 @@ extension WebViewManager {
                   let view = pages[id]?.view else { continue }
             Task { @MainActor [runPageScript] in _ = await runPageScript(view, Self.exitPictureInPictureScript, frame) }
         }
-        guard automaticPictureInPicture() else { return }
+        guard Self.supportsPictureInPicture, automaticPictureInPicture() else { return }
         for id in hidden {
             guard let page = pages[id], page.isPlayingMedia, !page.isFullscreen, !page.hasDialog,
                   automaticPictureInPictureTabs[id] == nil else { continue }

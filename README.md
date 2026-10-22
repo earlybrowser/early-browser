@@ -44,7 +44,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | History and private windows | Browse and search history (`⌘Y`), reopen today’s pages and recently closed tabs and windows from the History menu, clear history and website data by period, and open private windows (`⌘⇧N`) that keep nothing after closing. Pins and Favorites are Early’s saved pages. | Implemented. |
 | Site permissions and security | See whether each site is secure and open its certificate, and allow or block camera, microphone, and location (macOS 27) per site from the address bar’s site controls. Notifications have no public WebKit API yet. | Partial. |
 | GitHub live folders | Automatically collect pull requests and review requests in a folder linked to your GitHub account. | Planned. |
-| Picture in Picture | Videos playing in a tab you switch away from continue in a floating window and return when you come back; turn it off in Settings. | Partial. |
+| Picture in Picture | Websites’ Picture in Picture works, and videos playing in a tab you switch away from continue in a floating window and return when you come back; turn that off in Settings. macOS offers this to web views only through a WebKit preference that isn’t public API, so Early uses it only where WebKit still has it. | Partial. |
 | Settings and customization | Native Settings for profiles, Space assignment, appearance, sidebar behavior, search suggestions, command-bar actions, and local session restoration. More customization is planned. | Partial. |
 | macOS distribution | Install packaged releases or use Homebrew, with optional signing and notarization. | Planned. |
 
