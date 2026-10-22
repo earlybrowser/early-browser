@@ -60,6 +60,14 @@ struct PageReaderTests {
         #expect(!article.content.contains("Footer links") && !article.content.contains("About"))
 
         let reader = try #require(manager.readerView(for: tab.id))
+        // The color behind Reader matches its page, so no other page's color
+        // shows through the pane's rounded corners.
+        for (name, expected) in [(NSAppearance.Name.darkAqua, 0x1b), (.aqua, 0xfb)] {
+            reader.appearance = NSAppearance(named: name)
+            let red = reader.underPageBackgroundColor.usingColorSpace(.sRGB)?.redComponent ?? -1
+            #expect(Int((red * 255).rounded()) == expected, "\(name.rawValue)")
+        }
+        reader.appearance = nil
         #expect(reader.configuration.defaultWebpagePreferences.allowsContentJavaScript == false)
         #expect(reader.configuration.websiteDataStore === manager.websiteDataStore, "Reader stays in the profile")
         try await fixture.waitUntil("reader load") { !reader.isLoading && reader.url != nil }

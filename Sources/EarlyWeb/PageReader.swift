@@ -65,6 +65,19 @@ public final class ReaderWebView: WKWebView, WKNavigationDelegate, WKUIDelegate 
         allowsMagnification = true
         allowsBackForwardNavigationGestures = false
         setAccessibilityIdentifier("reader.view")
+        matchPageColor()
+    }
+
+    /// The pane paints this behind the view, so it must be Reader's own page
+    /// color, or another page's shows through the rounded corners. WebKit keeps
+    /// a fixed color, so follow light and dark here.
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        matchPageColor()
+    }
+
+    private func matchPageColor() {
+        underPageBackgroundColor = ReaderDocument.pageColor(for: effectiveAppearance)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -252,6 +265,13 @@ extension WebViewManager {
 /// The Reader page: the cleaned article in readable type, light or dark with
 /// the system, accented in the Space's theme.
 enum ReaderDocument {
+    /// Matches `--page` in the stylesheet below, for light and dark.
+    static func pageColor(for appearance: NSAppearance) -> NSColor {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0x1b / 255, green: 0x1b / 255, blue: 0x1d / 255, alpha: 1)
+            : NSColor(srgbRed: 0xfb / 255, green: 0xfb / 255, blue: 0xf9 / 255, alpha: 1)
+    }
+
     static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")

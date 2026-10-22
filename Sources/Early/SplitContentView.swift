@@ -133,13 +133,15 @@ struct SplitContentView: View {
     private func pane(_ id: UUID, paneID: UUID?, split: Bool) -> some View {
         let page = model.webViews.pages[id]
         let focused = model.coordinator.focusedTabID == id
+        // Reader takes the page's place in the same host, so focus, clicks and
+        // pane routing work unchanged; leaving it reinstalls the page.
+        let hosted = page?.isReaderShown == true ? model.webViews.readerView(for: id) ?? page?.view : page?.view
         return ZStack {
-            // Match the actual page, not the browser appearance: a dark site
-            // in light chrome must not flash a white island during attachment.
-            Color(nsColor: page?.view.underPageBackgroundColor ?? .textBackgroundColor)
-            // Reader takes the page's place in the same host, so focus, clicks
-            // and pane routing work unchanged; leaving it reinstalls the page.
-            WebContentView(view: page?.isReaderShown == true ? model.webViews.readerView(for: id) ?? page?.view : page?.view,
+            // Match the hosted document, not the browser appearance: a dark site
+            // in light chrome must not flash a white island during attachment,
+            // and its rounded corners must not show another page's color.
+            Color(nsColor: hosted?.underPageBackgroundColor ?? .textBackgroundColor)
+            WebContentView(view: hosted,
                 focusRequest: model.contentFocusRequest,
                 canFocus: focused && model.coordinator.commandBar == nil && model.tabSwitcher == nil
                     && model.splitDropSourceID == nil && !model.hasVisibleDialog,
