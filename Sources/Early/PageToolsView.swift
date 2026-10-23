@@ -40,6 +40,11 @@ struct PageToolsOverlay: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
+            if let offer = model.webViews.pages[tabID]?.passwordOffer {
+                PasswordOfferCard(model: model, tabID: tabID, offer: offer)
+                    .id(offer.id)
+                    .transition(reduceMotion ? .identity : .opacity)
+            }
             if let find = model.webViews.pages[tabID]?.find {
                 PageFindBar(model: model, tabID: tabID, state: find)
                     .transition(reduceMotion ? .identity : .opacity)
@@ -60,6 +65,7 @@ struct PageToolsOverlay: View {
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.zoomNotice?.id)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.webViews.pages[tabID]?.find != nil)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.webViews.pages[tabID]?.passwordOffer?.id)
     }
 }
 
@@ -159,6 +165,16 @@ struct SiteControlsPanel: View {
 
     static func readerValue(_ page: BrowserPage) -> String { page.isReaderShown ? "On" : "Off" }
 
+    /// Unknown until the passwords are open; showing the panel never opens them.
+    static func passwordsValue(_ count: Int?) -> String {
+        switch count {
+        case nil: "Saved passwords"
+        case 0: "None saved for this site"
+        case 1: "1 saved for this site"
+        case let count?: "\(count) saved for this site"
+        }
+    }
+
     static let clearSiteDataMessage = "You’ll be signed out of this website, and the data it stored in this profile is removed. "
         + "Other websites aren’t affected. Its open tabs reload."
 
@@ -221,6 +237,13 @@ struct SiteControlsPanel: View {
                     ForEach(Self.permissions, id: \.self) { permission in
                         SitePermissionRow(model: model, tabID: tabID, permission: permission, tint: tint)
                     }
+                }
+            }
+            if model.currentSiteOrigin != nil, model.canPerform(.showPasswords) {
+                SiteControlRow(symbol: "key", title: "Passwords", value: Self.passwordsValue(model.savedPasswordCount),
+                               active: false, tint: tint, identifier: "siteControls.passwords") {
+                    dismiss()
+                    model.perform(.showPasswords)
                 }
             }
             if page != nil, let host = url?.host, model.currentSiteOrigin != nil {

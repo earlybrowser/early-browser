@@ -53,6 +53,13 @@ struct BrowserCommands: Commands {
     }
 
     var body: some Commands {
+        CommandGroup(after: .appSettings) {
+            Button("Passwords…") {
+                if let model, model.perform(.showPasswords) { return }
+                application.showPasswords(profileID: nil)
+            }
+            .disabled(application.workspace == nil)
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Window") {
                 if let model { _ = model.perform(.newWindow) }

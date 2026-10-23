@@ -166,6 +166,8 @@ extension BrowserWindowModel {
             return coordinator.focusedTabID.map { webViews.canToggleWebInspector($0) } == true
         case .clearSiteData:
             return currentSiteOrigin != nil
+        case .showPasswords:
+            return passwords != nil && application != nil
         }
     }
 
@@ -275,7 +277,7 @@ extension BrowserWindowModel {
             guard application?.openNewWindow(from: self) != nil else { return false }
             restoreContentFocus = false
         case .newPrivateWindow:
-            guard application?.openPrivateWindow() != nil else { return false }
+            guard application?.openPrivateWindow(from: self) != nil else { return false }
             restoreContentFocus = false
         case .showDownloads:
             downloadsPresented = true
@@ -327,6 +329,9 @@ extension BrowserWindowModel {
         case .clearSiteData:
             guard let host = currentPageURL?.host else { return false }
             siteDataClearRequest = host
+            restoreContentFocus = false
+        case .showPasswords:
+            showPasswords(search: currentSiteOrigin.flatMap { URL(string: $0)?.host })
             restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
@@ -417,6 +422,8 @@ extension BrowserWindowModel {
             addAction("webInspector", webViews.isWebInspectorVisible(id) ? "Hide Web Inspector" : "Show Web Inspector",
                       .toggleWebInspector, terms: ["web inspector", "inspect element", "devtools", "developer tools", "console"])
         }
+        addAction("showPasswords", "Show Passwords", .showPasswords,
+                  terms: ["passwords", "saved passwords", "logins", "password manager", "accounts"])
         addAction("clearSiteData", "Clear Cache and Cookies for This Site…", .clearSiteData,
                   terms: ["clear cookies", "clear cache", "clear site data", "sign out of site"])
         addAction("exportPDF", "Export as PDF…", .exportPDF, terms: ["export pdf", "save as pdf", "pdf"])

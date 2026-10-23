@@ -6,14 +6,18 @@ import EarlyWeb
 import SwiftUI
 
 enum BrowserSettingsSection: String, CaseIterable, Identifiable {
-    case appearance = "General", profiles = "Profiles", sidebar = "Sidebar", search = "Search", sessions = "Sessions"
+    case appearance = "General", profiles = "Profiles", passwords = "Passwords", sidebar = "Sidebar", search = "Search", sessions = "Sessions"
     var id: Self { self }
     var key: String {
-        switch self { case .profiles: "profiles"; case .appearance: "appearance"; case .sidebar: "sidebar"; case .search: "search"; case .sessions: "sessions" }
+        switch self {
+        case .profiles: "profiles"; case .appearance: "appearance"; case .passwords: "passwords"; case .sidebar: "sidebar"
+        case .search: "search"; case .sessions: "sessions"
+        }
     }
     var symbol: String {
         switch self {
         case .profiles: "person.crop.circle"
+        case .passwords: "key"
         case .appearance: "gearshape"
         case .sidebar: "sidebar.left"
         case .search: "magnifyingglass"
@@ -23,6 +27,7 @@ enum BrowserSettingsSection: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .profiles: "A little separation for the different parts of your day."
+        case .passwords: "Saved on this Mac, filled in when you sign in."
         case .appearance: "Make Early feel at home."
         case .sidebar: "Your tabs, organized your way."
         case .search: "Choose what happens as you type."
@@ -155,6 +160,7 @@ struct BrowserSettingsView: View {
     @ViewBuilder private var sectionContent: some View {
         switch application.settingsSection {
         case .profiles: profilesSection
+        case .passwords: PasswordsSettingsSection(application: application, lock: application.passwordsLock)
         case .appearance: appearanceSection
         case .sidebar: sidebarSection
         case .search: searchSection
@@ -427,7 +433,7 @@ struct BrowserSettingsWindowAppearance: NSViewRepresentable {
     }
 }
 
-private struct SettingsCard<Content: View>: View {
+struct SettingsCard<Content: View>: View {
     @ViewBuilder var content: Content
     @Environment(\.colorSchemeContrast) private var contrast
     var body: some View {

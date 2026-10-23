@@ -271,6 +271,7 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
         window.addEventListener('scroll', moved, true);
         window.addEventListener('resize', moved);
         window.addEventListener('pagehide', moved);
+        window.addEventListener('blur', moved);
 
         window.__earlyPasswords = Object.freeze({
             // Fills like typing, so the page's own scripts see the values.
