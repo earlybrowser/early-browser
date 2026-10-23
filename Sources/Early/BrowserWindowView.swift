@@ -1551,15 +1551,13 @@ struct BrowserWindowView: View {
         .contextMenu {
             if let live = folder.live, let feed = model.pullRequests {
                 Text(Self.lastFetch(feed))
-                Menu("Fetch Interval") {
-                    ForEach(LiveFolder.Interval.allCases, id: \.self) { interval in
-                        Button {
-                            if model.coordinator.setLiveFolderInterval(folder.id, interval) { model.save() }
-                        } label: {
-                            if live.interval == interval { Label(interval.title, systemImage: "checkmark") } else { Text(interval.title) }
-                        }
-                    }
+                // A picker, so the menu checks the current choice.
+                Picker("Fetch Interval", selection: Binding(get: { live.interval }, set: { interval in
+                    if model.coordinator.setLiveFolderInterval(folder.id, interval) { model.save() }
+                })) {
+                    ForEach(LiveFolder.Interval.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
+                .pickerStyle(.menu)
                 Button("Refresh") { feed.refresh() }
                     .disabled(feed.isRefreshing)
                 Button("Open Pull Requests on GitHub") { _ = model.openLocations([PullRequest.github.appending(path: "pulls")]) }

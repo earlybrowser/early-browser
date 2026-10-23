@@ -189,6 +189,25 @@ struct PullRequestsApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test func newTabWithNoWindowOpensOneWithTheCommandBar() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        // ⌘W closed the last window; Early keeps running.
+        app.closeWindow(nil)
+        #expect(app.model == nil && fixture.opened.isEmpty)
+        #expect(app.presentCommandBar(.newTab))
+        let opened = try #require(app.windowModel(fixture.opened.last))
+        #expect(opened.coordinator.commandBar?.intent == .newTab && opened.coordinator.activeTabID == nil)
+        #expect(fixture.opened.count == 1)
+
+        // The Dock icon with no window showing opens one; with one showing, AppKit does the usual.
+        #expect(!app.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
+        #expect(fixture.opened.count == 2)
+        #expect(app.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) && fixture.opened.count == 2)
+        await fixture.cleanup()
+    }
+
     @Test func liveFolderNotesSayWhatsHappening() {
         #expect(LiveFolderStatusRow.message(for: .loading, hasPins: false)?.text == "Reading GitHub…")
         #expect(LiveFolderStatusRow.message(for: .loading, hasPins: true) == nil)

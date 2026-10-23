@@ -842,6 +842,39 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         saveAll()
     }
 
+    /// ⌘T or ⌘L with no browser window in front (none open, or Settings in
+    /// front): the frontmost browser window gets the command bar, or a new
+    /// window opens with it.
+    @discardableResult
+    func presentCommandBar(_ intent: CommandBarIntent) -> Bool {
+        guard canOpenWindow else { return false }
+        let front = NSApp.orderedWindows.lazy.compactMap { window -> BrowserWindowModel? in
+            guard window.isVisible, let identifier = window.identifier?.rawValue else { return nil }
+            if identifier == "browser" { return self.primaryWindowIsOpen ? self.model : nil }
+            guard identifier.hasPrefix("browser."), let id = UUID(uuidString: String(identifier.dropFirst("browser.".count))) else { return nil }
+            return self.windowModel(id)
+        }.first
+        if let front {
+            nativeWindow(of: front)?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return front.perform(.presentCommandBar(intent))
+        }
+        // A new window opens with the command bar ready.
+        return openNewWindow() != nil
+    }
+
+    /// Clicking the Dock icon with no window showing brings back a minimized
+    /// browser window, or opens one.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag, workspace != nil else { return true }
+        if let minimized = NSApp.windows.first(where: { $0.isMiniaturized && $0.identifier?.rawValue.hasPrefix("browser") == true }) {
+            minimized.deminiaturize(nil)
+        } else {
+            _ = openNewWindow()
+        }
+        return false
+    }
+
     func applyAppearance() {
         switch preferences?.appearance ?? .system {
         case .light: NSApp.appearance = NSAppearance(named: .aqua)
