@@ -70,8 +70,8 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
     }
     private var shownLinkMenu: NSMenu?
-    /// Developer Mode with Web Inspector: right-clicks open WebKit's menu, which
-    /// gets Early's items and keeps WebKit's own Inspect Element.
+    /// With Web Inspector, right-clicks open WebKit's menu, which gets Early's
+    /// items and keeps WebKit's own Inspect Element.
     var inspectsElements = false
     private var pendingContextTarget: (target: ContextTarget, time: Date)?
     static let inspectElementIdentifier = "WKMenuItemIdentifierInspectElement"
@@ -148,15 +148,31 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     /// keep WebKit's menu as they always do, now with Inspect Element too.
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         defer { super.willOpenMenu(menu, with: event) }
-        guard inspectsElements, let pending = pendingContextTarget.take(),
-              Date().timeIntervalSince(pending.time) < 2 else { return }
-        fill(menu, for: pending.target)
+        guard inspectsElements else { return }
+        shownLinkMenu = menu
+        // The page script's message comes just before WebKit's menu.
+        if let pending = pendingContextTarget.take(), Date().timeIntervalSince(pending.time) < 0.5 {
+            fill(menu, for: pending.target)
+        }
+    }
+
+    /// A menu is open only while the run loop tracks it. Cancelling one that
+    /// is not tracking stops the run loop itself instead.
+    static var isTrackingMenu: Bool { RunLoop.current.currentMode == .eventTracking }
+
+    override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        super.didCloseMenu(menu, with: event)
+        guard inspectsElements, shownLinkMenu === menu else { return }
+        shownLinkMenu = nil
+        onInteractionEnded?()
     }
 
     func fill(_ menu: NSMenu, for target: ContextTarget) {
         let inspect = menu.items.first { $0.identifier?.rawValue == Self.inspectElementIdentifier }
         menu.removeAllItems()
         menu.autoenablesItems = false
+        menu.allowsContextMenuPlugIns = false
+        if #available(macOS 15.2, *) { menu.automaticallyInsertsWritingToolsItems = false }
         let early = makeContextMenu(for: target)
         let items = early.items
         early.removeAllItems()
@@ -165,12 +181,6 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
             menu.addItem(.separator())
             menu.addItem(inspect)
         }
-    }
-
-    /// Web Inspector opens in its own window: a docked one would share the
-    /// pane with a page Early sizes to fill it.
-    func detachInspector() {
-        Self.inspector(of: self)?.perform(NSSelectorFromString("detach"))
     }
 
     static func inspector(of view: WKWebView) -> NSObject? {
@@ -209,7 +219,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     }
 
     func cancelLinkMenu() {
-        shownLinkMenu?.cancelTrackingWithoutAnimation()
+        if Self.isTrackingMenu { shownLinkMenu?.cancelTrackingWithoutAnimation() }
         shownLinkMenu = nil
         sharingPicker?.close()
         sharingPicker = nil

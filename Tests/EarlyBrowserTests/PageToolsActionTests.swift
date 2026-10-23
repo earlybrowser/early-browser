@@ -290,23 +290,23 @@ struct PageToolsActionTests {
         #expect(SiteSecurityRow.symbol(.notSecure) == "lock.slash.fill" && SiteSecurityRow.symbol(.certificateProblem) == "exclamationmark.triangle.fill")
     }
 
-    @Test func developerModeSourceAndSiteDataAreFocusedPageActions() async throws {
+    @Test func webInspectorSourceAndSiteDataAreFocusedPageActions() async throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
         let model = fixture.model
-        #expect(!model.canPerform(.viewPageSource) && !model.canPerform(.toggleDeveloperMode))
+        #expect(!model.canPerform(.viewPageSource) && !model.canPerform(.toggleWebInspector))
         #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
         let tab = try #require(model.coordinator.focusedTabID)
         try await fixture.waitForLoad(tab)
 
-        #expect(model.canPerform(.toggleDeveloperMode) && !model.webViews.isDeveloperModeOn(tab))
-        #expect(model.commandSearchCandidates().map(\.title).contains("Turn On Developer Mode"))
-        #expect(model.perform(.toggleDeveloperMode) && model.webViews.isDeveloperModeOn(tab))
-        #expect(model.webViews.pages[tab]?.view.isInspectable == true)
-        #expect(model.commandSearchCandidates().map(\.title).contains("Turn Off Developer Mode"))
-        #expect(model.perform(.toggleDeveloperMode) && model.webViews.pages[tab]?.view.isInspectable == false)
-        #expect(WebViewManager.supportsWebInspector && SiteControlsPanel.developerModeHint.contains("Inspect Element"))
-        #expect(model.canPerform(.showWebInspector) && model.commandSearchCandidates().map(\.title).contains("Show Web Inspector"))
+        // Every page can be inspected in Early, with no mode to turn on.
+        let view = try #require(model.webViews.pages[tab]?.view)
+        #expect(WebViewManager.supportsWebInspector)
+        #expect(view.configuration.preferences.value(forKey: "developerExtrasEnabled") as? Bool == true)
+        #expect(!view.isInspectable, "Safari's Develop menu is only the fallback")
+        #expect(model.canPerform(.toggleWebInspector) && !model.isWebInspectorVisible)
+        #expect(model.commandSearchCandidates().map(\.title).contains("Show Web Inspector"))
+        #expect(!model.commandSearchCandidates().map(\.title).contains { $0.contains("Developer Mode") })
 
         // Early's own pages are not websites, so there is nothing to clear.
         #expect(!model.canPerform(.clearSiteData) && model.siteDataClearRequest == nil)

@@ -147,44 +147,16 @@ struct SiteSecurityTests {
         }
     }
 
-    @Test func developerModeMakesOnlyThatTabInspectableUntilItCloses() async throws {
-        let fixture = PageToolFixture(pages: ["one": "<title>One</title>", "two": "<title>Two</title>"])
+    @Test func everyPageOffersInspectElementAfterEarlysMenuItems() async throws {
+        let fixture = PageToolFixture(pages: ["one": "<title>One</title>"])
         defer { fixture.cleanup() }
-        let manager = fixture.manager
-        let one = try await fixture.open("one"), two = try await fixture.open("two")
-        let first = try fixture.page(one), second = try fixture.page(two)
-        #expect(!first.view.isInspectable && !second.view.isInspectable, "Inspection is off unless asked for")
-        #expect(manager.setDeveloperMode(true, for: one.id))
-        #expect(first.view.isInspectable && manager.isDeveloperModeOn(one.id))
-        #expect(!second.view.isInspectable && !manager.isDeveloperModeOn(two.id))
-        #expect(manager.setDeveloperMode(false, for: one.id) && !first.view.isInspectable)
-        #expect(manager.setDeveloperMode(true, for: one.id))
-        manager.discard(tabID: one.id)
-        #expect(!manager.isDeveloperModeOn(one.id) && !manager.canToggleDeveloperMode(one.id))
-        #expect(!manager.setDeveloperMode(true, for: UUID()))
-    }
-
-    @Test func developerModeKeepsWebKitsInspectElementAfterEarlysMenuItems() async throws {
-        let fixture = PageToolFixture(pages: ["one": "<title>One</title>", "two": "<title>Two</title>"])
-        defer { fixture.cleanup() }
-        let manager = fixture.manager
-        let tab = try await fixture.open("one")
-        let view = try #require(try fixture.page(tab).view as? BrowserWebView)
-        func flag() async throws -> Bool? {
-            try await view.callAsyncJavaScript("return window.__earlyInspectsElements === true", contentWorld: PageContextMenuObserver.world) as? Bool
-        }
-        func developerExtras() -> Bool? { view.configuration.preferences.value(forKey: WebViewManager.developerExtrasPreference) as? Bool }
-        // macOS 26 and 27 WebKit both have the inspector; without it only Safari's route is offered.
+        let view = try #require(try fixture.page(try await fixture.open("one")).view as? BrowserWebView)
+        // macOS 26 and 27 WebKit both have the inspector; without it Safari's route is used.
         #expect(WebViewManager.supportsWebInspector)
-        let before = try await flag()
-        #expect(developerExtras() == false && !view.inspectsElements && before == false)
-
-        #expect(manager.setDeveloperMode(true, for: tab.id))
-        #expect(developerExtras() == true && view.inspectsElements && view.isInspectable)
-        #expect(try await flag() == true)
-        manager.load(fixture.url("two"), in: tab)
-        try await fixture.waitUntil("next page") { view.url == fixture.url("two") && !view.isLoading }
-        #expect(try await flag() == true, "Each new document gets the flag again")
+        #expect(view.configuration.preferences.value(forKey: WebViewManager.developerExtrasPreference) as? Bool == true)
+        #expect(view.inspectsElements && !view.isInspectable)
+        #expect(PageContextMenuObserver.script.contains("const webKitMenu = true"), "WebKit builds the menu")
+        #expect(fixture.manager.canToggleWebInspector(try #require(fixture.tabs.first?.id)))
 
         // A right-click's items wait for WebKit's menu, which keeps only Inspect Element of its own.
         var shown: [NSMenu] = []
@@ -199,10 +171,14 @@ struct SiteSecurityTests {
         view.fill(menu, for: BrowserWebView.ContextTarget())
         #expect(menu.items.map(\.title).filter { !$0.isEmpty } == ["Back", "Forward", "Reload", "Save Page As…", "Print…", "Inspect Element"])
         #expect(menu.items.last === inspect && menu.items.dropLast().last?.isSeparatorItem == true)
+        #expect(!menu.allowsContextMenuPlugIns)
 
-        #expect(manager.setDeveloperMode(false, for: tab.id))
-        let after = try await flag()
-        #expect(developerExtras() == false && !view.inspectsElements && !view.isInspectable && after == false)
+        let defaults = UserDefaults(suiteName: "local.early.tests.inspector.\(UUID())")!
+        WebViewManager.registerInspectorDefaults(in: defaults)
+        #expect(defaults.integer(forKey: "__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachmentSide") == 1, "Docked on the right")
+        defaults.set(0, forKey: "__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachmentSide")
+        WebViewManager.registerInspectorDefaults(in: defaults)
+        #expect(defaults.integer(forKey: "__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachmentSide") == 0, "A chosen side is kept")
     }
 
     @Test func pageSourceIsTheCurrentDocumentReadWithoutAskingTheWebsiteAgain() async throws {

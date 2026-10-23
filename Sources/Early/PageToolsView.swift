@@ -159,15 +159,6 @@ struct SiteControlsPanel: View {
 
     static func readerValue(_ page: BrowserPage) -> String { page.isReaderShown ? "On" : "Off" }
 
-    /// Web Inspector in Early, or through Safari's Develop menu where WebKit
-    /// offers no inspector of its own.
-    static var developerModeHint: String {
-        if WebViewManager.supportsWebInspector {
-            return "Right-click the page and choose Inspect Element, or press Option-Command-I."
-        }
-        return "In Safari, choose Develop › \(Host.current().localizedName ?? "this Mac") › Early, then this page."
-    }
-
     static let clearSiteDataMessage = "You’ll be signed out of this website, and the data it stored in this profile is removed. "
         + "Other websites aren’t affected. Its open tabs reload."
 
@@ -232,42 +223,13 @@ struct SiteControlsPanel: View {
                     }
                 }
             }
-            if page != nil {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Tools").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-                    let developer = model.webViews.isDeveloperModeOn(tabID)
-                    SiteControlRow(symbol: "hammer", title: "Developer Mode", value: developer ? "On for this tab" : "Off",
-                                   active: developer, tint: tint, identifier: "siteControls.developerMode") {
-                        model.perform(.toggleDeveloperMode)
-                    } trailing: {
-                        if developer && WebViewManager.supportsWebInspector {
-                            Button("Inspect") {
-                                dismiss()
-                                DispatchQueue.main.async { model.perform(.showWebInspector) }
-                            }
-                            .controlSize(.small)
-                            .help("Show Web Inspector (Option-Command-I)")
-                            .accessibilityLabel("Show Web Inspector")
-                            .accessibilityIdentifier("siteControls.webInspector")
-                        }
-                    }
-                    .disabled(!model.canPerform(.toggleDeveloperMode))
-                    if developer {
-                        Text(Self.developerModeHint)
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.leading, 42)
-                            .accessibilityIdentifier("siteControls.developerModeHint")
-                    }
-                    if let host = url?.host, model.currentSiteOrigin != nil {
-                        SiteControlRow(symbol: "trash", title: "Clear Cache and Cookies", value: host,
-                                       active: false, tint: tint, identifier: "siteControls.clearSiteData") {
-                            dismiss()
-                            model.perform(.clearSiteData)
-                        }
-                        .disabled(!model.canPerform(.clearSiteData))
-                    }
+            if page != nil, let host = url?.host, model.currentSiteOrigin != nil {
+                SiteControlRow(symbol: "trash", title: "Clear Cache and Cookies", value: host,
+                               active: false, tint: tint, identifier: "siteControls.clearSiteData") {
+                    dismiss()
+                    model.perform(.clearSiteData)
                 }
+                .disabled(!model.canPerform(.clearSiteData))
             }
             Divider()
             HStack(spacing: 8) {
@@ -289,6 +251,10 @@ struct SiteControlsPanel: View {
                 Spacer(minLength: 0)
                 Menu {
                     pageAction("View Page Source", systemImage: "chevron.left.forwardslash.chevron.right", .viewPageSource)
+                    if WebViewManager.supportsWebInspector {
+                        pageAction(model.webViews.isWebInspectorVisible(tabID) ? "Hide Web Inspector" : "Show Web Inspector",
+                                   systemImage: "hammer", .toggleWebInspector)
+                    }
                     Divider()
                     pageAction("Save Page As…", systemImage: "square.and.arrow.down", .savePage)
                     pageAction("Export as PDF…", systemImage: "doc.richtext", .exportPDF)

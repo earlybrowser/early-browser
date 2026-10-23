@@ -1087,7 +1087,8 @@ struct SplitPresentationTests {
         host.setLiveResize(true) // A request before a page is attached is safe.
         #expect(host.display(first))
         #expect(first.resizeStarts == 1 && first.resizeEnds == 0)
-        #expect(host.clipsToBounds && host.isFlipped && !host.autoresizesSubviews)
+        // Bottom-up like WebKit's docked Web Inspector layout (see WebInspectorDockingTests).
+        #expect(host.clipsToBounds && !host.isFlipped && !host.autoresizesSubviews)
         #expect(host.visibleRect == host.bounds)
         for size in [CGSize(width: 650, height: 480), .zero, CGSize(width: 200, height: 700), CGSize(width: 800, height: 600)] {
             let previousFrame = first.frame

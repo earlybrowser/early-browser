@@ -139,14 +139,12 @@ struct BrowserCommands: Commands {
             Button("View Page Source") { model?.perform(.viewPageSource) }
                 .keyboardShortcut("u", modifiers: [.command, .option])
                 .disabled(model?.canPerform(.viewPageSource) != true)
-            Toggle("Developer Mode", isOn: Binding(
-                get: { model.flatMap { model in model.coordinator.focusedTabID.map { model.webViews.isDeveloperModeOn($0) } } ?? false },
-                set: { _ in model?.perform(.toggleDeveloperMode) }))
-                .disabled(model?.canPerform(.toggleDeveloperMode) != true)
             if WebViewManager.supportsWebInspector {
-                Button("Show Web Inspector") { model?.perform(.showWebInspector) }
-                    .keyboardShortcut("i", modifiers: [.command, .option])
-                    .disabled(model?.canPerform(.showWebInspector) != true)
+                Button(model?.isWebInspectorVisible == true ? "Hide Web Inspector" : "Show Web Inspector") {
+                    model?.perform(.toggleWebInspector)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                .disabled(model?.canPerform(.toggleWebInspector) != true)
             }
             Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }

@@ -162,10 +162,8 @@ extension BrowserWindowModel {
             return coordinator.focusedTabID.flatMap { translationTitle(for: $0) } != nil
         case .viewPageSource:
             return coordinator.focusedTabID.map { webViews.canShowPageSource($0) } == true
-        case .toggleDeveloperMode:
-            return coordinator.focusedTabID.map { webViews.canToggleDeveloperMode($0) } == true
-        case .showWebInspector:
-            return WebViewManager.supportsWebInspector && coordinator.focusedTabID.map { webViews.canToggleDeveloperMode($0) } == true
+        case .toggleWebInspector:
+            return coordinator.focusedTabID.map { webViews.canToggleWebInspector($0) } == true
         case .clearSiteData:
             return currentSiteOrigin != nil
         }
@@ -323,11 +321,8 @@ extension BrowserWindowModel {
             guard let id = coordinator.focusedTabID else { return false }
             showPageSource(id)
             restoreContentFocus = false
-        case .toggleDeveloperMode:
-            guard let id = coordinator.focusedTabID,
-                  webViews.setDeveloperMode(!webViews.isDeveloperModeOn(id), for: id) else { return false }
-        case .showWebInspector:
-            guard let id = coordinator.focusedTabID, webViews.showWebInspector(id) else { return false }
+        case .toggleWebInspector:
+            guard let id = coordinator.focusedTabID, webViews.toggleWebInspector(id) else { return false }
             restoreContentFocus = false
         case .clearSiteData:
             guard let host = currentPageURL?.host else { return false }
@@ -419,10 +414,8 @@ extension BrowserWindowModel {
         addAction("savePage", "Save Page As…", .savePage, terms: ["save page", "save as", "save html"])
         addAction("viewPageSource", "View Page Source", .viewPageSource, terms: ["source", "html source", "view source"])
         if let id = coordinator.focusedTabID {
-            addAction("developerMode", webViews.isDeveloperModeOn(id) ? "Turn Off Developer Mode" : "Turn On Developer Mode",
-                      .toggleDeveloperMode, terms: ["developer mode", "inspect element", "devtools"])
-            addAction("webInspector", "Show Web Inspector", .showWebInspector,
-                      terms: ["web inspector", "inspect", "devtools", "developer tools", "console"])
+            addAction("webInspector", webViews.isWebInspectorVisible(id) ? "Hide Web Inspector" : "Show Web Inspector",
+                      .toggleWebInspector, terms: ["web inspector", "inspect element", "devtools", "developer tools", "console"])
         }
         addAction("clearSiteData", "Clear Cache and Cookies for This Site…", .clearSiteData,
                   terms: ["clear cookies", "clear cache", "clear site data", "sign out of site"])

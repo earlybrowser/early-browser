@@ -450,6 +450,9 @@ final class BrowserWindowModel {
         showToast(.siteDataCleared)
     }
 
+    /// Whether the focused tab's Web Inspector is open, for menu titles.
+    var isWebInspectorVisible: Bool { coordinator.focusedTabID.map { webViews.isWebInspectorVisible($0) } == true }
+
     func showPageSource(_ id: UUID) {
         let url = webViews.pages[id]?.view.url
         let title = coordinator.tabStore.tab(id: id)?.displayTitle ?? url?.host ?? "Page"

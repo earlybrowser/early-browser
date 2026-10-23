@@ -11,8 +11,11 @@ final class PageContextMenuObserver: NSObject, WKScriptMessageHandler {
     weak var owner: WebViewManager?
     static let name = "earlyContextMenu"
     static let world = WKContentWorld.world(name: "Early.PageContextMenu")
+    /// With Web Inspector, WebKit builds every menu (so it can offer Inspect
+    /// Element) and Early fills it; otherwise Early shows its own.
     static let script = """
     (() => {
+        const webKitMenu = \(WebViewManager.supportsWebInspector);
         const limit = 16384;
         const absolute = value => {
             try {
@@ -48,9 +51,8 @@ final class PageContextMenuObserver: NSObject, WKScriptMessageHandler {
                     }
                 }
             }
-            // Developer Mode: WebKit builds its menu, with Inspect Element, and
-            // Early fills it with these items instead of showing its own.
-            if (!window.__earlyInspectsElements) event.preventDefault();
+            // Tests set the flag to read Early's own menu without WebKit's.
+            if (!webKitMenu || window.__earlyOwnMenu === true) event.preventDefault();
             window.webkit.messageHandlers.earlyContextMenu.postMessage(message);
         });
     })();

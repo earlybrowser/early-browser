@@ -81,6 +81,10 @@ struct PageContextMenuTests {
             guard ContinuousClock.now < deadline else { throw CancellationError() }
             try await Task.sleep(for: .milliseconds(20))
         }
+        // WebKit's own menu would start real menu tracking in this test, so the
+        // page uses Early's menu here; filling WebKit's is tested on its own.
+        view.inspectsElements = false
+        _ = try await view.callAsyncJavaScript("window.__earlyOwnMenu = true", contentWorld: PageContextMenuObserver.world)
         func rightClick(atTop y: CGFloat) async throws -> [String]? {
             let before = shown.count
             let location = view.convert(CGPoint(x: 30, y: y), to: nil)
@@ -115,6 +119,8 @@ struct PageContextMenuTests {
         defer { manager.discardAll(); window.close() }
         var shown: [[String]] = []
         view.presentMenu = { menu, _ in shown.append(menu.items.map { $0.isSeparatorItem ? "—" : $0.title }) }
+        // Validation is the same whichever menu shows the items; check it on Early's own.
+        view.inspectsElements = false
 
         manager.showContextMenu(link: "javascript:alert(1)", image: nil, selection: "   ", in: view)
         manager.showContextMenu(link: "file:///etc/hosts", image: "blob:https://example.com/id", selection: nil, in: view)

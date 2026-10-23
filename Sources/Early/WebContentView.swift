@@ -1094,20 +1094,30 @@ struct WebContentView: NSViewRepresentable {
             autoresizesSubviews = false
         }
         required init?(coder: NSCoder) { return nil }
-        override var isFlipped: Bool { true }
+        // Not flipped: WebKit lays a docked Web Inspector out from the bottom
+        // edge. The page itself always fills the host, so it is unaffected.
+        override var isFlipped: Bool { false }
 
         override func setFrameSize(_ size: NSSize) {
             super.setFrameSize(size)
             layoutHostedView()
         }
 
-        /// WebKit docks Web Inspector beside the page in this host. The page
-        /// fills its pane here, so the inspector moves to its own window.
+        /// WebKit docks Web Inspector beside the page, in this host. It goes
+        /// with the page: parked while the tab is hidden, back beside it when
+        /// any host shows the page again.
+        private static let parkedInspectors = NSMapTable<WKWebView, NSView>.weakToStrongObjects()
+        private weak var inspector: NSView?
+
+        static func isInspector(_ view: NSView) -> Bool { String(describing: type(of: view)).hasPrefix("WKInspector") }
+
         override func didAddSubview(_ subview: NSView) {
             super.didAddSubview(subview)
-            guard subview !== hosted, String(describing: type(of: subview)).hasPrefix("WKInspector"), let hosted else { return }
-            DispatchQueue.main.async { WebViewManager.detachInspector(of: hosted) }
+            if subview !== hosted, Self.isInspector(subview) { inspector = subview }
         }
+
+        /// The docked inspector shares this host with its page.
+        var dockedInspector: NSView? { inspector?.superview === self ? inspector : nil }
         override func setBoundsSize(_ size: NSSize) {
             super.setBoundsSize(size)
             layoutHostedView()
@@ -1127,7 +1137,10 @@ struct WebContentView: NSViewRepresentable {
             // A newly made/removed SwiftUI host can have zero bounds for one
             // layout pass. Keep the last real viewport instead of asking
             // WebKit to reflow to zero and repaint again on Space re-entry.
-            if hasViewport, hosted.frame != bounds { hosted.frame = bounds }
+            // With Web Inspector docked, WebKit splits whatever frame the page
+            // gets between them; set it only when the two no longer fill this.
+            let area = dockedInspector.map { hosted.frame.union($0.frame) } ?? hosted.frame
+            if hasViewport, area != bounds { hosted.frame = bounds }
             layer?.backgroundColor = hosted.underPageBackgroundColor.cgColor
             CATransaction.commit()
         }
@@ -1238,8 +1251,13 @@ struct WebContentView: NSViewRepresentable {
             backgroundObservation = nil
             if let hosted {
                 if Self.owners.object(forKey: hosted) === self { Self.owners.removeObject(forKey: hosted) }
+                if let inspector = dockedInspector {
+                    Self.parkedInspectors.setObject(inspector, forKey: hosted)
+                    inspector.removeFromSuperview()
+                }
                 if hosted.superview === self { hosted.removeFromSuperview() }
             }
+            inspector = nil
             hosted = nil
             layer?.backgroundColor = nil
         }
@@ -1260,6 +1278,12 @@ struct WebContentView: NSViewRepresentable {
                 if hasViewport { view.frame = bounds }
                 layer?.backgroundColor = view.underPageBackgroundColor.cgColor
                 addSubview(view)
+                if let parked = Self.parkedInspectors.object(forKey: view) {
+                    Self.parkedInspectors.removeObject(forKey: view)
+                    addSubview(parked)
+                    // WebKit splits the page's frame again around its inspector.
+                    if hasViewport { view.frame = bounds }
+                }
                 CATransaction.commit()
                 layoutHostedView()
                 // Use WebKit's computed page background, not the browser's

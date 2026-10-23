@@ -591,6 +591,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyAppearance()
+        WebViewManager.registerInspectorDefaults()
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
