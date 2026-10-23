@@ -1126,13 +1126,17 @@ struct WebContentView: NSViewRepresentable {
 
         private var inspectorFrameObserver: NSObjectProtocol?
 
-        /// WebKit keeps a side-docked inspector below the window's title bar,
-        /// as Safari's toolbar needs. Early's page reaches the top of its pane,
-        /// so the inspector does too, leaving no strip above it.
+        /// WebKit keeps a side-docked inspector below the window's title bar, as
+        /// Safari's toolbar needs, and within the screen, so a window reaching
+        /// past the screen's edge would show a gap beside it. Here it runs from
+        /// the page's edge to the pane's, top to bottom.
         private func fitInspector() {
-            guard let inspector = dockedInspector, hasViewport, inspector.frame.width < bounds.width - 1 else { return }
-            let full = CGRect(x: inspector.frame.minX, y: bounds.minY, width: inspector.frame.width, height: bounds.height)
-            if inspector.frame != full { inspector.frame = full }
+            guard let inspector = dockedInspector, let hosted, hasViewport, inspector.frame.width < bounds.width - 1 else { return }
+            let onRight = inspector.frame.midX > hosted.frame.midX
+            let full = onRight
+                ? CGRect(x: hosted.frame.maxX, y: bounds.minY, width: bounds.maxX - hosted.frame.maxX, height: bounds.height)
+                : CGRect(x: bounds.minX, y: bounds.minY, width: hosted.frame.minX - bounds.minX, height: bounds.height)
+            if full.width > 0, inspector.frame != full { inspector.frame = full }
         }
 
         /// The docked inspector shares this host with its page.

@@ -28,13 +28,14 @@ struct WebInspectorDockingTests {
         let tab = try #require(model.coordinator.focusedTabID)
         let page = try #require(model.webViews.pages[tab])
         // Like Early's window: content, and the page, run up under the title bar.
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1200, height: 800),
+        // Within CI's 1024-by-768-point screen.
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 700),
                               styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         defer { window.close() }
-        let root = NSView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800))
+        let root = NSView(frame: CGRect(x: 0, y: 0, width: 1000, height: 700))
         window.contentView = root
         let first = WebContentView.HostView(frame: root.bounds)
         root.addSubview(first)
@@ -72,12 +73,18 @@ struct WebInspectorDockingTests {
                 "On the right of the page: \(opened) in \(first.bounds)")
         #expect(opened.inspector.height == first.bounds.height && opened.page.height == first.bounds.height,
                 "As tall as the page, no strip above it under the title bar: \(opened)")
+        // WebKit can leave the inspector short of the pane's edge (on CI's macOS
+        // 26: 324 of the 500 points beside the page); Early fills the pane.
+        let inspectorView = try #require(first.dockedInspector)
+        inspectorView.frame = CGRect(x: opened.page.maxX, y: 0, width: 324, height: first.bounds.height)
+        let refilled = try #require(try await settled(first, fills(first)))
+        #expect(refilled.inspector.maxX == first.bounds.maxX && refilled.inspector.minX == refilled.page.maxX, "\(refilled)")
         #expect(model.isWebInspectorVisible)
 
         // Switching tabs releases the page; another host shows it again later.
         first.invalidate()
         #expect(first.subviews.isEmpty, "Nothing is left behind in the old host")
-        let second = WebContentView.HostView(frame: CGRect(x: 0, y: 0, width: 1000, height: 700))
+        let second = WebContentView.HostView(frame: CGRect(x: 0, y: 0, width: 960, height: 660))
         root.addSubview(second)
         #expect(second.display(page.view))
         let returned = try #require(try await settled(second, fills(second)), "The inspector comes back with its page")
@@ -92,7 +99,7 @@ struct WebInspectorDockingTests {
         _ = try await frontend?.evaluateJavaScript("InspectorFrontendHost.requestSetDockSide('right'); 1")
         _ = try await settled(second) { fills(second)($0) && $0.inspector.width < second.bounds.width }
 
-        second.setFrameSize(CGSize(width: 900, height: 600))
+        second.setFrameSize(CGSize(width: 900, height: 620))
         let resized = try #require(try await settled(second) { fills(second)($0) && $0.inspector.height == second.bounds.height })
         #expect(resized.page.union(resized.inspector) == second.bounds && resized.inspector.height == second.bounds.height,
                 "\(resized) in \(second.bounds)")
