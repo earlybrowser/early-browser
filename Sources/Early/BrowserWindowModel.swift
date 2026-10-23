@@ -259,6 +259,7 @@ final class BrowserWindowModel {
         webViews.sitePermissions = self.sitePermissions
         webViews.passwords = passwords
         webViews.savesPasswords = !isPrivate
+        webViews.fillsPasswordsAutomatically = { [weak self] in self?.preferences.fillsPasswordsAutomatically == true }
         webViews.onManagePasswords = { [weak self] host in self?.showPasswords(search: host) }
         webViews.automaticPictureInPicture = { [weak self] in self?.preferences.automaticPictureInPicture == true }
         webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }

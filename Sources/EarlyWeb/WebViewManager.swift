@@ -131,6 +131,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var passwords: PasswordVault?
     /// Private windows fill saved passwords but never save or change them.
     public var savesPasswords = true
+    /// Whether sign-in pages with a saved password are filled in as they open.
+    public var fillsPasswordsAutomatically: () -> Bool = { true }
     /// Manage Passwords… was chosen under a sign-in field, for this host.
     public var onManagePasswords: ((String?) -> Void)?
     /// Answers HTTP sign-in requests instead of Early's sheet; tests use it.

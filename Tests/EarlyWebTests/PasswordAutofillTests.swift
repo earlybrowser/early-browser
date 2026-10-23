@@ -48,6 +48,8 @@ struct PasswordAutofillTests {
         let fixture = PageToolFixture(pages: pages)
         fixture.manager.passwords = PasswordVault(fileURL: nil, key: nil)
         fixture.manager.passwordTestSchemes = ["early-tools"]
+        // Filling as pages open has its own test; the others choose from the list.
+        fixture.manager.fillsPasswordsAutomatically = { false }
         return fixture
     }
 
@@ -144,6 +146,62 @@ struct PasswordAutofillTests {
 
         let labeled = try fixture.page(try await fixture.open("labeled")).view
         #expect((try await focus("mail", in: labeled, fixture)).role == .username, "Its label says it's an email address")
+    }
+
+    @Test func signInPagesWithASavedPasswordAreFilledAsTheyOpen() async throws {
+        let later = """
+            <title>Later</title><div id="app"></div>
+            <script>setTimeout(() => app.innerHTML = '<form><input id=user autocomplete=username><input id=pass type=password></form>', 300)</script>
+            """
+        let typed = Self.login.replacingOccurrences(of: "<input id=\"user\"", with: "<input id=\"user\" value=\"grace\"")
+        // The framed page, from another site, reports its own fields.
+        let framed = Self.login + "<script>setTimeout(() => parent.postMessage([user.value, pass.value].join(' '), '*'), 800)</script>"
+        let fixture = makeFixture(["login": Self.login, "later": later, "typed": typed, "framed": framed,
+            "outer": "<title>Outer</title><iframe src=\"early-tools://accounts/framed\"></iframe><script>addEventListener('message', e => window.framed = e.data)</script>"])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        var enabled = true
+        manager.fillsPasswordsAutomatically = { enabled }
+        vault.save(origin: "early-tools://fixture", username: "ada", password: "first")
+        vault.save(origin: "early-tools://fixture", username: "grace", password: "second")
+        vault.save(origin: "early-tools://accounts", username: "frame", password: "framed")
+        vault.markUsed(try #require(vault.login(origin: "early-tools://fixture", username: "grace")).id)
+        func values(_ tab: BrowserTab) async throws -> [String] {
+            var result: [String] = []
+            for _ in 0..<60 {
+                result = try await fixture.evaluate("['user', 'pass'].map(id => document.getElementById(id)?.value ?? '')", in: tab) as? [String] ?? []
+                if result.last?.isEmpty == false { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            return result
+        }
+
+        let login = try await fixture.open("login")
+        #expect(try await values(login) == ["grace", "second"], "The account used last")
+        #expect(try await fixture.evaluate("seen.join(',')", in: login) as? String == "user=grace,pass=second",
+                "Filled like typing")
+        #expect(vault.logins.allSatisfy { $0.username != "ada" || $0.lastUsed == nil }, "Filling isn't using it yet")
+        #expect(try await values(try await fixture.open("typed")) == ["grace", "second"], "The user name already in the form")
+        #expect(try await values(try await fixture.open("later")) == ["grace", "second"], "A form that appears later")
+
+        // Never in another site's frame.
+        let outer = try await fixture.open("outer")
+        var framedValues: String?
+        for _ in 0..<80 where framedValues == nil {
+            try await Task.sleep(for: .milliseconds(25))
+            framedValues = try await fixture.evaluate("window.framed ?? null", in: outer) as? String
+        }
+        #expect(framedValues == " ", "Nothing filled in the framed page: \(framedValues ?? "nil")")
+
+        // Turned off: the list under the field only.
+        enabled = false
+        let off = try await fixture.open("login")
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(try await fixture.evaluate("[user.value, pass.value]", in: off) as? [String] == ["", ""])
+
+        #expect(WebViewManager.allowsAutomaticFill(origin: "https://example.com", testSchemes: []))
+        #expect(!WebViewManager.allowsAutomaticFill(origin: "http://example.com", testSchemes: []), "Not on insecure pages")
+        #expect(WebViewManager.allowsAutomaticFill(origin: "http://localhost:8080", testSchemes: []))
     }
 
     @Test func aSentSignInIsOfferedOnceItWorksAndUpdatedWhenItChanges() async throws {

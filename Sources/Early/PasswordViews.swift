@@ -32,6 +32,7 @@ final class PasswordsLock {
     }
 
     /// Runs work that may show a system prompt.
+    @discardableResult
     func prompting<T>(_ work: () async -> T) async -> T {
         prompts += 1
         defer { prompts -= 1 }
@@ -84,6 +85,7 @@ final class PasswordsLock {
 /// Settings › Passwords: the profile's saved passwords, behind the lock.
 struct PasswordsSettingsSection: View {
     @Bindable var application: EarlyAppDelegate
+    @Bindable var preferences: BrowserPreferences
     @Bindable var lock: PasswordsLock
     @State private var expanded: UUID?
     @State private var revealed: Set<UUID> = []
@@ -103,6 +105,11 @@ struct PasswordsSettingsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
+            SettingsCard {
+                SettingsToggle("Fill passwords automatically",
+                               detail: "When a sign-in page you’ve saved a password for opens, Early fills it in. Turn this off to choose from the list under the field instead.",
+                               isOn: $preferences.fillsPasswordsAutomatically, identifier: "settings.fillPasswords")
+            }
             if application.profiles.count > 1 { profilePicker }
             if !lock.isUnlocked { lockedCard }
             else if let vault { content(vault) }
@@ -235,22 +242,22 @@ struct PasswordsSettingsSection: View {
                 || $0.note.lowercased().contains(query) }
             .sorted { ($0.host, $0.username.lowercased()) < ($1.host, $1.username.lowercased()) }
         return VStack(alignment: .leading, spacing: 22) {
+            HStack(spacing: 12) {
+                transferCard("Import Passwords", symbol: "square.and.arrow.down",
+                             detail: "Add passwords exported as a CSV file from Chrome, Safari, Firefox, 1Password, or Bitwarden.",
+                             button: "Import…", identifier: "passwords.import") { importPasswords(into: vault) }
+                transferCard("Export Passwords", symbol: "square.and.arrow.up",
+                             detail: "Save every password in this profile as a CSV file. Anyone who can open it can read them.",
+                             button: "Export…", identifier: "passwords.export") { exportPasswords(from: vault) }
+                    .disabled(vault.logins.isEmpty)
+            }
+            .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 TextField("Search passwords", text: $application.passwordSearch)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("passwords.search")
-                Button { editor = .new } label: { Image(systemName: "plus") }
-                    .help("Add Password")
-                    .accessibilityLabel("Add Password")
+                Button { editor = .new } label: { Label("Add Password", systemImage: "plus") }
                     .accessibilityIdentifier("passwords.add")
-                Menu {
-                    Button("Import Passwords…") { importPasswords(into: vault) }
-                    Button("Export Passwords…") { exportPasswords(from: vault) }.disabled(vault.logins.isEmpty)
-                } label: { Image(systemName: "ellipsis.circle") }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .help("Import or Export")
-                .accessibilityLabel("Import or Export")
-                .accessibilityIdentifier("passwords.more")
             }
             if logins.isEmpty {
                 SettingsCard {
@@ -270,6 +277,19 @@ struct PasswordsSettingsSection: View {
             Text("Passwords are encrypted on this Mac with a key kept in your Keychain. They aren’t synced, and private windows can fill them but never save new ones.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// Import or export: what it does and one clear button.
+    private func transferCard(_ title: String, symbol: String, detail: String, button: String, identifier: String,
+                              action: @escaping () -> Void) -> some View {
+        SettingsCard {
+            Label(title, systemImage: symbol).font(.headline)
+            Text(detail).font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxHeight: .infinity, alignment: .top)
+            Button(button, action: action).accessibilityIdentifier(identifier)
+        }
+        .frame(maxHeight: .infinity)
     }
 
     private func row(_ login: SavedLogin, vault: PasswordVault) -> some View {

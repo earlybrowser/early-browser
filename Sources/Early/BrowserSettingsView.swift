@@ -160,7 +160,7 @@ struct BrowserSettingsView: View {
     @ViewBuilder private var sectionContent: some View {
         switch application.settingsSection {
         case .profiles: profilesSection
-        case .passwords: PasswordsSettingsSection(application: application, lock: application.passwordsLock)
+        case .passwords: PasswordsSettingsSection(application: application, preferences: preferences, lock: application.passwordsLock)
         case .appearance: appearanceSection
         case .sidebar: sidebarSection
         case .search: searchSection
@@ -447,7 +447,7 @@ struct SettingsCard<Content: View>: View {
     }
 }
 
-private struct SettingsToggle: View {
+struct SettingsToggle: View {
     let title: String
     let detail: String
     @Binding var isOn: Bool
