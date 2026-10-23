@@ -70,6 +70,11 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
     }
     private var shownLinkMenu: NSMenu?
+    /// Developer Mode with Web Inspector: right-clicks open WebKit's menu, which
+    /// gets Early's items and keeps WebKit's own Inspect Element.
+    var inspectsElements = false
+    private var pendingContextTarget: (target: ContextTarget, time: Date)?
+    static let inspectElementIdentifier = "WKMenuItemIdentifierInspectElement"
     var onInteractionEnded: (() -> Void)?
     var hasActiveInteraction: Bool { shownLinkMenu != nil || sharingPicker != nil }
 
@@ -139,12 +144,51 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         return menu
     }
 
+    /// Early's items in WebKit's menu, then Inspect Element. Fields and media
+    /// keep WebKit's menu as they always do, now with Inspect Element too.
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        defer { super.willOpenMenu(menu, with: event) }
+        guard inspectsElements, let pending = pendingContextTarget.take(),
+              Date().timeIntervalSince(pending.time) < 2 else { return }
+        fill(menu, for: pending.target)
+    }
+
+    func fill(_ menu: NSMenu, for target: ContextTarget) {
+        let inspect = menu.items.first { $0.identifier?.rawValue == Self.inspectElementIdentifier }
+        menu.removeAllItems()
+        menu.autoenablesItems = false
+        let early = makeContextMenu(for: target)
+        let items = early.items
+        early.removeAllItems()
+        items.forEach(menu.addItem)
+        if let inspect {
+            menu.addItem(.separator())
+            menu.addItem(inspect)
+        }
+    }
+
+    /// Web Inspector opens in its own window: a docked one would share the
+    /// pane with a page Early sizes to fill it.
+    func detachInspector() {
+        Self.inspector(of: self)?.perform(NSSelectorFromString("detach"))
+    }
+
+    static func inspector(of view: WKWebView) -> NSObject? {
+        guard view.responds(to: NSSelectorFromString("_inspector")) else { return nil }
+        return view.value(forKey: "_inspector") as? NSObject
+    }
+
     static func menuExcerpt(_ text: String) -> String {
         let words = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         return words.count > 30 ? String(words.prefix(29)) + "…" : words
     }
 
     func showContextMenu(for target: ContextTarget) {
+        if inspectsElements {
+            // WebKit's own menu follows this message; it is filled in below.
+            pendingContextTarget = (target, Date())
+            return
+        }
         guard let window, window.attachedSheet == nil else { return }
         let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
         linkMenuPoint = point

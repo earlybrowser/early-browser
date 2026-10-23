@@ -78,8 +78,10 @@ public enum BrowserAction: Equatable, Sendable {
     case toggleTranslation
     /// The focused page's current markup in a read-only window.
     case viewPageSource
-    /// Lets Safari's Web Inspector attach to the focused tab's page.
+    /// Inspect Element and Web Inspector for the focused tab's page.
     case toggleDeveloperMode
+    /// Opens Web Inspector, turning Developer Mode on for the tab first.
+    case showWebInspector
     /// Asks before removing the focused website's cookies, caches and storage.
     case clearSiteData
 }

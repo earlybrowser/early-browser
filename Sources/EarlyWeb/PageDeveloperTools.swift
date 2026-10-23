@@ -6,8 +6,17 @@ import WebKit
 // MARK: Developer Mode
 
 extension WebViewManager {
-    /// Developer Mode lets Safari's Web Inspector attach to one tab's page.
-    /// It is off unless asked for, and belongs to the tab, like its zoom.
+    /// macOS offers apps only Safari's Develop menu for inspecting web views.
+    /// WebKit's own preference and inspector (what Safari uses) show Web
+    /// Inspector in the app with Inspect Element; used only where they exist.
+    static let developerExtrasPreference = "developerExtrasEnabled"
+    public static let supportsWebInspector =
+        WKPreferences().responds(to: NSSelectorFromString("_setDeveloperExtrasEnabled:"))
+        && WKWebView.instancesRespond(to: NSSelectorFromString("_inspector"))
+
+    /// Developer Mode: Inspect Element and Web Inspector for one tab's page,
+    /// which Safari's Develop menu can also reach. Off unless asked for; it
+    /// belongs to the tab, like its zoom.
     public func isDeveloperModeOn(_ id: UUID) -> Bool { developerModeTabs.contains(id) }
 
     public func canToggleDeveloperMode(_ id: UUID) -> Bool { pages[id] != nil }
@@ -16,7 +25,30 @@ extension WebViewManager {
     public func setDeveloperMode(_ on: Bool, for id: UUID) -> Bool {
         guard let page = pages[id] else { return false }
         if on { developerModeTabs.insert(id) } else { developerModeTabs.remove(id) }
-        page.view.isInspectable = on
+        applyDeveloperMode(to: page.view, on: on)
+        if !on { BrowserWebView.inspector(of: page.view)?.perform(NSSelectorFromString("close")) }
+        return true
+    }
+
+    /// Also after each navigation: every document starts without the flag.
+    func applyDeveloperMode(to view: WKWebView, on: Bool) {
+        view.isInspectable = on
+        guard Self.supportsWebInspector else { return }
+        view.configuration.preferences.setValue(on, forKey: Self.developerExtrasPreference)
+        (view as? BrowserWebView)?.inspectsElements = on
+        view.evaluateJavaScript("window.__earlyInspectsElements = \(on)", in: nil, in: PageContextMenuObserver.world) { _ in }
+    }
+
+    public static func detachInspector(of view: WKWebView) {
+        BrowserWebView.inspector(of: view)?.perform(NSSelectorFromString("detach"))
+    }
+
+    /// Opens Web Inspector for the tab, turning Developer Mode on first.
+    @discardableResult
+    public func showWebInspector(_ id: UUID) -> Bool {
+        guard Self.supportsWebInspector, let page = pages[id] else { return false }
+        if !isDeveloperModeOn(id) { setDeveloperMode(true, for: id) }
+        BrowserWebView.inspector(of: page.view)?.perform(NSSelectorFromString("show"))
         return true
     }
 }

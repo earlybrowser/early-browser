@@ -2,6 +2,7 @@
 
 import AppKit
 import EarlyCore
+import EarlyWeb
 import SwiftUI
 import WebKit
 
@@ -1098,6 +1099,14 @@ struct WebContentView: NSViewRepresentable {
         override func setFrameSize(_ size: NSSize) {
             super.setFrameSize(size)
             layoutHostedView()
+        }
+
+        /// WebKit docks Web Inspector beside the page in this host. The page
+        /// fills its pane here, so the inspector moves to its own window.
+        override func didAddSubview(_ subview: NSView) {
+            super.didAddSubview(subview)
+            guard subview !== hosted, String(describing: type(of: subview)).hasPrefix("WKInspector"), let hosted else { return }
+            DispatchQueue.main.async { WebViewManager.detachInspector(of: hosted) }
         }
         override func setBoundsSize(_ size: NSSize) {
             super.setBoundsSize(size)

@@ -159,10 +159,13 @@ struct SiteControlsPanel: View {
 
     static func readerValue(_ page: BrowserPage) -> String { page.isReaderShown ? "On" : "Off" }
 
-    /// Safari's Web Inspector attaches through its Develop menu.
+    /// Web Inspector in Early, or through Safari's Develop menu where WebKit
+    /// offers no inspector of its own.
     static var developerModeHint: String {
-        "In Safari, choose Develop › \(Host.current().localizedName ?? "this Mac") › Early, then this page. "
-            + "If Safari has no Develop menu, turn on “Show features for web developers” in Safari Settings › Advanced."
+        if WebViewManager.supportsWebInspector {
+            return "Right-click the page and choose Inspect Element, or press Option-Command-I."
+        }
+        return "In Safari, choose Develop › \(Host.current().localizedName ?? "this Mac") › Early, then this page."
     }
 
     static let clearSiteDataMessage = "You’ll be signed out of this website, and the data it stored in this profile is removed. "
@@ -236,6 +239,17 @@ struct SiteControlsPanel: View {
                     SiteControlRow(symbol: "hammer", title: "Developer Mode", value: developer ? "On for this tab" : "Off",
                                    active: developer, tint: tint, identifier: "siteControls.developerMode") {
                         model.perform(.toggleDeveloperMode)
+                    } trailing: {
+                        if developer && WebViewManager.supportsWebInspector {
+                            Button("Inspect") {
+                                dismiss()
+                                DispatchQueue.main.async { model.perform(.showWebInspector) }
+                            }
+                            .controlSize(.small)
+                            .help("Show Web Inspector (Option-Command-I)")
+                            .accessibilityLabel("Show Web Inspector")
+                            .accessibilityIdentifier("siteControls.webInspector")
+                        }
                     }
                     .disabled(!model.canPerform(.toggleDeveloperMode))
                     if developer {

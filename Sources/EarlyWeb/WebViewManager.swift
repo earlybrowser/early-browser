@@ -383,7 +383,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         view.uiDelegate = self
         let page = BrowserPage(view: view, url: tab.currentURL)
         if muteChoices.contains(tab.id) { page.isMuted = true; page.muteRevision = 1 }
-        if developerModeTabs.contains(tab.id) { view.isInspectable = true }
+        if developerModeTabs.contains(tab.id) { applyDeveloperMode(to: view, on: true) }
         if let zoom = zoomChoices[tab.id] {
             page.zoom = zoom
             view.pageZoom = zoom
@@ -985,6 +985,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.isReaderAvailable = false
         resetTranslationForNewDocument(id)
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
+        if developerModeTabs.contains(id) { applyDeveloperMode(to: webView, on: true) }
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }

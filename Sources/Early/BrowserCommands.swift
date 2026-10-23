@@ -2,6 +2,7 @@
 
 import AppKit
 import EarlyCore
+import EarlyWeb
 import SwiftUI
 
 private struct BrowserWindowKey: FocusedValueKey {
@@ -142,6 +143,11 @@ struct BrowserCommands: Commands {
                 get: { model.flatMap { model in model.coordinator.focusedTabID.map { model.webViews.isDeveloperModeOn($0) } } ?? false },
                 set: { _ in model?.perform(.toggleDeveloperMode) }))
                 .disabled(model?.canPerform(.toggleDeveloperMode) != true)
+            if WebViewManager.supportsWebInspector {
+                Button("Show Web Inspector") { model?.perform(.showWebInspector) }
+                    .keyboardShortcut("i", modifiers: [.command, .option])
+                    .disabled(model?.canPerform(.showWebInspector) != true)
+            }
             Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }
                 .keyboardShortcut("l", modifiers: [.command, .option])

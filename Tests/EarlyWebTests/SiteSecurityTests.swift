@@ -164,6 +164,47 @@ struct SiteSecurityTests {
         #expect(!manager.setDeveloperMode(true, for: UUID()))
     }
 
+    @Test func developerModeKeepsWebKitsInspectElementAfterEarlysMenuItems() async throws {
+        let fixture = PageToolFixture(pages: ["one": "<title>One</title>", "two": "<title>Two</title>"])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager
+        let tab = try await fixture.open("one")
+        let view = try #require(try fixture.page(tab).view as? BrowserWebView)
+        func flag() async throws -> Bool? {
+            try await view.callAsyncJavaScript("return window.__earlyInspectsElements === true", contentWorld: PageContextMenuObserver.world) as? Bool
+        }
+        func developerExtras() -> Bool? { view.configuration.preferences.value(forKey: WebViewManager.developerExtrasPreference) as? Bool }
+        // macOS 26 and 27 WebKit both have the inspector; without it only Safari's route is offered.
+        #expect(WebViewManager.supportsWebInspector)
+        let before = try await flag()
+        #expect(developerExtras() == false && !view.inspectsElements && before == false)
+
+        #expect(manager.setDeveloperMode(true, for: tab.id))
+        #expect(developerExtras() == true && view.inspectsElements && view.isInspectable)
+        #expect(try await flag() == true)
+        manager.load(fixture.url("two"), in: tab)
+        try await fixture.waitUntil("next page") { view.url == fixture.url("two") && !view.isLoading }
+        #expect(try await flag() == true, "Each new document gets the flag again")
+
+        // A right-click's items wait for WebKit's menu, which keeps only Inspect Element of its own.
+        var shown: [NSMenu] = []
+        view.presentMenu = { menu, _ in shown.append(menu) }
+        view.showContextMenu(for: BrowserWebView.ContextTarget())
+        #expect(shown.isEmpty)
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Look Up", action: nil, keyEquivalent: "")
+        let inspect = NSMenuItem(title: "Inspect Element", action: nil, keyEquivalent: "")
+        inspect.identifier = NSUserInterfaceItemIdentifier(BrowserWebView.inspectElementIdentifier)
+        menu.addItem(inspect)
+        view.fill(menu, for: BrowserWebView.ContextTarget())
+        #expect(menu.items.map(\.title).filter { !$0.isEmpty } == ["Back", "Forward", "Reload", "Save Page As…", "Print…", "Inspect Element"])
+        #expect(menu.items.last === inspect && menu.items.dropLast().last?.isSeparatorItem == true)
+
+        #expect(manager.setDeveloperMode(false, for: tab.id))
+        let after = try await flag()
+        #expect(developerExtras() == false && !view.inspectsElements && !view.isInspectable && after == false)
+    }
+
     @Test func pageSourceIsTheCurrentDocumentReadWithoutAskingTheWebsiteAgain() async throws {
         let html = "<!doctype html><title>Source</title><p id=a>Original</p><script>document.getElementById('a').textContent = 'Changed'</script>"
         let fixture = PageToolFixture(pages: ["source": html])

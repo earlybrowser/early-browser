@@ -48,7 +48,9 @@ final class PageContextMenuObserver: NSObject, WKScriptMessageHandler {
                     }
                 }
             }
-            event.preventDefault();
+            // Developer Mode: WebKit builds its menu, with Inspect Element, and
+            // Early fills it with these items instead of showing its own.
+            if (!window.__earlyInspectsElements) event.preventDefault();
             window.webkit.messageHandlers.earlyContextMenu.postMessage(message);
         });
     })();

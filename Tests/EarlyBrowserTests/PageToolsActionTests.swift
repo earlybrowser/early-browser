@@ -305,7 +305,8 @@ struct PageToolsActionTests {
         #expect(model.webViews.pages[tab]?.view.isInspectable == true)
         #expect(model.commandSearchCandidates().map(\.title).contains("Turn Off Developer Mode"))
         #expect(model.perform(.toggleDeveloperMode) && model.webViews.pages[tab]?.view.isInspectable == false)
-        #expect(SiteControlsPanel.developerModeHint.contains("Develop ›"))
+        #expect(WebViewManager.supportsWebInspector && SiteControlsPanel.developerModeHint.contains("Inspect Element"))
+        #expect(model.canPerform(.showWebInspector) && model.commandSearchCandidates().map(\.title).contains("Show Web Inspector"))
 
         // Early's own pages are not websites, so there is nothing to clear.
         #expect(!model.canPerform(.clearSiteData) && model.siteDataClearRequest == nil)

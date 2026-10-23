@@ -2,6 +2,7 @@
 
 import AppKit
 import EarlyCore
+import EarlyWeb
 
 enum BrowserActionSource: Equatable {
     case interface
@@ -163,6 +164,8 @@ extension BrowserWindowModel {
             return coordinator.focusedTabID.map { webViews.canShowPageSource($0) } == true
         case .toggleDeveloperMode:
             return coordinator.focusedTabID.map { webViews.canToggleDeveloperMode($0) } == true
+        case .showWebInspector:
+            return WebViewManager.supportsWebInspector && coordinator.focusedTabID.map { webViews.canToggleDeveloperMode($0) } == true
         case .clearSiteData:
             return currentSiteOrigin != nil
         }
@@ -323,6 +326,9 @@ extension BrowserWindowModel {
         case .toggleDeveloperMode:
             guard let id = coordinator.focusedTabID,
                   webViews.setDeveloperMode(!webViews.isDeveloperModeOn(id), for: id) else { return false }
+        case .showWebInspector:
+            guard let id = coordinator.focusedTabID, webViews.showWebInspector(id) else { return false }
+            restoreContentFocus = false
         case .clearSiteData:
             guard let host = currentPageURL?.host else { return false }
             siteDataClearRequest = host
@@ -414,7 +420,9 @@ extension BrowserWindowModel {
         addAction("viewPageSource", "View Page Source", .viewPageSource, terms: ["source", "html source", "view source"])
         if let id = coordinator.focusedTabID {
             addAction("developerMode", webViews.isDeveloperModeOn(id) ? "Turn Off Developer Mode" : "Turn On Developer Mode",
-                      .toggleDeveloperMode, terms: ["developer mode", "web inspector", "inspect element", "devtools"])
+                      .toggleDeveloperMode, terms: ["developer mode", "inspect element", "devtools"])
+            addAction("webInspector", "Show Web Inspector", .showWebInspector,
+                      terms: ["web inspector", "inspect", "devtools", "developer tools", "console"])
         }
         addAction("clearSiteData", "Clear Cache and Cookies for This Site…", .clearSiteData,
                   terms: ["clear cookies", "clear cache", "clear site data", "sign out of site"])
