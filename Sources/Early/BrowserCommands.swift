@@ -135,6 +135,14 @@ struct BrowserCommands: Commands {
             }
             .disabled(model?.canPerform(.toggleTranslation) != true)
             Divider()
+            Button("View Page Source") { model?.perform(.viewPageSource) }
+                .keyboardShortcut("u", modifiers: [.command, .option])
+                .disabled(model?.canPerform(.viewPageSource) != true)
+            Toggle("Developer Mode", isOn: Binding(
+                get: { model.flatMap { model in model.coordinator.focusedTabID.map { model.webViews.isDeveloperModeOn($0) } } ?? false },
+                set: { _ in model?.perform(.toggleDeveloperMode) }))
+                .disabled(model?.canPerform(.toggleDeveloperMode) != true)
+            Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(model?.canPerform(.showDownloads) != true)

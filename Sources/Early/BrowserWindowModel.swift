@@ -17,7 +17,7 @@ final class BrowserWindowModel {
         }
     }
     struct Toast: Identifiable {
-        enum Kind { case copiedURL, newTab, downloadStarted }
+        enum Kind { case copiedURL, newTab, downloadStarted, siteDataCleared }
         let id = UUID()
         let kind: Kind
         var message: String {
@@ -25,6 +25,7 @@ final class BrowserWindowModel {
             case .copiedURL: "Copied Current URL"
             case .newTab: "New Tab Created"
             case .downloadStarted: "Download Started"
+            case .siteDataCleared: "Cleared Cache and Cookies"
             }
         }
         var accessibilityIdentifier: String {
@@ -32,6 +33,7 @@ final class BrowserWindowModel {
             case .copiedURL: "browser.copiedURL"
             case .newTab: "browser.newTabCreated"
             case .downloadStarted: "browser.downloadStarted"
+            case .siteDataCleared: "browser.siteDataCleared"
             }
         }
     }
@@ -432,6 +434,33 @@ final class BrowserWindowModel {
 
     func sitePermission(_ permission: SitePermission) -> SitePermissionDecision? {
         currentSiteOrigin.map { sitePermissions.decision(for: $0, permission) }
+    }
+
+    /// Clear Cache and Cookies asks first: the website it would clear.
+    var siteDataClearRequest: String?
+
+    /// Removes the website's data from this profile, then reloads its tabs in
+    /// this window so they start signed out, as a fresh visit would.
+    func clearSiteData(_ host: String) async {
+        siteDataClearRequest = nil
+        await webViews.clearWebsiteData(forHost: host)
+        for (id, page) in webViews.pages {
+            if let pageHost = page.view.url?.host, WebViewManager.dataRecord(host, belongsTo: pageHost) { webViews.reload(id) }
+        }
+        showToast(.siteDataCleared)
+    }
+
+    func showPageSource(_ id: UUID) {
+        let url = webViews.pages[id]?.view.url
+        let title = coordinator.tabStore.tab(id: id)?.displayTitle ?? url?.host ?? "Page"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let source = await self.webViews.pageSource(id) else {
+                self.notice = "The page’s source couldn’t be shown."
+                return
+            }
+            PageSourceWindow.show(source, url: url, title: title)
+        }
     }
 
     /// Blocking a camera or microphone in use stops it in the site's tabs.

@@ -541,6 +541,15 @@ struct BrowserWindowView: View {
         } message: {
             Text(ClearHistoryButtons.message)
         }
+        .alert("Clear cache and cookies for \(model.siteDataClearRequest ?? "this website")?",
+               isPresented: Binding(get: { model.siteDataClearRequest != nil }, set: { if !$0 { model.siteDataClearRequest = nil } })) {
+            Button("Clear", role: .destructive) {
+                if let host = model.siteDataClearRequest { Task { await model.clearSiteData(host) } }
+            }
+            Button("Cancel", role: .cancel) { model.siteDataClearRequest = nil }
+        } message: {
+            Text(SiteControlsPanel.clearSiteDataMessage)
+        }
         .onDisappear {
             model.cancelWindowInteractions()
             endDrag()

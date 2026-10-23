@@ -92,6 +92,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     private var muteChoices: Set<UUID> = []
     /// Zoom belongs to the tab, so it survives background discard and recovery.
     var zoomChoices: [UUID: Double] = [:]
+    /// Tabs whose page Safari's Web Inspector may attach to; none by default.
+    public internal(set) var developerModeTabs: Set<UUID> = []
     /// Shared by this profile's tabs, like Safari's find string.
     var lastFindQuery = ""
     /// Reader's separate views, keyed by the tab they belong to.
@@ -200,6 +202,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         protections = protections.filter { open.contains($0.key) }
         muteChoices.formIntersection(open)
         zoomChoices = zoomChoices.filter { open.contains($0.key) }
+        developerModeTabs.formIntersection(open)
         for id in all where lifecycles[id] == nil { lifecycles[id] = PageLifecycle() }
         if let focusedTabID, open.contains(focusedTabID) {
             _ = setPresentation(visibleTabIDs: visibleTabIDs.intersection(open), focusedTabID: focusedTabID)
@@ -375,6 +378,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         view.uiDelegate = self
         let page = BrowserPage(view: view, url: tab.currentURL)
         if muteChoices.contains(tab.id) { page.isMuted = true; page.muteRevision = 1 }
+        if developerModeTabs.contains(tab.id) { view.isInspectable = true }
         if let zoom = zoomChoices[tab.id] {
             page.zoom = zoom
             view.pageZoom = zoom
@@ -599,6 +603,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         retentionPolicy.forget(tabID)
         muteChoices.remove(tabID)
         zoomChoices[tabID] = nil
+        developerModeTabs.remove(tabID)
     }
 
     private func releasePage(tabID: UUID, preservingSnapshot: Bool) {

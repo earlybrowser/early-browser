@@ -146,4 +146,59 @@ struct SiteSecurityTests {
             #expect(result as? Bool == false, "Valid JavaScript that finds nothing to do")
         }
     }
+
+    @Test func developerModeMakesOnlyThatTabInspectableUntilItCloses() async throws {
+        let fixture = PageToolFixture(pages: ["one": "<title>One</title>", "two": "<title>Two</title>"])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager
+        let one = try await fixture.open("one"), two = try await fixture.open("two")
+        let first = try fixture.page(one), second = try fixture.page(two)
+        #expect(!first.view.isInspectable && !second.view.isInspectable, "Inspection is off unless asked for")
+        #expect(manager.setDeveloperMode(true, for: one.id))
+        #expect(first.view.isInspectable && manager.isDeveloperModeOn(one.id))
+        #expect(!second.view.isInspectable && !manager.isDeveloperModeOn(two.id))
+        #expect(manager.setDeveloperMode(false, for: one.id) && !first.view.isInspectable)
+        #expect(manager.setDeveloperMode(true, for: one.id))
+        manager.discard(tabID: one.id)
+        #expect(!manager.isDeveloperModeOn(one.id) && !manager.canToggleDeveloperMode(one.id))
+        #expect(!manager.setDeveloperMode(true, for: UUID()))
+    }
+
+    @Test func pageSourceIsTheCurrentDocumentReadWithoutAskingTheWebsiteAgain() async throws {
+        let html = "<!doctype html><title>Source</title><p id=a>Original</p><script>document.getElementById('a').textContent = 'Changed'</script>"
+        let fixture = PageToolFixture(pages: ["source": html])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("source")
+        #expect(fixture.manager.canShowPageSource(tab.id))
+        let source = try #require(await fixture.manager.pageSource(tab.id))
+        #expect(source.hasPrefix("<!DOCTYPE html>") && source.contains("<p id=\"a\">Changed</p>"), "Scripts' changes are included")
+        #expect(source.contains("<title>Source</title>"))
+
+        let page = try fixture.page(tab)
+        fixture.manager.webView(page.view, didFailProvisionalNavigation: nil, withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))
+        #expect(!fixture.manager.canShowPageSource(tab.id), "A failed load has no source to show")
+        #expect(await fixture.manager.pageSource(tab.id) == nil)
+        #expect(await fixture.manager.pageSource(UUID()) == nil)
+    }
+
+    @Test func clearingOneWebsitesDataLeavesOtherWebsitesAlone() async throws {
+        let fixture = PageToolFixture(pages: ["one": "<title>One</title>"])
+        defer { fixture.cleanup() }
+        _ = try await fixture.open("one")
+        let store = fixture.manager.websiteDataStore
+        for domain in ["example.com", "other.org"] {
+            let cookie = try #require(HTTPCookie(properties: [.domain: domain, .path: "/", .name: "session", .value: "1"]))
+            await store.httpCookieStore.setCookie(cookie)
+        }
+        let cookies = Set([WKWebsiteDataTypeCookies])
+        #expect(Set(await store.dataRecords(ofTypes: cookies).map(\.displayName)) == ["example.com", "other.org"])
+        #expect(await fixture.manager.clearWebsiteData(forHost: "www.example.com") == 1)
+        #expect(await store.dataRecords(ofTypes: cookies).map(\.displayName) == ["other.org"])
+        #expect(await fixture.manager.clearWebsiteData(forHost: "nothing.example") == 0)
+
+        #expect(WebViewManager.dataRecord("example.com", belongsTo: "Shop.Example.com"))
+        #expect(WebViewManager.dataRecord("example.com", belongsTo: "example.com"))
+        #expect(!WebViewManager.dataRecord("example.com", belongsTo: "notexample.com"), "Only a dot separates a subdomain")
+        #expect(!WebViewManager.dataRecord("", belongsTo: "example.com"))
+    }
 }

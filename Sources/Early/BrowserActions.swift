@@ -159,6 +159,12 @@ extension BrowserWindowModel {
             return coordinator.focusedTabID.map { webViews.canToggleReader($0) } == true
         case .toggleTranslation:
             return coordinator.focusedTabID.flatMap { translationTitle(for: $0) } != nil
+        case .viewPageSource:
+            return coordinator.focusedTabID.map { webViews.canShowPageSource($0) } == true
+        case .toggleDeveloperMode:
+            return coordinator.focusedTabID.map { webViews.canToggleDeveloperMode($0) } == true
+        case .clearSiteData:
+            return currentSiteOrigin != nil
         }
     }
 
@@ -310,6 +316,17 @@ extension BrowserWindowModel {
             guard let id = coordinator.focusedTabID else { return false }
             toggleTranslation(id)
             restoreContentFocus = false
+        case .viewPageSource:
+            guard let id = coordinator.focusedTabID else { return false }
+            showPageSource(id)
+            restoreContentFocus = false
+        case .toggleDeveloperMode:
+            guard let id = coordinator.focusedTabID,
+                  webViews.setDeveloperMode(!webViews.isDeveloperModeOn(id), for: id) else { return false }
+        case .clearSiteData:
+            guard let host = currentPageURL?.host else { return false }
+            siteDataClearRequest = host
+            restoreContentFocus = false
         }
         if source == .commandBar && coordinator.commandBar != nil {
             dismissCommandBar(restoreFocus: restoreContentFocus && contentFocusRequest == previousFocusRequest)
@@ -394,6 +411,13 @@ extension BrowserWindowModel {
         addAction("openFile", "Open File…", .openFile, terms: ["open file", "open local file", "open pdf"])
         addAction("printPage", "Print Page…", .printPage, terms: ["print", "print page"])
         addAction("savePage", "Save Page As…", .savePage, terms: ["save page", "save as", "save html"])
+        addAction("viewPageSource", "View Page Source", .viewPageSource, terms: ["source", "html source", "view source"])
+        if let id = coordinator.focusedTabID {
+            addAction("developerMode", webViews.isDeveloperModeOn(id) ? "Turn Off Developer Mode" : "Turn On Developer Mode",
+                      .toggleDeveloperMode, terms: ["developer mode", "web inspector", "inspect element", "devtools"])
+        }
+        addAction("clearSiteData", "Clear Cache and Cookies for This Site…", .clearSiteData,
+                  terms: ["clear cookies", "clear cache", "clear site data", "sign out of site"])
         addAction("exportPDF", "Export as PDF…", .exportPDF, terms: ["export pdf", "save as pdf", "pdf"])
         addAction("find", "Find on Page…", .find, terms: ["find", "search page", "find in page"])
         let readerShown = activePage?.isReaderShown == true

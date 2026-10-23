@@ -159,6 +159,15 @@ struct SiteControlsPanel: View {
 
     static func readerValue(_ page: BrowserPage) -> String { page.isReaderShown ? "On" : "Off" }
 
+    /// Safari's Web Inspector attaches through its Develop menu.
+    static var developerModeHint: String {
+        "In Safari, choose Develop › \(Host.current().localizedName ?? "this Mac") › Early, then this page. "
+            + "If Safari has no Develop menu, turn on “Show features for web developers” in Safari Settings › Advanced."
+    }
+
+    static let clearSiteDataMessage = "You’ll be signed out of this website, and the data it stored in this profile is removed. "
+        + "Other websites aren’t affected. Its open tabs reload."
+
     /// Location only where WebKit asks Early about it (macOS 27 and later).
     static var permissions: [SitePermission] {
         SitePermission.allCases.filter { $0 != .location || WebViewManager.offersLocation }
@@ -220,22 +229,72 @@ struct SiteControlsPanel: View {
                     }
                 }
             }
-            Divider()
-            Button {
-                model.perform(.copyCurrentURL)
-                dismiss()
-            } label: {
-                Label("Copy Link", systemImage: "link")
-                    .font(.system(size: 13, weight: .medium))
-                    .padding(.horizontal, 12).frame(height: 30)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-                    .contentShape(RoundedRectangle(cornerRadius: 8))
+            if page != nil {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Tools").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    let developer = model.webViews.isDeveloperModeOn(tabID)
+                    SiteControlRow(symbol: "hammer", title: "Developer Mode", value: developer ? "On for this tab" : "Off",
+                                   active: developer, tint: tint, identifier: "siteControls.developerMode") {
+                        model.perform(.toggleDeveloperMode)
+                    }
+                    .disabled(!model.canPerform(.toggleDeveloperMode))
+                    if developer {
+                        Text(Self.developerModeHint)
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.leading, 42)
+                            .accessibilityIdentifier("siteControls.developerModeHint")
+                    }
+                    if let host = url?.host, model.currentSiteOrigin != nil {
+                        SiteControlRow(symbol: "trash", title: "Clear Cache and Cookies", value: host,
+                                       active: false, tint: tint, identifier: "siteControls.clearSiteData") {
+                            dismiss()
+                            model.perform(.clearSiteData)
+                        }
+                        .disabled(!model.canPerform(.clearSiteData))
+                    }
+                }
             }
-            .buttonStyle(.plain)
-            .browserKeyboardFocus(cornerRadius: 8)
-            .disabled(!model.canPerform(.copyCurrentURL))
-            .help("Copy Current URL (Command-Shift-C)")
-            .accessibilityIdentifier("siteControls.copyLink")
+            Divider()
+            HStack(spacing: 8) {
+                Button {
+                    model.perform(.copyCurrentURL)
+                    dismiss()
+                } label: {
+                    Label("Copy Link", systemImage: "link")
+                        .font(.system(size: 13, weight: .medium))
+                        .padding(.horizontal, 12).frame(height: 30)
+                        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .browserKeyboardFocus(cornerRadius: 8)
+                .disabled(!model.canPerform(.copyCurrentURL))
+                .help("Copy Current URL (Command-Shift-C)")
+                .accessibilityIdentifier("siteControls.copyLink")
+                Spacer(minLength: 0)
+                Menu {
+                    pageAction("View Page Source", systemImage: "chevron.left.forwardslash.chevron.right", .viewPageSource)
+                    Divider()
+                    pageAction("Save Page As…", systemImage: "square.and.arrow.down", .savePage)
+                    pageAction("Export as PDF…", systemImage: "doc.richtext", .exportPDF)
+                    pageAction("Print…", systemImage: "printer", .printPage)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .browserKeyboardFocus(cornerRadius: 8)
+                .help("More Page Actions")
+                .accessibilityLabel("More Page Actions")
+                .accessibilityIdentifier("siteControls.more")
+            }
             if let page, page.security != .none {
                 SiteSecurityRow(security: page.security, host: url?.host, hasCertificate: page.serverTrust != nil) {
                     guard let trust = page.serverTrust else { return }
@@ -249,6 +308,18 @@ struct SiteControlsPanel: View {
         .frame(width: 280, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("siteControls.panel")
+    }
+
+    /// One of the "…" menu's page actions; it closes the panel first.
+    private func pageAction(_ title: String, systemImage: String, _ action: BrowserAction) -> some View {
+        Button {
+            dismiss()
+            // After the popover closes, so a panel or window can take focus.
+            DispatchQueue.main.async { model.perform(action) }
+        } label: {
+            Label(title, systemImage: systemImage)
+        }
+        .disabled(!model.canPerform(action))
     }
 
     private func zoomButton(_ symbol: String, _ label: String, _ action: BrowserAction, identifier: String) -> some View {

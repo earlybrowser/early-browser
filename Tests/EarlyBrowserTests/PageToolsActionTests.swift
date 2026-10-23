@@ -290,6 +290,35 @@ struct PageToolsActionTests {
         #expect(SiteSecurityRow.symbol(.notSecure) == "lock.slash.fill" && SiteSecurityRow.symbol(.certificateProblem) == "exclamationmark.triangle.fill")
     }
 
+    @Test func developerModeSourceAndSiteDataAreFocusedPageActions() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(!model.canPerform(.viewPageSource) && !model.canPerform(.toggleDeveloperMode))
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        let tab = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(tab)
+
+        #expect(model.canPerform(.toggleDeveloperMode) && !model.webViews.isDeveloperModeOn(tab))
+        #expect(model.commandSearchCandidates().map(\.title).contains("Turn On Developer Mode"))
+        #expect(model.perform(.toggleDeveloperMode) && model.webViews.isDeveloperModeOn(tab))
+        #expect(model.webViews.pages[tab]?.view.isInspectable == true)
+        #expect(model.commandSearchCandidates().map(\.title).contains("Turn Off Developer Mode"))
+        #expect(model.perform(.toggleDeveloperMode) && model.webViews.pages[tab]?.view.isInspectable == false)
+        #expect(SiteControlsPanel.developerModeHint.contains("Develop ›"))
+
+        // Early's own pages are not websites, so there is nothing to clear.
+        #expect(!model.canPerform(.clearSiteData) && model.siteDataClearRequest == nil)
+        #expect(!model.commandSearchCandidates().map(\.title).contains("Clear Cache and Cookies for This Site…"))
+        #expect(model.canPerform(.viewPageSource) && model.commandSearchCandidates().map(\.title).contains("View Page Source"))
+
+        let window = PageSourceWindow(source: "<!DOCTYPE html>\n<p>Hi</p>", url: URL(string: "early-test://fixture/one"), title: "Page One")
+        #expect(window.textView.string == "<!DOCTYPE html>\n<p>Hi</p>" && !window.textView.isEditable && window.textView.usesFindBar)
+        #expect(window.window?.title == "Source of Page One" && window.window?.subtitle == "early-test://fixture/one")
+        window.close()
+        #expect(PageSourceWindow.explanation.contains("as it is now"))
+    }
+
     @Test func recentlyClosedListsTabsNewestFirstAndReopensAnyOfThem() async throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
