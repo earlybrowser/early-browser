@@ -6,11 +6,13 @@ import EarlyWeb
 import SwiftUI
 
 enum BrowserSettingsSection: String, CaseIterable, Identifiable {
-    case appearance = "General", profiles = "Profiles", passwords = "Passwords", sidebar = "Sidebar", search = "Search", sessions = "Sessions"
+    case appearance = "General", profiles = "Profiles", passwords = "Passwords", extensions = "Extensions", sidebar = "Sidebar"
+    case search = "Search", sessions = "Sessions"
     var id: Self { self }
     var key: String {
         switch self {
-        case .profiles: "profiles"; case .appearance: "appearance"; case .passwords: "passwords"; case .sidebar: "sidebar"
+        case .profiles: "profiles"; case .appearance: "appearance"; case .passwords: "passwords"; case .extensions: "extensions"
+        case .sidebar: "sidebar"
         case .search: "search"; case .sessions: "sessions"
         }
     }
@@ -18,6 +20,7 @@ enum BrowserSettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .profiles: "person.crop.circle"
         case .passwords: "key"
+        case .extensions: "puzzlepiece.extension"
         case .appearance: "gearshape"
         case .sidebar: "sidebar.left"
         case .search: "magnifyingglass"
@@ -28,6 +31,7 @@ enum BrowserSettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .profiles: "A little separation for the different parts of your day."
         case .passwords: "Saved on this Mac, filled in when you sign in."
+        case .extensions: "Add features to Early, one profile at a time."
         case .appearance: "Make Early feel at home."
         case .sidebar: "Your tabs, organized your way."
         case .search: "Choose what happens as you type."
@@ -161,6 +165,7 @@ struct BrowserSettingsView: View {
         switch application.settingsSection {
         case .profiles: profilesSection
         case .passwords: PasswordsSettingsSection(application: application, preferences: preferences, lock: application.passwordsLock)
+        case .extensions: ExtensionsSettingsSection(application: application)
         case .appearance: appearanceSection
         case .sidebar: sidebarSection
         case .search: searchSection

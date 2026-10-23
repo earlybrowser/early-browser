@@ -44,6 +44,11 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     /// object when the page declines it; weak entries vanish with the event.
     private let pageKeyEvents = NSHashTable<NSEvent>(options: [.weakMemory, .objectPointerPersonality])
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if extensionCommand?(event) == true { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func keyDown(with event: NSEvent) {
         guard pageKeyEvents.contains(event) else {
             pageKeyEvents.add(event)
@@ -78,6 +83,10 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     static let inspectElementIdentifier = "WKMenuItemIdentifierInspectElement"
     static let inspectTitle = "Inspect"
     var onInteractionEnded: (() -> Void)?
+    /// Extensions' items for this page's menu.
+    var extensionMenuItems: (() -> [NSMenuItem])?
+    /// An extension's keyboard shortcut, tried before the page's own.
+    var extensionCommand: ((NSEvent) -> Bool)?
     var hasActiveInteraction: Bool { shownLinkMenu != nil || sharingPicker != nil }
 
     func makeLinkMenu(for url: URL) -> NSMenu { makeContextMenu(for: ContextTarget(link: url)) }
@@ -139,6 +148,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
                 sections.append([item(title, perform, ContextAction.translatePage)])
             }
         }
+        if let extensionItems = extensionMenuItems?(), !extensionItems.isEmpty { sections.append(extensionItems) }
         // Every menu ends with the page's source (then, in WebKit's, Inspect).
         let isSource = url?.scheme?.lowercased() == NavigationInput.pageSourceScheme
         sections.append([item("View Page Source", perform, ContextAction.viewPageSource, enabled: url != nil && !isSource)])

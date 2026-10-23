@@ -284,7 +284,7 @@ struct PasswordAutofillTests {
         #expect(page.passwordOffer == nil)
     }
 
-    @Test func newPasswordFieldsGetAStrongPasswordThatIsKeptAtOnce() async throws {
+    @Test func newPasswordFieldsGetAStrongPasswordKeptAsADraft() async throws {
         let fixture = makeFixture(["join": Self.signUp])
         defer { fixture.cleanup() }
         let manager = fixture.manager, vault = try #require(manager.passwords)
@@ -303,15 +303,114 @@ struct PasswordAutofillTests {
         _ = try await focus("new", in: view, fixture)
         _ = try await fixture.evaluate("user.value = ''; 1", in: tab)
         manager.choosePasswordSuggestion(.strongPassword(password))
-        try await fixture.waitUntil("kept") { vault.logins.count == 1 }
+        try await fixture.waitUntil("kept as a draft") { vault.drafts.count == 1 }
         let values = try await fixture.evaluate("[document.getElementById('new').value, document.getElementById('confirm').value]", in: tab) as? [String]
         #expect(values == [password, password], "Both fields")
-        #expect(vault.logins.first?.username == "" && vault.logins.first?.password == password)
+        #expect(vault.logins.isEmpty && vault.drafts.first?.password == password, "Not a login until the website accepts it")
+        // The form tried again gets the same strong password.
+        let again = try await focus("new", in: view, fixture)
+        #expect(manager.passwordSuggestions(for: again).first == .strongPassword(password))
 
-        // Sending the form adds the user name to it, without asking.
+        // Sending the form saves the new account, without asking.
         _ = try await fixture.evaluate("user.value = 'ada'; form.requestSubmit(); 1", in: tab)
-        try await fixture.waitUntil("named") { vault.logins.first?.username == "ada" }
-        #expect(try fixture.page(tab).passwordOffer == nil && vault.logins.count == 1)
+        try await fixture.waitUntil("saved") { vault.logins.count == 1 }
+        #expect(vault.logins.first?.username == "ada" && vault.logins.first?.password == password && vault.drafts.isEmpty)
+        #expect(try fixture.page(tab).passwordOffer == nil)
+    }
+
+    @Test func aStrongPasswordReplacesAWorkingOneOnlyWhenTheChangeIsAccepted() async throws {
+        let change = """
+            <title>Change password</title>
+            <form id="form"><input id="user" autocomplete="username" value="ada">
+                <input id="current" type="password" autocomplete="current-password">
+                <input id="new" type="password" autocomplete="new-password">
+                <input id="confirm" type="password" autocomplete="new-password"></form>
+            <script>document.getElementById('form').addEventListener('submit', e => { e.preventDefault(); setTimeout(() => e.target.remove(), 50); });</script>
+            """
+        let fixture = makeFixture(["change": change])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        vault.save(origin: "early-tools://fixture", username: "ada", password: "working")
+        var tab = try await fixture.open("change")
+        let field = try await focus("new", in: try fixture.page(tab).view, fixture)
+        guard case .strongPassword(let password) = manager.passwordSuggestions(for: field).first else { Issue.record("No strong password"); return }
+        manager.choosePasswordSuggestion(.strongPassword(password))
+        try await fixture.waitUntil("draft") { vault.drafts.count == 1 }
+        #expect(vault.login(origin: "early-tools://fixture", username: "ada")?.password == "working",
+                "Choosing it doesn't touch the saved password")
+
+        // The website accepts the change: Early asks before replacing it.
+        _ = try await fixture.evaluate("current.value = 'working'; form.requestSubmit(); 1", in: tab)
+        var page = try fixture.page(tab)
+        try await fixture.waitUntil("update offer") { page.passwordOffer != nil }
+        #expect(page.passwordOffer?.isUpdate == true && page.passwordOffer?.password == password)
+        manager.dismissPasswordOffer(in: tab.id)
+        #expect(vault.login(origin: "early-tools://fixture", username: "ada")?.password == "working" && vault.drafts.count == 1,
+                "Not Now keeps both: the working password and the draft")
+
+        // Another try uses the same draft; Update replaces it at last.
+        tab = try await fixture.open("change")
+        page = try fixture.page(tab)
+        let retry = try await focus("new", in: page.view, fixture)
+        #expect(manager.passwordSuggestions(for: retry).first == .strongPassword(password))
+        manager.choosePasswordSuggestion(.strongPassword(password))
+        try await Task.sleep(for: .milliseconds(200))
+        _ = try await fixture.evaluate("current.value = 'working'; form.requestSubmit(); 1", in: tab)
+        try await fixture.waitUntil("update offer again") { page.passwordOffer != nil }
+        manager.acceptPasswordOffer(in: tab.id)
+        #expect(vault.login(origin: "early-tools://fixture", username: "ada")?.password == password && vault.drafts.isEmpty)
+    }
+
+    @Test func aWebsitesHugePasswordRulesOfferNothing() async throws {
+        let huge = """
+            <title>Huge</title><form><input id="user" autocomplete="username">
+            <input id="new" type="password" autocomplete="new-password" passwordrules="minlength: 999999999; required: digit"></form>
+            """
+        let fixture = makeFixture(["huge": huge])
+        defer { fixture.cleanup() }
+        let field = try await focus("new", in: try fixture.page(try await fixture.open("huge")).view, fixture)
+        let start = ContinuousClock.now
+        #expect(fixture.manager.passwordSuggestions(for: field).isEmpty)
+        #expect(ContinuousClock.now - start < .milliseconds(500))
+    }
+
+    /// A key kept in memory; tests never use the Keychain.
+    final class TestKey: PasswordVaultKey, @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Data?
+        func existing() throws -> Data? { lock.withLock { stored } }
+        func make() throws -> Data {
+            lock.withLock {
+                if let stored { return stored }
+                let fresh = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+                stored = fresh
+                return fresh
+            }
+        }
+        func remove() throws { lock.withLock { stored = nil } }
+    }
+
+    @Test func aPasswordThatCantBeSavedIsReported() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswordWrite-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let blocker = directory.appending(path: "Passwords")
+        try Data().write(to: blocker)
+        let fixture = makeFixture(["app": Self.app])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager
+        let vault = PasswordVault(fileURL: blocker.appending(path: "profile.vault"), key: TestKey())
+        manager.passwords = vault
+        var notices: [String] = []
+        manager.onNotice = { notices.append($0) }
+        let tab = try await fixture.open("app")
+        let page = try fixture.page(tab)
+        _ = try await fixture.evaluate("user.value = 'ada@example.com'; pass.value = 'secret'; form.requestSubmit(); 1", in: tab)
+        try await fixture.waitUntil("offer") { page.passwordOffer != nil }
+        manager.acceptPasswordOffer(in: tab.id)
+        try await fixture.waitUntil("reported") { !notices.isEmpty }
+        #expect(notices == ["The password for fixture couldn’t be saved. Try again in Settings › Passwords."])
+        #expect(vault.logins.count == 1 && vault.saveError != nil, "Kept in memory for Try Again")
     }
 
     @Test func privateWindowsFillButNeverSave() async throws {

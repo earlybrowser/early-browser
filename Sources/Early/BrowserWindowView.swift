@@ -397,6 +397,7 @@ struct BrowserWindowView: View {
         .onPreferenceChange(DownloadsButtonFrameKey.self) { frame in
             if model.downloadsButtonFrame != frame { model.downloadsButtonFrame = frame }
         }
+        .onPreferenceChange(SiteControlsFrameKey.self) { model.siteControlsFrame = $0 }
         // One shared surface for the outer frame and pinned sidebar. Only the
         // clipped page area is inset into it; no sidebar tint or seam on top.
         .background(BrowserChromeBackground(theme: model.chromeTheme,

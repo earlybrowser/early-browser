@@ -127,7 +127,7 @@ struct PasswordApplicationTests {
         #expect(await lock.unlock() == false && !lock.isUnlocked)
     }
 
-    @Test func importingReportsWhatHappenedAndCopiedPasswordsAreConcealed() throws {
+    @Test func importingReportsWhatHappenedAndCopiedPasswordsAreConcealed() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswordImport-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -140,7 +140,7 @@ struct PasswordApplicationTests {
             Example,https://example.com/,grace,pw,
             App,android://x@com.example/,me,pw,
             """.utf8).write(to: file)
-        let notice = PasswordsSettingsSection.importFile(file, into: vault)
+        let notice = await PasswordsSettingsSection.importFile(file, into: vault)
         #expect(notice.title == "Passwords imported" && notice.importedFile == file)
         #expect(notice.message.hasPrefix("1 password was imported. 1 differs from a saved password; your saved one was kept. 1 without a website or password was skipped."),
                 "\(notice.message)")
@@ -148,7 +148,7 @@ struct PasswordApplicationTests {
 
         let other = directory.appending(path: "contacts.csv")
         try Data("name,phone\nAda,1\n".utf8).write(to: other)
-        #expect(PasswordsSettingsSection.importFile(other, into: vault).title == "No passwords found")
+        #expect(await PasswordsSettingsSection.importFile(other, into: vault).title == "No passwords found")
 
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("local.early.tests.passwords.\(UUID())"))
         defer { pasteboard.releaseGlobally() }
@@ -157,6 +157,45 @@ struct PasswordApplicationTests {
         #expect(pasteboard.types?.contains(NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) == true)
         PasswordsSettingsSection.copy("ada", concealed: false, pasteboard: pasteboard)
         #expect(pasteboard.types?.contains(NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) == false)
+    }
+
+    /// A key kept in memory; tests never use the Keychain.
+    final class TestKey: PasswordVaultKey, @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Data?
+        func existing() throws -> Data? { lock.withLock { stored } }
+        func make() throws -> Data {
+            lock.withLock {
+                if let stored { return stored }
+                let fresh = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+                stored = fresh
+                return fresh
+            }
+        }
+        func remove() throws { lock.withLock { stored = nil } }
+    }
+
+    @Test func anImportThatCantBeSavedKeepsItsFileForAnotherTry() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswordImport-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A file where the passwords' folder should be: nothing can be written.
+        let blocker = directory.appending(path: "Passwords")
+        try Data().write(to: blocker)
+        let vault = PasswordVault(fileURL: blocker.appending(path: "profile.vault"), key: TestKey())
+        #expect(await vault.load())
+        let file = directory.appending(path: "Passwords.csv")
+        try Data("name,url,username,password,note\nExample,https://example.com/,ada,pw,\n".utf8).write(to: file)
+
+        let failed = await PasswordsSettingsSection.importFile(file, into: vault)
+        #expect(failed.title == "The imported passwords couldn’t be saved")
+        #expect(failed.importedFile == nil && failed.unsavedFile == file, "No offer to trash a file whose passwords aren't saved")
+        #expect(FileManager.default.fileExists(atPath: file.path))
+
+        try FileManager.default.removeItem(at: blocker)
+        vault.retrySaving()
+        let saved = await PasswordsSettingsSection.importSaved(file, in: vault)
+        #expect(saved.title == "Passwords imported" && saved.importedFile == file && saved.unsavedFile == nil)
     }
 
     @Test func siteControlsDontOpenPasswordsJustToCountThem() {

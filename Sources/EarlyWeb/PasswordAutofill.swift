@@ -442,7 +442,10 @@ extension WebViewManager {
         case .new:
             // Never in a private window, where it could not be kept.
             guard savesPasswords, !vault.isNeverSaved(field.origin) else { return [] }
-            items = [.strongPassword(PasswordGenerator.strongPassword(rules: field.rules, maxLength: field.maxLength))]
+            // A form tried again gets the same strong password, not another.
+            guard let password = vault.recentDraft(origin: field.origin)?.password
+                    ?? PasswordGenerator.strongPassword(rules: field.rules, maxLength: field.maxLength) else { return [] }
+            items = [.strongPassword(password)]
         case .username, .current:
             let typed = field.role == .username ? field.typed.lowercased() : ""
             // A login without a user name has nothing to fill in a user name field.
@@ -526,9 +529,11 @@ extension WebViewManager {
             Task { @MainActor [weak self] in
                 guard let self, let username = await self.fillPasswordField(field, username: nil, password: password, mode: "new"),
                       self.savesPasswords else { return }
-                // Kept at once, so it can't be lost if the form fails; the user
-                // name is added when the form is sent.
-                vault.save(origin: field.origin, username: username, password: password)
+                // Kept at once as a draft, so it can't be lost if the form
+                // fails. It never replaces a saved password by itself: that
+                // waits until the website accepts it and the person agrees.
+                vault.saveDraft(origin: field.origin, username: username, password: password)
+                self.reportSaveFailure(of: vault, for: field.origin)
             }
         case .manage:
             onManagePasswords?(URL(string: field.origin)?.host)
@@ -635,21 +640,35 @@ extension WebViewManager {
             if login.password != pending.password { offer(login.username, login.id) }
             return
         }
+        let draft = vault.draft(origin: pending.origin, password: pending.password)
         if let login = saved.first(where: { $0.username == pending.username }) {
             if login.password == pending.password {
                 if pending.kind == .login { vault.markUsed(login.id) }
+                if let draft { vault.deleteDraft(draft.id) }
             } else {
+                // Even Early's own strong password replaces a working one only
+                // when the person chooses Update.
                 offer(login.username, login.id)
             }
             return
         }
-        // A strong password kept before its user name was known.
-        if !pending.username.isEmpty, var generated = saved.first(where: { $0.username.isEmpty && $0.password == pending.password }) {
-            generated.username = pending.username
-            vault.update(generated)
+        // A new account made with Early's strong password: kept without asking.
+        if let draft {
+            vault.commitDraft(draft.id, username: pending.username)
+            reportSaveFailure(of: vault, for: pending.origin)
             return
         }
         offer(pending.username, nil)
+    }
+
+    /// A password that couldn't be written to disk is reported in the window;
+    /// Settings › Passwords can try again.
+    func reportSaveFailure(of vault: PasswordVault, for origin: String) {
+        Task { @MainActor [weak self, weak vault] in
+            guard let vault, await vault.flush() == false, let self else { return }
+            let host = URL(string: origin)?.host ?? origin
+            self.onNotice?("The password for \(host) couldn’t be saved. Try again in Settings › Passwords.")
+        }
     }
 
     /// Save or Update: the offer's password goes into the profile's passwords.
@@ -662,6 +681,8 @@ extension WebViewManager {
         } else {
             vault.save(origin: offer.origin, username: username ?? offer.username, password: offer.password)
         }
+        vault.removeDrafts(origin: offer.origin, password: offer.password)
+        reportSaveFailure(of: vault, for: offer.origin)
     }
 
     public func neverSavePasswords(in id: UUID) {

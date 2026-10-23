@@ -67,6 +67,13 @@ final class BrowserWindowModel {
     /// save or change them.
     let passwords: PasswordVault?
     let passwordsProfileID: UUID?
+    /// The profile's extensions (an `ExtensionHost`, macOS 15.4 and later),
+    /// and this window as they see it (an `ExtensionWindow`).
+    let extensionHost: AnyObject?
+    @ObservationIgnored var extensionWindow: AnyObject?
+    /// Where extension popups point from: the Site Controls button's frame in
+    /// the window's top-left coordinate space.
+    @ObservationIgnored var siteControlsFrame: CGRect?
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The address last recorded per tab, and the live page it came from.
     @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID)] = [:]
@@ -171,7 +178,7 @@ final class BrowserWindowModel {
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
          downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, isPrivate: Bool = false,
          history: HistoryStore? = nil, sitePermissions: SitePermissions? = nil,
-         passwords: PasswordVault? = nil, passwordsProfileID: UUID? = nil,
+         passwords: PasswordVault? = nil, passwordsProfileID: UUID? = nil, extensionHost: AnyObject? = nil,
          searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
@@ -182,6 +189,7 @@ final class BrowserWindowModel {
         self.sitePermissions = sitePermissions ?? SitePermissions(fileURL: nil)
         self.passwords = passwords
         self.passwordsProfileID = passwords == nil ? nil : passwordsProfileID ?? (isPrivate ? nil : session.profileID)
+        self.extensionHost = extensionHost
         self.now = now
         self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
         let service = GoogleSearchSuggestions()
@@ -222,7 +230,9 @@ final class BrowserWindowModel {
             // A pin or Favorite reopened at its saved address changes none of
             // its metadata, but it is still a visit.
             if self.coordinator.tabStore.tab(id: id)?.isOpen == true { self.recordHistory(id, url: url, title: title) }
-            guard self.coordinator.updateMetadata(id, url: url, title: title) else { return }
+            let changed = self.coordinator.updateMetadata(id, url: url, title: title)
+            self.extensionTabChanged(id)
+            guard changed else { return }
             self.save()
         }
         webViews.onNewWindow = { [weak self] url, configuration in
@@ -272,6 +282,7 @@ final class BrowserWindowModel {
             guard let self, let url = try? self.input.searchURL(for: text) else { return }
             _ = self.openLocations([url])
         }
+        if #available(macOS 15.4, *) { connectExtensions() }
         activateSelection()
         if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
         refreshRecentPages()
@@ -1259,6 +1270,7 @@ final class BrowserWindowModel {
     }
 
     private func reconcileRuntimePresentation() {
+        defer { syncExtensionWindow() }
         guard webViews.reconcile(tabs: coordinator.tabStore.tabs) else { return }
         _ = webViews.setPresentation(visibleTabIDs: coordinator.visibleTabIDs, focusedTabID: coordinator.focusedTabID)
     }

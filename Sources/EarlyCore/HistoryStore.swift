@@ -66,6 +66,7 @@ public actor HistoryStore {
     /// Not local files, and not a page's source, which is a view of another page.
     public nonisolated static func records(_ url: URL) -> Bool {
         !url.isFileURL && url.scheme != nil && url.scheme?.lowercased() != NavigationInput.pageSourceScheme
+            && !NavigationInput.extensionSchemes.contains(url.scheme?.lowercased() ?? "")
             && url.absoluteString.utf8.count <= 4096
     }
 

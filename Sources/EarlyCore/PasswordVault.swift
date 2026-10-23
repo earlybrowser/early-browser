@@ -150,12 +150,35 @@ public final class PasswordVault {
         var version = 1
         var logins: [SavedLogin] = []
         var neverSaved: [String] = []
+        var drafts: [SavedLogin] = []
+
+        init(logins: [SavedLogin], neverSaved: [String], drafts: [SavedLogin]) {
+            self.logins = logins
+            self.neverSaved = neverSaved
+            self.drafts = drafts
+        }
+
+        /// Files from before drafts existed have none.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+            logins = try container.decodeIfPresent([SavedLogin].self, forKey: .logins) ?? []
+            neverSaved = try container.decodeIfPresent([String].self, forKey: .neverSaved) ?? []
+            drafts = try container.decodeIfPresent([SavedLogin].self, forKey: .drafts) ?? []
+        }
     }
 
     public private(set) var logins: [SavedLogin] = []
     /// Websites the person asked Early never to offer saving for.
     public private(set) var neverSaved: [String] = []
+    /// Strong passwords Early filled in that no website has accepted yet.
+    /// Kept so they can't be lost, but never filled or used to replace a
+    /// working password on their own.
+    public private(set) var drafts: [SavedLogin] = []
     public private(set) var state: State
+    /// Why the latest changes couldn't be written to disk; nil once a write
+    /// succeeds. They stay in memory, so ``retrySaving()`` can still keep them.
+    public private(set) var saveError: String?
     @ObservationIgnored public let fileURL: URL?
     @ObservationIgnored private let key: (any PasswordVaultKey)?
     @ObservationIgnored private var symmetricKey: SymmetricKey?
@@ -164,7 +187,14 @@ public final class PasswordVault {
     /// Opened with an earlier build's key: re-encrypted with the current one,
     /// then the old key goes.
     @ObservationIgnored private var movesFromLegacyKey = false
+    /// Bumped when the passwords are deleted or reset: work started before
+    /// then neither writes nor restores anything.
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var isRemoved = false
     @ObservationIgnored private let now: () -> Date
+    static let draftLimit = 50
+    /// A recent strong password for a site is offered again, not a new one.
+    static let draftReuse: TimeInterval = 86_400
 
     nonisolated static let magic = Data("EARLYPW1".utf8)
 
@@ -182,11 +212,13 @@ public final class PasswordVault {
     /// tried again only when asked, so the Keychain doesn't keep asking.
     @discardableResult
     public func load(retry: Bool = false) async -> Bool {
+        guard !isRemoved else { return false }
         if state == .ready { return true }
         if case .unavailable = state, !retry { return false }
         if let loading { return await loading.value }
         guard let fileURL, let key else { state = .ready; return true }
         state = .loading
+        let started = generation
         let task = Task { @MainActor [weak self] () -> Bool in
             let result = await Task.detached { () -> Result<(contents: Contents?, key: Data?), KeyError> in
                 guard let data = try? Data(contentsOf: fileURL) else {
@@ -208,7 +240,8 @@ public final class PasswordVault {
                     return .failure(KeyError(status: errSecInternalError))
                 }
             }.value
-            guard let self else { return false }
+            // Deleted or reset while reading: nothing comes back.
+            guard let self, self.generation == started else { return false }
             self.loading = nil
             switch result {
             case .success((nil, _)):
@@ -216,6 +249,7 @@ public final class PasswordVault {
             case .success((let contents?, let current)):
                 self.logins = contents.logins
                 self.neverSaved = contents.neverSaved
+                self.drafts = contents.drafts
                 self.state = .ready
                 if let current {
                     self.symmetricKey = SymmetricKey(data: current)
@@ -255,9 +289,12 @@ public final class PasswordVault {
             let aside = fileURL.deletingPathExtension().appendingPathExtension("unreadable-\(stamp).vault")
             try? FileManager.default.moveItem(at: fileURL, to: aside)
         }
+        generation += 1
         symmetricKey = nil
         logins = []
         neverSaved = []
+        drafts = []
+        saveError = nil
         state = .ready
     }
 
@@ -289,6 +326,18 @@ public final class PasswordVault {
     }
 
     public func isNeverSaved(_ origin: String) -> Bool { neverSaved.contains(origin) }
+
+    /// The strong password Early filled in for this site, by its password.
+    public func draft(origin: String, password: String) -> SavedLogin? {
+        drafts.first { $0.origin == origin && $0.password == password }
+    }
+
+    /// A strong password from the last day for this site, to offer again
+    /// rather than a new one each time a form is retried.
+    public func recentDraft(origin: String) -> SavedLogin? {
+        drafts.filter { $0.origin == origin && now().timeIntervalSince($0.created) < Self.draftReuse }
+            .max { $0.created < $1.created }
+    }
 
     // MARK: Changing
 
@@ -352,6 +401,68 @@ public final class PasswordVault {
         persist()
     }
 
+    // MARK: Strong-password drafts
+
+    /// Keeps a strong password Early filled in, apart from the saved logins,
+    /// until the website accepts it.
+    public func saveDraft(origin: String, username: String, password: String) {
+        guard isReady, !password.isEmpty else { return }
+        if let index = drafts.firstIndex(where: { $0.origin == origin && $0.password == password }) {
+            guard !username.isEmpty, drafts[index].username != username else { return }
+            drafts[index].username = username
+            drafts[index].modified = now()
+        } else {
+            drafts.append(SavedLogin(origin: origin, username: username, password: password, created: now()))
+            if drafts.count > Self.draftLimit { drafts.removeFirst(drafts.count - Self.draftLimit) }
+        }
+        persist()
+    }
+
+    /// A draft becomes a saved login, unless a login with its user name
+    /// exists: replacing that one needs the person's say (``replace(_:with:)``).
+    @discardableResult
+    public func commitDraft(_ id: UUID, username: String? = nil) -> SaveResult? {
+        guard isReady, let index = drafts.firstIndex(where: { $0.id == id }) else { return nil }
+        let draft = drafts[index]
+        let name = username.flatMap { $0.isEmpty ? nil : $0 } ?? draft.username
+        if let existing = login(origin: draft.origin, username: name) {
+            guard existing.password == draft.password else { return nil }
+            drafts.remove(at: index)
+            persist()
+            return .unchanged
+        }
+        drafts.remove(at: index)
+        logins.append(SavedLogin(origin: draft.origin, username: name, password: draft.password, created: now()))
+        neverSaved.removeAll { $0 == draft.origin }
+        persist()
+        return .added
+    }
+
+    /// The person chose to replace a saved login's password with a draft.
+    @discardableResult
+    public func replace(_ loginID: UUID, with draftID: UUID) -> Bool {
+        guard isReady, let draft = drafts.first(where: { $0.id == draftID }),
+              let index = logins.firstIndex(where: { $0.id == loginID }) else { return false }
+        logins[index].password = draft.password
+        logins[index].modified = now()
+        drafts.removeAll { $0.id == draftID }
+        persist()
+        return true
+    }
+
+    public func deleteDraft(_ id: UUID) {
+        guard isReady, drafts.contains(where: { $0.id == id }) else { return }
+        drafts.removeAll { $0.id == id }
+        persist()
+    }
+
+    /// A website accepted the password: its draft is no longer needed.
+    public func removeDrafts(origin: String, password: String) {
+        guard isReady, drafts.contains(where: { $0.origin == origin && $0.password == password }) else { return }
+        drafts.removeAll { $0.origin == origin && $0.password == password }
+        persist()
+    }
+
     /// Imported rows never replace a saved password.
     @discardableResult
     public func importRows(_ rows: [PasswordCSV.Row], skipped: Int = 0) -> ImportSummary {
@@ -373,13 +484,19 @@ public final class PasswordVault {
 
     public func exportCSV() -> String { PasswordCSV.export(logins) }
 
-    /// Deleting a profile: its file and key go.
+    /// Deleting a profile: its file and key go, and no open or save still
+    /// under way can write or restore anything afterwards.
     public func removeAll() {
-        loading?.cancel()
+        generation += 1
+        isRemoved = true
+        loading = nil
+        writing = nil
         logins = []
         neverSaved = []
+        drafts = []
         symmetricKey = nil
-        state = .ready
+        saveError = nil
+        state = .unavailable("This profile’s passwords were deleted.", canReset: false)
         Self.remove(fileURL: fileURL, key: key)
     }
 
@@ -392,30 +509,51 @@ public final class PasswordVault {
         }
     }
 
-    /// Waits for pending writes; tests and quitting use it.
-    public func flush() async { await writing?.value }
+    /// Waits for pending writes, and tells whether everything was written.
+    @discardableResult
+    public func flush() async -> Bool {
+        await writing?.value
+        return saveError == nil
+    }
+
+    /// Writes the passwords again after a failed save.
+    public func retrySaving() {
+        guard isReady else { return }
+        persist()
+    }
 
     // MARK: Storage
 
     private func persist() {
-        guard let fileURL, let key else { return }
-        let contents = Contents(logins: logins, neverSaved: neverSaved)
+        guard let fileURL, let key, !isRemoved else { return }
+        let contents = Contents(logins: logins, neverSaved: neverSaved, drafts: drafts)
         let previous = writing
+        let started = generation
         writing = Task { @MainActor [weak self] in
             await previous?.value
-            guard let self else { return }
+            guard let self, self.generation == started else { return }
             if self.symmetricKey == nil {
                 // The first save, or passwords moving from an earlier build's key.
                 let made = await Task.detached { try? key.make() }.value
+                guard self.generation == started else { return }
                 guard let made else {
-                    self.state = .unavailable("Early couldn’t save a key for your passwords in the Keychain, so new passwords aren’t kept after you quit.", canReset: false)
+                    self.saveError = "Early couldn’t save a key for your passwords in the Keychain."
                     return
                 }
                 self.symmetricKey = SymmetricKey(data: made)
             }
-            guard let symmetric = self.symmetricKey, let data = try? Self.encrypt(contents, key: symmetric) else { return }
-            try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return }
+            guard let symmetric = self.symmetricKey, let data = try? Self.encrypt(contents, key: symmetric) else {
+                self.saveError = "Your passwords couldn’t be encrypted."
+                return
+            }
+            do {
+                try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: fileURL, options: .atomic)
+            } catch {
+                self.saveError = "Your passwords couldn’t be written to disk. \(error.localizedDescription)"
+                return
+            }
+            self.saveError = nil
             if self.movesFromLegacyKey {
                 self.movesFromLegacyKey = false
                 Task.detached { try? key.removeLegacy() }

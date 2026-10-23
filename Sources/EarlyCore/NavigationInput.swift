@@ -54,6 +54,9 @@ public struct NavigationInput: Sendable {
 
     /// View Page Source shows `view-source:` plus the page's address.
     public static let pageSourceScheme = "view-source"
+    /// Extensions' own pages: Safari Web Extensions from Mac apps, and folder
+    /// or ZIP installs. They open in tabs but are not websites.
+    public static let extensionSchemes: Set<String> = ["safari-web-extension", "webkit-extension"]
 
     public static func sourceURL(of page: URL) -> URL? { URL(string: pageSourceScheme + ":" + page.absoluteString) }
 

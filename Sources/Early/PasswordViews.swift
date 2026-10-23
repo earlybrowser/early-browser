@@ -93,6 +93,7 @@ struct PasswordsSettingsSection: View {
     @State private var deleting: SavedLogin?
     @State private var resetting = false
     @State private var notice: PasswordNotice?
+    @State private var replacingDraft: DraftReplacement?
     @State private var unlocking = false
 
     private var profileID: UUID? {
@@ -171,10 +172,27 @@ struct PasswordsSettingsSection: View {
             if let file = notice.importedFile {
                 Button("Keep File", role: .cancel) {}
                 Button("Move to Trash") { try? FileManager.default.trashItem(at: file, resultingItemURL: nil) }
+            } else if let file = notice.unsavedFile, let vault {
+                Button("Cancel", role: .cancel) {}
+                Button("Try Again") {
+                    vault.retrySaving()
+                    Task { self.notice = await Self.importSaved(file, in: vault) }
+                }
             } else {
                 Button("OK", role: .cancel) {}
             }
         } message: { notice in Text(notice.message) }
+        .alert("Replace the saved password for \(replacingDraft?.draft.host ?? "this website")?", isPresented: Binding(
+            get: { replacingDraft != nil }, set: { if !$0 { replacingDraft = nil } }
+        ), presenting: replacingDraft) { replacement in
+            Button("Cancel", role: .cancel) { replacingDraft = nil }
+            Button("Replace", role: .destructive) {
+                vault?.replace(replacement.login.id, with: replacement.draft.id)
+                replacingDraft = nil
+            }
+        } message: { replacement in
+            Text("“\(replacement.login.username.isEmpty ? "No user name" : replacement.login.username)” already has a saved password. Replace it only if the website accepted this strong password.")
+        }
     }
 
     private var profilePicker: some View {
@@ -242,6 +260,18 @@ struct PasswordsSettingsSection: View {
                 || $0.note.lowercased().contains(query) }
             .sorted { ($0.host, $0.username.lowercased()) < ($1.host, $1.username.lowercased()) }
         return VStack(alignment: .leading, spacing: 22) {
+            if let error = vault.saveError {
+                SettingsCard {
+                    Label("Your latest changes weren’t saved", systemImage: "exclamationmark.triangle").font(.headline)
+                    Text("\(error) They’re kept until you quit Early.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button("Try Again") {
+                        lock.touch()
+                        vault.retrySaving()
+                    }
+                    .accessibilityIdentifier("passwords.retrySave")
+                }
+            }
             HStack(spacing: 12) {
                 transferCard("Import Passwords", symbol: "square.and.arrow.down",
                              detail: "Add passwords exported as a CSV file from Chrome, Safari, Firefox, 1Password, or Bitwarden.",
@@ -273,6 +303,7 @@ struct PasswordsSettingsSection: View {
                     ForEach(logins) { login in row(login, vault: vault) }
                 }
             }
+            if !vault.drafts.isEmpty { draftsCard(vault) }
             if !vault.neverSaved.isEmpty { neverSavedCard(vault) }
             Text("Passwords are encrypted on this Mac with a key kept in your Keychain. They aren’t synced, and private windows can fill them but never save new ones.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -378,6 +409,42 @@ struct PasswordsSettingsSection: View {
         .accessibilityLabel(label)
     }
 
+    /// Strong passwords Early filled in that no website accepted yet. They're
+    /// never filled or used to replace a password without the person.
+    private func draftsCard(_ vault: PasswordVault) -> some View {
+        SettingsCard {
+            Text("Strong Passwords Not Yet Saved").font(.headline)
+            Text("Early filled these in, but they weren’t saved as logins yet. Save one if the website accepted it.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ForEach(vault.drafts.sorted { $0.created > $1.created }) { draft in
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(draft.host).font(.body.weight(.medium)).lineLimit(1)
+                        Text("\(draft.username.isEmpty ? "No user name" : draft.username) · \(draft.created.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    copyButton("Copy Password") { Self.copy(draft.password, concealed: true) }
+                    Button("Save") {
+                        lock.touch()
+                        if let login = vault.login(origin: draft.origin, username: draft.username), login.password != draft.password {
+                            replacingDraft = DraftReplacement(draft: draft, login: login)
+                        } else {
+                            vault.commitDraft(draft.id)
+                        }
+                    }
+                    .accessibilityIdentifier("passwords.draft.save")
+                    Button("Delete", role: .destructive) {
+                        lock.touch()
+                        vault.deleteDraft(draft.id)
+                    }
+                    .accessibilityIdentifier("passwords.draft.delete")
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
     private func neverSavedCard(_ vault: PasswordVault) -> some View {
         SettingsCard {
             Text("Never Saved").font(.headline)
@@ -421,13 +488,15 @@ struct PasswordsSettingsSection: View {
         panel.message = "Choose a passwords file exported from a browser or password manager."
         let completion: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, let url = panel.url else { return }
-            notice = Self.importFile(url, into: vault)
+            Task { notice = await Self.importFile(url, into: vault) }
         }
         if let window = NSApp.keyWindow { panel.beginSheetModal(for: window, completionHandler: completion) }
         else { completion(panel.runModal()) }
     }
 
-    static func importFile(_ url: URL, into vault: PasswordVault) -> PasswordNotice {
+    /// Reported as imported only once the passwords are written to disk; the
+    /// file can't be moved to the Trash before then.
+    static func importFile(_ url: URL, into vault: PasswordVault) async -> PasswordNotice {
         guard let data = try? Data(contentsOf: url),
               let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
             return PasswordNotice(title: "The file couldn’t be read", message: "Choose a CSV file of passwords.")
@@ -443,8 +512,21 @@ struct PasswordsSettingsSection: View {
             lines.append("\(summary.conflicts) \(summary.conflicts == 1 ? "differs" : "differ") from a saved password; your saved \(summary.conflicts == 1 ? "one was" : "ones were") kept.")
         }
         if summary.skipped > 0 { lines.append("\(summary.skipped) without a website or password \(summary.skipped == 1 ? "was" : "were") skipped.") }
+        guard await vault.flush() else { return unsaved(url, in: vault) }
         lines.append("The file isn’t encrypted. You can move it to the Trash now.")
         return PasswordNotice(title: "Passwords imported", message: lines.joined(separator: " "), importedFile: url)
+    }
+
+    /// After Try Again: saved at last, or still not.
+    static func importSaved(_ url: URL, in vault: PasswordVault) async -> PasswordNotice {
+        guard await vault.flush() else { return unsaved(url, in: vault) }
+        return PasswordNotice(title: "Passwords imported",
+                              message: "They’re saved. The file isn’t encrypted. You can move it to the Trash now.", importedFile: url)
+    }
+
+    private static func unsaved(_ url: URL, in vault: PasswordVault) -> PasswordNotice {
+        PasswordNotice(title: "The imported passwords couldn’t be saved",
+                       message: "\(vault.saveError ?? "They couldn’t be written to disk.") Your file was kept.", unsavedFile: url)
     }
 
     private func exportPasswords(from vault: PasswordVault) {
@@ -473,8 +555,18 @@ struct PasswordNotice: Identifiable {
     let id = UUID()
     let title: String
     let message: String
-    /// An imported file, which can be moved to the Trash.
+    /// An imported file whose passwords are saved, which can go to the Trash.
     var importedFile: URL?
+    /// An imported file whose passwords couldn't be saved: it's kept, and
+    /// saving can be tried again.
+    var unsavedFile: URL?
+}
+
+/// Saving a strong-password draft over a login with its user name.
+struct DraftReplacement: Identifiable {
+    let draft: SavedLogin
+    let login: SavedLogin
+    var id: UUID { draft.id }
 }
 
 enum PasswordEditorRequest: Identifiable {

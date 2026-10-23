@@ -381,6 +381,7 @@ struct BrowserCommands: Commands {
                 openSettings()
             }
         }
+        CommandMenu("Extensions") { ExtensionsMenuItems(application: application, model: model) }
         #if DEBUG
         // Deterministic layout coverage without relying on synthesized drags
         // being accepted by the macOS window manager. No normal-user menu.
