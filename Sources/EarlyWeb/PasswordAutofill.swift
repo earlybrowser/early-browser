@@ -185,6 +185,8 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
 
         let menuToken = null, menuSelected = false, filling = false, watching = null;
         const report = node => {
+            // Never under a field the person can't see.
+            if (!shown(node)) return;
             const form = describe(scopeOf(node));
             const role = roleOf(node, form);
             if (!role) return;

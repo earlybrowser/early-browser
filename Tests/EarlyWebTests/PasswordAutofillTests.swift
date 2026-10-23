@@ -84,6 +84,13 @@ struct PasswordAutofillTests {
         typed.typed = "GR"
         #expect(manager.passwordSuggestions(for: typed).count == 2, "Typing narrows the list")
         #expect((try await focus("pass", in: view, fixture)).role == .current)
+        // A hidden field gets nothing, even when a page focuses it.
+        try await fixture.evaluate("document.body.insertAdjacentHTML('beforeend', '<input id=hidden type=password style=opacity:0>'); 1", in: tab)
+        manager.focusedPasswordField = nil
+        try await run("document.getElementById('hidden').focus()", in: view)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(manager.focusedPasswordField == nil)
+        _ = try await focus("pass", in: view, fixture)
 
         let grace = try #require(vault.login(origin: "early-tools://fixture", username: "grace"))
         manager.choosePasswordSuggestion(.login(grace.id, username: "grace"))
