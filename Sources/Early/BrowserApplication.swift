@@ -492,8 +492,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard let workspace else { return }
         for profile in workspace.profiles.map(\.id) {
             let open = visibleModels.contains { $0.coordinator.profileID == profile && !$0.isPrivate }
-            if open, workspace.session(for: profile)?.folders.contains(where: { $0.live?.source == .githubPullRequests }) == true {
-                pullRequests(for: profile)?.start()
+            let intervals = (workspace.session(for: profile)?.folders ?? []).compactMap { folder in
+                folder.live?.source == .githubPullRequests ? folder.live?.interval.seconds : nil
+            }
+            // One read serves every folder, so the most frequent choice wins.
+            if open, let interval = intervals.min(), let feed = pullRequests(for: profile) {
+                feed.interval = interval
+                feed.start()
             } else {
                 pullRequestFeeds[profile]?.stop()
             }

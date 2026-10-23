@@ -136,11 +136,11 @@ struct PullRequestFeedTests {
         try await Self.waitUntil { feed.status == .ready }
         #expect(feed.sections.first?.items == [Self.item] && feed.count == 1 && pages.reads == 1)
 
-        // Fresh: coming back to a window doesn't read again; stale does.
+        // Fresh: coming back to a window doesn't read again; overdue does.
         feed.refreshIfStale()
         await Task.yield()
         #expect(pages.reads == 1)
-        clock += 301
+        clock += 901
         feed.refreshIfStale()
         try await Self.waitUntil { pages.reads == 2 && !feed.isRefreshing }
 
@@ -160,6 +160,28 @@ struct PullRequestFeedTests {
         pages.gate = nil
         await Task.yield()
         #expect(feed.status == .idle && feed.sections.isEmpty && feed.lastRefreshed == nil && !feed.isActive)
+    }
+
+    @Test func theChosenIntervalDecidesWhenItsOverdue() async throws {
+        let pages = Pages()
+        var clock = Date(timeIntervalSince1970: 1_000)
+        let feed = PullRequestFeed(read: { _ in
+            pages.reads += 1
+            return pages.answer
+        }, now: { clock })
+        pages.answer = [.opened: .found([Self.item]), .assigned: .found([]), .reviewRequested: .found([])]
+        #expect(feed.interval == 900, "Fifteen minutes unless chosen")
+        feed.interval = 7200
+        feed.start()
+        try await Self.waitUntil { feed.status == .ready }
+        clock += 1800
+        feed.refreshIfStale()
+        await Task.yield()
+        #expect(pages.reads == 1, "Coming back after half an hour doesn't read a two-hour folder")
+        clock += 5401
+        feed.refreshIfStale()
+        try await Self.waitUntil { pages.reads == 2 }
+        feed.stop()
     }
 
     @Test func throttlingWaitsAndBacksOff() async throws {

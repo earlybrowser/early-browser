@@ -33,12 +33,16 @@ struct SpaceIconView: View {
 /// Selection stays in the editor draft until the enclosing sheet is saved.
 struct SpaceIconPicker: View {
     @Binding var selection: SpaceIcon?
+    var title = "Choose an icon"
+    /// The no-icon choice: a Space's dot, or a folder without an icon.
+    var noneTitle = "Use default dot"
+    var noneSymbol: String?
     let dismiss: () -> Void
     private let columns = Array(repeating: GridItem(.fixed(32), spacing: 6), count: 8)
 
     var body: some View {
         VStack(spacing: 14) {
-            Text("Choose an icon").font(.headline)
+            Text(title).font(.headline).lineLimit(2).multilineTextAlignment(.center)
 
             LazyVGrid(columns: columns, spacing: 6) {
                 ForEach(SpaceIcon.Symbol.allCases, id: \.self) { symbol in
@@ -52,8 +56,12 @@ struct SpaceIconPicker: View {
                 dismiss()
             } label: {
                 HStack(spacing: 8) {
-                    Circle().fill(.secondary).frame(width: 7, height: 7)
-                    Text("Use default dot")
+                    if let noneSymbol {
+                        Image(systemName: noneSymbol).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    } else {
+                        Circle().fill(.secondary).frame(width: 7, height: 7)
+                    }
+                    Text(noneTitle)
                     Spacer()
                     if selection == nil { Image(systemName: "checkmark").font(.caption.weight(.semibold)) }
                 }
@@ -62,7 +70,7 @@ struct SpaceIconPicker: View {
             }
             .buttonStyle(.plain)
             .browserKeyboardFocus()
-            .accessibilityLabel("Use default dot")
+            .accessibilityLabel(noneTitle)
             .accessibilityAddTraits(selection == nil ? .isSelected : [])
             .accessibilityIdentifier("space.icon.none")
         }

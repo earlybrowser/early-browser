@@ -137,7 +137,7 @@ public struct TabStore: Equatable, Sendable {
             guard original.spaceID == root.spaceID else { return nil }
             var moved = BrowserFolder(id: original.id, spaceID: spaceID,
                 parentID: original.id == id ? nil : original.parentID, name: original.name,
-                isExpanded: original.isExpanded, live: original.live)
+                isExpanded: original.isExpanded, live: original.live, icon: original.icon)
             moved.sidebarPosition = original.id == id ? nil : original.sidebarPosition
             candidate.folders[index] = moved
         }
@@ -170,7 +170,7 @@ public struct TabStore: Equatable, Sendable {
             // A live folder's copy fills itself from the same source.
             var copy = BrowserFolder(id: folderIDs[original.id]!, spaceID: destination,
                 parentID: original.parentID.flatMap { folderIDs[$0] }, name: original.name,
-                live: original.live.map { LiveFolder(source: $0.source) })
+                live: original.live.map { LiveFolder(source: $0.source, interval: $0.interval) }, icon: original.icon)
             copy.sidebarPosition = original.sidebarPosition
             return copy
         }
@@ -315,10 +315,10 @@ public struct TabStore: Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func createFolder(name: String, parentID: UUID?, spaceID: UUID) -> UUID? {
+    public mutating func createFolder(name: String, parentID: UUID?, spaceID: UUID, icon: SpaceIcon? = nil) -> UUID? {
         guard canCreateFolder(in: parentID, spaceID: spaceID) else { return nil }
         let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128))
-        let folder = BrowserFolder(spaceID: spaceID, parentID: parentID, name: name)
+        let folder = BrowserFolder(spaceID: spaceID, parentID: parentID, name: name, icon: icon)
         let candidate = folders + [folder]
         guard (try? BrowserFolder.validate(candidate)) != nil else { return nil }
         folders = candidate
@@ -389,6 +389,23 @@ public struct TabStore: Equatable, Sendable {
         guard canMoveFolder(id, to: parentID), let index = folders.firstIndex(where: { $0.id == id }) else { return false }
         folders[index].parentID = parentID
         folders[index].sidebarPosition = nil
+        return true
+    }
+
+    /// A live folder shows its source's mark instead.
+    @discardableResult
+    public mutating func setFolderIcon(_ id: UUID, icon: SpaceIcon?) -> Bool {
+        guard let index = folders.firstIndex(where: { $0.id == id }), folders[index].live == nil,
+              folders[index].icon != icon else { return false }
+        folders[index].icon = icon
+        return true
+    }
+
+    @discardableResult
+    public mutating func setLiveFolderInterval(_ id: UUID, _ interval: LiveFolder.Interval) -> Bool {
+        guard let index = folders.firstIndex(where: { $0.id == id }), folders[index].live?.interval != nil,
+              folders[index].live?.interval != interval else { return false }
+        folders[index].live?.interval = interval
         return true
     }
 

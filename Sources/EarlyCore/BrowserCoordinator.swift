@@ -406,8 +406,20 @@ public final class BrowserCoordinator {
     }
 
     @discardableResult
-    public func createFolder(name: String, parentID: UUID? = nil) -> UUID? {
-        tabStore.createFolder(name: name, parentID: parentID, spaceID: activeSpaceID)
+    public func createFolder(name: String, parentID: UUID? = nil, icon: SpaceIcon? = nil) -> UUID? {
+        tabStore.createFolder(name: name, parentID: parentID, spaceID: activeSpaceID, icon: icon)
+    }
+
+    @discardableResult
+    public func setFolderIcon(_ id: UUID, icon: SpaceIcon?) -> Bool {
+        guard folders.contains(where: { $0.id == id }) else { return false }
+        return tabStore.setFolderIcon(id, icon: icon)
+    }
+
+    @discardableResult
+    public func setLiveFolderInterval(_ id: UUID, _ interval: LiveFolder.Interval) -> Bool {
+        guard folders.contains(where: { $0.id == id }) else { return false }
+        return tabStore.setLiveFolderInterval(id, interval)
     }
 
     /// A live folder at the end of this Space's pins.

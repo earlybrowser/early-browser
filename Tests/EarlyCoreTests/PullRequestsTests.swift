@@ -171,4 +171,43 @@ struct PullRequestsTests {
         let old = Data(#"{"id":"\#(UUID().uuidString)","spaceID":"\#(UUID().uuidString)","name":"Old","isExpanded":false}"#.utf8)
         #expect(try JSONDecoder().decode(BrowserFolder.self, from: old).live == nil)
     }
+
+    @Test func foldersKeepTheirIconAndLiveFoldersTheirInterval() throws {
+        let space = UUID(), other = UUID()
+        var store = TabStore()
+        let made = store.createFolder(name: "Work", parentID: nil, spaceID: space, icon: .symbol(.briefcase))
+        let folder = try #require(made)
+        #expect(store.folders.first?.icon == .symbol(.briefcase))
+        let changed = store.setFolderIcon(folder, icon: .symbol(.star))
+        let same = store.setFolderIcon(folder, icon: .symbol(.star))
+        #expect(changed && !same && store.folders.first?.icon == .symbol(.star))
+        let liveMade = store.createLiveFolder(name: "Pull Requests", source: .githubPullRequests, spaceID: space)
+        let live = try #require(liveMade)
+        let liveIcon = store.setFolderIcon(live, icon: .symbol(.star))
+        #expect(!liveIcon, "A live folder shows its source's mark")
+        #expect(store.folders.first { $0.id == live }?.live?.interval == .fifteenMinutes)
+        let interval = store.setLiveFolderInterval(live, .twoHours)
+        let notLive = store.setLiveFolderInterval(folder, .twoHours)
+        #expect(interval && !notLive && store.folders.first { $0.id == live }?.live?.interval == .twoHours)
+        #expect(LiveFolder.Interval.allCases.map(\.title) == ["15 minutes", "30 minutes", "1 hour", "2 hours", "4 hours", "8 hours"])
+
+        // Moving or copying a Space keeps both.
+        _ = store.moveFolder(folder, toSpace: other)
+        _ = store.moveFolder(live, toSpace: other)
+        #expect(store.folders.first { $0.id == folder }?.icon == .symbol(.star))
+        store.duplicateSavedItems(in: other, to: space)
+        #expect(store.folders.contains { $0.spaceID == space && $0.icon == .symbol(.star) })
+        #expect(store.folders.contains { $0.spaceID == space && $0.live?.interval == .twoHours })
+
+        // Saved; older or unknown values never stop a session restoring.
+        let saved = try #require(store.folders.first { $0.id == live })
+        #expect(try JSONDecoder().decode(BrowserFolder.self, from: JSONEncoder().encode(saved)) == saved)
+        let id = UUID().uuidString, spaceID = UUID().uuidString
+        let older = Data(#"{"id":"\#(id)","spaceID":"\#(spaceID)","name":"PRs","isExpanded":true,"live":{"source":"githubPullRequests","dismissed":["a/b#1"]}}"#.utf8)
+        let decoded = try JSONDecoder().decode(BrowserFolder.self, from: older)
+        #expect(decoded.live == LiveFolder(source: .githubPullRequests, interval: .fifteenMinutes, dismissed: ["a/b#1"]))
+        let unknown = Data(#"{"id":"\#(id)","spaceID":"\#(spaceID)","name":"X","isExpanded":false,"icon":{"symbol":{"_0":"no.such"}},"live":{"source":"elsewhere"}}"#.utf8)
+        let tolerant = try JSONDecoder().decode(BrowserFolder.self, from: unknown)
+        #expect(tolerant.icon == nil && tolerant.live == nil && tolerant.name == "X")
+    }
 }

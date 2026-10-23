@@ -79,6 +79,10 @@ struct BrowserWindowView: View {
     @State private var editingFolder: UUID?
     @State private var folderParent: UUID?
     @State private var folderName = ""
+    @State private var folderIcon: SpaceIcon?
+    @State private var showingFolderIconPicker = false
+    /// The folder whose icon Change Icon… is choosing.
+    @State private var iconFolderID: UUID?
     #if DEBUG
     @State private var folderToggleActionCount = 0
 
@@ -518,13 +522,41 @@ struct BrowserWindowView: View {
           VStack(alignment: .leading, spacing: 16) {
             Text(editingFolder == nil ? "New Folder" : "Rename Folder").font(.headline)
             TextField("Folder name", text: $folderName).accessibilityIdentifier("folder.name")
+            if editingFolder == nil {
+                HStack(spacing: 12) {
+                    Button { showingFolderIconPicker.toggle() } label: {
+                        FolderIcon(isOpen: false, themeColor: model.preferences.spaceThemes
+                                   ? model.coordinator.activeSpace?.color ?? .gray : .gray,
+                                   emblem: folderIcon.flatMap { if case .symbol(let symbol) = $0 { .symbol(symbol.rawValue) } else { nil } })
+                            .frame(width: FolderIcon.width, height: FolderIcon.height)
+                            .frame(width: 38, height: 38)
+                            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+                            .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.12)) }
+                    }
+                    .buttonStyle(.plain)
+                    .browserKeyboardFocus(cornerRadius: 10)
+                    .accessibilityLabel("Choose folder icon")
+                    .accessibilityValue(folderIcon?.accessibilityName ?? "No icon")
+                    .accessibilityIdentifier("folder.iconPicker")
+                    .popover(isPresented: $showingFolderIconPicker, arrowEdge: .bottom) {
+                        SpaceIconPicker(selection: $folderIcon, noneTitle: "No icon", noneSymbol: "folder") {
+                            showingFolderIconPicker = false
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Folder icon")
+                        Text("Optional. Shown on the folder.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
             HStack {
             Button("Cancel") { folderEditor = false }.keyboardShortcut(.cancelAction)
             Spacer()
             Button("Save") {
                 let success: Bool
                 if let editingFolder { success = model.coordinator.renameFolder(editingFolder, to: folderName) }
-                else { success = model.coordinator.createFolder(name: folderName, parentID: folderParent) != nil }
+                else { success = model.coordinator.createFolder(name: folderName, parentID: folderParent, icon: folderIcon) != nil }
                 if success { model.save() } else { model.notice = "Could not save folder. Use a name and a parent with room for a subfolder (two nesting levels maximum)." }
                 folderEditor = false
             }
@@ -534,6 +566,22 @@ struct BrowserWindowView: View {
           }.padding(24).frame(width: 340).browserReducedMotion()
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
+        .sheet(isPresented: Binding(get: { iconFolderID != nil }, set: { if !$0 { iconFolderID = nil } })) {
+            if let id = iconFolderID, let folder = model.coordinator.folders.first(where: { $0.id == id }) {
+                VStack(spacing: 0) {
+                    SpaceIconPicker(selection: Binding(get: { folder.icon }, set: { icon in
+                        if model.coordinator.setFolderIcon(id, icon: icon) { model.save() }
+                    }), title: "Choose an icon for “\(folder.name)”", noneTitle: "No icon", noneSymbol: "folder") {
+                        iconFolderID = nil
+                    }
+                    HStack {
+                        Spacer()
+                        Button("Cancel") { iconFolderID = nil }.keyboardShortcut(.cancelAction)
+                    }
+                    .padding(.horizontal, 18).padding(.bottom, 16)
+                }
+            }
+        }
         .sheet(isPresented: $model.historyPresented) { HistoryView(model: model) }
         // Clear History from the menu without opening History first.
         .confirmationDialog("Clear history and website data?",
@@ -1414,6 +1462,7 @@ struct BrowserWindowView: View {
         editingFolder = folder?.id
         folderParent = parent
         folderName = folder?.name ?? ""
+        folderIcon = folder?.icon
         folderEditor = true
     }
 
@@ -1433,8 +1482,8 @@ struct BrowserWindowView: View {
         let header = HStack(spacing: 4) {
             // Neither disclosure nor title waits for a possible second click.
             Button { toggleFolder(folder) } label: {
-                FolderIcon(isOpen: isFolderOpen(folder), themeColor: folderTheme(folder))
-                    .frame(width: 19, height: 20)
+                FolderIcon(isOpen: isFolderOpen(folder), themeColor: folderTheme(folder), emblem: FolderEmblem(folder))
+                    .frame(width: FolderIcon.width, height: FolderIcon.height)
                     .animation(folderExpansionAnimation, value: isFolderOpen(folder))
                     .frame(width: PinnedIsland.iconControlWidth, height: PinnedIsland.height)
                     .contentShape(Rectangle())
@@ -1496,7 +1545,17 @@ struct BrowserWindowView: View {
         .animation(dragSourceItem == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
         .background(tabFrame(folder.id))
         .contextMenu {
-            if folder.live != nil, let feed = model.pullRequests {
+            if let live = folder.live, let feed = model.pullRequests {
+                Text(Self.lastFetch(feed))
+                Menu("Fetch Interval") {
+                    ForEach(LiveFolder.Interval.allCases, id: \.self) { interval in
+                        Button {
+                            if model.coordinator.setLiveFolderInterval(folder.id, interval) { model.save() }
+                        } label: {
+                            if live.interval == interval { Label(interval.title, systemImage: "checkmark") } else { Text(interval.title) }
+                        }
+                    }
+                }
                 Button("Refresh") { feed.refresh() }
                     .disabled(feed.isRefreshing)
                 Button("Open Pull Requests on GitHub") { _ = model.openLocations([PullRequest.github.appending(path: "pulls")]) }
@@ -1506,6 +1565,10 @@ struct BrowserWindowView: View {
                     .disabled(!model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID))
             }
             Button("Rename Folder…") { editFolder(folder, parent: folder.parentID) }
+            // A live folder shows its source's mark.
+            if folder.live == nil {
+                Button("Change Icon…") { iconFolderID = folder.id }
+            }
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
                     Button(space.name) {
@@ -1535,6 +1598,17 @@ struct BrowserWindowView: View {
             }
             .help("Delete this folder, all subfolders, and all their tabs")
         }
+    }
+
+    /// "Last fetch: 49 seconds ago", as of when the menu opens.
+    static func lastFetch(_ feed: PullRequestFeed, now: Date = Date()) -> String {
+        if feed.isRefreshing { return "Fetching…" }
+        guard let date = feed.lastRefreshed else { return "Not fetched yet" }
+        let elapsed = now.timeIntervalSince(date)
+        if elapsed < 60 { return "Last fetch: \(max(Int(elapsed), 1)) seconds ago" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last fetch: " + formatter.localizedString(for: date, relativeTo: now)
     }
 
     private func folderTheme(_ folder: BrowserFolder) -> BrowserSpace.Color {
@@ -2205,8 +2279,8 @@ struct BrowserWindowView: View {
                 .shadow(radius: lifted ? 5 : 0, y: lifted ? 2 : 0)
         case .folder(let folder):
             HStack(spacing: 4) {
-                FolderIcon(isOpen: false, themeColor: folderTheme(folder))
-                    .frame(width: 19, height: 20)
+                FolderIcon(isOpen: false, themeColor: folderTheme(folder), emblem: FolderEmblem(folder))
+                    .frame(width: FolderIcon.width, height: FolderIcon.height)
                     .frame(width: PinnedIsland.iconControlWidth, height: PinnedIsland.height)
                 Text(folder.name).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
@@ -2860,9 +2934,26 @@ private struct NavigationChevron: Shape {
 }
 
 /// Layered folder artwork shared by live rows, Space pages and drag previews.
+/// What a folder shows on its front: an icon from the Space set, or GitHub's
+/// mark on a GitHub live folder.
+enum FolderEmblem: Equatable {
+    case symbol(String), github
+
+    init?(_ folder: BrowserFolder) {
+        if folder.live?.source == .githubPullRequests { self = .github }
+        else if case .symbol(let symbol)? = folder.icon { self = .symbol(symbol.rawValue) }
+        else { return nil }
+    }
+}
+
 struct FolderIcon: View {
+    /// Room for an icon on the front.
+    static let width: CGFloat = 22
+    static let height: CGFloat = 22
+
     let isOpen: Bool
     var themeColor: BrowserSpace.Color = .gray
+    var emblem: FolderEmblem?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -2887,7 +2978,88 @@ struct FolderIcon: View {
                     FolderCover(openness: isOpen ? 1 : 0)
                         .stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
                 }
+            if let emblem {
+                GeometryReader { geometry in
+                    let size = geometry.size
+                    // On the front, leaning back with it as the folder opens.
+                    FolderEmblemView(emblem: emblem)
+                        .foregroundStyle(outline)
+                        .frame(width: size.width * 0.42, height: size.width * 0.42)
+                        .modifier(FolderEmblemTilt(openness: isOpen ? 1 : 0))
+                        .position(x: size.width * (isOpen ? 0.555 : 0.5), y: size.height * (isOpen ? 0.625 : 0.61))
+                }
+                .accessibilityHidden(true)
+            }
         }
+    }
+}
+
+private struct FolderEmblemView: View {
+    let emblem: FolderEmblem
+
+    var body: some View {
+        switch emblem {
+        case .github:
+            GitHubMark().fill(style: FillStyle(eoFill: true))
+        case .symbol(let name):
+            Image(systemName: name).resizable().scaledToFit().fontWeight(.semibold)
+        }
+    }
+}
+
+/// The open front is a slanted, shorter face; its icon follows it.
+private struct FolderEmblemTilt: GeometryEffect {
+    var openness: CGFloat
+    var animatableData: CGFloat {
+        get { openness }
+        set { openness = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        let lean = CGAffineTransform(a: 1, b: 0, c: -0.34 * openness, d: 1 - 0.16 * openness, tx: 0, ty: 0)
+        let centered = CGAffineTransform(translationX: -size.width / 2, y: -size.height / 2)
+            .concatenating(lean)
+            .concatenating(CGAffineTransform(translationX: size.width / 2, y: size.height / 2))
+        return ProjectionTransform(centered)
+    }
+}
+
+/// GitHub's own mark (its logo, as GitHub's logo guidelines allow for linking
+/// to GitHub), drawn as a shape rather than taken from an icon set.
+struct GitHubMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height)
+        let origin = CGPoint(x: rect.midX - side / 2, y: rect.midY - side / 2)
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: origin.x + x * side, y: origin.y + y * side) }
+        var path = Path()
+        path.move(to: p(0.5, 0))
+        path.addCurve(to: p(1, 0.5), control1: p(0.7762, 0), control2: p(1, 0.2238))
+        path.addCurve(to: p(0.6594, 0.9744), control1: p(0.9999, 0.7148), control2: p(0.8629, 0.9057))
+        path.addCurve(to: p(0.625, 0.9506), control1: p(0.6344, 0.9794), control2: p(0.625, 0.9637))
+        path.addCurve(to: p(0.6256, 0.8131), control1: p(0.625, 0.9337), control2: p(0.6256, 0.88))
+        path.addCurve(to: p(0.5919, 0.7206), control1: p(0.6256, 0.7662), control2: p(0.61, 0.7362))
+        path.addCurve(to: p(0.82, 0.4737), control1: p(0.7031, 0.7081), control2: p(0.82, 0.6656))
+        path.addCurve(to: p(0.7687, 0.3394), control1: p(0.82, 0.4187), control2: p(0.8006, 0.3744))
+        path.addCurve(to: p(0.7637, 0.2069), control1: p(0.7737, 0.3269), control2: p(0.7912, 0.2756))
+        path.addCurve(to: p(0.6262, 0.2581), control1: p(0.7637, 0.2069), control2: p(0.7219, 0.1931))
+        path.addCurve(to: p(0.5012, 0.2412), control1: p(0.5862, 0.2469), control2: p(0.5437, 0.2412))
+        path.addCurve(to: p(0.3762, 0.2581), control1: p(0.4587, 0.2412), control2: p(0.4162, 0.2469))
+        path.addCurve(to: p(0.2387, 0.2069), control1: p(0.2806, 0.1937), control2: p(0.2387, 0.2069))
+        path.addCurve(to: p(0.2337, 0.3394), control1: p(0.2112, 0.2756), control2: p(0.2287, 0.3269))
+        path.addCurve(to: p(0.1825, 0.4737), control1: p(0.2019, 0.3744), control2: p(0.1825, 0.4194))
+        path.addCurve(to: p(0.41, 0.7206), control1: p(0.1825, 0.665), control2: p(0.2987, 0.7081))
+        path.addCurve(to: p(0.3781, 0.7875), control1: p(0.3956, 0.7331), control2: p(0.3825, 0.755))
+        path.addCurve(to: p(0.2325, 0.7462), control1: p(0.3494, 0.8006), control2: p(0.2775, 0.8219))
+        path.addCurve(to: p(0.1556, 0.695), control1: p(0.2231, 0.7312), control2: p(0.195, 0.6944))
+        path.addCurve(to: p(0.1562, 0.7281), control1: p(0.1137, 0.6956), control2: p(0.1387, 0.7187))
+        path.addCurve(to: p(0.2075, 0.7987), control1: p(0.1775, 0.74), control2: p(0.2019, 0.7844))
+        path.addCurve(to: p(0.3756, 0.8575), control1: p(0.2175, 0.8269), control2: p(0.25, 0.8806))
+        path.addCurve(to: p(0.3762, 0.9506), control1: p(0.3756, 0.8994), control2: p(0.3762, 0.9387))
+        path.addCurve(to: p(0.3419, 0.9744), control1: p(0.3762, 0.9637), control2: p(0.3669, 0.9787))
+        path.addCurve(to: p(-0, 0.5), control1: p(0.1376, 0.9064), control2: p(-0.0001, 0.7153))
+        path.addCurve(to: p(0.5, 0), control1: p(0, 0.2238), control2: p(0.2238, 0))
+        path.closeSubpath()
+        return path
     }
 }
 

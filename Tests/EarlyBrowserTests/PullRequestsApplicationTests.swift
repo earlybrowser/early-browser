@@ -83,6 +83,9 @@ struct PullRequestsApplicationTests {
         let pin = try #require(pins(personal, in: folder).first)
         #expect(pin.liveItemID == Self.item.id && pin.pinnedURL == Self.item.url() && pin.displayTitle == Self.item.title)
         #expect(!pin.isOpen, "Nothing loads until it's chosen")
+        let fetched = try #require(feed.lastRefreshed)
+        #expect(BrowserWindowView.lastFetch(feed, now: fetched.addingTimeInterval(30)) == "Last fetch: 30 seconds ago")
+        #expect(BrowserWindowView.lastFetch(feed, now: fetched.addingTimeInterval(7200)).hasPrefix("Last fetch: 2 hours"))
 
         // Another window of the profile shares the folder and its pins.
         #expect(personal.perform(.newWindow))
@@ -152,6 +155,31 @@ struct PullRequestsApplicationTests {
         app.closeWindow(nil)
         #expect(!feed.isActive)
         #expect(app.workspace?.session(for: profile)?.tabs.contains { $0.liveItemID == Self.other.id } == true)
+        await fixture.cleanup()
+    }
+
+    @Test func theMostFrequentFetchIntervalWinsAndFoldersShowTheirIcon() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let model = try #require(app.model)
+        let first = try #require(model.addGitHubLiveFolder())
+        let feed = try #require(model.pullRequests)
+        #expect(feed.interval == LiveFolder.Interval.fifteenMinutes.seconds)
+        #expect(model.coordinator.setLiveFolderInterval(first, .fourHours))
+        model.save()
+        #expect(feed.interval == LiveFolder.Interval.fourHours.seconds)
+        let second = try #require(model.addGitHubLiveFolder())
+        #expect(model.coordinator.setLiveFolderInterval(second, .oneHour))
+        model.save()
+        #expect(feed.interval == LiveFolder.Interval.oneHour.seconds, "One read serves both")
+
+        let live = try #require(model.coordinator.folders.first { $0.id == first })
+        #expect(FolderEmblem(live) == .github)
+        let own = try #require(model.coordinator.createFolder(name: "Work", icon: .symbol(.briefcase)))
+        let folder = try #require(model.coordinator.folders.first { $0.id == own })
+        #expect(FolderEmblem(folder) == .symbol("briefcase.fill"))
+        #expect(FolderEmblem(BrowserFolder(spaceID: folder.spaceID, name: "Plain")) == nil)
         await fixture.cleanup()
     }
 

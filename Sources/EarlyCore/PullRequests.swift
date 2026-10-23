@@ -104,8 +104,8 @@ public enum PullRequestFolderStatus: Equatable, Sendable {
 public enum PullRequests {
     /// At most this many per group: the first page of GitHub's results.
     public static let limit = 25
-    /// How often a shown folder is read again.
-    public static let interval: TimeInterval = 600
+    /// How often a live folder is read again unless its menu says otherwise.
+    public static let interval: TimeInterval = 900
 
     /// The reader script's answer for one page, given where it ended up.
     public static func reading(from result: Any?, finalURL: URL?, statusCode: Int?, base: URL = PullRequest.github) -> PullRequestReading {

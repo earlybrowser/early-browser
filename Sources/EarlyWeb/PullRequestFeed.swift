@@ -6,9 +6,9 @@ import Observation
 import WebKit
 
 /// A profile's open pull requests on GitHub, for its GitHub live folders.
-/// While one of its open windows has such a folder it's read on start, every
-/// ten minutes and when asked, with the GitHub sign-in the profile already
-/// has; the folders' pins follow it.
+/// While one of its open windows has such a folder it's read on start, at the
+/// folders' fetch interval and when asked, with the GitHub sign-in the profile
+/// already has; the folders' pins follow it.
 @MainActor @Observable
 public final class PullRequestFeed {
     public typealias Read = @MainActor ([PullRequestGroup]) async -> [PullRequestGroup: PullRequestReading]
@@ -23,6 +23,13 @@ public final class PullRequestFeed {
     public var items: [PullRequest] { sections.flatMap(\.items) }
     /// A read finished, with a list or a failure.
     @ObservationIgnored public var onUpdate: (() -> Void)?
+    /// How often it's read again; a change applies to the next read.
+    public var interval: TimeInterval = PullRequests.interval {
+        didSet {
+            guard interval != oldValue, isActive, !isRefreshing, status == .ready, let lastRefreshed else { return }
+            schedule(after: max(0, interval - now().timeIntervalSince(lastRefreshed)))
+        }
+    }
 
     @ObservationIgnored private let read: Read
     @ObservationIgnored private let now: () -> Date
@@ -72,10 +79,11 @@ public final class PullRequestFeed {
         schedule(after: 0)
     }
 
-    /// A window came forward or the folder opened: read again if it's been a
-    /// while (soon after a failure), but never while GitHub asked to wait.
-    public func refreshIfStale(olderThan age: TimeInterval = 300) {
+    /// A window came forward or the folder opened: read again if it's
+    /// overdue (soon after a failure), but never while GitHub asked to wait.
+    public func refreshIfStale(olderThan age: TimeInterval? = nil) {
         guard isActive, !isRefreshing, status != .throttled else { return }
+        let age = age ?? interval
         let limit = status == .ready ? age : min(age, 30)
         if let lastRefreshed, now().timeIntervalSince(lastRefreshed) < limit { return }
         refresh()
@@ -100,7 +108,7 @@ public final class PullRequestFeed {
         let current = generation
         isRefreshing = true
         let readings = await read(PullRequestGroup.allCases)
-        guard current == generation, isActive else { return PullRequests.interval }
+        guard current == generation, isActive else { return interval }
         isRefreshing = false
         lastRefreshed = now()
         defer { onUpdate?() }
@@ -109,7 +117,7 @@ public final class PullRequestFeed {
             sections = found
             status = .ready
             failures = 0
-            return PullRequests.interval
+            return interval
         case .failed(let failure):
             sections = []
             status = failure

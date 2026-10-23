@@ -10,13 +10,43 @@ public struct LiveFolder: Codable, Equatable, Sendable {
         case githubPullRequests
     }
 
+    /// How often its source is read again, as chosen in the folder's menu.
+    public enum Interval: Int, Codable, CaseIterable, Sendable {
+        case fifteenMinutes = 900, thirtyMinutes = 1800, oneHour = 3600, twoHours = 7200
+        case fourHours = 14400, eightHours = 28800
+
+        public var seconds: TimeInterval { TimeInterval(rawValue) }
+
+        public var title: String {
+            switch self {
+            case .fifteenMinutes: "15 minutes"
+            case .thirtyMinutes: "30 minutes"
+            case .oneHour: "1 hour"
+            case .twoHours: "2 hours"
+            case .fourHours: "4 hours"
+            case .eightHours: "8 hours"
+            }
+        }
+    }
+
     public var source: Source
+    public var interval: Interval
     /// Items removed by hand: not added again while the source still lists them.
     public var dismissed: [String]
 
-    public init(source: Source, dismissed: [String] = []) {
+    public init(source: Source, interval: Interval = .fifteenMinutes, dismissed: [String] = []) {
         self.source = source
+        self.interval = interval
         self.dismissed = dismissed
+    }
+
+    private enum CodingKeys: String, CodingKey { case source, interval, dismissed }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        source = try values.decode(Source.self, forKey: .source)
+        interval = (try? values.decodeIfPresent(Interval.self, forKey: .interval)) ?? .fifteenMinutes
+        dismissed = (try? values.decodeIfPresent([String].self, forKey: .dismissed)) ?? []
     }
 
     /// The most items remembered as removed.
@@ -48,15 +78,34 @@ public struct BrowserFolder: Identifiable, Codable, Equatable, Sendable {
     public var sidebarPosition: Int?
     /// Set for a live folder; nil for the person's own folders.
     public var live: LiveFolder?
+    /// Drawn on the folder's front, from the same set as Space icons.
+    public var icon: SpaceIcon?
 
     public init(id: UUID = UUID(), spaceID: UUID, parentID: UUID? = nil, name: String, isExpanded: Bool = false,
-                live: LiveFolder? = nil) {
+                live: LiveFolder? = nil, icon: SpaceIcon? = nil) {
         self.id = id
         self.spaceID = spaceID
         self.parentID = parentID
         self.name = name
         self.isExpanded = isExpanded
         self.live = live
+        self.icon = icon
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, spaceID, parentID, name, isExpanded, sidebarPosition, live, icon }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        spaceID = try values.decode(UUID.self, forKey: .spaceID)
+        parentID = try values.decodeIfPresent(UUID.self, forKey: .parentID)
+        name = try values.decode(String.self, forKey: .name)
+        isExpanded = try values.decode(Bool.self, forKey: .isExpanded)
+        sidebarPosition = try values.decodeIfPresent(Int.self, forKey: .sidebarPosition)
+        // Like a Space's icon, decoration never stops a session restoring; an
+        // unknown live source restores as an ordinary folder.
+        live = (try? values.decodeIfPresent(LiveFolder.self, forKey: .live)) ?? nil
+        icon = (try? values.decodeIfPresent(SpaceIcon.self, forKey: .icon)) ?? nil
     }
 
     public static func validate(_ folders: [BrowserFolder]) throws {
