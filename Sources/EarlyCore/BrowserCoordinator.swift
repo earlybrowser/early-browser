@@ -634,6 +634,15 @@ public final class BrowserCoordinator {
         return true
     }
 
+    /// Adds or removes the Pull Requests live folder in a Space.
+    @discardableResult
+    public func setShowsPullRequests(_ shown: Bool, in id: UUID) -> Bool {
+        guard let index = spaces.firstIndex(where: { $0.id == id && $0.profileID == profileID }),
+              spaces[index].showsPullRequests != shown else { return false }
+        spaces[index].showsPullRequests = shown
+        return true
+    }
+
     /// Copy saved organization, not Today tabs, shared Favorites, live page
     /// state, or selection. All copies are closed and receive fresh identities.
     @discardableResult

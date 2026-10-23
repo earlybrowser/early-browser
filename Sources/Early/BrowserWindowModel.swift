@@ -71,6 +71,9 @@ final class BrowserWindowModel {
     /// and this window as they see it (an `ExtensionWindow`).
     let extensionHost: AnyObject?
     @ObservationIgnored var extensionWindow: AnyObject?
+    /// Spaces whose Pull Requests folder is open in this window. Like other
+    /// folders, it starts closed.
+    var openPullRequestFolders: Set<UUID> = []
     /// Where extension popups point from: the Site Controls button's frame in
     /// the window's top-left coordinate space.
     @ObservationIgnored var siteControlsFrame: CGRect?
@@ -232,6 +235,7 @@ final class BrowserWindowModel {
             if self.coordinator.tabStore.tab(id: id)?.isOpen == true { self.recordHistory(id, url: url, title: title) }
             let changed = self.coordinator.updateMetadata(id, url: url, title: title)
             self.extensionTabChanged(id)
+            if let url, !self.isPrivate { self.application?.noteVisit(url, profile: self.coordinator.profileID) }
             guard changed else { return }
             self.save()
         }
@@ -275,6 +279,7 @@ final class BrowserWindowModel {
         }
         webViews.onManagePasswords = { [weak self] host in self?.showPasswords(search: host) }
         webViews.automaticPictureInPicture = { [weak self] in self?.preferences.automaticPictureInPicture == true }
+        webViews.onReturnFromPictureInPicture = { [weak self] in self?.showTabFromPictureInPicture($0) }
         webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }
         webViews.translationMenuTitle = { [weak self] in self?.translationTitle(for: $0) }
         webViews.onTranslatePage = { [weak self] in self?.toggleTranslation($0) }
@@ -757,6 +762,50 @@ final class BrowserWindowModel {
             || Set(selection.tabIDs) != Set(openTabs.map(\.id)) {
             cancelTabSwitcher(restoreFocus: false)
         }
+    }
+
+    // MARK: Pull Requests folder
+
+    /// The profile's open pull requests on GitHub; none in private windows.
+    var pullRequests: PullRequestFeed? { isPrivate ? nil : application?.pullRequests(for: coordinator.profileID) }
+
+    /// Adds the folder to a Space (open, so it's seen) or removes it.
+    func setPullRequestsFolder(_ shown: Bool, in spaceID: UUID) {
+        guard !isPrivate, coordinator.setShowsPullRequests(shown, in: spaceID) else { return }
+        if shown { openPullRequestFolders.insert(spaceID) } else { openPullRequestFolders.remove(spaceID) }
+        save()
+    }
+
+    func togglePullRequestsFolder(in spaceID: UUID) {
+        if openPullRequestFolders.remove(spaceID) == nil {
+            openPullRequestFolders.insert(spaceID)
+            pullRequests?.refreshIfStale()
+        }
+    }
+
+    /// A pull request's tab if it's open in this Space, else a new Today tab.
+    func openPullRequest(_ pullRequest: PullRequest) {
+        let space = coordinator.activeSpaceID
+        if let open = coordinator.tabStore.tabs.first(where: {
+            $0.isOpen && $0.isVisible(in: space) && pullRequest.isShown(at: webViews.pages[$0.id]?.view.url ?? $0.currentURL)
+        }) {
+            selectTab(open.id)
+        } else {
+            _ = openLocations([pullRequest.url()])
+        }
+    }
+
+    /// Picture in Picture's return button: the video's tab comes forward, in
+    /// its Space and window, so WebKit can put the video back in its page.
+    func showTabFromPictureInPicture(_ id: UUID) {
+        guard let tab = coordinator.tabStore.tab(id: id), tab.isOpen else { return }
+        if !tab.isVisible(in: coordinator.activeSpaceID) { _ = switchSpace(to: tab.spaceID) }
+        if !coordinator.visibleTabIDs.contains(id) { selectTab(id) }
+        if let window = application?.nativeWindow(of: self) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func closeActiveTab() {

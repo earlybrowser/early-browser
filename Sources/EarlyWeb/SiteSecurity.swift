@@ -200,8 +200,8 @@ extension WebViewManager {
             guard let page = pages[id], page.isPlayingMedia, !page.isFullscreen, !page.hasDialog,
                   automaticPictureInPictureTabs[id] == nil else { continue }
             // Each frame playing media, then the main frame if none is known.
-            var frames: [WKFrameInfo?] = page.playingFrames.compactMap { page.mediaFrames[$0] }
-            if frames.isEmpty { frames = [nil] }
+            let playing: [WKFrameInfo?] = page.playingFrames.compactMap { page.mediaFrames[$0] }
+            let frames = playing.isEmpty ? [nil] : playing
             automaticPictureInPictureTabs[id] = .entering(frames)
             let view = page.view
             Task { @MainActor [weak self, runPageScript] in
@@ -221,6 +221,21 @@ extension WebViewManager {
                 }
             }
         }
+    }
+}
+
+extension WebViewManager {
+    /// The return button in Picture in Picture's window. WebKit returns the
+    /// video only once its page is visible, and asks the browser to show it
+    /// through this delegate method (Safari's; not public API, like the
+    /// preference that enables Picture in Picture). Without it the button
+    /// does nothing.
+    @objc(_webViewFullscreenMayReturnToInline:)
+    public func webViewFullscreenMayReturnToInline(_ webView: WKWebView) {
+        guard let id = tabID(for: webView) else { return }
+        // WebKit is already returning it; showing the tab needn't ask again.
+        automaticPictureInPictureTabs[id] = nil
+        onReturnFromPictureInPicture?(id)
     }
 }
 

@@ -57,6 +57,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var extensionCatalogs: [UUID: ExtensionCatalog] = [:]
     /// The profile whose extensions Settings shows.
     var extensionsProfileID: UUID?
+    /// Each profile's Pull Requests folder contents, read while one of its
+    /// open windows' Spaces shows the folder. Never for private windows.
+    @ObservationIgnored private var pullRequestFeeds: [UUID: PullRequestFeed] = [:]
+    /// Tests read stand-in pages; UI automation never reaches GitHub.
+    @ObservationIgnored var pullRequestReader: PullRequestFeed.Read?
     /// All open private windows share one temporary profile and one website
     /// data store kept only in memory, released with the last private window.
     @ObservationIgnored private(set) var privateProfileID: UUID?
@@ -468,6 +473,40 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    /// A profile's Pull Requests folder contents.
+    func pullRequests(for profile: UUID) -> PullRequestFeed? {
+        if let feed = pullRequestFeeds[profile] { return feed }
+        guard !isPrivateProfile(profile), profiles.contains(where: { $0.id == profile }) else { return nil }
+        let feed: PullRequestFeed
+        if let pullRequestReader { feed = PullRequestFeed(read: pullRequestReader) }
+        else if testing { feed = PullRequestFeed(read: { _ in [:] }) }
+        else { feed = PullRequestFeed(dataStore: { [weak self] in self?.websiteDataStore(for: profile) }) }
+        pullRequestFeeds[profile] = feed
+        return feed
+    }
+
+    /// A feed runs while a Space of one of its profile's open windows shows
+    /// the folder; otherwise it stops and forgets what it read.
+    private func updatePullRequestFeeds() {
+        guard let workspace else { return }
+        for profile in workspace.profiles.map(\.id) {
+            let open = visibleModels.contains { $0.coordinator.profileID == profile && !$0.isPrivate }
+            if open, workspace.session(for: profile)?.spaces.contains(where: \.showsPullRequests) == true {
+                pullRequests(for: profile)?.start()
+            } else {
+                pullRequestFeeds[profile]?.stop()
+            }
+        }
+    }
+
+    /// Signing in to GitHub in a tab: a signed-out folder reads it again.
+    func noteVisit(_ url: URL, profile: UUID) {
+        guard let feed = pullRequestFeeds[profile], feed.status == .signedOut,
+              url.host?.lowercased() == PullRequest.github.host, !url.path.hasPrefix("/login"),
+              !url.path.hasPrefix("/session") else { return }
+        feed.refresh()
+    }
+
     func history(for id: UUID) -> HistoryStore? {
         if let store = historyStores[id] { return store }
         guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
@@ -547,6 +586,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard !applyingWorkspace else { return }
         captureWorkspace()
         if let workspace { persistence?.enqueue(workspace) }
+        updatePullRequestFeeds()
     }
 
     /// Every tab, pin and Favorite address in the profile's open windows.
@@ -569,6 +609,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         // Another window of the profile may have added to its history.
         windowModel(id)?.refreshRecentPages()
         windowModel(id)?.extensionWindowDidFocus()
+        if let owner = windowModel(id), !owner.isPrivate { pullRequestFeeds[owner.coordinator.profileID]?.refreshIfStale() }
         guard !restoringFocus, let owner = windowModel(id), !owner.isPrivate,
               workspace?.activeProfileID != owner.coordinator.profileID else { return }
         workspace?.activeProfileID = owner.coordinator.profileID
@@ -707,6 +748,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             await host?.removeAllData()
         }
         extensionCatalogs.removeValue(forKey: id)?.removeFile()
+        pullRequestFeeds.removeValue(forKey: id)?.stop()
         if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
         if extensionsProfileID == id { extensionsProfileID = nil }
         if let vault = passwordVaults.removeValue(forKey: id) { vault.removeAll() }

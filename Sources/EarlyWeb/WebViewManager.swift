@@ -124,6 +124,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onTranslatePage: ((UUID) -> Void)?
     /// The profile's per-site permission choices; nil denies every request.
     public var sitePermissions: SitePermissions?
+    /// Picture in Picture's return button was clicked: the owner shows this
+    /// tab (its Space and window), and WebKit then returns the video to it.
+    public var onReturnFromPictureInPicture: ((UUID) -> Void)?
     /// Whether a tab switched away from keeps its playing video in Picture in Picture.
     public var automaticPictureInPicture: () -> Bool = { false }
     /// Tabs whose video Early is moving, or moved, into Picture in Picture.

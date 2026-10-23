@@ -134,6 +134,22 @@ struct SiteSecurityTests {
         #expect(scripts.runs.count == 6)
     }
 
+    @Test func pictureInPicturesReturnButtonAsksForTheVideosTab() {
+        let manager = WebViewManager(profileID: UUID(), ephemeral: true, input: NavigationInput(),
+                                     faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false)
+        defer { manager.discardAll() }
+        #expect(manager.responds(to: NSSelectorFromString("_webViewFullscreenMayReturnToInline:")),
+                "WebKit asks the browser to show the tab before the video returns")
+        let tab = BrowserTab(spaceID: UUID(), profileID: manager.profileID, title: "Video", currentURL: URL(string: "about:blank")!)
+        manager.reconcile(tabs: [tab])
+        let view = manager.prepare(tab).view
+        var asked: [UUID] = []
+        manager.onReturnFromPictureInPicture = { asked.append($0) }
+        manager.webViewFullscreenMayReturnToInline(view)
+        manager.webViewFullscreenMayReturnToInline(WKWebView())
+        #expect(asked == [tab.id], "Only for its own pages")
+    }
+
     @Test func pagesAllowPictureInPictureAndItsScriptsRunWithoutAVideo() async throws {
         let fixture = PageToolFixture(pages: ["one": "<title>One</title><p>No video here</p>"])
         defer { fixture.cleanup() }

@@ -604,6 +604,9 @@ struct BrowserWindowView: View {
             // A private window has no saved pages, folders or other Spaces.
             if !model.isPrivate {
                 Button("New Folder") { editFolder(nil, parent: nil) }
+                if let space = model.coordinator.activeSpace, !space.showsPullRequests {
+                    Button("New Pull Requests Folder") { model.setPullRequestsFolder(true, in: space.id) }
+                }
                 Divider()
                 Button("New Space…") { model.perform(.newSpace) }
                 if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
@@ -773,6 +776,7 @@ struct BrowserWindowView: View {
                                     .background(dropArea("pinnedEnd"))
                                     .accessibilityHidden(true)
                             case .divider:
+                                pullRequestsFolder(in: space)
                                 HStack(spacing: 6) {
                                     VStack { Divider() }
                                     if active && !model.todayTabs.isEmpty {
@@ -867,6 +871,15 @@ struct BrowserWindowView: View {
         .allowsHitTesting(active && model.spaceSwipeProgress == 0 && !model.spaceSwipeIsSettling)
         .accessibilityHidden(!active)
         .transformPreference(SidebarFrames.self) { if !active { $0 = [:] } }
+    }
+
+    /// Below the Space's pins, above Today.
+    @ViewBuilder private func pullRequestsFolder(in space: BrowserSpace) -> some View {
+        if space.showsPullRequests, let feed = model.pullRequests {
+            PullRequestsFolder(model: model, space: space, feed: feed,
+                               themeColor: model.preferences.spaceThemes ? space.color : .gray)
+                .padding(.bottom, 8)
+        }
     }
 
     private var spacePager: some View {

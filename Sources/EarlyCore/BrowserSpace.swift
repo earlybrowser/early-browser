@@ -13,6 +13,8 @@ public struct BrowserSpace: Identifiable, Codable, Equatable, Sendable {
     public var name: String
     public var color: Color
     public var icon: SpaceIcon?
+    /// The Pull Requests live folder is in this Space's sidebar.
+    public var showsPullRequests = false
 
     public init(id: UUID = UUID(), profileID: UUID, name: String, color: Color = .blue, icon: SpaceIcon? = nil) {
         self.id = id
@@ -22,7 +24,7 @@ public struct BrowserSpace: Identifiable, Codable, Equatable, Sendable {
         self.icon = icon
     }
 
-    private enum CodingKeys: String, CodingKey { case id, profileID, name, color, icon }
+    private enum CodingKeys: String, CodingKey { case id, profileID, name, color, icon, showsPullRequests }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -33,6 +35,7 @@ public struct BrowserSpace: Identifiable, Codable, Equatable, Sendable {
         // Decorative metadata must not prevent restoring a whole workspace.
         // This also retires emoji saved by the initial local appearance build.
         icon = try? values.decode(SpaceIcon.self, forKey: .icon)
+        showsPullRequests = (try? values.decodeIfPresent(Bool.self, forKey: .showsPullRequests)) ?? false
     }
 
     public static func normalizedName(_ name: String) -> String? {
