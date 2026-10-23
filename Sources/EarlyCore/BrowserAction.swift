@@ -76,4 +76,10 @@ public enum BrowserAction: Equatable, Sendable {
     case useSelectionForFind
     case toggleReader
     case toggleTranslation
+    /// The focused page's current markup in a read-only window.
+    case viewPageSource
+    /// Shows or closes Web Inspector beside the focused tab's page.
+    case toggleWebInspector
+    /// Asks before removing the focused website's cookies, caches and storage.
+    case clearSiteData
 }

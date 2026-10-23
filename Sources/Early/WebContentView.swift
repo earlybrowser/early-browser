@@ -2,6 +2,7 @@
 
 import AppKit
 import EarlyCore
+import EarlyWeb
 import SwiftUI
 import WebKit
 
@@ -1093,12 +1094,53 @@ struct WebContentView: NSViewRepresentable {
             autoresizesSubviews = false
         }
         required init?(coder: NSCoder) { return nil }
-        override var isFlipped: Bool { true }
+        // Not flipped: WebKit lays a docked Web Inspector out from the bottom
+        // edge. The page itself always fills the host, so it is unaffected.
+        override var isFlipped: Bool { false }
 
         override func setFrameSize(_ size: NSSize) {
             super.setFrameSize(size)
             layoutHostedView()
         }
+
+        /// WebKit docks Web Inspector beside the page, in this host. It goes
+        /// with the page: parked while the tab is hidden, back beside it when
+        /// any host shows the page again.
+        private static let parkedInspectors = NSMapTable<WKWebView, NSView>.weakToStrongObjects()
+        private weak var inspector: NSView?
+
+        static func isInspector(_ view: NSView) -> Bool { String(describing: type(of: view)).hasPrefix("WKInspector") }
+
+        override func didAddSubview(_ subview: NSView) {
+            super.didAddSubview(subview)
+            guard subview !== hosted, Self.isInspector(subview) else { return }
+            inspector = subview
+            if let observer = inspectorFrameObserver { NotificationCenter.default.removeObserver(observer) }
+            subview.postsFrameChangedNotifications = true
+            inspectorFrameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: subview, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.fitInspector() }
+            }
+            fitInspector()
+        }
+
+        private var inspectorFrameObserver: NSObjectProtocol?
+
+        /// WebKit keeps a side-docked inspector below the window's title bar, as
+        /// Safari's toolbar needs, and within the screen, so a window reaching
+        /// past the screen's edge would show a gap beside it. Here it runs from
+        /// the page's edge to the pane's, top to bottom.
+        private func fitInspector() {
+            guard let inspector = dockedInspector, let hosted, hasViewport, inspector.frame.width < bounds.width - 1 else { return }
+            let onRight = inspector.frame.midX > hosted.frame.midX
+            let full = onRight
+                ? CGRect(x: hosted.frame.maxX, y: bounds.minY, width: bounds.maxX - hosted.frame.maxX, height: bounds.height)
+                : CGRect(x: bounds.minX, y: bounds.minY, width: hosted.frame.minX - bounds.minX, height: bounds.height)
+            if full.width > 0, inspector.frame != full { inspector.frame = full }
+        }
+
+        /// The docked inspector shares this host with its page.
+        var dockedInspector: NSView? { inspector?.superview === self ? inspector : nil }
         override func setBoundsSize(_ size: NSSize) {
             super.setBoundsSize(size)
             layoutHostedView()
@@ -1118,7 +1160,11 @@ struct WebContentView: NSViewRepresentable {
             // A newly made/removed SwiftUI host can have zero bounds for one
             // layout pass. Keep the last real viewport instead of asking
             // WebKit to reflow to zero and repaint again on Space re-entry.
-            if hasViewport, hosted.frame != bounds { hosted.frame = bounds }
+            // With Web Inspector docked, WebKit splits whatever frame the page
+            // gets between them; set it only when the two no longer fill this.
+            let area = dockedInspector.map { hosted.frame.union($0.frame) } ?? hosted.frame
+            if hasViewport, area != bounds { hosted.frame = bounds }
+            fitInspector()
             layer?.backgroundColor = hosted.underPageBackgroundColor.cgColor
             CATransaction.commit()
         }
@@ -1229,8 +1275,15 @@ struct WebContentView: NSViewRepresentable {
             backgroundObservation = nil
             if let hosted {
                 if Self.owners.object(forKey: hosted) === self { Self.owners.removeObject(forKey: hosted) }
+                if let inspector = dockedInspector {
+                    Self.parkedInspectors.setObject(inspector, forKey: hosted)
+                    inspector.removeFromSuperview()
+                }
+                if let observer = inspectorFrameObserver { NotificationCenter.default.removeObserver(observer) }
+                inspectorFrameObserver = nil
                 if hosted.superview === self { hosted.removeFromSuperview() }
             }
+            inspector = nil
             hosted = nil
             layer?.backgroundColor = nil
         }
@@ -1251,6 +1304,12 @@ struct WebContentView: NSViewRepresentable {
                 if hasViewport { view.frame = bounds }
                 layer?.backgroundColor = view.underPageBackgroundColor.cgColor
                 addSubview(view)
+                if let parked = Self.parkedInspectors.object(forKey: view) {
+                    Self.parkedInspectors.removeObject(forKey: view)
+                    addSubview(parked)
+                    // WebKit splits the page's frame again around its inspector.
+                    if hasViewport { view.frame = bounds }
+                }
                 CATransaction.commit()
                 layoutHostedView()
                 // Use WebKit's computed page background, not the browser's

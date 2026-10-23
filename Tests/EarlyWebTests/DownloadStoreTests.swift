@@ -274,4 +274,78 @@ struct DownloadStoreTests {
         #expect(fixture.store.items.isEmpty)
         #expect(FileManager.default.fileExists(atPath: try #require(finished.destination).path), "Clearing never deletes files")
     }
+
+    @Test func theListLimitDropsSettledEntriesButKeepsPausedAndResumableDownloads() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        let file = fixture.directory.appending(path: "saved.html")
+        try FileManager.default.createDirectory(at: fixture.directory, withIntermediateDirectories: true)
+        try Data("<p>Saved</p>".utf8).write(to: file)
+        let paused = store.recordSavedFile(at: file, source: nil)
+        paused.state = .paused
+        paused.resumeData = Data([1])
+        let interrupted = store.recordSavedFile(at: file, source: nil)
+        interrupted.state = .failed
+        interrupted.resumeData = Data([2])
+        let broken = store.recordSavedFile(at: file, source: nil)
+        broken.state = .failed
+        let cancelled = store.recordSavedFile(at: file, source: nil)
+        cancelled.state = .cancelled
+        #expect(!paused.canBeTrimmed && !interrupted.canBeTrimmed && broken.canBeTrimmed && cancelled.canBeTrimmed)
+
+        for _ in 0..<DownloadStore.maximumListedItems { store.recordSavedFile(at: file, source: nil) }
+        let ids = Set(store.items.map(\.id))
+        #expect(store.items.count == DownloadStore.maximumListedItems)
+        #expect(ids.contains(paused.id) && ids.contains(interrupted.id), "Downloads that can continue are kept")
+        #expect(!ids.contains(broken.id) && !ids.contains(cancelled.id))
+        #expect(paused.resumeData == Data([1]), "With their resume data")
+
+        // Past the limit, kept downloads stay; only settled entries make room.
+        for _ in 0..<5 { store.recordSavedFile(at: file, source: nil) }
+        #expect(store.items.count == DownloadStore.maximumListedItems && Set(store.items.map(\.id)).isSuperset(of: [paused.id, interrupted.id]))
+    }
+
+    @Test func savingAFileKeepsTheOriginalAndReplacesOthersOnlyWithACompleteCopy() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "EarlySave-\(UUID())", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let report = folder.appending(path: "report.pdf"), other = folder.appending(path: "other.pdf")
+        try Data("%PDF original".utf8).write(to: report)
+        try Data("%PDF other".utf8).write(to: other)
+
+        // Choosing the original itself, under any spelling, changes nothing.
+        try WebViewManager.copyFile(report, replacing: report)
+        try WebViewManager.copyFile(report, replacing: folder.appending(path: "REPORT.pdf"))
+        let link = folder.appending(path: "link.pdf")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: report)
+        try WebViewManager.copyFile(report, replacing: link)
+        #expect(try Data(contentsOf: report) == Data("%PDF original".utf8))
+        #expect(WebViewManager.isSameFile(report, link) && !WebViewManager.isSameFile(report, other))
+
+        // A failed copy leaves the chosen file as it was.
+        #expect(throws: (any Error).self) { try WebViewManager.copyFile(folder.appending(path: "missing.pdf"), replacing: other) }
+        #expect(try Data(contentsOf: other) == Data("%PDF other".utf8))
+        try WebViewManager.copyFile(report, replacing: other)
+        #expect(try Data(contentsOf: other) == Data("%PDF original".utf8) && FileManager.default.fileExists(atPath: report.path))
+
+        // Saving beside the original suggests the first unused number.
+        try Data().write(to: folder.appending(path: "report (1).pdf"))
+        let exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+        #expect(WebViewManager.unusedName("report.pdf", in: folder, exists: exists) == "report (2).pdf")
+        #expect(WebViewManager.unusedName("notes.pdf", in: folder, exists: exists) == "notes.pdf")
+        #expect(WebViewManager.unusedName("README", in: folder) { $0.lastPathComponent == "README" } == "README (1)")
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "report.pdf"
+        WebViewManager.suggestUnusedName(for: report, in: panel)
+        #expect(panel.nameFieldStringValue == "report (2).pdf" && panel.directoryURL?.standardizedFileURL == folder.standardizedFileURL)
+
+        // A web page's name is checked in whatever folder the panel opens in.
+        try Data().write(to: folder.appending(path: "sector 36 - Google Search.html"))
+        let page = NSSavePanel()
+        page.directoryURL = folder
+        page.nameFieldStringValue = "sector 36 - Google Search.html"
+        WebViewManager.suggestUnusedName(for: URL(string: "https://www.google.com/search?q=sector+36"), in: page)
+        #expect(page.nameFieldStringValue == "sector 36 - Google Search (1).html" && page.directoryURL?.standardizedFileURL == folder.standardizedFileURL)
+    }
 }

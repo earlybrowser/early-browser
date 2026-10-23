@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import EarlyCore
 import WebKit
 
 /// WebKit re-sends a key-down that the page left unhandled through AppKit,
@@ -32,7 +33,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
 
     /// Menu actions that the owning manager performs for this page.
     enum ContextAction: Equatable {
-        case back, forward, reload, savePage, printPage
+        case back, forward, reload, savePage, printPage, viewPageSource
         case downloadLink(URL)
         case openImageInNewTab(URL), saveImage(URL), copyImage(URL)
         case searchSelection(String)
@@ -70,6 +71,12 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
     }
     private var shownLinkMenu: NSMenu?
+    /// With Web Inspector, right-clicks open WebKit's menu, which gets Early's
+    /// items and keeps WebKit's own Inspect Element.
+    var inspectsElements = false
+    private var pendingContextTarget: (target: ContextTarget, time: Date)?
+    static let inspectElementIdentifier = "WKMenuItemIdentifierInspectElement"
+    static let inspectTitle = "Inspect"
     var onInteractionEnded: (() -> Void)?
     var hasActiveInteraction: Bool { shownLinkMenu != nil || sharingPicker != nil }
 
@@ -132,11 +139,72 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
                 sections.append([item(title, perform, ContextAction.translatePage)])
             }
         }
+        // Every menu ends with the page's source (then, in WebKit's, Inspect).
+        let isSource = url?.scheme?.lowercased() == NavigationInput.pageSourceScheme
+        sections.append([item("View Page Source", perform, ContextAction.viewPageSource, enabled: url != nil && !isSource)])
         for (index, section) in sections.enumerated() {
             if index > 0 { menu.addItem(.separator()) }
             section.forEach { menu.addItem($0) }
         }
         return menu
+    }
+
+    /// Early's items in WebKit's menu, then Inspect Element. Fields and media
+    /// keep WebKit's menu as they always do, now with Inspect Element too.
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        defer { super.willOpenMenu(menu, with: event) }
+        guard inspectsElements else { return }
+        shownLinkMenu = menu
+        // The page script's message comes just before WebKit's menu. Fields and
+        // media keep WebKit's own items, with its Inspect at the end.
+        if let pending = pendingContextTarget.take(), Date().timeIntervalSince(pending.time) < 0.5 {
+            fill(menu, for: pending.target)
+        } else {
+            menu.items.first { $0.identifier?.rawValue == Self.inspectElementIdentifier }?.title = Self.inspectTitle
+        }
+    }
+
+    /// A menu is open only while the run loop tracks it. Cancelling one that
+    /// is not tracking stops the run loop itself instead.
+    static var isTrackingMenu: Bool { RunLoop.current.currentMode == .eventTracking }
+
+    /// While a page menu opens, the page offers nothing to Services: macOS
+    /// would add its submenu to WebKit's menu, which lists only Early's working
+    /// actions. The app's own Services menu is not affected.
+    private var opensPageMenu = false
+
+    override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+                                 returnType: NSPasteboard.PasteboardType?) -> Any? {
+        opensPageMenu ? nil : super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+
+    override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        super.didCloseMenu(menu, with: event)
+        opensPageMenu = false
+        guard inspectsElements, shownLinkMenu === menu else { return }
+        shownLinkMenu = nil
+        onInteractionEnded?()
+    }
+
+    func fill(_ menu: NSMenu, for target: ContextTarget) {
+        let inspect = menu.items.first { $0.identifier?.rawValue == Self.inspectElementIdentifier }
+        menu.removeAllItems()
+        menu.autoenablesItems = false
+        menu.allowsContextMenuPlugIns = false
+        if #available(macOS 15.2, *) { menu.automaticallyInsertsWritingToolsItems = false }
+        let early = makeContextMenu(for: target)
+        let items = early.items
+        early.removeAllItems()
+        items.forEach(menu.addItem)
+        if let inspect {
+            inspect.title = Self.inspectTitle
+            menu.addItem(inspect)
+        }
+    }
+
+    static func inspector(of view: WKWebView) -> NSObject? {
+        guard view.responds(to: NSSelectorFromString("_inspector")) else { return nil }
+        return view.value(forKey: "_inspector") as? NSObject
     }
 
     static func menuExcerpt(_ text: String) -> String {
@@ -145,6 +213,16 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     }
 
     func showContextMenu(for target: ContextTarget) {
+        if inspectsElements {
+            // WebKit's own menu follows this message; it is filled in below.
+            pendingContextTarget = (target, Date())
+            opensPageMenu = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+                guard let self, self.shownLinkMenu == nil else { return }
+                self.opensPageMenu = false
+            }
+            return
+        }
         guard let window, window.attachedSheet == nil else { return }
         let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
         linkMenuPoint = point
@@ -165,7 +243,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     }
 
     func cancelLinkMenu() {
-        shownLinkMenu?.cancelTrackingWithoutAnimation()
+        if Self.isTrackingMenu { shownLinkMenu?.cancelTrackingWithoutAnimation() }
         shownLinkMenu = nil
         sharingPicker?.close()
         sharingPicker = nil

@@ -118,6 +118,7 @@ extension WebViewManager {
         panel.allowedContentTypes = [.pdf]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = Self.documentName(for: page.view, extension: "pdf")
+        Self.suggestUnusedName(for: page.view.url, in: panel)
         beginDocumentPanel(id, window: window, sheet: panel)
         panel.beginSheetModal(for: window) { [weak self, weak panel] response in
             guard let self else { return }
@@ -142,6 +143,7 @@ extension WebViewManager {
         panel.allowedContentTypes = [isPDF ? .pdf : .html]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = Self.documentName(for: page.view, extension: isPDF ? "pdf" : "html")
+        Self.suggestUnusedName(for: url, in: panel)
         beginDocumentPanel(id, window: window, sheet: panel)
         panel.beginSheetModal(for: window) { [weak self, weak panel] response in
             guard let self else { return }
@@ -205,13 +207,49 @@ extension WebViewManager {
     private func saveOriginal(_ url: URL, from id: UUID, to destination: URL, failure: String) {
         if url.isFileURL {
             do {
-                if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
-                try FileManager.default.copyItem(at: url, to: destination)
+                try Self.copyFile(url, replacing: destination)
                 downloads.recordSavedFile(at: destination, source: nil)
             } catch { onNotice?(failure) }
             return
         }
         if !startDownload(url, from: id, to: destination) { onNotice?(failure) }
+    }
+
+    /// Saving a file onto itself leaves it alone. Any other destination is
+    /// replaced only by a complete copy, so a failed save never loses it.
+    static func copyFile(_ source: URL, replacing destination: URL) throws {
+        if isSameFile(source, destination) { return }
+        try Data(contentsOf: source, options: .mappedIfSafe).write(to: destination, options: .atomic)
+    }
+
+    /// The same file under another spelling too: a different letter case, a
+    /// symbolic link, or a second hard link.
+    static func isSameFile(_ first: URL, _ second: URL) -> Bool {
+        if first.standardizedFileURL.resolvingSymlinksInPath() == second.standardizedFileURL.resolvingSymlinksInPath() { return true }
+        guard let one = try? first.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
+              let other = try? second.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier else { return false }
+        return one.isEqual(other)
+    }
+
+    /// A taken name gets the first free number, “name (1).ext”, in the folder
+    /// the panel opens in; a file on this Mac saves beside itself.
+    static func suggestUnusedName(for source: URL?, in panel: NSSavePanel) {
+        if let source, source.isFileURL { panel.directoryURL = source.deletingLastPathComponent() }
+        guard let folder = panel.directoryURL
+                ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
+        panel.nameFieldStringValue = unusedName(panel.nameFieldStringValue, in: folder) {
+            FileManager.default.fileExists(atPath: $0.path)
+        }
+    }
+
+    static func unusedName(_ name: String, in folder: URL, exists: (URL) -> Bool) -> String {
+        guard exists(folder.appendingPathComponent(name)) else { return name }
+        let ext = (name as NSString).pathExtension, base = (name as NSString).deletingPathExtension
+        for number in 1... {
+            let candidate = base + " (\(number))" + (ext.isEmpty ? "" : "." + ext)
+            if !exists(folder.appendingPathComponent(candidate)) { return candidate }
+        }
+        return name
     }
 
     static func documentName(for view: WKWebView, extension ext: String?) -> String {
@@ -241,6 +279,7 @@ extension WebViewManager {
         case .copyImage(let url): copyImage(url, from: id)
         case .searchSelection(let text): onOpenSearch?(text)
         case .translatePage: onTranslatePage?(id)
+        case .viewPageSource: onViewPageSource?(id)
         }
     }
 

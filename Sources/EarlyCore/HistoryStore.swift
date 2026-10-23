@@ -63,8 +63,10 @@ public actor HistoryStore {
     deinit { if let db { sqlite3_close(db) } }
 
     /// Pages Early can open again: never local files, nothing past 4 KB.
+    /// Not local files, and not a page's source, which is a view of another page.
     public nonisolated static func records(_ url: URL) -> Bool {
-        !url.isFileURL && url.scheme != nil && url.absoluteString.utf8.count <= 4096
+        !url.isFileURL && url.scheme != nil && url.scheme?.lowercased() != NavigationInput.pageSourceScheme
+            && url.absoluteString.utf8.count <= 4096
     }
 
     public func record(_ url: URL, title: String?, at date: Date) throws {

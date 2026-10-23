@@ -541,6 +541,15 @@ struct BrowserWindowView: View {
         } message: {
             Text(ClearHistoryButtons.message)
         }
+        .alert("Clear cache and cookies for \(model.siteDataClearRequest ?? "this website")?",
+               isPresented: Binding(get: { model.siteDataClearRequest != nil }, set: { if !$0 { model.siteDataClearRequest = nil } })) {
+            Button("Clear", role: .destructive) {
+                if let host = model.siteDataClearRequest { Task { await model.clearSiteData(host) } }
+            }
+            Button("Cancel", role: .cancel) { model.siteDataClearRequest = nil }
+        } message: {
+            Text(SiteControlsPanel.clearSiteDataMessage)
+        }
         .onDisappear {
             model.cancelWindowInteractions()
             endDrag()
@@ -2499,6 +2508,13 @@ struct BrowserWindowView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }
+                if let security = model.activePage?.security, security.isInsecure {
+                    Image(systemName: SiteSecurityRow.symbol(security))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .help(SiteSecurityRow.title(security))
+                        .accessibilityHidden(true)
+                }
                 Text(addressLabel)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -2539,6 +2555,7 @@ struct BrowserWindowView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: addressHovered)
         .accessibilityLabel("Address bar")
         .accessibilityValue(currentURL ?? "No active tab")
+        .accessibilityHint(model.activePage?.security.isInsecure == true ? SiteSecurityRow.title(model.activePage?.security ?? .none) : "")
         .accessibilityIdentifier("sidebar.addressBar")
         .help(currentURL.map { "\($0) — Open Location (Command-L)" }
               ?? "Search or enter a URL (Command-L)")
@@ -2547,9 +2564,10 @@ struct BrowserWindowView: View {
     }
 
     private var addressLabel: String {
-        guard let currentURL, let url = URL(string: currentURL), let host = url.host else {
-            return "Search…"
-        }
+        guard let currentURL, let address = URL(string: currentURL) else { return "Search…" }
+        let source = NavigationInput.page(ofSource: address)
+        guard let url = source ?? Optional(address), let host = url.host else { return "Search…" }
+        if source != nil { return NavigationInput.pageSourceScheme + ":" + host }
         // Keep the complete URL in the editor, accessibility value and hover help.
         return (url.scheme == "http" ? "http://" : "") + host
             + (url.port.map { ":\($0)" } ?? "")

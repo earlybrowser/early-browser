@@ -20,6 +20,8 @@ public final class BrowserPreferences {
     public var spaceThemes: Bool { didSet { store(spaceThemes, for: "spaceThemes") } }
     public var translucentChrome: Bool { didSet { store(translucentChrome, for: "translucentChrome") } }
     public var restoreSession: Bool { didSet { store(restoreSession, for: "restoreSession") } }
+    /// A video playing in a tab you switch away from continues in Picture in Picture.
+    public var automaticPictureInPicture: Bool { didSet { store(automaticPictureInPicture, for: "automaticPictureInPicture") } }
     private var width: Double
 
     public var sidebarWidth: Double {
@@ -33,7 +35,8 @@ public final class BrowserPreferences {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: ["onlineSearchSuggestions": true, "commandBarActions": true, "spaceSwipes": true,
-            "haptics": true, "spaceThemes": true, "translucentChrome": true, "restoreSession": true])
+            "haptics": true, "spaceThemes": true, "translucentChrome": true, "restoreSession": true,
+            "automaticPictureInPicture": true])
         appearance = Appearance(rawValue: defaults.string(forKey: "browserAppearance") ?? "") ?? .system
         onlineSuggestions = defaults.bool(forKey: "onlineSearchSuggestions")
         commandBarActions = defaults.bool(forKey: "commandBarActions")
@@ -44,6 +47,7 @@ public final class BrowserPreferences {
         spaceThemes = defaults.bool(forKey: "spaceThemes")
         translucentChrome = defaults.bool(forKey: "translucentChrome")
         restoreSession = defaults.bool(forKey: "restoreSession")
+        automaticPictureInPicture = defaults.bool(forKey: "automaticPictureInPicture")
         width = SidebarWidth.clamped(defaults.object(forKey: "sidebarWidth") as? Double ?? SidebarWidth.defaultValue)
     }
 

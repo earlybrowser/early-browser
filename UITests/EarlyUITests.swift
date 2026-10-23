@@ -2652,8 +2652,14 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(enter.waitForExistence(timeout: 10))
         enter.click()
         XCTAssertTrue(app.staticTexts["Fullscreen active"].waitForExistence(timeout: 8))
-        app.buttons["Exit video fullscreen"].click()
-        XCTAssertTrue(app.staticTexts["Fullscreen closed"].waitForExistence(timeout: 8))
+        // macOS animates into full screen, and a click during the animation can
+        // be lost (seen on CI), so the page's Exit button is tried again.
+        let exit = app.buttons["Exit video fullscreen"], closed = app.staticTexts["Fullscreen closed"]
+        for _ in 0..<3 where !closed.exists {
+            if exit.waitForExistence(timeout: 3), exit.isHittable { exit.click() }
+            _ = closed.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(closed.exists)
         XCTAssertTrue(app.buttons["sidebar.newTab"].exists)
         app.typeKey("l", modifierFlags: .command)
         XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 3))

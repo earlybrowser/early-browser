@@ -19,7 +19,7 @@ struct PageToolsActionTests {
             _ = NSApplication.shared
             defaults = UserDefaults(suiteName: suite)!
             defaults.set(false, forKey: "onlineSearchSuggestions")
-            let input = NavigationInput(allowedSchemes: ["http", "https", "early-test"])
+            let input = NavigationInput(allowedSchemes: ["http", "https", "early-test", "view-source"])
             let repository = SessionRepository(fileURL: FileManager.default.temporaryDirectory
                 .appendingPathComponent("EarlyPageTools-\(UUID()).sqlite"), input: input)
             model = BrowserWindowModel(startup: .returningSession, session: session, repository: repository,
@@ -269,6 +269,64 @@ struct PageToolsActionTests {
         #expect(model.perform(.clearTodayTabs) && model.todayTabs.isEmpty && !model.canPerform(.clearTodayTabs))
     }
 
+    @Test func siteControlsDescribeSecurityAndPermissionsAndFollowThePictureInPictureSetting() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        #expect(model.currentSiteOrigin == nil && model.sitePermission(.camera) == nil, "Early's own pages have no permissions")
+
+        #expect(model.webViews.automaticPictureInPicture())
+        model.preferences.automaticPictureInPicture = false
+        #expect(!model.webViews.automaticPictureInPicture())
+        model.preferences.automaticPictureInPicture = true
+
+        #expect(SiteControlsPanel.permissions.contains(.location) == WebViewManager.offersLocation)
+        #expect(SiteControlsPanel.permissions.prefix(2) == [.camera, .microphone])
+        #expect(SitePermissionRow.status(.ask, inUse: false) == "Asks first" && SitePermissionRow.status(.block, inUse: false) == "Blocked")
+        #expect(SitePermissionRow.status(.allow, inUse: true) == "In use")
+        #expect(SiteSecurityRow.title(.secure) == "Secure" && SiteSecurityRow.title(.mixedContent) == "Not Secure")
+        #expect(SiteSecurityRow.detail(.secure, host: "example.com") == "Your connection to example.com is encrypted.")
+        #expect(SiteSecurityRow.symbol(.notSecure) == "lock.slash.fill" && SiteSecurityRow.symbol(.certificateProblem) == "exclamationmark.triangle.fill")
+    }
+
+    @Test func webInspectorSourceAndSiteDataAreFocusedPageActions() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        #expect(!model.canPerform(.viewPageSource) && !model.canPerform(.toggleWebInspector))
+        #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
+        let tab = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(tab)
+
+        // Every page can be inspected in Early, with no mode to turn on.
+        let view = try #require(model.webViews.pages[tab]?.view)
+        #expect(WebViewManager.supportsWebInspector)
+        #expect(view.configuration.preferences.value(forKey: "developerExtrasEnabled") as? Bool == true)
+        #expect(!view.isInspectable, "Safari's Develop menu is only the fallback")
+        #expect(model.canPerform(.toggleWebInspector) && !model.isWebInspectorVisible)
+        #expect(model.commandSearchCandidates().map(\.title).contains("Show Web Inspector"))
+        #expect(!model.commandSearchCandidates().map(\.title).contains { $0.contains("Developer Mode") })
+
+        // Early's own pages are not websites, so there is nothing to clear.
+        #expect(!model.canPerform(.clearSiteData) && model.siteDataClearRequest == nil)
+        #expect(!model.commandSearchCandidates().map(\.title).contains("Clear Cache and Cookies for This Site…"))
+        #expect(model.canPerform(.viewPageSource) && model.commandSearchCandidates().map(\.title).contains("View Page Source"))
+
+        // View Page Source opens the page's current markup in a new tab.
+        let tabs = model.todayTabs.count
+        #expect(model.perform(.viewPageSource))
+        let source = try #require(URL(string: "view-source:early-test://fixture/one"))
+        try await fixture.waitUntil("source tab") { model.activeTab?.currentURL == source }
+        let sourceTab = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(sourceTab)
+        try await fixture.waitUntil("source title") { model.webViews.pages[sourceTab]?.view.title?.hasPrefix("Source of ") == true }
+        #expect(model.todayTabs.count == tabs + 1 && sourceTab != tab)
+        let text = try await model.webViews.pages[sourceTab]?.view.evaluateJavaScript("document.querySelector('pre').textContent") as? String
+        #expect(text?.contains("<title>") == true, "The page's markup, shown as text")
+        #expect(!model.canPerform(.viewPageSource), "A source tab has no source of its own")
+    }
+
     @Test func recentlyClosedListsTabsNewestFirstAndReopensAnyOfThem() async throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
@@ -318,6 +376,13 @@ struct PageToolsActionTests {
 
         await model.clearHistory(.all)
         try await fixture.waitUntil("cleared") { model.recentlyVisited.isEmpty }
+        // A title arriving from an open tab afterwards only names a page that
+        // is gone; it does not put the page back in History.
+        let open = try #require(model.coordinator.focusedTabID)
+        model.webViews.onMetadata?(open, one, "Page One, Later")
+        await model.flushHistory()
+        let remaining = try await history.visits()
+        #expect(model.recentlyVisited.isEmpty && remaining.isEmpty)
     }
 
     @Test func visitsAreRecordedAndTheCommandBarOffersHistoryButNotOpenTabsTwice() async throws {

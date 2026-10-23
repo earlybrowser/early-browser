@@ -85,6 +85,8 @@ struct LocalDocumentPolicyTests {
         for source in ["data:text/plain;base64,aGk=", "blob:https://example.com/id", "https://example.com/report.pdf"] {
             #expect(decision(manager, page, Action(URL(string: source)!, type: .linkActivated, download: true)) == .download, "\(source)")
         }
+        // No app opens ftp: links here, so the link is refused with a notice.
+        manager.appForLink = { _ in nil }
         #expect(decision(manager, page, Action(URL(string: "ftp://example.com/file.zip")!, type: .linkActivated, download: true)) == .cancel)
         #expect(page.requestedURL == tab.currentURL, "A download keeps the visible page as the reload target")
         #expect(page.navigationNotice?.contains("unsupported address type") == true)

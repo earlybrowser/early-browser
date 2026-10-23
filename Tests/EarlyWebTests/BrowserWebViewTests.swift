@@ -14,13 +14,16 @@ struct BrowserWebViewTests {
         let url = URL(string: "https://example.com/page?query=one#section")!
         let menu = view.makeLinkMenu(for: url)
 
-        #expect(menu.items.map(\.title) == ["Open Link in New Tab", "Open Link in New Window", "Download Linked File", "Copy Link", "Share"])
+        // The link's own actions, then the page's source, as every menu ends.
+        #expect(menu.items.map(\.title) == ["Open Link in New Tab", "Open Link in New Window", "Download Linked File", "Copy Link", "Share",
+                                            "", "View Page Source"])
+        #expect(menu.items[5].isSeparatorItem && menu.items[6].target === view)
         #expect(!menu.autoenablesItems)
         #expect(!menu.allowsContextMenuPlugIns)
         if #available(macOS 15.2, *) {
             #expect(!menu.automaticallyInsertsWritingToolsItems)
         }
-        for item in menu.items {
+        for item in menu.items.prefix(5) {
             #expect(!item.isSeparatorItem)
             #expect(item.submenu == nil)
             #expect(item.isEnabled)

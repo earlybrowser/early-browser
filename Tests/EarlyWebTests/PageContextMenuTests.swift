@@ -19,10 +19,10 @@ struct PageContextMenuTests {
 
     @Test func plainPageMenuOffersOnlyWorkingPageCommands() {
         let menu = view().makeContextMenu(for: .init())
-        #expect(titles(menu) == ["Back", "Forward", "Reload", "—", "Save Page As…", "Print…"])
+        #expect(titles(menu) == ["Back", "Forward", "Reload", "—", "Save Page As…", "Print…", "—", "View Page Source"])
         // A fresh view has no history or document yet.
         #expect(menu.items.filter { !$0.isSeparatorItem && !$0.isEnabled }.map(\.title)
-            == ["Back", "Forward", "Save Page As…", "Print…"])
+            == ["Back", "Forward", "Save Page As…", "Print…", "View Page Source"])
         #expect(!menu.allowsContextMenuPlugIns && !menu.autoenablesItems)
     }
 
@@ -31,17 +31,18 @@ struct PageContextMenuTests {
         let data = URL(string: "data:image/png;base64,AAAA")!
         let link = URL(string: "https://example.com/page")!
         let view = view()
+        let source = ["—", "View Page Source"]
         #expect(titles(view.makeContextMenu(for: .init(image: web)))
-            == ["Open Image in New Tab", "Save Image As…", "Copy Image", "Copy Image Address"])
-        #expect(titles(view.makeContextMenu(for: .init(image: data))) == ["Save Image As…", "Copy Image"])
+            == ["Open Image in New Tab", "Save Image As…", "Copy Image", "Copy Image Address"] + source)
+        #expect(titles(view.makeContextMenu(for: .init(image: data))) == ["Save Image As…", "Copy Image"] + source)
         let long = String(repeating: "searchable words ", count: 8)
         let selection = view.makeContextMenu(for: .init(selection: long))
         let search = try #require(selection.items.first?.title)
         #expect(search.hasPrefix("Search with Google for “") && search.hasSuffix("…”") && search.count < 60)
-        #expect(titles(selection).dropFirst() == ["Copy", "Look Up “\(BrowserWebView.menuExcerpt(long))”", "Share"])
+        #expect(Array(titles(selection).dropFirst()) == ["Copy", "Look Up “\(BrowserWebView.menuExcerpt(long))”", "Share"] + source)
         #expect(titles(view.makeContextMenu(for: .init(link: link, image: web)))
             == ["Open Link in New Tab", "Open Link in New Window", "Download Linked File", "Copy Link", "Share", "—",
-                "Open Image in New Tab", "Save Image As…", "Copy Image", "Copy Image Address"])
+                "Open Image in New Tab", "Save Image As…", "Copy Image", "Copy Image Address"] + source)
     }
 
     @Test func menuItemsDispatchTheirExactTargets() {
@@ -81,6 +82,10 @@ struct PageContextMenuTests {
             guard ContinuousClock.now < deadline else { throw CancellationError() }
             try await Task.sleep(for: .milliseconds(20))
         }
+        // WebKit's own menu would start real menu tracking in this test, so the
+        // page uses Early's menu here; filling WebKit's is tested on its own.
+        view.inspectsElements = false
+        _ = try await view.callAsyncJavaScript("window.__earlyOwnMenu = true", contentWorld: PageContextMenuObserver.world)
         func rightClick(atTop y: CGFloat) async throws -> [String]? {
             let before = shown.count
             let location = view.convert(CGPoint(x: 30, y: y), to: nil)
@@ -96,7 +101,8 @@ struct PageContextMenuTests {
         }
         // WebKit's view is flipped: y is measured from the top.
         #expect(try await rightClick(atTop: 20)?.first?.hasPrefix("Search with Google for") == true, "\(shown)")
-        #expect(try await rightClick(atTop: 200) == ["Back", "Forward", "Reload", "—", "Save Page As…", "Print…"], "\(shown)")
+        #expect(try await rightClick(atTop: 200) == ["Back", "Forward", "Reload", "—", "Save Page As…", "Print…", "—", "View Page Source"],
+                "\(shown)")
         #expect(!window.isVisible)
     }
 
@@ -115,14 +121,16 @@ struct PageContextMenuTests {
         defer { manager.discardAll(); window.close() }
         var shown: [[String]] = []
         view.presentMenu = { menu, _ in shown.append(menu.items.map { $0.isSeparatorItem ? "—" : $0.title }) }
+        // Validation is the same whichever menu shows the items; check it on Early's own.
+        view.inspectsElements = false
 
         manager.showContextMenu(link: "javascript:alert(1)", image: nil, selection: "   ", in: view)
         manager.showContextMenu(link: "file:///etc/hosts", image: "blob:https://example.com/id", selection: nil, in: view)
         manager.showContextMenu(link: nil, image: "ftp://example.com/a.png", selection: " Early ", in: view)
         #expect(shown.count == 3)
         #expect(shown[0].first == "Back", "Unsupported links and blank selections fall back to the page menu")
-        #expect(shown[1] == ["Save Image As…", "Copy Image"], "A web page cannot offer a local file link")
-        #expect(shown[2] == ["Search with Google for “Early”", "Copy", "Look Up “Early”", "Share"])
+        #expect(shown[1] == ["Save Image As…", "Copy Image", "—", "View Page Source"], "A web page cannot offer a local file link")
+        #expect(shown[2] == ["Search with Google for “Early”", "Copy", "Look Up “Early”", "Share", "—", "View Page Source"])
         #expect(!window.isVisible)
     }
 }

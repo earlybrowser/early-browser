@@ -41,6 +41,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var downloadStores: [UUID: DownloadStore] = [:]
     /// Each profile's browsing history, beside the session file.
     @ObservationIgnored private var historyStores: [UUID: HistoryStore] = [:]
+    /// Each profile's per-site permissions; a private session's stay in memory.
+    @ObservationIgnored private var sitePermissionStores: [UUID: SitePermissions] = [:]
     /// All open private windows share one temporary profile and one website
     /// data store kept only in memory, released with the last private window.
     @ObservationIgnored private(set) var privateProfileID: UUID?
@@ -91,7 +93,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                    value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) { suite = value }
                 #endif
                 let testing = suite != nil || isTesting
-                let input = NavigationInput(allowedSchemes: testing ? ["http", "https", "file", "early-test"] : ["http", "https", "file"])
+                let input = NavigationInput(allowedSchemes: testing ? ["http", "https", "file", "view-source", "early-test"]
+                                                                    : ["http", "https", "file", "view-source"])
                 var directory = storageDirectory ?? URL.applicationSupportDirectory.appending(path: "Early", directoryHint: .isDirectory)
                 if storageDirectory == nil, let suite { directory.append(path: "UITests/\(suite)", directoryHint: .isDirectory) }
                 let repository = SessionRepository(fileURL: directory.appending(path: "session.sqlite"), input: input)
@@ -232,6 +235,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
               !visibleModels.contains(where: { $0.coordinator.profileID == profile }) else { return }
         privateProfileID = nil
         privateDataStore = nil
+        sitePermissionStores.removeValue(forKey: profile)
         downloadStores.removeValue(forKey: profile)?.cancelAll()
     }
 
@@ -266,6 +270,17 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         storageURL?.deletingLastPathComponent().appending(path: "History/\(id.uuidString).sqlite", directoryHint: .notDirectory)
     }
 
+    private func sitePermissionsFile(for id: UUID) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "Permissions/\(id.uuidString).json", directoryHint: .notDirectory)
+    }
+
+    func sitePermissions(for id: UUID) -> SitePermissions {
+        if let store = sitePermissionStores[id] { return store }
+        let store = SitePermissions(fileURL: isPrivateProfile(id) ? nil : sitePermissionsFile(for: id))
+        sitePermissionStores[id] = store
+        return store
+    }
+
     func history(for id: UUID) -> HistoryStore? {
         if let store = historyStores[id] { return store }
         guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
@@ -278,7 +293,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         BrowserWindowModel(startup: startup, session: session, repository: repository!, input: input, isTesting: testing,
             restorationError: persistence?.error, defaults: defaults, sharedPersistence: persistence,
             websiteDataStore: websiteDataStore(for: session.profileID), downloads: downloads(for: session.profileID),
-            preferences: preferences, isPrivate: isPrivateProfile(session.profileID), history: history(for: session.profileID))
+            preferences: preferences, isPrivate: isPrivateProfile(session.profileID), history: history(for: session.profileID),
+            sitePermissions: sitePermissions(for: session.profileID))
     }
 
     @discardableResult private func addWindow(session: BrowserSession) -> UUID {
@@ -488,6 +504,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         dataStores.removeValue(forKey: id)
         downloadStores.removeValue(forKey: id)?.cancelAll()
         let history = historyStores.removeValue(forKey: id)
+        sitePermissionStores.removeValue(forKey: id)?.removeFile()
         saveAll()
         guard await persistence?.flush() == true else {
             profileError = "The profile change could not be saved. Its website data was kept. \(persistence?.error ?? "")"
@@ -518,6 +535,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                         try await FaviconStore.removeCache(for: id)
                     }
                     if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
+                    if let file = sitePermissionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
                     var remaining = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
                     remaining.removeAll { $0 == value }
                     defaults.set(remaining, forKey: "pendingProfileCleanup")
@@ -574,6 +592,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyAppearance()
+        WebViewManager.registerInspectorDefaults()
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }

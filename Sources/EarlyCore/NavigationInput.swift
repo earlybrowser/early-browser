@@ -52,6 +52,16 @@ public struct NavigationInput: Sendable {
         return String(query.prefix(limit))
     }
 
+    /// View Page Source shows `view-source:` plus the page's address.
+    public static let pageSourceScheme = "view-source"
+
+    public static func sourceURL(of page: URL) -> URL? { URL(string: pageSourceScheme + ":" + page.absoluteString) }
+
+    public static func page(ofSource url: URL) -> URL? {
+        guard url.scheme?.lowercased() == pageSourceScheme else { return nil }
+        return URL(string: String(url.absoluteString.dropFirst(pageSourceScheme.count + 1)))
+    }
+
     public func searchURL(for query: String) throws -> URL {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NavigationInputError.empty }
@@ -63,6 +73,14 @@ public struct NavigationInput: Sendable {
     public func validate(_ url: URL) throws -> URL {
         guard let scheme = url.scheme?.lowercased(), allowedSchemes.contains(scheme) else {
             throw NavigationInputError.unsupportedScheme
+        }
+        if scheme == Self.pageSourceScheme {
+            // A page's source: valid when the page's own address is.
+            guard let page = Self.page(ofSource: url), page.scheme?.lowercased() != Self.pageSourceScheme else {
+                throw NavigationInputError.invalidAddress
+            }
+            _ = try validate(page)
+            return url
         }
         if scheme == "file" {
             // Local documents chosen by the user: a path, and no remote host.

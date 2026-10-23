@@ -154,6 +154,31 @@ struct PrivateBrowsingTests {
         await fixture.cleanup()
     }
 
+    @Test func sitePermissionsAreSavedPerProfileAndForgottenWithThePrivateSession() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let normal = try #require(app.model)
+        let profile = normal.coordinator.profileID
+        let saved = app.sitePermissions(for: profile)
+        #expect(normal.sitePermissions === saved && saved === app.sitePermissions(for: profile))
+        #expect(saved.fileURL == fixture.directory.appending(path: "Permissions/\(profile.uuidString).json"))
+        saved.set(.allow, for: [.camera], origin: "https://meet.example.com")
+        #expect(SitePermissions(fileURL: saved.fileURL).decision(for: "https://meet.example.com", .camera) == .allow)
+        #expect(normal.webViews.sitePermissions === saved)
+
+        let first = try #require(app.openPrivateWindow())
+        let model = try #require(app.windowModel(first))
+        #expect(model.sitePermissions.fileURL == nil && model.sitePermissions !== saved, "Private choices stay in memory")
+        #expect(model.sitePermissions.decision(for: "https://meet.example.com", .camera) == .ask, "Nothing carries over")
+        model.sitePermissions.set(.allow, for: [.microphone], origin: "https://meet.example.com")
+        app.closeWindow(first)
+        let second = try #require(app.openPrivateWindow())
+        #expect(app.windowModel(second)?.sitePermissions.decisions.isEmpty == true, "A new private session starts fresh")
+        fixture.opened.removeAll { $0 == first }
+        await fixture.cleanup()
+    }
+
     @Test func recentlyClosedWindowsAreListedNewestFirstAndAnyOfThemReopens() async throws {
         let fixture = Fixture()
         await fixture.start()

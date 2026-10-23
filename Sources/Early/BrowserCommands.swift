@@ -2,6 +2,7 @@
 
 import AppKit
 import EarlyCore
+import EarlyWeb
 import SwiftUI
 
 private struct BrowserWindowKey: FocusedValueKey {
@@ -134,6 +135,17 @@ struct BrowserCommands: Commands {
                 model?.perform(.toggleTranslation)
             }
             .disabled(model?.canPerform(.toggleTranslation) != true)
+            Divider()
+            Button("View Page Source") { model?.perform(.viewPageSource) }
+                .keyboardShortcut("u", modifiers: [.command, .option])
+                .disabled(model?.canPerform(.viewPageSource) != true)
+            if WebViewManager.supportsWebInspector {
+                Button(model?.isWebInspectorVisible == true ? "Hide Web Inspector" : "Show Web Inspector") {
+                    model?.perform(.toggleWebInspector)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                .disabled(model?.canPerform(.toggleWebInspector) != true)
+            }
             Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }
                 .keyboardShortcut("l", modifiers: [.command, .option])
