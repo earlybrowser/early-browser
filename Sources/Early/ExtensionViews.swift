@@ -686,7 +686,18 @@ private struct ExtensionsMenuList: View {
                     Button("Options…") { model.openExtensionTab(options, active: true) }
                 }
             } label: {
-                Text(item.name)
+                // Its button's icon on this page, as Site Controls shows it.
+                Label {
+                    Text(item.name)
+                } icon: {
+                    if let icon = context?.action(for: tab)?.icon(for: BrowserCommands.menuIconSize)
+                        ?? context?.webExtension.icon(for: BrowserCommands.menuIconSize) {
+                        Image(nsImage: BrowserCommands.menuIcon(icon))
+                    } else {
+                        Image(systemName: "puzzlepiece.extension")
+                    }
+                }
+                .labelStyle(.titleAndIcon)
             }
         }
     }
