@@ -2914,15 +2914,27 @@ final class EarlyUITests: XCTestCase {
             return CGFloat(largest)
         }
 
+        // A native widget redraws a moment after the pointer leaves or
+        // enters it; wait briefly for that, then judge it.
+        func settled(_ light: XCUIElement, idle: Bool) throws -> CGFloat {
+            let deadline = Date().addingTimeInterval(2)
+            var value = try colorBeyondBackdrop(light)
+            while (idle ? value >= 0.12 : value <= 0.25), Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.1)
+                value = try colorBeyondBackdrop(light)
+            }
+            return value
+        }
+
         away.hover()
-        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try settled(light, idle: true), 0.12) }
         let idle = XCTAttachment(screenshot: window.screenshot())
         idle.name = "\(appearance) muted native traffic lights"
         idle.lifetime = .keepAlways
         add(idle)
         close.hover()
         for light in lights {
-            XCTAssertGreaterThan(try colorBeyondBackdrop(light), 0.25)
+            XCTAssertGreaterThan(try settled(light, idle: false), 0.25)
             try assertHoverSymbol(light)
         }
         let hovered = XCTAttachment(screenshot: window.screenshot())
@@ -2930,7 +2942,7 @@ final class EarlyUITests: XCTestCase {
         hovered.lifetime = .keepAlways
         add(hovered)
         away.hover()
-        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try settled(light, idle: true), 0.12) }
         XCTAssertTrue(close.isEnabled)
         XCTAssertTrue(close.isHittable)
 
@@ -2938,10 +2950,10 @@ final class EarlyUITests: XCTestCase {
         // idle mask must survive those redraws, not just the first hover cycle.
         for light in lights {
             light.hover()
-            XCTAssertGreaterThan(try colorBeyondBackdrop(light), 0.25)
+            XCTAssertGreaterThan(try settled(light, idle: false), 0.25)
             away.hover()
             for idleLight in lights {
-                XCTAssertLessThan(try colorBeyondBackdrop(idleLight), 0.12)
+                XCTAssertLessThan(try settled(idleLight, idle: true), 0.12)
                 XCTAssertTrue(idleLight.isHittable)
             }
         }
@@ -2952,7 +2964,7 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 10))
         XCTAssertTrue(close.waitForExistence(timeout: 5))
-        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try settled(light, idle: true), 0.12) }
         app.typeKey(.escape, modifierFlags: [])
         close.click()
         XCTAssertTrue(window.waitForNonExistence(timeout: 5))
