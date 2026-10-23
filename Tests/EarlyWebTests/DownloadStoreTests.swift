@@ -337,7 +337,15 @@ struct DownloadStoreTests {
         #expect(WebViewManager.unusedName("README", in: folder) { $0.lastPathComponent == "README" } == "README (1)")
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "report.pdf"
-        WebViewManager.suggestBesideOriginal(report, in: panel)
+        WebViewManager.suggestUnusedName(for: report, in: panel)
         #expect(panel.nameFieldStringValue == "report (2).pdf" && panel.directoryURL?.standardizedFileURL == folder.standardizedFileURL)
+
+        // A web page's name is checked in whatever folder the panel opens in.
+        try Data().write(to: folder.appending(path: "sector 36 - Google Search.html"))
+        let page = NSSavePanel()
+        page.directoryURL = folder
+        page.nameFieldStringValue = "sector 36 - Google Search.html"
+        WebViewManager.suggestUnusedName(for: URL(string: "https://www.google.com/search?q=sector+36"), in: page)
+        #expect(page.nameFieldStringValue == "sector 36 - Google Search (1).html" && page.directoryURL?.standardizedFileURL == folder.standardizedFileURL)
     }
 }

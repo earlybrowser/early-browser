@@ -118,7 +118,7 @@ extension WebViewManager {
         panel.allowedContentTypes = [.pdf]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = Self.documentName(for: page.view, extension: "pdf")
-        Self.suggestBesideOriginal(page.view.url, in: panel)
+        Self.suggestUnusedName(for: page.view.url, in: panel)
         beginDocumentPanel(id, window: window, sheet: panel)
         panel.beginSheetModal(for: window) { [weak self, weak panel] response in
             guard let self else { return }
@@ -143,7 +143,7 @@ extension WebViewManager {
         panel.allowedContentTypes = [isPDF ? .pdf : .html]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = Self.documentName(for: page.view, extension: isPDF ? "pdf" : "html")
-        Self.suggestBesideOriginal(url, in: panel)
+        Self.suggestUnusedName(for: url, in: panel)
         beginDocumentPanel(id, window: window, sheet: panel)
         panel.beginSheetModal(for: window) { [weak self, weak panel] response in
             guard let self else { return }
@@ -231,11 +231,12 @@ extension WebViewManager {
         return one.isEqual(other)
     }
 
-    /// A file on this Mac saves beside itself, as “name (1).ext”.
-    static func suggestBesideOriginal(_ source: URL?, in panel: NSSavePanel) {
-        guard let source, source.isFileURL else { return }
-        let folder = source.deletingLastPathComponent()
-        panel.directoryURL = folder
+    /// A taken name gets the first free number, “name (1).ext”, in the folder
+    /// the panel opens in; a file on this Mac saves beside itself.
+    static func suggestUnusedName(for source: URL?, in panel: NSSavePanel) {
+        if let source, source.isFileURL { panel.directoryURL = source.deletingLastPathComponent() }
+        guard let folder = panel.directoryURL
+                ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
         panel.nameFieldStringValue = unusedName(panel.nameFieldStringValue, in: folder) {
             FileManager.default.fileExists(atPath: $0.path)
         }
