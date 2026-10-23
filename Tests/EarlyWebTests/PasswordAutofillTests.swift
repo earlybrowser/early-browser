@@ -181,8 +181,20 @@ struct PasswordAutofillTests {
         #expect(try await fixture.evaluate("seen.join(',')", in: login) as? String == "user=grace,pass=second",
                 "Filled like typing")
         #expect(vault.logins.allSatisfy { $0.username != "ada" || $0.lastUsed == nil }, "Filling isn't using it yet")
+        // Clicking the field still lists every account, and choosing one replaces what was filled.
+        let field = try await focus("user", in: try fixture.page(login).view, fixture)
+        #expect(manager.passwordSuggestions(for: field).count == 3, "Both accounts, not only the filled-in one")
+        manager.choosePasswordSuggestion(.login(try #require(vault.login(origin: "early-tools://fixture", username: "ada")).id,
+                                                username: "ada"))
+        var chosen: [String] = []
+        for _ in 0..<60 where chosen != ["ada", "first"] {
+            try await Task.sleep(for: .milliseconds(25))
+            chosen = try await fixture.evaluate("[user.value, pass.value]", in: login) as? [String] ?? []
+        }
+        #expect(chosen == ["ada", "first"])
         #expect(try await values(try await fixture.open("typed")) == ["grace", "second"], "The user name already in the form")
-        #expect(try await values(try await fixture.open("later")) == ["grace", "second"], "A form that appears later")
+        #expect(try await values(try await fixture.open("later")) == ["ada", "first"],
+                "A form that appears later, with the account chosen last")
 
         // Never in another site's frame.
         let outer = try await fixture.open("outer")

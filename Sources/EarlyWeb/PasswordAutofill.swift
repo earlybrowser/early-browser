@@ -208,7 +208,7 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             const role = roleOf(node, form);
             // A sign-up form's user name is new: no saved accounts for it.
             if (!role || (role === 'username' && form.kind !== 'login')) return;
-            post({ type: 'focus', token: tokenFor(node), role, rect: rectOf(node), value: node.value.slice(0, 256),
+            post({ type: 'focus', token: tokenFor(node), role, rect: rectOf(node),
                    maxLength: node.maxLength > 0 ? node.maxLength : 0, rules: node.getAttribute('passwordrules') || '' });
         };
         const editable = node => isPassword(node) || isText(node);
@@ -385,7 +385,9 @@ extension WebViewManager {
                   visibleTabIDs.contains(id), view.window?.isKeyWindow != false else { return }
             let maxLength = body["maxLength"] as? Int
             focusedPasswordField = FocusedPasswordField(tabID: id, token: token, role: role, origin: origin, frame: frame,
-                view: view, rect: body["rect"] as? [String: Any] ?? [:], typed: text("value", 256),
+                // Only typing narrows the list: a filled-in user name still
+                // lists every account, to switch to another.
+                view: view, rect: body["rect"] as? [String: Any] ?? [:], typed: "",
                 rules: PasswordRules.parse(text("rules", 512)), maxLength: maxLength.flatMap { $0 > 0 ? $0 : nil })
             showPasswordSuggestions()
         case "input":
