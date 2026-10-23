@@ -15,6 +15,14 @@ struct CommandBarView: View {
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.colorScheme) private var colorScheme
 
+    /// A selected or hovered row: a wash of the Space's color where the bar
+    /// wears the theme, neutral gray where it doesn't.
+    private func rowHighlight(selected: Bool, hovered: Bool) -> CommandRowHighlight {
+        let tint = model.tintsChrome
+            ? model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color : nil
+        return CommandRowHighlight(selected: selected, hovered: hovered, tint: tint, increasedContrast: contrast == .increased)
+    }
+
     private var hasResults: Bool {
         !model.visibleCommandResults.isEmpty || !model.suggestions.results.isEmpty
     }
@@ -165,14 +173,7 @@ struct CommandBarView: View {
                             .padding(.horizontal, 10)
                             .frame(height: 34)
                             .contentShape(Rectangle())
-                            .background(Color.primary.opacity(selected || (!hasKeyboardSelection && hoveredItem == rowID) ? 0.08 : 0),
-                                        in: RoundedRectangle(cornerRadius: 7))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 7)
-                                    .strokeBorder(Color.primary.opacity(selected ? (contrast == .increased ? 1 : 0.35) : 0),
-                                                  lineWidth: contrast == .increased ? 2 : 1)
-                                    .allowsHitTesting(false).accessibilityHidden(true)
-                            }
+                            .modifier(rowHighlight(selected: selected, hovered: !hasKeyboardSelection && hoveredItem == rowID))
                         }
                         .buttonStyle(.plain)
                         .browserKeyboardFocus()
@@ -201,14 +202,7 @@ struct CommandBarView: View {
                             .padding(.horizontal, 10)
                             .frame(height: 34)
                             .contentShape(Rectangle())
-                            .background(Color.primary.opacity(selected || (!hasKeyboardSelection && hoveredItem == rowID) ? 0.08 : 0),
-                                        in: RoundedRectangle(cornerRadius: 7))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 7)
-                                    .strokeBorder(Color.primary.opacity(selected ? (contrast == .increased ? 1 : 0.35) : 0),
-                                                  lineWidth: contrast == .increased ? 2 : 1)
-                                    .allowsHitTesting(false).accessibilityHidden(true)
-                            }
+                            .modifier(rowHighlight(selected: selected, hovered: !hasKeyboardSelection && hoveredItem == rowID))
                         }
                         .buttonStyle(.plain)
                         .browserKeyboardFocus()
@@ -436,5 +430,27 @@ private struct CommandBarCardAnchor: NSViewRepresentable {
             }
         }
 
+    }
+}
+
+/// A command-bar row's selection and hover.
+struct CommandRowHighlight: ViewModifier {
+    let selected: Bool
+    let hovered: Bool
+    /// The Space's color; nil keeps the neutral gray.
+    let tint: Color?
+    let increasedContrast: Bool
+
+    func body(content: Content) -> some View {
+        let color = tint ?? .primary
+        let fill = tint == nil ? (selected || hovered ? 0.08 : 0) : (selected ? 0.20 : (hovered ? 0.10 : 0))
+        let edge = selected ? (increasedContrast ? 1 : (tint == nil ? 0.35 : 0.6)) : 0
+        content
+            .background(color.opacity(fill), in: RoundedRectangle(cornerRadius: 7))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(color.opacity(edge), lineWidth: increasedContrast ? 2 : 1)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
     }
 }

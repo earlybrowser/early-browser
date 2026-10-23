@@ -174,7 +174,7 @@ struct SplitContentView: View {
                     .accessibilityIdentifier("browser.retry")
                 }
                 .padding(24).frame(maxWidth: 440)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("browser.error")
             }
@@ -200,7 +200,7 @@ struct SplitContentView: View {
                     Button("Dismiss") { model.webViews.dismissNavigationNotice(for: id) }
                 }
                 .font(.callout).padding(12)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
                 .padding(10)
                 .accessibilityIdentifier("browser.navigationNotice.\(id)")
             }

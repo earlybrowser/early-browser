@@ -294,7 +294,7 @@ struct BrowserWindowView: View {
                 VStack {
                     if let error = model.persistence.error {
                         Text(error).font(.callout).padding(12)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
                             .accessibilityIdentifier("browser.persistenceError")
                     }
                     if let notice = model.notice {
@@ -302,7 +302,7 @@ struct BrowserWindowView: View {
                             Text(notice)
                             Button("Dismiss") { model.notice = nil }
                         }.font(.callout).padding(12)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
                     }
                     Spacer()
                 }
@@ -428,22 +428,17 @@ struct BrowserWindowView: View {
         }, isInteracting: model.sidebarInteractionInProgress || model.splitResize != nil))
         .overlay(alignment: .topTrailing) {
             if let toast = model.toast {
-                Label(toast.message, systemImage: "checkmark")
+                Label {
+                    Text(toast.message)
+                } icon: {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(model.chromeTheme.focusBorder(isDark: colorScheme == .dark,
+                                                                       increasedContrast: contrast == .increased).color)
+                }
                     .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .background {
-                        if reduceTransparency || contrast == .increased {
-                            RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
-                        } else {
-                            RoundedRectangle(cornerRadius: 12).fill(.thickMaterial)
-                        }
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12)
-                            .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.4 : 0.16), lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+                    .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
                     .padding(20)
                     .allowsHitTesting(false)
                     .accessibilityLabel(toast.message)

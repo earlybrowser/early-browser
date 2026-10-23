@@ -32,6 +32,16 @@ struct PageToolSurface: ViewModifier {
     }
 }
 
+extension View {
+    /// A popover drawn like the sidebar it opens from: the Space's chrome
+    /// instead of the system's material.
+    func spacePopoverBackground(_ model: BrowserWindowModel) -> some View {
+        presentationBackground {
+            BrowserChromeBackground(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome)
+        }
+    }
+}
+
 /// Floating tools at the top trailing corner of one pane.
 struct PageToolsOverlay: View {
     @Bindable var model: BrowserWindowModel
@@ -151,6 +161,7 @@ struct SiteControlsButton: View {
             .accessibilityIdentifier("address.siteControls")
             .popover(isPresented: $presented, arrowEdge: .bottom) {
                 SiteControlsPanel(model: model, tabID: id) { presented = false }
+                    .spacePopoverBackground(model)
             }
         }
     }
