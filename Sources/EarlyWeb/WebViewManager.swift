@@ -135,6 +135,13 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var passwordListStyle: () -> PasswordListStyle = { PasswordListStyle(theme: .space(.gray), allowsTransparency: true) }
     /// Whether sign-in pages with a saved password are filled in as they open.
     public var fillsPasswordsAutomatically: () -> Bool = { true }
+    /// The profile's extensions (a `WKWebExtensionController` on macOS 15.4
+    /// and later); pages get it when they're created.
+    public var extensionController: AnyObject?
+    /// Extensions' menu items for a tab's page.
+    public var extensionMenuItems: ((UUID) -> [NSMenuItem])?
+    /// An extension's keyboard shortcut.
+    public var extensionCommand: ((NSEvent) -> Bool)?
     /// Manage Passwords… was chosen under a sign-in field, for this host.
     public var onManagePasswords: ((String?) -> Void)?
     /// Answers HTTP sign-in requests instead of Early's sheet; tests use it.
@@ -377,6 +384,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             configuration.preferences.isFraudulentWebsiteWarningEnabled = true
             Self.enablePictureInPicture(configuration.preferences)
             Self.enableInspection(configuration.preferences)
+            if #available(macOS 15.4, *), let controller = extensionController as? WKWebExtensionController {
+                configuration.webExtensionController = controller
+            }
             configure(configuration)
             configuration.applicationNameForUserAgent = BrowserUserAgent.applicationName
         }
@@ -394,6 +404,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             _ = self.openContextLink(url, in: view, background: true)
         }
         view.onInteractionEnded = { [weak self] in self?.scheduleRetention() }
+        view.extensionMenuItems = { [weak self, weak view] in
+            guard let self, let view, let id = self.tabID(for: view) else { return [] }
+            return self.extensionMenuItems?(id) ?? []
+        }
+        view.extensionCommand = { [weak self] event in self?.extensionCommand?(event) ?? false }
         view.pageTranslationTitle = { [weak self, weak view] in
             guard let self, let view, let id = self.tabID(for: view) else { return nil }
             return self.translationMenuTitle?(id)
@@ -676,6 +691,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             view.onOpenBackgroundLink = nil
             view.onContextAction = nil
             view.onInteractionEnded = nil
+            view.extensionMenuItems = nil
+            view.extensionCommand = nil
         }
         page.observations.forEach { $0.invalidate() }
         page.observations.removeAll()
