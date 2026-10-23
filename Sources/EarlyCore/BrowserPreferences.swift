@@ -22,6 +22,8 @@ public final class BrowserPreferences {
     public var restoreSession: Bool { didSet { store(restoreSession, for: "restoreSession") } }
     /// A video playing in a tab you switch away from continues in Picture in Picture.
     public var automaticPictureInPicture: Bool { didSet { store(automaticPictureInPicture, for: "automaticPictureInPicture") } }
+    /// A sign-in page with a saved password is filled in as it opens, as in Chrome.
+    public var fillsPasswordsAutomatically: Bool { didSet { store(fillsPasswordsAutomatically, for: "fillsPasswordsAutomatically") } }
     private var width: Double
 
     public var sidebarWidth: Double {
@@ -36,7 +38,7 @@ public final class BrowserPreferences {
         self.defaults = defaults
         defaults.register(defaults: ["onlineSearchSuggestions": true, "commandBarActions": true, "spaceSwipes": true,
             "haptics": true, "spaceThemes": true, "translucentChrome": true, "restoreSession": true,
-            "automaticPictureInPicture": true])
+            "automaticPictureInPicture": true, "fillsPasswordsAutomatically": true])
         appearance = Appearance(rawValue: defaults.string(forKey: "browserAppearance") ?? "") ?? .system
         onlineSuggestions = defaults.bool(forKey: "onlineSearchSuggestions")
         commandBarActions = defaults.bool(forKey: "commandBarActions")
@@ -48,6 +50,7 @@ public final class BrowserPreferences {
         translucentChrome = defaults.bool(forKey: "translucentChrome")
         restoreSession = defaults.bool(forKey: "restoreSession")
         automaticPictureInPicture = defaults.bool(forKey: "automaticPictureInPicture")
+        fillsPasswordsAutomatically = defaults.bool(forKey: "fillsPasswordsAutomatically")
         width = SidebarWidth.clamped(defaults.object(forKey: "sidebarWidth") as? Double ?? SidebarWidth.defaultValue)
     }
 

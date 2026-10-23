@@ -88,7 +88,8 @@ struct DownloadsButton: View {
         .onChange(of: model.downloadLandingRevision) { playStart() }
         .onChange(of: store.finishedRevision) { finished() }
         .popover(isPresented: $model.downloadsPresented, arrowEdge: .top) {
-            DownloadsPanel(store: store)
+            DownloadsPanel(store: store, tint: theme)
+                .spacePopoverBackground(model)
         }
     }
 
@@ -320,6 +321,8 @@ enum DownloadArrowDrop {
 /// Session download list for this profile. Clearing removes rows, not files.
 struct DownloadsPanel: View {
     let store: DownloadStore
+    /// The Space's color, for progress and the hovered row.
+    let tint: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -339,7 +342,7 @@ struct DownloadsPanel: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(store.items) { DownloadRow(item: $0, store: store) }
+                        ForEach(store.items) { DownloadRow(item: $0, store: store, tint: tint) }
                     }
                 }
                 .frame(height: min(CGFloat(store.items.count) * 52, 312))
@@ -353,9 +356,42 @@ struct DownloadsPanel: View {
     }
 }
 
+/// A download's progress in the Space's color, as the Downloads button's
+/// ring shows it. Without a known size a short segment sweeps back and
+/// forth; with Reduce Motion it rests in the middle.
+private struct DownloadProgressBar: View {
+    let fraction: Double?
+    let tint: Color
+    @State private var sweeping = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.12))
+                if let fraction {
+                    Capsule().fill(tint).frame(width: max(4, width * min(max(fraction, 0), 1)))
+                } else {
+                    Capsule().fill(tint).frame(width: width * 0.3)
+                        .offset(x: reduceMotion ? width * 0.35 : (sweeping ? width * 0.7 : 0))
+                }
+            }
+        }
+        .frame(height: 4)
+        .clipShape(Capsule())
+        .onAppear {
+            guard fraction == nil, !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { sweeping = true }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 private struct DownloadRow: View {
     let item: DownloadItem
     let store: DownloadStore
+    let tint: Color
     @State private var hovered = false
 
     var body: some View {
@@ -369,11 +405,7 @@ private struct DownloadRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.filename).lineLimit(1).truncationMode(.middle)
                 if item.state.isActive {
-                    if let fraction = item.fractionCompleted {
-                        ProgressView(value: fraction).controlSize(.small)
-                    } else {
-                        ProgressView().progressViewStyle(.linear).controlSize(.small)
-                    }
+                    DownloadProgressBar(fraction: item.fractionCompleted, tint: tint)
                 }
                 Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -397,7 +429,7 @@ private struct DownloadRow: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(hovered ? 0.06 : 0)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(tint.opacity(hovered ? 0.14 : 0)))
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .onTapGesture(count: 2) { store.open(item) }

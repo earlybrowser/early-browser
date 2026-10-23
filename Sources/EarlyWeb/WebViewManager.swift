@@ -51,6 +51,10 @@ public final class BrowserPage {
     public internal(set) var serverTrust: SecTrust?
     /// A navigation refused for its certificate, until the next one starts.
     var certificateFailure: CertificateFailure?
+    /// A sign-in Early offers to save or update, until it is answered.
+    public internal(set) var passwordOffer: PasswordOffer?
+    var pendingLogin: PendingLogin?
+    var recentUsername: RecentUsername?
     public internal(set) var cameraCapture = WKMediaCaptureState.none
     public internal(set) var microphoneCapture = WKMediaCaptureState.none
     /// The committed main document's MIME type, e.g. a viewed PDF.
@@ -123,6 +127,22 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     let sourcePages = PageSourcePages()
     /// View Page Source was chosen from a page's menu.
     public var onViewPageSource: ((UUID) -> Void)?
+    /// The saved passwords this window fills from; nil fills and saves nothing.
+    public var passwords: PasswordVault?
+    /// Private windows fill saved passwords but never save or change them.
+    public var savesPasswords = true
+    /// The window's look for the list under sign-in fields.
+    public var passwordListStyle: () -> PasswordListStyle = { PasswordListStyle(theme: .space(.gray), allowsTransparency: true) }
+    /// Whether sign-in pages with a saved password are filled in as they open.
+    public var fillsPasswordsAutomatically: () -> Bool = { true }
+    /// Manage Passwords… was chosen under a sign-in field, for this host.
+    public var onManagePasswords: ((String?) -> Void)?
+    /// Answers HTTP sign-in requests instead of Early's sheet; tests use it.
+    @ObservationIgnored var askForSignIn: ((SignInRequest, WKWebView, @escaping @MainActor (SignInResponse?) -> Void) -> Void)?
+    /// Other schemes whose pages tests treat as websites for passwords.
+    @ObservationIgnored var passwordTestSchemes: Set<String> = []
+    let passwordPanel = PasswordSuggestionPanel()
+    @ObservationIgnored var focusedPasswordField: FocusedPasswordField?
     /// The app macOS would open a link with, and opening it; tests replace both.
     @ObservationIgnored var appForLink: (URL) -> URL? = { NSWorkspace.shared.urlForApplication(toOpen: $0) }
     @ObservationIgnored var openInApp: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -228,6 +248,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         if unchanged {
             for id in visibleTabIDs where pages[id]?.processTerminated == true { recoverIfNeeded(id) }
             return true
+        }
+        if let field = focusedPasswordField, field.tabID != focusedTabID || !visibleTabIDs.contains(field.tabID) {
+            hidePasswordSuggestions()
         }
         updateAutomaticPictureInPicture(hidden: self.visibleTabIDs.subtracting(visibleTabIDs),
                                         shown: visibleTabIDs.subtracting(self.visibleTabIDs))
@@ -453,6 +476,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             controller.addUserScript(WKUserScript(source: LinkHoverObserver.script,
                 injectionTime: .atDocumentStart, forMainFrameOnly: false, in: LinkHoverObserver.world))
         }
+        let passwordObserver = PasswordFormObserver()
+        passwordObserver.owner = self
+        controller.removeScriptMessageHandler(forName: PasswordFormObserver.name, contentWorld: PasswordFormObserver.world)
+        controller.add(passwordObserver, contentWorld: PasswordFormObserver.world, name: PasswordFormObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == PasswordFormObserver.script }) {
+            controller.addUserScript(WKUserScript(source: PasswordFormObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false, in: PasswordFormObserver.world))
+        }
         let interactionObserver = PageInteractionObserver()
         interactionObserver.owner = self
         controller.removeScriptMessageHandler(forName: PageInteractionObserver.name, contentWorld: .defaultClient)
@@ -474,6 +505,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         controller.removeScriptMessageHandler(forName: PageContextMenuObserver.name, contentWorld: PageContextMenuObserver.world)
         controller.removeScriptMessageHandler(forName: PageInteractionObserver.name, contentWorld: .defaultClient)
         controller.removeScriptMessageHandler(forName: LinkHoverObserver.name, contentWorld: LinkHoverObserver.world)
+        controller.removeScriptMessageHandler(forName: PasswordFormObserver.name, contentWorld: PasswordFormObserver.world)
     }
 
     private func beginLoading(_ id: UUID) {
@@ -619,6 +651,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         if preservingSnapshot { snapshots.cancelCapture(tabID: tabID) }
         else { snapshots.invalidate(tabID: tabID) }
         protections[tabID] = nil
+        if focusedPasswordField?.tabID == tabID { hidePasswordSuggestions() }
         if lifecycles[tabID] != nil { transition(tabID, .discard) }
         guard let page = pages[tabID] else { return }
         // Removing a view/owner and stopping resource loads does not stop its
@@ -658,6 +691,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     public func discardAll() {
+        hidePasswordSuggestions()
         retentionTask?.cancel()
         retentionTask = nil
         for id in Array(pages.keys) { discard(tabID: id) }
@@ -981,6 +1015,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.documentMIMEType = pages[id]?.pendingDocumentMIMEType
         pages[id]?.pendingDocumentMIMEType = nil
         resetFindForNewDocument(id)
+        if focusedPasswordField?.tabID == id { hidePasswordSuggestions() }
         pages[id]?.hoveredLink = nil
         // Reader shows one document; a new one returns to the page.
         hideReader(id)
@@ -1003,6 +1038,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         refreshFindAfterLoad(id)
         checkReaderAvailability(id)
         detectPageLanguage(id)
+        checkPendingLogin(id)
         guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected
@@ -1109,8 +1145,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
                         completionHandler: @escaping @MainActor (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        // Never accept invalid certificates or manufacture credentials.
-        completionHandler(.performDefaultHandling, nil)
+        // Never accepts invalid certificates or makes up credentials; a
+        // website's own sign-in asks the person.
+        handleAuthentication(challenge, in: webView, completionHandler: completionHandler)
     }
 
     public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,

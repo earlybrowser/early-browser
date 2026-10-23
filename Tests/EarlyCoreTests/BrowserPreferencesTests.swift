@@ -15,6 +15,7 @@ struct BrowserPreferencesTests {
         let preferences = BrowserPreferences(defaults: defaults)
         #expect(!preferences.onlineSuggestions && preferences.commandBarActions && preferences.sidebarWidth == 300)
         #expect(preferences.spaceSwipes && preferences.haptics && preferences.spaceThemes && preferences.translucentChrome)
+        #expect(preferences.fillsPasswordsAutomatically)
         preferences.appearance = .dark
         preferences.sidebarAutoHides = true
         preferences.spaceSwipes = false
@@ -24,10 +25,12 @@ struct BrowserPreferencesTests {
         preferences.translucentChrome = false
         preferences.onlineSuggestions = true
         preferences.commandBarActions = false
+        preferences.fillsPasswordsAutomatically = false
         let restored = BrowserPreferences(defaults: defaults)
         #expect(restored.appearance == .dark && restored.sidebarAutoHides)
         #expect(!restored.spaceSwipes && !restored.haptics && !restored.restoreSession)
         #expect(!restored.spaceThemes && !restored.translucentChrome && restored.onlineSuggestions && !restored.commandBarActions)
+        #expect(!restored.fillsPasswordsAutomatically)
         restored.sidebarWidth = .infinity
         #expect(restored.sidebarWidth == SidebarWidth.defaultValue)
         restored.sidebarWidth = 9999

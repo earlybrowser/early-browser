@@ -62,6 +62,11 @@ final class BrowserWindowModel {
     let history: HistoryStore?
     /// This profile's per-site camera, microphone and location choices.
     let sitePermissions: SitePermissions
+    /// The saved passwords this window fills from: its profile's, or for a
+    /// private window the profile it was opened from. Private windows never
+    /// save or change them.
+    let passwords: PasswordVault?
+    let passwordsProfileID: UUID?
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The address last recorded per tab, and the live page it came from.
     @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID)] = [:]
@@ -166,6 +171,7 @@ final class BrowserWindowModel {
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
          downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, isPrivate: Bool = false,
          history: HistoryStore? = nil, sitePermissions: SitePermissions? = nil,
+         passwords: PasswordVault? = nil, passwordsProfileID: UUID? = nil,
          searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
@@ -174,6 +180,8 @@ final class BrowserWindowModel {
         self.isPrivate = isPrivate
         self.history = isPrivate ? nil : history
         self.sitePermissions = sitePermissions ?? SitePermissions(fileURL: nil)
+        self.passwords = passwords
+        self.passwordsProfileID = passwords == nil ? nil : passwordsProfileID ?? (isPrivate ? nil : session.profileID)
         self.now = now
         self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
         let service = GoogleSearchSuggestions()
@@ -249,6 +257,13 @@ final class BrowserWindowModel {
         webViews.onOpenFiles = { [weak self] in _ = self?.openLocations($0) }
         webViews.onViewPageSource = { [weak self] in self?.showPageSource($0) }
         webViews.sitePermissions = self.sitePermissions
+        webViews.passwords = passwords
+        webViews.savesPasswords = !isPrivate
+        webViews.fillsPasswordsAutomatically = { [weak self] in self?.preferences.fillsPasswordsAutomatically == true }
+        webViews.passwordListStyle = { [weak self] in
+            PasswordListStyle(theme: self?.chromeTheme ?? .space(.gray), allowsTransparency: self?.preferences.translucentChrome ?? true)
+        }
+        webViews.onManagePasswords = { [weak self] host in self?.showPasswords(search: host) }
         webViews.automaticPictureInPicture = { [weak self] in self?.preferences.automaticPictureInPicture == true }
         webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }
         webViews.translationMenuTitle = { [weak self] in self?.translationTitle(for: $0) }
@@ -463,6 +478,18 @@ final class BrowserWindowModel {
                 return
             }
         }
+    }
+
+    /// Settings › Passwords for this window's profile.
+    func showPasswords(search host: String?) {
+        application?.showPasswords(profileID: passwordsProfileID, search: host)
+    }
+
+    /// How many passwords are saved for the focused website, once they're
+    /// open; nil before that, so showing Site Controls never asks the Keychain.
+    var savedPasswordCount: Int? {
+        guard let passwords, passwords.isReady, let origin = currentSiteOrigin else { return nil }
+        return passwords.logins(for: origin).count
     }
 
     /// Blocking a camera or microphone in use stops it in the site's tabs.

@@ -82,4 +82,6 @@ public enum BrowserAction: Equatable, Sendable {
     case toggleWebInspector
     /// Asks before removing the focused website's cookies, caches and storage.
     case clearSiteData
+    /// Settings › Passwords, searching for the focused website.
+    case showPasswords
 }

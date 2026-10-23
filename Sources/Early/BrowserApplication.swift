@@ -43,6 +43,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var historyStores: [UUID: HistoryStore] = [:]
     /// Each profile's per-site permissions; a private session's stay in memory.
     @ObservationIgnored private var sitePermissionStores: [UUID: SitePermissions] = [:]
+    /// Each profile's saved passwords, opened when first needed.
+    @ObservationIgnored private var passwordVaults: [UUID: PasswordVault] = [:]
+    /// Settings › Passwords opens only with Touch ID or the Mac's password.
+    let passwordsLock = PasswordsLock()
+    /// The profile whose passwords Settings shows, and what it searches for.
+    var passwordsProfileID: UUID?
+    var passwordSearch = ""
     /// All open private windows share one temporary profile and one website
     /// data store kept only in memory, released with the last private window.
     @ObservationIgnored private(set) var privateProfileID: UUID?
@@ -115,6 +122,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         self.storageURL = loaded.repository.fileURL
         self.input = loaded.input
         self.testing = loaded.testing
+        // UI automation never asks for Touch ID.
+        if loaded.testing { passwordsLock.authenticate = { _ in true } }
         let writer = SessionAutosaver(repository: loaded.repository, disabledReason: loaded.error)
         persistence = writer
         var snapshot = loaded.workspace
@@ -183,12 +192,14 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Opens a private window: its only Space is named "Private", it records
     /// no history, and nothing in it is saved, restored or kept on disk.
+    /// It fills passwords saved in the profile it was opened from.
     @discardableResult
-    func openPrivateWindow() -> UUID? {
+    func openPrivateWindow(from source: BrowserWindowModel? = nil) -> UUID? {
         guard canOpenWindow else { return nil }
         let profile = privateProfileID ?? UUID()
         privateProfileID = profile
-        let id = addWindow(session: .privateWindow(profileID: profile))
+        let passwordsFrom = source?.passwordsProfileID ?? workspace?.activeProfileID
+        let id = addWindow(session: .privateWindow(profileID: profile), passwordsFrom: passwordsFrom)
         presentWindow?(id)
         return id
     }
@@ -281,6 +292,34 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return store
     }
 
+    private func passwordsFile(for id: UUID) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "Passwords/\(id.uuidString).vault", directoryHint: .notDirectory)
+    }
+
+    /// A profile's saved passwords. Private sessions have none of their own.
+    func passwords(for id: UUID) -> PasswordVault? {
+        if let vault = passwordVaults[id] { return vault }
+        guard !isPrivateProfile(id), profiles.contains(where: { $0.id == id }) else { return nil }
+        // UI automation keeps passwords in memory and never uses the Keychain.
+        let vault = testing ? PasswordVault(fileURL: nil, key: nil)
+            : PasswordVault(fileURL: passwordsFile(for: id), key: KeychainVaultKey(profile: id))
+        passwordVaults[id] = vault
+        return vault
+    }
+
+    /// Settings › Passwords for a profile, searching for a website.
+    func showPasswords(profileID: UUID?, search: String? = nil) {
+        passwordsProfileID = profileID ?? workspace?.activeProfileID
+        passwordSearch = search ?? ""
+        settingsSection = .passwords
+        presentSettingsWindow?()
+    }
+
+    /// A site's icon from a window of the profile, if one has it.
+    func favicon(for url: URL, profileID: UUID) -> NSImage? {
+        visibleModels.lazy.filter { $0.coordinator.profileID == profileID }.compactMap { $0.webViews.favicons.image(for: url) }.first
+    }
+
     func history(for id: UUID) -> HistoryStore? {
         if let store = historyStores[id] { return store }
         guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
@@ -289,17 +328,21 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return store
     }
 
-    private func makeModel(session: BrowserSession, startup: StartupContext = .returningSession) -> BrowserWindowModel {
-        BrowserWindowModel(startup: startup, session: session, repository: repository!, input: input, isTesting: testing,
+    private func makeModel(session: BrowserSession, startup: StartupContext = .returningSession,
+                           passwordsFrom: UUID? = nil) -> BrowserWindowModel {
+        let isPrivate = isPrivateProfile(session.profileID)
+        let passwordsProfile = isPrivate ? passwordsFrom : session.profileID
+        return BrowserWindowModel(startup: startup, session: session, repository: repository!, input: input, isTesting: testing,
             restorationError: persistence?.error, defaults: defaults, sharedPersistence: persistence,
             websiteDataStore: websiteDataStore(for: session.profileID), downloads: downloads(for: session.profileID),
-            preferences: preferences, isPrivate: isPrivateProfile(session.profileID), history: history(for: session.profileID),
-            sitePermissions: sitePermissions(for: session.profileID))
+            preferences: preferences, isPrivate: isPrivate, history: history(for: session.profileID),
+            sitePermissions: sitePermissions(for: session.profileID),
+            passwords: passwordsProfile.flatMap { passwords(for: $0) }, passwordsProfileID: passwordsProfile)
     }
 
-    @discardableResult private func addWindow(session: BrowserSession) -> UUID {
+    @discardableResult private func addWindow(session: BrowserSession, passwordsFrom: UUID? = nil) -> UUID {
         let id = UUID()
-        let child = makeModel(session: session)
+        let child = makeModel(session: session, passwordsFrom: passwordsFrom)
         windows.append(WindowEntry(id: id, model: child))
         attach(child)
         return id
@@ -505,6 +548,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         downloadStores.removeValue(forKey: id)?.cancelAll()
         let history = historyStores.removeValue(forKey: id)
         sitePermissionStores.removeValue(forKey: id)?.removeFile()
+        if let vault = passwordVaults.removeValue(forKey: id) { vault.removeAll() }
+        else { PasswordVault.remove(fileURL: passwordsFile(for: id), key: testing ? nil : KeychainVaultKey(profile: id)) }
+        if passwordsProfileID == id { passwordsProfileID = nil }
         saveAll()
         guard await persistence?.flush() == true else {
             profileError = "The profile change could not be saved. Its website data was kept. \(persistence?.error ?? "")"
@@ -536,6 +582,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                     }
                     if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
                     if let file = sitePermissionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
+                    if let file = passwordsFile(for: id), FileManager.default.fileExists(atPath: file.path) {
+                        PasswordVault.remove(fileURL: file, key: testing ? nil : KeychainVaultKey(profile: id))
+                    }
                     var remaining = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
                     remaining.removeAll { $0 == value }
                     defaults.set(remaining, forKey: "pendingProfileCleanup")
@@ -613,6 +662,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         isTerminating = true
         saveAll()
         Task { @MainActor in
+            for vault in self.passwordVaults.values { await vault.flush() }
             var canQuit = await persistence.flush()
             if !canQuit {
                 let alert = NSAlert()

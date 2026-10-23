@@ -79,6 +79,11 @@ struct TabSwitcherView: View {
         }
     }
 
+    /// The Space's color where the switcher wears the theme; nil keeps gray.
+    private var selectionTint: Color? {
+        model.tintsChrome ? model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color : nil
+    }
+
     private func card(_ tab: BrowserTab, width: Double, selected: Bool) -> some View {
         Button { model.commitTabSwitcher(selecting: tab.id) } label: {
             VStack(alignment: .leading, spacing: 8) {
@@ -115,17 +120,24 @@ struct TabSwitcherView: View {
                         .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 0)
                     Image(systemName: "checkmark").font(.caption.weight(.semibold))
+                        .foregroundStyle(selectionTint ?? .primary)
                         .opacity(selected ? 1 : 0).accessibilityHidden(true)
                 }
                 .frame(height: 22)
             }
             .padding(8)
             .frame(width: width)
-            .background(Color.primary.opacity(selected ? 0.13 : (hoveredID == tab.id ? 0.07 : 0.025)),
-                        in: RoundedRectangle(cornerRadius: 14))
+            .background {
+                // The chosen card takes the Space's color where the switcher wears the theme.
+                let tint = selectionTint
+                RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.025))
+                RoundedRectangle(cornerRadius: 14)
+                    .fill((tint ?? .primary).opacity(selected ? (tint == nil ? 0.105 : 0.20) : (hoveredID == tab.id ? (tint == nil ? 0.045 : 0.10) : 0)))
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(Color.primary.opacity(selected ? (contrast == .increased ? 0.8 : 0.30) : 0), lineWidth: 1)
+                    .strokeBorder((selectionTint ?? .primary).opacity(selected ? (contrast == .increased ? 0.8 : (selectionTint == nil ? 0.30 : 0.6)) : 0),
+                                  lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: 14))
         }
