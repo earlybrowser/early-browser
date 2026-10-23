@@ -2970,31 +2970,31 @@ struct FolderIcon: View {
             : Color(white: 0.38)
     }
 
+    /// Flat and filled: a deeper back and tab, a lighter front. Opening tips
+    /// the front toward you on its bottom edge, its icon with it. Increased
+    /// contrast adds an outline.
     var body: some View {
+        let isDark = colorScheme == .dark
+        let back = color.folderBack(isDark: isDark).color
+        let outlined = contrast == .increased
         ZStack {
-            FolderBack()
-                .fill(color.folderBack(isDark: colorScheme == .dark).color)
-                .overlay {
-                    FolderBack().stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            FolderBack().fill(back)
+                .overlay { if outlined { FolderBack().stroke(outline, lineWidth: 1) } }
+            ZStack {
+                FolderFront().fill(color.folderFront(isDark: isDark).color)
+                    .overlay { if outlined { FolderFront().stroke(outline, lineWidth: 1) } }
+                if let emblem {
+                    GeometryReader { geometry in
+                        FolderEmblemView(emblem: emblem)
+                            .foregroundStyle(outlined ? outline : back)
+                            .frame(width: geometry.size.width * 0.38, height: geometry.size.width * 0.38)
+                            .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.635)
+                    }
+                    .accessibilityHidden(true)
                 }
-            FolderCover(openness: isOpen ? 1 : 0)
-                .fill(color.folderFront(isDark: colorScheme == .dark).color)
-                .overlay {
-                    FolderCover(openness: isOpen ? 1 : 0)
-                        .stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
-                }
-            if let emblem {
-                GeometryReader { geometry in
-                    let size = geometry.size
-                    // On the front, leaning back with it as the folder opens.
-                    FolderEmblemView(emblem: emblem)
-                        .foregroundStyle(outline)
-                        .frame(width: size.width * 0.42, height: size.width * 0.42)
-                        .modifier(FolderEmblemTilt(openness: isOpen ? 1 : 0))
-                        .position(x: size.width * (isOpen ? 0.555 : 0.5), y: size.height * (isOpen ? 0.625 : 0.61))
-                }
-                .accessibilityHidden(true)
             }
+            .rotation3DEffect(.degrees(isOpen ? -38 : 0), axis: (x: 1, y: 0, z: 0),
+                              anchor: UnitPoint(x: 0.5, y: FolderFront.bottom), perspective: 0.35)
         }
     }
 }
@@ -3012,20 +3012,38 @@ private struct FolderEmblemView: View {
     }
 }
 
-/// The open front is a slanted, shorter face; its icon follows it.
-private struct FolderEmblemTilt: GeometryEffect {
-    var openness: CGFloat
-    var animatableData: CGFloat {
-        get { openness }
-        set { openness = newValue }
+/// The back and its tab, behind the front.
+private struct FolderBack: Shape {
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
+        }
+        var path = Path()
+        path.move(to: point(0.06, 0.26))
+        path.addQuadCurve(to: point(0.14, 0.17), control: point(0.06, 0.17))
+        path.addLine(to: point(0.35, 0.17))
+        path.addQuadCurve(to: point(0.42, 0.20), control: point(0.39, 0.17))
+        path.addLine(to: point(0.47, 0.26))
+        path.addQuadCurve(to: point(0.54, 0.29), control: point(0.50, 0.29))
+        path.addLine(to: point(0.86, 0.29))
+        path.addQuadCurve(to: point(0.94, 0.37), control: point(0.94, 0.29))
+        path.addLine(to: point(0.94, 0.79))
+        path.addQuadCurve(to: point(0.85, FolderFront.bottom), control: point(0.94, FolderFront.bottom))
+        path.addLine(to: point(0.15, FolderFront.bottom))
+        path.addQuadCurve(to: point(0.06, 0.79), control: point(0.06, FolderFront.bottom))
+        path.closeSubpath()
+        return path
     }
+}
 
-    func effectValue(size: CGSize) -> ProjectionTransform {
-        let lean = CGAffineTransform(a: 1, b: 0, c: -0.34 * openness, d: 1 - 0.16 * openness, tx: 0, ty: 0)
-        let centered = CGAffineTransform(translationX: -size.width / 2, y: -size.height / 2)
-            .concatenating(lean)
-            .concatenating(CGAffineTransform(translationX: size.width / 2, y: size.height / 2))
-        return ProjectionTransform(centered)
+/// The front, a little lower than the back so its top edge shows.
+private struct FolderFront: Shape {
+    static let bottom: CGFloat = 0.88
+
+    func path(in rect: CGRect) -> Path {
+        let front = CGRect(x: rect.minX + 0.06 * rect.width, y: rect.minY + 0.36 * rect.height,
+                           width: 0.88 * rect.width, height: (Self.bottom - 0.36) * rect.height)
+        return Path(roundedRect: front, cornerRadius: 0.09 * rect.width, style: .continuous)
     }
 }
 
@@ -3068,57 +3086,3 @@ struct GitHubMark: Shape {
     }
 }
 
-private struct FolderBack: Shape {
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
-        }
-        let right: CGFloat = 0.88
-        path.move(to: point(0.18, 0.88))
-        path.addQuadCurve(to: point(0.06, 0.76), control: point(0.06, 0.88))
-        path.addLine(to: point(0.06, 0.23))
-        path.addQuadCurve(to: point(0.18, 0.11), control: point(0.06, 0.11))
-        path.addLine(to: point(0.34, 0.11))
-        path.addQuadCurve(to: point(0.41, 0.15), control: point(0.38, 0.11))
-        path.addLine(to: point(0.47, 0.23))
-        path.addQuadCurve(to: point(0.54, 0.27), control: point(0.50, 0.27))
-        path.addLine(to: point(right - 0.12, 0.27))
-        path.addQuadCurve(to: point(right, 0.39), control: point(right, 0.27))
-        path.addLine(to: point(right, 0.76))
-        path.addQuadCurve(to: point(right - 0.12, 0.88), control: point(right, 0.88))
-        path.closeSubpath()
-        return path
-    }
-}
-
-private struct FolderCover: Shape {
-    var openness: CGFloat
-    var animatableData: CGFloat {
-        get { openness }
-        set { openness = newValue }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
-        }
-        func blended(_ x: CGFloat, _ y: CGFloat, _ openX: CGFloat, _ openY: CGFloat) -> CGPoint {
-            point(x + (openX - x) * openness, y + (openY - y) * openness)
-        }
-        var path = Path()
-        // Matching control points let the cover smoothly unfold, without
-        // crossfading two overlapping outlines halfway through the animation.
-        path.move(to: point(0.18, 0.88))
-        path.addQuadCurve(to: blended(0.06, 0.76, 0.12, 0.80), control: blended(0.06, 0.88, 0.10, 0.88))
-        path.addLine(to: blended(0.06, 0.46, 0.27, 0.43))
-        path.addQuadCurve(to: blended(0.18, 0.34, 0.37, 0.37), control: blended(0.06, 0.34, 0.30, 0.37))
-        path.addLine(to: blended(0.82, 0.34, 0.89, 0.37))
-        path.addQuadCurve(to: blended(0.94, 0.46, 0.96, 0.46), control: blended(0.94, 0.34, 1.00, 0.37))
-        path.addLine(to: blended(0.94, 0.76, 0.84, 0.81))
-        path.addQuadCurve(to: blended(0.82, 0.88, 0.74, 0.88), control: blended(0.94, 0.88, 0.81, 0.88))
-        path.closeSubpath()
-        return path
-    }
-}

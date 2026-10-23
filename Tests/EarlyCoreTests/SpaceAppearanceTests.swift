@@ -55,12 +55,13 @@ struct SpaceAppearanceTests {
                 let frontChannels = [front.red, front.green, front.blue]
                 let backChannels = [back.red, back.green, back.blue]
                 #expect((frontChannels + backChannels).allSatisfy { (0...1).contains($0) })
-                #expect(zip(frontChannels, backChannels).allSatisfy { dark ? $0 < $1 : $0 > $1 })
+                // Flat folders: the front is lighter than the back in both appearances.
+                #expect(zip(frontChannels, backChannels).allSatisfy { $0 > $1 })
                 if color == .gray {
                     #expect(front.red == front.green && front.green == front.blue)
                     #expect(back.red == back.green && back.green == back.blue)
-                    #expect(front.red == (dark ? 0.13 : 0.95))
-                    #expect(back.red == (dark ? 0.47 : 0.72))
+                    #expect(front.red == (dark ? 0.6 : 0.8))
+                    #expect(back.red == (dark ? 0.36 : 0.58))
                 } else {
                     #expect(front != BrowserSpace.Color.gray.folderFront(isDark: dark))
                     #expect(back != BrowserSpace.Color.gray.folderBack(isDark: dark))
