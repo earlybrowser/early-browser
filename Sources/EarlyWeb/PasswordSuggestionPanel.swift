@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import EarlyCore
+
+/// The window's look for the list under a sign-in field: its Space's theme,
+/// like Early's other floating tools.
+public struct PasswordListStyle: Equatable, Sendable {
+    public var theme: WindowTheme
+    public var allowsTransparency: Bool
+
+    public init(theme: WindowTheme, allowsTransparency: Bool) {
+        self.theme = theme
+        self.allowsTransparency = allowsTransparency
+    }
+}
 
 /// What the list under a sign-in field offers.
 public enum PasswordSuggestion: Equatable, Sendable {
@@ -21,7 +34,8 @@ final class PasswordSuggestionPanel {
     var onHighlight: ((Int?) -> Void)?
     var onClose: (() -> Void)?
     private var panel: Panel?
-    private var list: ListView?
+    private(set) var surface: SurfaceView?
+    private(set) var list: ListView?
     private weak var parent: NSWindow?
     private var observers: [NSObjectProtocol] = []
 
@@ -29,12 +43,17 @@ final class PasswordSuggestionPanel {
 
     /// `field` is in screen coordinates; the list goes below it, or above
     /// when there is no room.
-    func show(_ items: [PasswordSuggestion], title: String, below field: NSRect, in parent: NSWindow) {
+    func show(_ items: [PasswordSuggestion], title: String, below field: NSRect, in parent: NSWindow,
+              style: PasswordListStyle = PasswordListStyle(theme: .space(.gray), allowsTransparency: true)) {
         guard !items.isEmpty else { close(); return }
         if items != self.items { highlighted = nil }
         self.items = items
         self.title = title
         let panel = self.panel ?? makePanel()
+        // A child window doesn't take its parent's appearance (private windows are always dark).
+        panel.appearance = parent.effectiveAppearance
+        surface?.style = style
+        list?.tint = surface?.tint ?? .controlAccentColor
         list?.update(title: title, items: items, highlighted: highlighted)
         let size = NSSize(width: min(max(field.width, 250), 380), height: list?.fittingHeight ?? 0)
         var origin = NSPoint(x: field.minX, y: field.minY - 4 - size.height)
@@ -104,26 +123,19 @@ final class PasswordSuggestionPanel {
         panel.backgroundColor = .clear
         panel.animationBehavior = .none
         panel.setAccessibilityLabel("Passwords")
-        let background = NSVisualEffectView()
-        background.material = .menu
-        background.state = .active
-        background.blendingMode = .behindWindow
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 8
-        background.layer?.masksToBounds = true
+        let background = SurfaceView()
+        background.onAppearanceChange = { [weak self] in
+            guard let self, let surface = self.surface else { return }
+            self.list?.tint = surface.tint
+            self.list?.update(title: self.title, items: self.items, highlighted: self.highlighted)
+        }
         let list = ListView()
         list.onChoose = { [weak self] in self?.choose(at: $0) }
         list.onHover = { [weak self] in self?.setHighlight($0) }
-        list.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(list)
-        NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: background.leadingAnchor),
-            list.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            list.topAnchor.constraint(equalTo: background.topAnchor),
-            list.bottomAnchor.constraint(equalTo: background.bottomAnchor)
-        ])
+        background.embed(list)
         panel.contentView = background
         self.panel = panel
+        self.surface = background
         self.list = list
         return panel
     }
@@ -146,8 +158,121 @@ final class PasswordSuggestionPanel {
         override var canBecomeMain: Bool { false }
     }
 
+    /// The Space's chrome, as SwiftUI's floating tools draw it: a material,
+    /// the theme's gradient over it, and a theme-colored edge. Solid with
+    /// Reduce Transparency, translucent chrome off, or increased contrast.
+    final class SurfaceView: NSView {
+        var style = PasswordListStyle(theme: .space(.gray), allowsTransparency: true) {
+            didSet { if style != oldValue { refresh() } }
+        }
+        var onAppearanceChange: (() -> Void)?
+        private let material = PassthroughMaterial()
+        private let dim = PassthroughView()
+        private let shade = GradientView()
+        private let edge = PassthroughView()
+        static let cornerRadius: CGFloat = 10
+
+        /// Drawing only: clicks go through to the rows.
+        private class PassthroughView: NSView {
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        }
+
+        private final class PassthroughMaterial: NSVisualEffectView {
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        }
+
+        /// The theme's gradient, as the view's own layer.
+        private final class GradientView: PassthroughView {
+            override func makeBackingLayer() -> CALayer { CAGradientLayer() }
+            var gradient: CAGradientLayer { layer as! CAGradientLayer }
+        }
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            layer?.cornerRadius = Self.cornerRadius
+            layer?.masksToBounds = true
+            material.material = .popover
+            material.blendingMode = .behindWindow
+            material.state = .active
+            dim.wantsLayer = true
+            shade.wantsLayer = true
+            shade.gradient.startPoint = CGPoint(x: 0, y: 1)
+            shade.gradient.endPoint = CGPoint(x: 1, y: 0)
+            // The edge sits above the rows, like the SwiftUI surfaces' stroke.
+            edge.wantsLayer = true
+            edge.layer?.cornerRadius = Self.cornerRadius
+            edge.layer?.borderWidth = 1
+            for view in [material, dim, shade, edge] {
+                view.autoresizingMask = [.width, .height]
+                addSubview(view)
+            }
+            refresh()
+        }
+
+        /// The list goes above the background and below the edge.
+        func embed(_ content: NSView) {
+            content.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(content, positioned: .below, relativeTo: edge)
+            NSLayoutConstraint.activate([
+                content.leadingAnchor.constraint(equalTo: leadingAnchor),
+                content.trailingAnchor.constraint(equalTo: trailingAnchor),
+                content.topAnchor.constraint(equalTo: topAnchor),
+                content.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
+        }
+
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        var isDark: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+        private var increasedContrast: Bool { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
+
+        /// The theme's edge color, also used for icons and the highlighted row.
+        var tint: NSColor { Self.color(style.theme.focusBorder(isDark: isDark, increasedContrast: increasedContrast)) }
+
+        static func color(_ rgb: SpaceThemeRGB, alpha: CGFloat = 1) -> NSColor {
+            NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: alpha)
+        }
+
+        override func layout() {
+            super.layout()
+            for view in [material, dim, shade, edge] { view.frame = bounds }
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            refresh()
+            onAppearanceChange?()
+        }
+
+        private func refresh() {
+            let dark = isDark
+            let solid = !style.allowsTransparency || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                if increasedContrast {
+                    material.isHidden = true
+                    dim.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+                    shade.isHidden = true
+                } else {
+                    material.isHidden = solid
+                    dim.layer?.backgroundColor = dark && !solid ? NSColor.black.withAlphaComponent(0.30).cgColor : nil
+                    shade.isHidden = false
+                    shade.gradient.colors = [Self.color(style.theme.chromeTop(isDark: dark)).cgColor,
+                                             Self.color(style.theme.chromeBottom(isDark: dark)).cgColor]
+                    shade.gradient.opacity = solid ? 1 : (dark ? 0.64 : 0.68)
+                }
+                edge.layer?.borderColor = tint.withAlphaComponent(increasedContrast ? 1 : 0.55).cgColor
+                CATransaction.commit()
+            }
+        }
+    }
+
     /// The rows; clicks land on the first click although the list is never key.
     final class ListView: NSView {
+        var tint = NSColor.controlAccentColor
         var onChoose: ((Int) -> Void)?
         var onHover: ((Int?) -> Void)?
         private var rows: [RowView] = []
@@ -185,7 +310,10 @@ final class PasswordSuggestionPanel {
                     return row
                 }
             }
-            for (index, row) in rows.enumerated() { row.isHighlighted = index == highlighted }
+            for (index, row) in rows.enumerated() {
+                row.tint = tint
+                row.isHighlighted = index == highlighted
+            }
             needsLayout = true
         }
 
@@ -230,6 +358,10 @@ final class PasswordSuggestionPanel {
         private let separator = NSBox()
 
         var height: CGFloat { item == .manage ? ListView.manageHeight : ListView.rowHeight }
+
+        var tint = NSColor.controlAccentColor {
+            didSet { if tint != oldValue { updateColors() } }
+        }
 
         var isHighlighted = false {
             didSet {
@@ -289,6 +421,11 @@ final class PasswordSuggestionPanel {
 
         override var isFlipped: Bool { true }
 
+        // The list is never key, so every click is a first click: the row
+        // takes it whole, over its labels, and passes it to the list.
+        override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
         override func layout() {
             super.layout()
             if item == .manage {
@@ -301,11 +438,12 @@ final class PasswordSuggestionPanel {
             detail.frame = NSRect(x: 34, y: 20, width: bounds.width - 42, height: 14)
         }
 
+        /// Like Site Controls' active rows: a soft wash of the Space's color.
         private func updateColors() {
-            layer?.backgroundColor = isHighlighted ? NSColor.selectedContentBackgroundColor.cgColor : nil
-            title.textColor = isHighlighted ? .alternateSelectedControlTextColor : .labelColor
-            detail.textColor = isHighlighted ? .alternateSelectedControlTextColor.withAlphaComponent(0.8) : .secondaryLabelColor
-            icon.contentTintColor = isHighlighted ? .alternateSelectedControlTextColor : .secondaryLabelColor
+            layer?.backgroundColor = isHighlighted ? tint.withAlphaComponent(0.22).cgColor : nil
+            title.textColor = .labelColor
+            detail.textColor = .secondaryLabelColor
+            icon.contentTintColor = tint
             setAccessibilitySelected(isHighlighted)
         }
     }

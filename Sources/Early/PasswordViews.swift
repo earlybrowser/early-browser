@@ -585,6 +585,16 @@ struct PasswordEditorSheet: View {
     }
 }
 
+private extension View {
+    /// The offer's buttons, shaped like Site Controls' Copy Link.
+    func offerButton(_ fill: Color) -> some View {
+        font(.system(size: 12, weight: .medium))
+            .padding(.horizontal, 11).frame(height: 26)
+            .background(fill, in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+    }
+}
+
 /// A site's icon, or its first letter until Early has one.
 struct PasswordSiteIcon: View {
     let image: NSImage?
@@ -662,13 +672,20 @@ struct PasswordOfferCard: View {
                         .accessibilityIdentifier("passwordOffer.never")
                 }
                 Spacer(minLength: 0)
-                Button("Not Now") { model.webViews.dismissPasswordOffer(in: tabID) }
-                    .controlSize(.small)
-                    .accessibilityIdentifier("passwordOffer.notNow")
-                Button(offer.isUpdate ? "Update" : "Save") {
-                    model.webViews.acceptPasswordOffer(in: tabID, username: username.trimmingCharacters(in: .whitespacesAndNewlines))
+                Button { model.webViews.dismissPasswordOffer(in: tabID) } label: {
+                    Text("Not Now").offerButton(Color.primary.opacity(0.08))
                 }
-                .controlSize(.small).buttonStyle(.borderedProminent)
+                .buttonStyle(.plain)
+                .browserKeyboardFocus(cornerRadius: 7)
+                .accessibilityIdentifier("passwordOffer.notNow")
+                Button {
+                    model.webViews.acceptPasswordOffer(in: tabID, username: username.trimmingCharacters(in: .whitespacesAndNewlines))
+                } label: {
+                    Text(offer.isUpdate ? "Update" : "Save").fontWeight(.semibold).foregroundStyle(tint)
+                        .offerButton(tint.opacity(0.22))
+                }
+                .buttonStyle(.plain)
+                .browserKeyboardFocus(cornerRadius: 7)
                 .accessibilityIdentifier("passwordOffer.save")
             }
         }

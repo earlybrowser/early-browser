@@ -131,6 +131,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var passwords: PasswordVault?
     /// Private windows fill saved passwords but never save or change them.
     public var savesPasswords = true
+    /// The window's look for the list under sign-in fields.
+    public var passwordListStyle: () -> PasswordListStyle = { PasswordListStyle(theme: .space(.gray), allowsTransparency: true) }
     /// Whether sign-in pages with a saved password are filled in as they open.
     public var fillsPasswordsAutomatically: () -> Bool = { true }
     /// Manage Passwords… was chosen under a sign-in field, for this host.

@@ -400,6 +400,19 @@ struct PasswordAutofillTests {
         #expect(panel.highlighted == 0, "And it wraps around")
         #expect(panel.chooseHighlighted())
         #expect(chosen == [.login(id, username: "ada")] && !panel.isVisible && window.childWindows?.isEmpty != false)
+
+        // It wears the window's Space theme, and its edge never blocks a click.
+        window.appearance = NSAppearance(named: .darkAqua)
+        panel.show(items, title: "Passwords for example.com", below: NSRect(x: 150, y: 300, width: 200, height: 24), in: window,
+                   style: PasswordListStyle(theme: .space(.blue), allowsTransparency: true))
+        let surface = try #require(panel.surface), list = try #require(panel.list)
+        surface.layoutSubtreeIfNeeded()
+        #expect(surface.isDark, "A child window takes its parent's appearance")
+        let blue = WindowTheme.space(.blue).focusBorder(isDark: true, increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)
+        #expect(surface.tint == PasswordSuggestionPanel.SurfaceView.color(blue) && list.tint == surface.tint)
+        let point = surface.convert(NSPoint(x: surface.bounds.midX, y: PasswordSuggestionPanel.ListView.headerHeight + 10), from: list)
+        #expect(surface.hitTest(point) is PasswordSuggestionPanel.RowView, "\(String(describing: surface.hitTest(point)))")
+        panel.close()
     }
 
     @Test func fieldsAreFoundInTheWindowAtThePagesScale() throws {

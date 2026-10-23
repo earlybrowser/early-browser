@@ -477,7 +477,7 @@ extension WebViewManager {
         passwordPanel.onChoose = { [weak self] in self?.choosePasswordSuggestion($0) }
         passwordPanel.onHighlight = { [weak self] index in self?.setPageMenu(open: true, selected: index != nil) }
         passwordPanel.show(items, title: field.role == .new ? "Strong password for \(host)" : "Passwords for \(host)",
-                           below: rect, in: window)
+                           below: rect, in: window, style: passwordListStyle())
         setPageMenu(open: true, selected: passwordPanel.highlighted != nil)
     }
 

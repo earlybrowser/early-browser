@@ -260,6 +260,9 @@ final class BrowserWindowModel {
         webViews.passwords = passwords
         webViews.savesPasswords = !isPrivate
         webViews.fillsPasswordsAutomatically = { [weak self] in self?.preferences.fillsPasswordsAutomatically == true }
+        webViews.passwordListStyle = { [weak self] in
+            PasswordListStyle(theme: self?.chromeTheme ?? .space(.gray), allowsTransparency: self?.preferences.translucentChrome ?? true)
+        }
         webViews.onManagePasswords = { [weak self] host in self?.showPasswords(search: host) }
         webViews.automaticPictureInPicture = { [weak self] in self?.preferences.automaticPictureInPicture == true }
         webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }
