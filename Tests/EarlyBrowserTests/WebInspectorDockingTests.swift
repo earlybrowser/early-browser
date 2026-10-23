@@ -48,20 +48,30 @@ struct WebInspectorDockingTests {
             guard let inspector = host.dockedInspector else { return nil }
             return (page.view.frame, inspector.frame)
         }
-        func waitDocked(_ host: WebContentView.HostView) async throws {
+        // WebKit lays the docked inspector out over a few passes (slower on
+        // CI): wait for the layout a check expects, then report what is there.
+        func settled(_ host: WebContentView.HostView,
+                     _ ready: ((page: CGRect, inspector: CGRect)) -> Bool) async throws -> (page: CGRect, inspector: CGRect)? {
             let until = ContinuousClock.now.advanced(by: .seconds(10))
-            while docked(host) == nil {
-                guard ContinuousClock.now < until else { return }
+            while ContinuousClock.now < until {
+                host.layoutSubtreeIfNeeded()
+                if let frames = docked(host), ready(frames) { return frames }
                 try await Task.sleep(for: .milliseconds(50))
             }
+            return docked(host)
+        }
+        func fills(_ host: WebContentView.HostView) -> ((page: CGRect, inspector: CGRect)) -> Bool {
+            { $0.page.union($0.inspector) == host.bounds }
         }
 
         #expect(model.perform(.toggleWebInspector))
-        try await waitDocked(first)
-        let opened = try #require(docked(first), "Web Inspector docks beside the page")
-        #expect(opened.page.union(opened.inspector) == first.bounds && opened.inspector.minX > opened.page.minX, "On the right of the page")
+        let opened = try #require(try await settled(first) {
+            fills(first)($0) && $0.inspector.minX > $0.page.minX && $0.inspector.height == first.bounds.height
+        }, "Web Inspector docks beside the page")
+        #expect(opened.page.union(opened.inspector) == first.bounds && opened.inspector.minX > opened.page.minX,
+                "On the right of the page: \(opened) in \(first.bounds)")
         #expect(opened.inspector.height == first.bounds.height && opened.page.height == first.bounds.height,
-                "As tall as the page: no strip above it under the title bar")
+                "As tall as the page, no strip above it under the title bar: \(opened)")
         #expect(model.isWebInspectorVisible)
 
         // Switching tabs releases the page; another host shows it again later.
@@ -70,25 +80,22 @@ struct WebInspectorDockingTests {
         let second = WebContentView.HostView(frame: CGRect(x: 0, y: 0, width: 1000, height: 700))
         root.addSubview(second)
         #expect(second.display(page.view))
-        try await Task.sleep(for: .milliseconds(300))
-        let returned = try #require(docked(second), "The inspector comes back with its page")
-        #expect(returned.page.union(returned.inspector) == second.bounds)
+        let returned = try #require(try await settled(second, fills(second)), "The inspector comes back with its page")
+        #expect(returned.page.union(returned.inspector) == second.bounds, "\(returned) in \(second.bounds)")
 
         // The inspector's own "dock to bottom" puts it below the page.
         let frontend = inspector(of: page.view)?.value(forKey: "inspectorWebView") as? WKWebView
         _ = try await frontend?.evaluateJavaScript("InspectorFrontendHost.requestSetDockSide('bottom'); 1")
-        try await Task.sleep(for: .milliseconds(800))
-        let bottom = try #require(docked(second))
-        #expect(bottom.inspector.maxY <= bottom.page.minY + 1, "Below the page, not above it")
-        #expect(bottom.page.union(bottom.inspector) == second.bounds)
+        let bottom = try #require(try await settled(second) { fills(second)($0) && $0.inspector.width == second.bounds.width })
+        #expect(bottom.inspector.maxY <= bottom.page.minY + 1, "Below the page, not above it: \(bottom)")
+        #expect(bottom.page.union(bottom.inspector) == second.bounds, "\(bottom) in \(second.bounds)")
         _ = try await frontend?.evaluateJavaScript("InspectorFrontendHost.requestSetDockSide('right'); 1")
-        try await Task.sleep(for: .milliseconds(800))
+        _ = try await settled(second) { fills(second)($0) && $0.inspector.width < second.bounds.width }
 
         second.setFrameSize(CGSize(width: 900, height: 600))
-        second.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(300))
-        let resized = try #require(docked(second))
-        #expect(resized.page.union(resized.inspector) == second.bounds && resized.inspector.height == second.bounds.height)
+        let resized = try #require(try await settled(second) { fills(second)($0) && $0.inspector.height == second.bounds.height })
+        #expect(resized.page.union(resized.inspector) == second.bounds && resized.inspector.height == second.bounds.height,
+                "\(resized) in \(second.bounds)")
 
         #expect(model.perform(.toggleWebInspector))
         let until = ContinuousClock.now.advanced(by: .seconds(5))

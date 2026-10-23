@@ -168,8 +168,19 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     /// is not tracking stops the run loop itself instead.
     static var isTrackingMenu: Bool { RunLoop.current.currentMode == .eventTracking }
 
+    /// While a page menu opens, the page offers nothing to Services: macOS
+    /// would add its submenu to WebKit's menu, which lists only Early's working
+    /// actions. The app's own Services menu is not affected.
+    private var opensPageMenu = false
+
+    override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+                                 returnType: NSPasteboard.PasteboardType?) -> Any? {
+        opensPageMenu ? nil : super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+
     override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
         super.didCloseMenu(menu, with: event)
+        opensPageMenu = false
         guard inspectsElements, shownLinkMenu === menu else { return }
         shownLinkMenu = nil
         onInteractionEnded?()
@@ -205,6 +216,11 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         if inspectsElements {
             // WebKit's own menu follows this message; it is filled in below.
             pendingContextTarget = (target, Date())
+            opensPageMenu = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+                guard let self, self.shownLinkMenu == nil else { return }
+                self.opensPageMenu = false
+            }
             return
         }
         guard let window, window.attachedSheet == nil else { return }

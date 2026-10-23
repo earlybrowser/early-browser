@@ -163,6 +163,7 @@ struct SiteSecurityTests {
         view.presentMenu = { menu, _ in shown.append(menu) }
         view.showContextMenu(for: BrowserWebView.ContextTarget())
         #expect(shown.isEmpty)
+        #expect(view.validRequestor(forSendType: .string, returnType: nil) == nil, "Nothing for Services while the menu opens")
         let menu = NSMenu()
         menu.addItem(withTitle: "Look Up", action: nil, keyEquivalent: "")
         let inspect = NSMenuItem(title: "Inspect Element", action: nil, keyEquivalent: "")
