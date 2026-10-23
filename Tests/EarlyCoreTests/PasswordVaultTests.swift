@@ -19,6 +19,18 @@ final class MemoryVaultKey: PasswordVaultKey, @unchecked Sendable {
     }
     private var _failure: OSStatus?
     private var old: Data?
+    /// Making a key fails, like a refused Keychain.
+    var makeFails: Bool {
+        get { lock.withLock { _makeFails } }
+        set { lock.withLock { _makeFails = newValue } }
+    }
+    private var _makeFails = false
+    /// The Keychain takes this long, so work can still be under way.
+    var delay: TimeInterval {
+        get { lock.withLock { _delay } }
+        set { lock.withLock { _delay = newValue } }
+    }
+    private var _delay: TimeInterval = 0
 
     /// `legacy` is a key an earlier build kept.
     init(_ key: Data? = nil, legacy: Data? = nil) {
@@ -31,7 +43,8 @@ final class MemoryVaultKey: PasswordVaultKey, @unchecked Sendable {
     var legacyKey: Data? { lock.withLock { old } }
 
     func existing() throws -> Data? {
-        try lock.withLock {
+        Thread.sleep(forTimeInterval: delay)
+        return try lock.withLock {
             reads += 1
             if let _failure { throw PasswordVault.KeyError(status: _failure) }
             return stored
@@ -39,7 +52,9 @@ final class MemoryVaultKey: PasswordVaultKey, @unchecked Sendable {
     }
 
     func make() throws -> Data {
-        lock.withLock {
+        Thread.sleep(forTimeInterval: delay)
+        return try lock.withLock {
+            if _makeFails { throw PasswordVault.KeyError(status: errSecAuthFailed) }
             if let stored { return stored }
             let fresh = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
             stored = fresh
@@ -198,6 +213,120 @@ struct PasswordVaultTests {
         #expect(first.count == 32 && first == KeychainVaultKey.derive(shared, profile: one), "The same key every time")
         #expect(first != KeychainVaultKey.derive(shared, profile: two), "Profiles are encrypted separately")
         #expect(first != shared && first != KeychainVaultKey.derive(Data(repeating: 7, count: 32), profile: one))
+    }
+
+    @Test func deletingPasswordsStopsSavesAndOpensStillUnderWay() async throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        // A save still waiting for its Keychain key when the profile goes.
+        let slow = MemoryVaultKey()
+        let vault = PasswordVault(fileURL: url, key: slow)
+        #expect(await vault.load())
+        slow.delay = 0.3
+        vault.save(origin: "https://example.com", username: "ada", password: "deleted")
+        vault.removeAll()
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(await vault.flush())
+        #expect(!FileManager.default.fileExists(atPath: url.path), "The save can't bring the file back")
+        #expect(vault.logins.isEmpty && !vault.isReady)
+        #expect(vault.save(origin: "https://example.com", username: "ada", password: "again") == nil, "Nothing more is kept")
+        #expect(await vault.load() == false)
+
+        // Passwords still being opened when the profile goes don't come back.
+        let key = MemoryVaultKey()
+        let saved = PasswordVault(fileURL: url, key: key)
+        #expect(await saved.load())
+        saved.save(origin: "https://example.com", username: "ada", password: "old")
+        await saved.flush()
+        key.delay = 0.3
+        let opening = PasswordVault(fileURL: url, key: key)
+        let load = Task { await opening.load() }
+        try await Task.sleep(for: .milliseconds(50))
+        opening.removeAll()
+        #expect(await load.value == false)
+        #expect(opening.logins.isEmpty, "Nothing is restored")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test func failedSavesAreReportedAndCanBeTriedAgain() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswords-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A file where the passwords' folder should be: nothing can be written.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let blocker = directory.appending(path: "Passwords")
+        try Data().write(to: blocker)
+        let url = blocker.appending(path: "profile.vault")
+        let vault = PasswordVault(fileURL: url, key: MemoryVaultKey())
+        #expect(await vault.load())
+        vault.save(origin: "https://example.com", username: "ada", password: "kept")
+        #expect(await vault.flush() == false)
+        #expect(vault.saveError?.contains("couldn’t be written") == true, "\(vault.saveError ?? "nil")")
+        #expect(vault.logins.count == 1 && vault.isReady, "Still in memory, still usable")
+        try FileManager.default.removeItem(at: blocker)
+        vault.retrySaving()
+        #expect(await vault.flush() && vault.saveError == nil)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+
+        // A refused Keychain key: reported, the passwords kept for another try.
+        let refusing = MemoryVaultKey()
+        refusing.makeFails = true
+        let other = PasswordVault(fileURL: directory.appending(path: "other.vault"), key: refusing)
+        #expect(await other.load())
+        other.save(origin: "https://example.com", username: "grace", password: "pw")
+        #expect(await other.flush() == false && other.saveError?.contains("Keychain") == true)
+        #expect(other.isReady && other.logins.count == 1)
+        refusing.makeFails = false
+        other.retrySaving()
+        #expect(await other.flush())
+        #expect(await PasswordVault(fileURL: directory.appending(path: "other.vault"), key: refusing).load())
+    }
+
+    @Test func strongPasswordDraftsNeverReplaceASavedPassword() async throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let key = MemoryVaultKey()
+        let vault = PasswordVault(fileURL: url, key: key)
+        #expect(await vault.load())
+        vault.save(origin: "https://example.com", username: "ada", password: "working")
+        vault.saveDraft(origin: "https://example.com", username: "ada", password: "generated")
+        #expect(vault.login(origin: "https://example.com", username: "ada")?.password == "working")
+        #expect(vault.drafts.map(\.password) == ["generated"] && vault.recentDraft(origin: "https://example.com")?.password == "generated")
+        let draft = try #require(vault.draft(origin: "https://example.com", password: "generated"))
+        #expect(vault.commitDraft(draft.id) == nil, "A login with that user name needs the person's say")
+        #expect(vault.login(origin: "https://example.com", username: "ada")?.password == "working" && vault.drafts.count == 1)
+
+        // Kept on disk with the logins, and opened again.
+        await vault.flush()
+        let reopened = PasswordVault(fileURL: url, key: key)
+        #expect(await reopened.load())
+        #expect(reopened.drafts.map(\.password) == ["generated"] && reopened.logins.map(\.password) == ["working"])
+        let login = try #require(reopened.login(origin: "https://example.com", username: "ada"))
+        #expect(reopened.replace(login.id, with: draft.id), "Replacing is the person's choice")
+        #expect(reopened.login(id: login.id)?.password == "generated" && reopened.drafts.isEmpty)
+
+        // A new account's draft becomes a login of its own.
+        reopened.saveDraft(origin: "https://new.example", username: "", password: "fresh")
+        reopened.saveDraft(origin: "https://new.example", username: "grace", password: "fresh")
+        #expect(reopened.drafts.count == 1 && reopened.drafts[0].username == "grace", "One draft per password")
+        #expect(reopened.commitDraft(reopened.drafts[0].id) == .added)
+        #expect(reopened.login(origin: "https://new.example", username: "grace")?.password == "fresh" && reopened.drafts.isEmpty)
+    }
+
+    @Test func passwordsSavedBeforeDraftsExistedStillOpen() async throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let keyData = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+        // The format before drafts: version, logins and neverSaved only.
+        let json = """
+            {"version":1,"logins":[{"id":"\(UUID().uuidString)","origin":"https://example.com","username":"ada",
+            "password":"old","note":"","created":"2026-10-20T10:00:00Z","modified":"2026-10-20T10:00:00Z"}],"neverSaved":[]}
+            """
+        let sealed = try AES.GCM.seal(Data(json.utf8), using: SymmetricKey(data: keyData))
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try (Data("EARLYPW1".utf8) + sealed.combined!).write(to: url)
+        let vault = PasswordVault(fileURL: url, key: MemoryVaultKey(keyData))
+        #expect(await vault.load())
+        #expect(vault.logins.map(\.password) == ["old"] && vault.drafts.isEmpty)
     }
 
     @Test func importsKeepSavedPasswordsAndExportsReadBackTheSame() async throws {
