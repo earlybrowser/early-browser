@@ -66,6 +66,8 @@ final class PasswordSuggestionPanel {
             observe(parent)
             self.parent = parent
         }
+        // Only over a window on screen; one that was never shown (tests) shows nothing.
+        guard parent.isVisible else { return }
         if panel.parent == nil { parent.addChildWindow(panel, ordered: .above) }
         panel.orderFront(nil)
         panel.invalidateShadow()

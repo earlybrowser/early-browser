@@ -393,6 +393,7 @@ struct PasswordAutofillTests {
         let items: [PasswordSuggestion] = [.login(id, username: "ada"), .login(UUID(), username: ""), .manage]
         panel.show(items, title: "Passwords for example.com", below: NSRect(x: 150, y: 300, width: 200, height: 24), in: window)
         #expect(panel.isVisible && panel.highlighted == nil)
+        #expect(window.childWindows?.isEmpty != false, "Nothing appears over a window that isn't on screen")
         #expect(!panel.chooseHighlighted(), "Return without a highlight sends the form")
         panel.moveHighlight(-1)
         #expect(panel.highlighted == 2, "Up from nothing is the last row")
