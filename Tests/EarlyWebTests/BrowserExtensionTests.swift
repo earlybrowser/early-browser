@@ -120,10 +120,16 @@ enum ExtensionScenarios {
         let files: URL
         let profile = UUID()
 
+        /// A regular profile's pages are on a persistent store, as in Early.
+        /// WebKit treats pages on a memory-only store as private browsing,
+        /// where (on macOS 26) extensions run only if allowed in private
+        /// windows. One store is reused, and emptied after each test.
+        static let profileStore = UUID(uuidString: "E4A1E5C0-7E57-4E57-A000-000000000001")!
+
         init(isPrivate: Bool = false, catalog: ExtensionCatalog = ExtensionCatalog(fileURL: nil)) {
             _ = NSApplication.shared
             files = FileManager.default.temporaryDirectory.appending(path: "EarlyExtensions-\(UUID())", directoryHint: .isDirectory)
-            let store = WKWebsiteDataStore.nonPersistent()
+            let store = isPrivate ? WKWebsiteDataStore.nonPersistent() : WKWebsiteDataStore(forIdentifier: Self.profileStore)
             let input = NavigationInput(allowedSchemes: Set(["http", "https"]).union(NavigationInput.extensionSchemes))
             manager = WebViewManager(profileID: profile, ephemeral: true, input: input,
                                      faviconStore: FaviconStore { _, _, _ in nil }, websiteDataStore: store,
@@ -161,6 +167,10 @@ enum ExtensionScenarios {
             manager.discardAll()
             window.close()
             try? FileManager.default.removeItem(at: files)
+            let store = manager.websiteDataStore
+            if store.isPersistent {
+                store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+            }
         }
     }
 
