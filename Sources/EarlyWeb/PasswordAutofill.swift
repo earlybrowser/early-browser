@@ -441,8 +441,9 @@ extension WebViewManager {
         switch field.role {
         case .new:
             // Never in a private window, where it could not be kept.
-            guard savesPasswords, !vault.isNeverSaved(field.origin) else { return [] }
-            items = [.strongPassword(PasswordGenerator.strongPassword(rules: field.rules, maxLength: field.maxLength))]
+            guard savesPasswords, !vault.isNeverSaved(field.origin),
+                  let password = PasswordGenerator.strongPassword(rules: field.rules, maxLength: field.maxLength) else { return [] }
+            items = [.strongPassword(password)]
         case .username, .current:
             let typed = field.role == .username ? field.typed.lowercased() : ""
             // A login without a user name has nothing to fill in a user name field.

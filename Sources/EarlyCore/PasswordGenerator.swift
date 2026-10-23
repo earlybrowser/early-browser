@@ -78,22 +78,45 @@ public enum PasswordGenerator {
     static let readableDigits = Array("23456789")
     static let fallback = upper.union(lower).union(digits).union("-_!@#$%^&*")
     public static let defaultLength = 20
+    /// More than any website needs: a site's rules can't make Early build a
+    /// longer one.
+    public static let maximumLength = 128
+    /// Anything shorter isn't a strong password, so none is offered.
+    public static let minimumLength = 8
+    static let attempts = 50
 
-    public static func strongPassword(rules: PasswordRules = PasswordRules(), maxLength: Int? = nil) -> String {
+    /// A strong password for a field without rules.
+    public static func strongPassword() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return readablePassword(using: &generator)
+    }
+
+    /// One that follows a website's rules and the field's length, or nil when
+    /// no strong password can: too short, contradictory or impossible rules,
+    /// or more than ``maximumLength`` characters.
+    public static func strongPassword(rules: PasswordRules, maxLength: Int?) -> String? {
         var generator = SystemRandomNumberGenerator()
         return strongPassword(rules: rules, maxLength: maxLength, using: &generator)
     }
 
     public static func strongPassword<R: RandomNumberGenerator>(rules: PasswordRules, maxLength: Int?,
-                                                               using generator: inout R) -> String {
+                                                               using generator: inout R) -> String? {
+        guard let lengths = lengths(rules: rules, maxLength: maxLength) else { return nil }
         let readable = readablePassword(using: &generator)
         if satisfies(readable, rules: rules, maxLength: maxLength) { return readable }
-        var candidate = ""
-        for _ in 0..<50 {
-            candidate = randomPassword(rules: rules, maxLength: maxLength, using: &generator)
+        for _ in 0..<attempts {
+            let candidate = randomPassword(rules: rules, lengths: lengths, using: &generator)
             if satisfies(candidate, rules: rules, maxLength: maxLength) { return candidate }
         }
-        return candidate
+        return nil
+    }
+
+    /// The lengths a password may have: the site's and the field's limits
+    /// within Early's own. Nil when none is left.
+    static func lengths(rules: PasswordRules, maxLength: Int?) -> ClosedRange<Int>? {
+        let upper = min(maximumLength, rules.maxLength ?? .max, maxLength.flatMap { $0 > 0 ? $0 : nil } ?? .max)
+        let lower = max(minimumLength, rules.minLength ?? 0, rules.required.count)
+        return lower <= upper ? lower...upper : nil
     }
 
     /// Three groups of six: lowercase, one uppercase and at least one digit.
@@ -109,12 +132,11 @@ public enum PasswordGenerator {
         return [characters[0..<6], characters[6..<12], characters[12..<18]].map { String($0) }.joined(separator: "-")
     }
 
-    static func randomPassword<R: RandomNumberGenerator>(rules: PasswordRules, maxLength: Int?,
+    static func randomPassword<R: RandomNumberGenerator>(rules: PasswordRules, lengths: ClosedRange<Int>,
                                                          using generator: inout R) -> String {
         let explicit = rules.allowed.union(rules.required.reduce(into: Set<Character>()) { $0.formUnion($1) })
         let alphabet = Array(explicit.isEmpty ? fallback : explicit)
-        let limit = min(rules.maxLength ?? .max, maxLength.flatMap { $0 > 0 ? $0 : nil } ?? .max)
-        let length = max(rules.required.count, min(max(defaultLength, rules.minLength ?? 0), limit))
+        let length = min(max(defaultLength, lengths.lowerBound), lengths.upperBound)
         var characters = rules.required.map { Array($0).randomElement(using: &generator)! }
         while characters.count < length { characters.append(alphabet.randomElement(using: &generator)!) }
         return String(characters.shuffled(using: &generator))

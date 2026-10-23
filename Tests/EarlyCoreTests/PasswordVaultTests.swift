@@ -287,17 +287,37 @@ struct PasswordGeneratorTests {
         #expect(rules.minLength == 8 && rules.maxLength == 12 && rules.required.count == 4)
         #expect(rules.required[3] == ["!", "#"] && rules.allowed == ["-"])
         for _ in 0..<50 {
-            let password = PasswordGenerator.strongPassword(rules: rules)
+            guard let password = PasswordGenerator.strongPassword(rules: rules, maxLength: nil) else {
+                Issue.record("No password for possible rules")
+                return
+            }
             #expect(password.count == 12, "\(password)")
             #expect(password.contains(where: \.isLowercase) && password.contains(where: \.isUppercase)
                     && password.contains(where: \.isNumber) && password.contains { "!#".contains($0) }, "\(password)")
             #expect(password.allSatisfy { $0.isLetter || $0.isNumber || "!#-".contains($0) }, "\(password)")
         }
-        let short = PasswordGenerator.strongPassword(maxLength: 10)
-        #expect(short.count == 10, "The field's maxlength: \(short)")
-        let digits = PasswordGenerator.strongPassword(rules: .parse("required: digit; max-consecutive: 2"), maxLength: 6)
-        #expect(digits.count == 6 && digits.allSatisfy(\.isNumber), "\(digits)")
+        let short = PasswordGenerator.strongPassword(rules: PasswordRules(), maxLength: 10)
+        #expect(short?.count == 10, "The field's maxlength: \(short ?? "nil")")
+        let digits = PasswordGenerator.strongPassword(rules: .parse("required: digit; max-consecutive: 2"), maxLength: 12)
+        #expect(digits?.count == 12 && digits?.allSatisfy(\.isNumber) == true, "\(digits ?? "nil")")
         #expect(PasswordRules.parse("required: []-]").required == [["]", "-"]], "A leading ] is a character")
         #expect(PasswordRules.parse("nonsense; minlength: x").minLength == nil)
+    }
+
+    @Test func websitesCantAskForHugeOrImpossiblePasswords() {
+        let start = ContinuousClock.now
+        // A site asking for a billion characters gets nothing, at once.
+        #expect(PasswordGenerator.strongPassword(rules: .parse("minlength: 999999999"), maxLength: nil) == nil)
+        #expect(PasswordGenerator.strongPassword(rules: .parse("minlength: 200"), maxLength: nil) == nil,
+                "Longer than Early generates")
+        #expect(PasswordGenerator.strongPassword(rules: .parse("minlength: 128"), maxLength: nil)?.count == 128)
+        #expect(PasswordGenerator.strongPassword(rules: .parse("minlength: 30; maxlength: 12"), maxLength: nil) == nil,
+                "Contradictory")
+        #expect(PasswordGenerator.strongPassword(rules: PasswordRules(), maxLength: 6) == nil, "Too short to be strong")
+        #expect(PasswordGenerator.strongPassword(rules: .parse("required: [a]; allowed: [a]; max-consecutive: 1"), maxLength: nil) == nil,
+                "Impossible: one character that can't repeat")
+        // Huge field limits are bounded by Early's own maximum.
+        #expect((PasswordGenerator.strongPassword(rules: .parse("minlength: 100"), maxLength: Int(Int32.max))?.count ?? 0) <= 128)
+        #expect(ContinuousClock.now - start < .seconds(1), "Bounded work")
     }
 }
