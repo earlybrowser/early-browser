@@ -2987,13 +2987,13 @@ struct FolderIcon: View {
             if let emblem {
                 GeometryReader { geometry in
                     let size = geometry.size
-                    // On the front, leaning back with it as the folder opens.
                     FolderEmblemView(emblem: emblem)
                         .foregroundStyle(outline)
                         .frame(width: size.width * 0.42, height: size.width * 0.42)
-                        .modifier(FolderEmblemTilt(openness: isOpen ? 1 : 0))
-                        .position(x: size.width * (isOpen ? 0.62 : 0.5), y: size.height * (isOpen ? 0.635 : 0.62))
+                        .position(x: size.width * 0.5, y: size.height * 0.62)
                 }
+                // On the front, moving with it as the folder opens.
+                .modifier(FolderFrontLean(openness: isOpen ? 1 : 0))
                 .accessibilityHidden(true)
             }
         }
@@ -3013,8 +3013,8 @@ private struct FolderEmblemView: View {
     }
 }
 
-/// The open front is a slanted, shorter face; its icon follows it.
-private struct FolderEmblemTilt: GeometryEffect {
+/// Moves a folder's icon exactly as its front moves.
+private struct FolderFrontLean: GeometryEffect {
     var openness: CGFloat
     var animatableData: CGFloat {
         get { openness }
@@ -3022,11 +3022,7 @@ private struct FolderEmblemTilt: GeometryEffect {
     }
 
     func effectValue(size: CGSize) -> ProjectionTransform {
-        let lean = CGAffineTransform(a: 1, b: 0, c: -0.2 * openness, d: 1 - 0.1 * openness, tx: 0, ty: 0)
-        let centered = CGAffineTransform(translationX: -size.width / 2, y: -size.height / 2)
-            .concatenating(lean)
-            .concatenating(CGAffineTransform(translationX: size.width / 2, y: size.height / 2))
-        return ProjectionTransform(centered)
+        ProjectionTransform(FolderLean.front.transform(openness, in: CGRect(origin: .zero, size: size)))
     }
 }
 
@@ -3069,8 +3065,29 @@ struct GitHubMark: Shape {
     }
 }
 
-/// The back and its tab. Opening leans it back: its left edge slants in
-/// toward the bottom, as in an open folder seen from the front.
+/// How a folder's half moves as it opens: hinged on the bottom edge, its top
+/// leans one way (`shear`) and comes forward or goes back (`squash`).
+struct FolderLean {
+    static let hinge: CGFloat = 0.88
+    static let back = FolderLean(shear: -0.16, squash: 0.04)
+    static let front = FolderLean(shear: 0.24, squash: 0.14)
+
+    let shear: CGFloat
+    let squash: CGFloat
+
+    /// From closed (0) to open (1), in a rect's own coordinates.
+    func transform(_ openness: CGFloat, in rect: CGRect) -> CGAffineTransform {
+        let narrow = 1 - 0.08 * openness, lean = shear * openness, height = 1 - squash * openness
+        // In the unit square: x' = 0.5 + (x − 0.5)·narrow + lean·(hinge − y), y' = hinge − (hinge − y)·height.
+        let unitX = 0.5 - 0.5 * narrow + Self.hinge * lean, unitY = Self.hinge * (1 - height)
+        let ratio = rect.height > 0 ? rect.width / rect.height : 1
+        return CGAffineTransform(a: narrow, b: 0, c: -lean * ratio, d: height,
+                                 tx: rect.minX + rect.width * unitX - narrow * rect.minX + lean * ratio * rect.minY,
+                                 ty: rect.minY + rect.height * unitY - height * rect.minY)
+    }
+}
+
+/// The back and its tab; opening tips it back.
 private struct FolderBack: Shape {
     var openness: CGFloat = 0
     var animatableData: CGFloat {
@@ -3079,30 +3096,28 @@ private struct FolderBack: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        func point(_ x: CGFloat, _ y: CGFloat, _ openX: CGFloat, _ openY: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + (x + (openX - x) * openness) * rect.width,
-                    y: rect.minY + (y + (openY - y) * openness) * rect.height)
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
         }
         var path = Path()
-        path.move(to: point(0.18, 0.88, 0.32, 0.88))
-        path.addQuadCurve(to: point(0.06, 0.76, 0.22, 0.79), control: point(0.06, 0.88, 0.20, 0.88))
-        path.addLine(to: point(0.06, 0.28, 0.07, 0.29))
-        path.addQuadCurve(to: point(0.16, 0.18, 0.16, 0.19), control: point(0.06, 0.18, 0.06, 0.19))
-        path.addLine(to: point(0.33, 0.18, 0.33, 0.19))
-        path.addQuadCurve(to: point(0.40, 0.21, 0.40, 0.22), control: point(0.37, 0.18, 0.37, 0.19))
-        path.addLine(to: point(0.46, 0.27, 0.46, 0.28))
-        path.addQuadCurve(to: point(0.53, 0.30, 0.53, 0.31), control: point(0.49, 0.30, 0.49, 0.31))
-        path.addLine(to: point(0.76, 0.30, 0.72, 0.31))
-        path.addQuadCurve(to: point(0.88, 0.41, 0.84, 0.42), control: point(0.88, 0.30, 0.84, 0.31))
-        path.addLine(to: point(0.88, 0.76, 0.80, 0.77))
-        path.addQuadCurve(to: point(0.76, 0.88, 0.69, 0.88), control: point(0.88, 0.88, 0.79, 0.88))
+        path.move(to: point(0.18, 0.88))
+        path.addQuadCurve(to: point(0.06, 0.76), control: point(0.06, 0.88))
+        path.addLine(to: point(0.06, 0.28))
+        path.addQuadCurve(to: point(0.16, 0.18), control: point(0.06, 0.18))
+        path.addLine(to: point(0.33, 0.18))
+        path.addQuadCurve(to: point(0.40, 0.21), control: point(0.37, 0.18))
+        path.addLine(to: point(0.46, 0.27))
+        path.addQuadCurve(to: point(0.53, 0.30), control: point(0.49, 0.30))
+        path.addLine(to: point(0.76, 0.30))
+        path.addQuadCurve(to: point(0.88, 0.41), control: point(0.88, 0.30))
+        path.addLine(to: point(0.88, 0.76))
+        path.addQuadCurve(to: point(0.76, 0.88), control: point(0.88, 0.88))
         path.closeSubpath()
-        return path
+        return path.applying(FolderLean.back.transform(openness, in: rect))
     }
 }
 
-/// The front. Opening tips it forward: narrower at the bottom and moved
-/// right, its top reaching out past the back.
+/// The front; opening tips it toward you.
 private struct FolderCover: Shape {
     var openness: CGFloat
     var animatableData: CGFloat {
@@ -3111,23 +3126,21 @@ private struct FolderCover: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        func point(_ x: CGFloat, _ y: CGFloat, _ openX: CGFloat, _ openY: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + (x + (openX - x) * openness) * rect.width,
-                    y: rect.minY + (y + (openY - y) * openness) * rect.height)
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
         }
         var path = Path()
-        // Matching control points let the cover smoothly unfold, without
-        // crossfading two overlapping outlines halfway through the animation.
-        path.move(to: point(0.18, 0.88, 0.37, 0.88))
-        path.addQuadCurve(to: point(0.06, 0.76, 0.27, 0.80), control: point(0.06, 0.88, 0.26, 0.88))
-        path.addLine(to: point(0.06, 0.48, 0.34, 0.46))
-        path.addQuadCurve(to: point(0.18, 0.36, 0.43, 0.38), control: point(0.06, 0.36, 0.36, 0.38))
-        path.addLine(to: point(0.82, 0.36, 0.88, 0.38))
-        path.addQuadCurve(to: point(0.94, 0.48, 0.95, 0.46), control: point(0.94, 0.36, 0.98, 0.38))
-        path.addLine(to: point(0.94, 0.76, 0.84, 0.80))
-        path.addQuadCurve(to: point(0.82, 0.88, 0.75, 0.88), control: point(0.94, 0.88, 0.82, 0.88))
+        path.move(to: point(0.18, 0.88))
+        path.addQuadCurve(to: point(0.06, 0.76), control: point(0.06, 0.88))
+        path.addLine(to: point(0.06, 0.48))
+        path.addQuadCurve(to: point(0.18, 0.36), control: point(0.06, 0.36))
+        path.addLine(to: point(0.82, 0.36))
+        path.addQuadCurve(to: point(0.94, 0.48), control: point(0.94, 0.36))
+        path.addLine(to: point(0.94, 0.76))
+        path.addQuadCurve(to: point(0.82, 0.88), control: point(0.94, 0.88))
         path.closeSubpath()
-        return path
+        return path.applying(FolderLean.front.transform(openness, in: rect))
     }
 }
+
 
