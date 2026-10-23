@@ -2954,7 +2954,7 @@ enum FolderEmblem: Equatable {
 struct FolderIcon: View {
     /// Room for an icon on the front.
     static let width: CGFloat = 22
-    static let height: CGFloat = 22
+    static let height: CGFloat = 24
 
     let isOpen: Bool
     var themeColor: BrowserSpace.Color = .gray
