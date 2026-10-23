@@ -65,13 +65,82 @@ extension WebViewManager {
         """
 
     public func canShowPageSource(_ id: UUID) -> Bool {
-        guard let page = pages[id], page.view.url != nil, page.failure == nil else { return false }
-        return page.documentMIMEType != "application/pdf"
+        guard let page = pages[id], let url = page.view.url, page.failure == nil else { return false }
+        return page.documentMIMEType != "application/pdf" && url.scheme?.lowercased() != NavigationInput.pageSourceScheme
     }
 
     public func pageSource(_ id: UUID) async -> String? {
         guard canShowPageSource(id), let view = pages[id]?.view else { return nil }
         return try? await view.callAsyncJavaScript(Self.pageSourceScript, contentWorld: Self.documentWorld) as? String
+    }
+
+    /// Keeps the page's current markup for its `view-source:` tab and returns
+    /// that tab's address.
+    public func capturePageSource(_ id: UUID) async -> URL? {
+        guard let view = pages[id]?.view, let page = view.url, let address = NavigationInput.sourceURL(of: page),
+              let source = await pageSource(id) else { return nil }
+        sourcePages.store(source, title: view.title ?? "", for: page)
+        return address
+    }
+}
+
+/// `view-source:` pages: snapshots of this window's pages, shown as text. The
+/// generated page runs no scripts and loads nothing, from the website or else.
+@MainActor
+final class PageSourcePages: NSObject, WKURLSchemeHandler {
+    private var snapshots: [URL: (title: String, source: String)] = [:]
+    private var order: [URL] = []
+    static let limit = 20
+    static let explanation = "The page as it is now, including changes made by its scripts. Early doesn’t download it again."
+
+    func store(_ source: String, title: String, for page: URL) {
+        snapshots[page] = (title, source)
+        order.removeAll { $0 == page }
+        order.append(page)
+        while order.count > Self.limit { snapshots[order.removeFirst()] = nil }
+    }
+
+    func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
+        guard let url = task.request.url, let page = NavigationInput.page(ofSource: url) else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        let html = snapshots[page].map { Self.render($0.source, title: $0.title, page: page) } ?? Self.unavailable(page)
+        let headers = ["Content-Type": "text/html; charset=utf-8",
+                       "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"]
+        guard let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers) else { return }
+        task.didReceive(response)
+        task.didReceive(Data(html.utf8))
+        task.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {}
+
+    static func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    private static let style = """
+        <meta name="color-scheme" content="light dark"><style>
+        body { margin: 0; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+        header { position: sticky; top: 0; padding: 10px 14px; font: 13px -apple-system, sans-serif; color: GrayText;
+                 background: Canvas; border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
+        pre { margin: 0; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
+        p { font: 14px -apple-system, sans-serif; padding: 24px; }
+        </style>
+        """
+
+    static func render(_ source: String, title: String, page: URL) -> String {
+        let name = title.isEmpty ? (page.host ?? page.absoluteString) : title
+        return "<!doctype html><meta charset=\"utf-8\">\(style)<title>Source of \(escape(name))</title>"
+            + "<header>\(escape(explanation))</header><pre>\(escape(source))</pre>"
+    }
+
+    static func unavailable(_ page: URL) -> String {
+        "<!doctype html><meta charset=\"utf-8\">\(style)<title>Source of \(escape(page.host ?? page.absoluteString))</title>"
+            + "<p>This source view wasn’t kept. Open <a href=\"\(escape(page.absoluteString))\">\(escape(page.absoluteString))</a> "
+            + "and choose View Page Source again.</p>"
     }
 }
 

@@ -119,6 +119,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var automaticPictureInPicture: () -> Bool = { false }
     /// Tabs whose video Early is moving, or moved, into Picture in Picture.
     @ObservationIgnored var automaticPictureInPictureTabs: [UUID: AutomaticPictureInPicture] = [:]
+    /// This window's `view-source:` snapshots.
+    let sourcePages = PageSourcePages()
+    /// View Page Source was chosen from a page's menu.
+    public var onViewPageSource: ((UUID) -> Void)?
     /// The app macOS would open a link with, and opening it; tests replace both.
     @ObservationIgnored var appForLink: (URL) -> URL? = { NSWorkspace.shared.urlForApplication(toOpen: $0) }
     @ObservationIgnored var openInApp: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -345,6 +349,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             configuration.websiteDataStore = websiteDataStore
             configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
             configuration.preferences.isElementFullscreenEnabled = true
+            configuration.setURLSchemeHandler(sourcePages, forURLScheme: NavigationInput.pageSourceScheme)
             // WebKit's phishing and malware warnings (Safari's Safe Browsing).
             configuration.preferences.isFraudulentWebsiteWarningEnabled = true
             Self.enablePictureInPicture(configuration.preferences)

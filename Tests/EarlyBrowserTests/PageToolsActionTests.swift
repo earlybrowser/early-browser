@@ -19,7 +19,7 @@ struct PageToolsActionTests {
             _ = NSApplication.shared
             defaults = UserDefaults(suiteName: suite)!
             defaults.set(false, forKey: "onlineSearchSuggestions")
-            let input = NavigationInput(allowedSchemes: ["http", "https", "early-test"])
+            let input = NavigationInput(allowedSchemes: ["http", "https", "early-test", "view-source"])
             let repository = SessionRepository(fileURL: FileManager.default.temporaryDirectory
                 .appendingPathComponent("EarlyPageTools-\(UUID()).sqlite"), input: input)
             model = BrowserWindowModel(startup: .returningSession, session: session, repository: repository,
@@ -313,11 +313,18 @@ struct PageToolsActionTests {
         #expect(!model.commandSearchCandidates().map(\.title).contains("Clear Cache and Cookies for This Site…"))
         #expect(model.canPerform(.viewPageSource) && model.commandSearchCandidates().map(\.title).contains("View Page Source"))
 
-        let window = PageSourceWindow(source: "<!DOCTYPE html>\n<p>Hi</p>", url: URL(string: "early-test://fixture/one"), title: "Page One")
-        #expect(window.textView.string == "<!DOCTYPE html>\n<p>Hi</p>" && !window.textView.isEditable && window.textView.usesFindBar)
-        #expect(window.window?.title == "Source of Page One" && window.window?.subtitle == "early-test://fixture/one")
-        window.close()
-        #expect(PageSourceWindow.explanation.contains("as it is now"))
+        // View Page Source opens the page's current markup in a new tab.
+        let tabs = model.todayTabs.count
+        #expect(model.perform(.viewPageSource))
+        let source = try #require(URL(string: "view-source:early-test://fixture/one"))
+        try await fixture.waitUntil("source tab") { model.activeTab?.currentURL == source }
+        let sourceTab = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(sourceTab)
+        try await fixture.waitUntil("source title") { model.webViews.pages[sourceTab]?.view.title?.hasPrefix("Source of ") == true }
+        #expect(model.todayTabs.count == tabs + 1 && sourceTab != tab)
+        let text = try await model.webViews.pages[sourceTab]?.view.evaluateJavaScript("document.querySelector('pre').textContent") as? String
+        #expect(text?.contains("<title>") == true, "The page's markup, shown as text")
+        #expect(!model.canPerform(.viewPageSource), "A source tab has no source of its own")
     }
 
     @Test func recentlyClosedListsTabsNewestFirstAndReopensAnyOfThem() async throws {
@@ -369,6 +376,13 @@ struct PageToolsActionTests {
 
         await model.clearHistory(.all)
         try await fixture.waitUntil("cleared") { model.recentlyVisited.isEmpty }
+        // A title arriving from an open tab afterwards only names a page that
+        // is gone; it does not put the page back in History.
+        let open = try #require(model.coordinator.focusedTabID)
+        model.webViews.onMetadata?(open, one, "Page One, Later")
+        await model.flushHistory()
+        let remaining = try await history.visits()
+        #expect(model.recentlyVisited.isEmpty && remaining.isEmpty)
     }
 
     @Test func visitsAreRecordedAndTheCommandBarOffersHistoryButNotOpenTabsTwice() async throws {

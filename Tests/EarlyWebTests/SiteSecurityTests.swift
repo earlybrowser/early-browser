@@ -169,8 +169,8 @@ struct SiteSecurityTests {
         inspect.identifier = NSUserInterfaceItemIdentifier(BrowserWebView.inspectElementIdentifier)
         menu.addItem(inspect)
         view.fill(menu, for: BrowserWebView.ContextTarget())
-        #expect(menu.items.map(\.title).filter { !$0.isEmpty } == ["Back", "Forward", "Reload", "Save Page As…", "Print…", "Inspect Element"])
-        #expect(menu.items.last === inspect && menu.items.dropLast().last?.isSeparatorItem == true)
+        #expect(menu.items.map(\.title).filter { !$0.isEmpty } == ["Back", "Forward", "Reload", "Save Page As…", "Print…", "View Page Source", "Inspect"])
+        #expect(menu.items.last === inspect && menu.items.dropLast().last?.title == "View Page Source")
         #expect(!menu.allowsContextMenuPlugIns)
 
         let defaults = UserDefaults(suiteName: "local.early.tests.inspector.\(UUID())")!
@@ -188,6 +188,17 @@ struct SiteSecurityTests {
         let tab = try await fixture.open("source")
         #expect(fixture.manager.canShowPageSource(tab.id))
         let source = try #require(await fixture.manager.pageSource(tab.id))
+        // The source tab shows that markup as text, with no scripts of its own.
+        let address = try #require(await fixture.manager.capturePageSource(tab.id))
+        #expect(address.absoluteString == "view-source:" + fixture.url("source").absoluteString)
+        let sourceTab = try await fixture.open("source view", url: address)
+        let shown = try await fixture.evaluate("document.querySelector('pre').textContent", in: sourceTab) as? String
+        let title = try await fixture.evaluate("document.title", in: sourceTab) as? String
+        #expect(shown == source && title == "Source of Source")
+        #expect(try await fixture.evaluate("document.scripts.length", in: sourceTab) as? Int == 0)
+        #expect(!fixture.manager.canShowPageSource(sourceTab.id))
+        #expect(PageSourcePages.unavailable(URL(string: "https://example.com/a")!).contains("wasn’t kept"))
+        #expect(PageSourcePages.escape("<a href=\"x\">&</a>") == "&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;")
         #expect(source.hasPrefix("<!DOCTYPE html>") && source.contains("<p id=\"a\">Changed</p>"), "Scripts' changes are included")
         #expect(source.contains("<title>Source</title>"))
 

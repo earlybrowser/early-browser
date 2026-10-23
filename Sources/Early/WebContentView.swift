@@ -1113,7 +1113,26 @@ struct WebContentView: NSViewRepresentable {
 
         override func didAddSubview(_ subview: NSView) {
             super.didAddSubview(subview)
-            if subview !== hosted, Self.isInspector(subview) { inspector = subview }
+            guard subview !== hosted, Self.isInspector(subview) else { return }
+            inspector = subview
+            if let observer = inspectorFrameObserver { NotificationCenter.default.removeObserver(observer) }
+            subview.postsFrameChangedNotifications = true
+            inspectorFrameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: subview, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.fitInspector() }
+            }
+            fitInspector()
+        }
+
+        private var inspectorFrameObserver: NSObjectProtocol?
+
+        /// WebKit keeps a side-docked inspector below the window's title bar,
+        /// as Safari's toolbar needs. Early's page reaches the top of its pane,
+        /// so the inspector does too, leaving no strip above it.
+        private func fitInspector() {
+            guard let inspector = dockedInspector, hasViewport, inspector.frame.width < bounds.width - 1 else { return }
+            let full = CGRect(x: inspector.frame.minX, y: bounds.minY, width: inspector.frame.width, height: bounds.height)
+            if inspector.frame != full { inspector.frame = full }
         }
 
         /// The docked inspector shares this host with its page.
@@ -1141,6 +1160,7 @@ struct WebContentView: NSViewRepresentable {
             // gets between them; set it only when the two no longer fill this.
             let area = dockedInspector.map { hosted.frame.union($0.frame) } ?? hosted.frame
             if hasViewport, area != bounds { hosted.frame = bounds }
+            fitInspector()
             layer?.backgroundColor = hosted.underPageBackgroundColor.cgColor
             CATransaction.commit()
         }
@@ -1255,6 +1275,8 @@ struct WebContentView: NSViewRepresentable {
                     Self.parkedInspectors.setObject(inspector, forKey: hosted)
                     inspector.removeFromSuperview()
                 }
+                if let observer = inspectorFrameObserver { NotificationCenter.default.removeObserver(observer) }
+                inspectorFrameObserver = nil
                 if hosted.superview === self { hosted.removeFromSuperview() }
             }
             inspector = nil

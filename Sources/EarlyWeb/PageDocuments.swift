@@ -279,6 +279,7 @@ extension WebViewManager {
         case .copyImage(let url): copyImage(url, from: id)
         case .searchSelection(let text): onOpenSearch?(text)
         case .translatePage: onTranslatePage?(id)
+        case .viewPageSource: onViewPageSource?(id)
         }
     }
 

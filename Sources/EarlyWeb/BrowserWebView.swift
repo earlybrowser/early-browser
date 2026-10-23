@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import EarlyCore
 import WebKit
 
 /// WebKit re-sends a key-down that the page left unhandled through AppKit,
@@ -32,7 +33,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
 
     /// Menu actions that the owning manager performs for this page.
     enum ContextAction: Equatable {
-        case back, forward, reload, savePage, printPage
+        case back, forward, reload, savePage, printPage, viewPageSource
         case downloadLink(URL)
         case openImageInNewTab(URL), saveImage(URL), copyImage(URL)
         case searchSelection(String)
@@ -75,6 +76,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     var inspectsElements = false
     private var pendingContextTarget: (target: ContextTarget, time: Date)?
     static let inspectElementIdentifier = "WKMenuItemIdentifierInspectElement"
+    static let inspectTitle = "Inspect"
     var onInteractionEnded: (() -> Void)?
     var hasActiveInteraction: Bool { shownLinkMenu != nil || sharingPicker != nil }
 
@@ -137,6 +139,9 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
                 sections.append([item(title, perform, ContextAction.translatePage)])
             }
         }
+        // Every menu ends with the page's source (then, in WebKit's, Inspect).
+        let isSource = url?.scheme?.lowercased() == NavigationInput.pageSourceScheme
+        sections.append([item("View Page Source", perform, ContextAction.viewPageSource, enabled: url != nil && !isSource)])
         for (index, section) in sections.enumerated() {
             if index > 0 { menu.addItem(.separator()) }
             section.forEach { menu.addItem($0) }
@@ -150,9 +155,12 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         defer { super.willOpenMenu(menu, with: event) }
         guard inspectsElements else { return }
         shownLinkMenu = menu
-        // The page script's message comes just before WebKit's menu.
+        // The page script's message comes just before WebKit's menu. Fields and
+        // media keep WebKit's own items, with its Inspect at the end.
         if let pending = pendingContextTarget.take(), Date().timeIntervalSince(pending.time) < 0.5 {
             fill(menu, for: pending.target)
+        } else {
+            menu.items.first { $0.identifier?.rawValue == Self.inspectElementIdentifier }?.title = Self.inspectTitle
         }
     }
 
@@ -178,7 +186,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         early.removeAllItems()
         items.forEach(menu.addItem)
         if let inspect {
-            menu.addItem(.separator())
+            inspect.title = Self.inspectTitle
             menu.addItem(inspect)
         }
     }

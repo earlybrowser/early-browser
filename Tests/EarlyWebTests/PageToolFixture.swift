@@ -19,7 +19,7 @@ final class PageToolFixture {
     init(pages: [String: String], allowance: Int = 4) {
         _ = NSApplication.shared
         manager = WebViewManager(profileID: profile, ephemeral: true,
-            input: NavigationInput(allowedSchemes: ["http", "https", "early-tools"]),
+            input: NavigationInput(allowedSchemes: ["http", "https", "early-tools", "view-source"]),
             faviconStore: FaviconStore { _, _, _ in nil },
             retentionPolicy: PageRetentionPolicy(maximumInactivePages: allowance),
             observesMemoryPressure: false) {
@@ -31,18 +31,19 @@ final class PageToolFixture {
 
     /// Prepares a tab, loads `path` and waits until WebKit finished it.
     @discardableResult
-    func open(_ path: String) async throws -> BrowserTab {
-        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: path, currentURL: url(path))
+    func open(_ path: String, url address: URL? = nil) async throws -> BrowserTab {
+        let target = address ?? url(path)
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: path, currentURL: target)
         tabs.append(tab)
         manager.reconcile(tabs: tabs)
         // Opened pages stay visible, so retention never discards them mid-test.
         manager.setPresentation(visibleTabIDs: Set(tabs.map(\.id)), focusedTabID: tab.id)
         // A real viewport, so layout-dependent checks (visibility, scrolling) apply.
         manager.prepare(tab).view.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
-        manager.load(url(path), in: tab)
+        manager.load(target, in: tab)
         try await waitUntil("load \(path)") {
             guard let page = manager.pages[tab.id] else { return false }
-            return !page.isLoading && !page.view.isLoading && page.view.url == url(path)
+            return !page.isLoading && !page.view.isLoading && page.view.url == target
         }
         return tab
     }

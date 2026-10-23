@@ -27,7 +27,11 @@ struct WebInspectorDockingTests {
         #expect(model.openLocations([URL(string: "early-test://fixture/one")!]))
         let tab = try #require(model.coordinator.focusedTabID)
         let page = try #require(model.webViews.pages[tab])
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        // Like Early's window: content, and the page, run up under the title bar.
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1200, height: 800),
+                              styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         defer { window.close() }
         let root = NSView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800))
@@ -56,6 +60,8 @@ struct WebInspectorDockingTests {
         try await waitDocked(first)
         let opened = try #require(docked(first), "Web Inspector docks beside the page")
         #expect(opened.page.union(opened.inspector) == first.bounds && opened.inspector.minX > opened.page.minX, "On the right of the page")
+        #expect(opened.inspector.height == first.bounds.height && opened.page.height == first.bounds.height,
+                "As tall as the page: no strip above it under the title bar")
         #expect(model.isWebInspectorVisible)
 
         // Switching tabs releases the page; another host shows it again later.
@@ -82,7 +88,7 @@ struct WebInspectorDockingTests {
         second.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(300))
         let resized = try #require(docked(second))
-        #expect(resized.page.union(resized.inspector) == second.bounds)
+        #expect(resized.page.union(resized.inspector) == second.bounds && resized.inspector.height == second.bounds.height)
 
         #expect(model.perform(.toggleWebInspector))
         let until = ContinuousClock.now.advanced(by: .seconds(5))

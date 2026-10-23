@@ -247,6 +247,7 @@ final class BrowserWindowModel {
             self.beginDownloadFlight()
         }
         webViews.onOpenFiles = { [weak self] in _ = self?.openLocations($0) }
+        webViews.onViewPageSource = { [weak self] in self?.showPageSource($0) }
         webViews.sitePermissions = self.sitePermissions
         webViews.automaticPictureInPicture = { [weak self] in self?.preferences.automaticPictureInPicture == true }
         webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }
@@ -453,16 +454,14 @@ final class BrowserWindowModel {
     /// Whether the focused tab's Web Inspector is open, for menu titles.
     var isWebInspectorVisible: Bool { coordinator.focusedTabID.map { webViews.isWebInspectorVisible($0) } == true }
 
+    /// The page's current markup in a new tab beside it, at `view-source:`.
     func showPageSource(_ id: UUID) {
-        let url = webViews.pages[id]?.view.url
-        let title = coordinator.tabStore.tab(id: id)?.displayTitle ?? url?.host ?? "Page"
         Task { @MainActor [weak self] in
             guard let self else { return }
-            guard let source = await self.webViews.pageSource(id) else {
+            guard let address = await self.webViews.capturePageSource(id), self.openLocations([address]) else {
                 self.notice = "The page’s source couldn’t be shown."
                 return
             }
-            PageSourceWindow.show(source, url: url, title: title)
         }
     }
 
@@ -795,7 +794,8 @@ final class BrowserWindowModel {
         // Tabs, pins and Favorites in every window of the profile keep their icons.
         let kept = application?.sidebarURLs(profileID: coordinator.profileID) ?? sidebarURLs
         await webViews.clearWebsiteData(since: since, keepingIconsFor: kept)
-        historyURLs.removeAll()
+        // Open tabs keep their last recorded page: a title arriving later only
+        // names a page that is gone, and does not put it back in History.
         historyRevision += 1
         refreshRecentPages()
         application?.didClearWebsiteData(profileID: coordinator.profileID, from: self)

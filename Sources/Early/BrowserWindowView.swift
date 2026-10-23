@@ -2564,9 +2564,10 @@ struct BrowserWindowView: View {
     }
 
     private var addressLabel: String {
-        guard let currentURL, let url = URL(string: currentURL), let host = url.host else {
-            return "Search…"
-        }
+        guard let currentURL, let address = URL(string: currentURL) else { return "Search…" }
+        let source = NavigationInput.page(ofSource: address)
+        guard let url = source ?? Optional(address), let host = url.host else { return "Search…" }
+        if source != nil { return NavigationInput.pageSourceScheme + ":" + host }
         // Keep the complete URL in the editor, accessibility value and hover help.
         return (url.scheme == "http" ? "http://" : "") + host
             + (url.port.map { ":\($0)" } ?? "")

@@ -93,7 +93,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                    value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) { suite = value }
                 #endif
                 let testing = suite != nil || isTesting
-                let input = NavigationInput(allowedSchemes: testing ? ["http", "https", "file", "early-test"] : ["http", "https", "file"])
+                let input = NavigationInput(allowedSchemes: testing ? ["http", "https", "file", "view-source", "early-test"]
+                                                                    : ["http", "https", "file", "view-source"])
                 var directory = storageDirectory ?? URL.applicationSupportDirectory.appending(path: "Early", directoryHint: .isDirectory)
                 if storageDirectory == nil, let suite { directory.append(path: "UITests/\(suite)", directoryHint: .isDirectory) }
                 let repository = SessionRepository(fileURL: directory.appending(path: "session.sqlite"), input: input)

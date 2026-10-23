@@ -42,6 +42,23 @@ struct NavigationTests {
         #expect(try NavigationInput().resolve(pair.0).absoluteString == pair.1)
     }
 
+    @Test func pageSourceAddressesAreValidOnlyAroundAValidPageAddress() throws {
+        let input = NavigationInput(allowedSchemes: ["http", "https", "file", "view-source"])
+        let page = try #require(URL(string: "https://example.com/a?b=1#c"))
+        let source = try #require(NavigationInput.sourceURL(of: page))
+        #expect(source.absoluteString == "view-source:https://example.com/a?b=1#c")
+        #expect(NavigationInput.page(ofSource: source) == page && NavigationInput.page(ofSource: page) == nil)
+        #expect(try input.validate(source) == source)
+        for bad in ["view-source:javascript:alert(1)", "view-source:view-source:https://example.com",
+                    "view-source:https://user:pass@example.com", "view-source:"] {
+            #expect(throws: NavigationInputError.self, "\(bad)") { try input.validate(URL(string: bad)!) }
+        }
+        #expect(throws: NavigationInputError.unsupportedScheme) {
+            try NavigationInput(allowedSchemes: ["https"]).validate(source)
+        }
+        #expect(!HistoryStore.records(source) && HistoryStore.records(page), "A source view is not a visit")
+    }
+
     @Test func searchIsCorrectlyEscaped() throws {
         let url = try NavigationInput().resolve("swift & native #browser")
         let parts = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
