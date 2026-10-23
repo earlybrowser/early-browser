@@ -122,7 +122,19 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
         const usable = node => shown(node) || node.value !== '';
         const scopeOf = node => node.form || node.getRootNode();
         const signUp = /sign.?up|regist|create|join|enrol|new.?account/i;
-        const named = /user|email|login|account|identifier/i;
+        // What a field says it is: its name, id, placeholder and labels.
+        const hint = node => [node.name, node.id, node.getAttribute('placeholder'), node.getAttribute('aria-label'),
+            ...Array.from(node.labels || [], label => label.textContent)].join(' ').slice(0, 500);
+        const userWords = /user|e-?mail|log-?in|sign-?in|account|identifier|phone|mobile|handle/i;
+        const otherWords = /name|company|workspace|organi[sz]|team|project|title|search|query|address|street|city|postal|zip|code|coupon|promo|captcha|amount|comment|message|url|website/i;
+        const otherAutocomplete = /\\b(name|given-name|additional-name|family-name|nickname|organization|organization-title|street-address|address-line\\d|address-level\\d|postal-code|country|country-name|one-time-code|cc-[a-z-]+|bday[a-z-]*|url|search)\\b/;
+        // "Email address" is a user name; "Workspace name" or "Account name" isn't.
+        const userLike = node => {
+            if (/\\b(username|email)\\b/.test(autocomplete(node)) || node.type === 'email') return true;
+            const text = hint(node);
+            return userWords.test(text) && (/user|e-?mail/i.test(text) || !otherWords.test(text));
+        };
+        const otherLike = node => otherAutocomplete.test(autocomplete(node)) || (otherWords.test(hint(node)) && !userLike(node));
 
         // The form's sign-in fields: a user name, then its password fields.
         const describe = scope => {
@@ -132,13 +144,18 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             const first = passwords[0];
             let username = null;
             if (first) {
+                // The nearest field before the password that looks like a user
+                // name; in a real form, the field right before it unless it's
+                // clearly something else.
                 const before = inputs.slice(0, inputs.indexOf(first)).filter(node => isText(node) && usable(node)
-                    && !/one-time-code|cc-|search/.test(autocomplete(node)));
-                username = before.find(node => /\\busername\\b/.test(autocomplete(node))) || before[before.length - 1] || null;
+                    && !otherAutocomplete.test(autocomplete(node)));
+                const last = before[before.length - 1];
+                username = before.filter(userLike).pop()
+                    || (scope instanceof HTMLFormElement && last && !otherLike(last) ? last : null);
             } else {
-                const texts = inputs.filter(node => isText(node) && shown(node));
+                const texts = inputs.filter(node => isText(node) && shown(node) && !otherAutocomplete.test(autocomplete(node)));
                 username = texts.find(node => /\\busername\\b/.test(autocomplete(node)))
-                    || (texts.length <= 2 ? texts.find(node => node.type === 'email' || named.test(node.name + ' ' + node.id)) : null)
+                    || (texts.length <= 2 ? texts.find(userLike) : null)
                     || null;
             }
             const marked = passwords.find(node => autocomplete(node).includes('current-password'));
@@ -189,7 +206,8 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             if (!shown(node)) return;
             const form = describe(scopeOf(node));
             const role = roleOf(node, form);
-            if (!role) return;
+            // A sign-up form's user name is new: no saved accounts for it.
+            if (!role || (role === 'username' && form.kind !== 'login')) return;
             post({ type: 'focus', token: tokenFor(node), role, rect: rectOf(node), value: node.value.slice(0, 256),
                    maxLength: node.maxLength > 0 ? node.maxLength : 0, rules: node.getAttribute('passwordrules') || '' });
         };
@@ -394,7 +412,9 @@ extension WebViewManager {
             items = [.strongPassword(PasswordGenerator.strongPassword(rules: field.rules, maxLength: field.maxLength))]
         case .username, .current:
             let typed = field.role == .username ? field.typed.lowercased() : ""
+            // A login without a user name has nothing to fill in a user name field.
             items = vault.logins(for: field.origin)
+                .filter { field.role == .current || !$0.username.isEmpty }
                 .filter { typed.isEmpty || $0.username.lowercased().hasPrefix(typed) }
                 .prefix(8).map { .login($0.id, username: $0.username) }
         }

@@ -99,6 +99,53 @@ struct PasswordAutofillTests {
         #expect(values == ["grace", "second", "user=grace,pass=second"], "The page's own listeners see the values")
     }
 
+    @Test func onlyFieldsThatLookLikeUserNamesGetSavedAccounts() async throws {
+        let fixture = makeFixture([
+            // No form: a password field elsewhere doesn't make every text field a user name.
+            "setup": """
+                <title>Setup</title>
+                <label>Workspace name <input id="workspace"></label>
+                <label>Team <input id="team" name="team_name"></label>
+                <div><input id="secret" type="password"></div>
+                """,
+            "signup": """
+                <title>Join</title><form><label>Email <input id="email" type="email"></label>
+                <input id="new" type="password" autocomplete="new-password"></form>
+                """,
+            "plain": "<title>Plain</title><form><input id=\"j_id0\" name=\"j_id0\"><input id=\"pw\" type=\"password\"></form>",
+            "labeled": "<title>Labeled</title><label>Email address <input id=\"mail\"></label><input id=\"pw\" type=\"password\">"
+        ])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        vault.save(origin: "early-tools://fixture", username: "", password: "nameless")
+        vault.save(origin: "early-tools://fixture", username: "ada", password: "pw")
+        func ignored(_ id: String, in view: WKWebView) async throws -> Bool {
+            manager.focusedPasswordField = nil
+            try await run("document.getElementById('\(id)').focus()", in: view)
+            try await Task.sleep(for: .milliseconds(250))
+            return manager.focusedPasswordField == nil
+        }
+
+        let setup = try fixture.page(try await fixture.open("setup")).view
+        #expect(try await ignored("workspace", in: setup), "“Workspace name” isn't a user name")
+        #expect(try await ignored("team", in: setup))
+        let secret = try await focus("secret", in: setup, fixture)
+        #expect(secret.role == .current && manager.passwordSuggestions(for: secret).count == 3,
+                "A password field lists every login, with or without a user name")
+
+        let signup = try fixture.page(try await fixture.open("signup")).view
+        #expect(try await ignored("email", in: signup), "A sign-up form's user name is new")
+
+        let plain = try fixture.page(try await fixture.open("plain")).view
+        let field = try await focus("j_id0", in: plain, fixture)
+        #expect(field.role == .username, "In a sign-in form, the field before the password")
+        #expect(manager.passwordSuggestions(for: field) == [.login(vault.logins[1].id, username: "ada"), .manage],
+                "A login without a user name has nothing to fill there")
+
+        let labeled = try fixture.page(try await fixture.open("labeled")).view
+        #expect((try await focus("mail", in: labeled, fixture)).role == .username, "Its label says it's an email address")
+    }
+
     @Test func aSentSignInIsOfferedOnceItWorksAndUpdatedWhenItChanges() async throws {
         let fixture = makeFixture(["app": Self.app, "login": Self.login,
                                "welcome": "<title>Welcome</title><p>Signed in"])
@@ -165,8 +212,10 @@ struct PasswordAutofillTests {
         let suggestions = manager.passwordSuggestions(for: field)
         guard case .strongPassword(let password) = suggestions.first else { Issue.record("\(suggestions)"); return }
         #expect(suggestions.count == 2 && password.count >= 12)
-        #expect((try await focus("user", in: view, fixture)).role == .username)
-        #expect(manager.passwordSuggestions(for: fixture.manager.focusedPasswordField!).isEmpty, "No saved logins yet")
+        manager.focusedPasswordField = nil
+        try await run("document.getElementById('user').focus()", in: view)
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(manager.focusedPasswordField == nil, "A new account's user name gets no saved accounts")
 
         _ = try await focus("new", in: view, fixture)
         try await fixture.evaluate("user.value = ''; 1", in: tab)
