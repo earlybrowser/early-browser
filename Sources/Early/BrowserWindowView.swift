@@ -2972,10 +2972,11 @@ struct FolderIcon: View {
 
     var body: some View {
         ZStack {
-            FolderBack()
+            FolderBack(openness: isOpen ? 1 : 0)
                 .fill(color.folderBack(isDark: colorScheme == .dark).color)
                 .overlay {
-                    FolderBack().stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+                    FolderBack(openness: isOpen ? 1 : 0)
+                        .stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
                 }
             FolderCover(openness: isOpen ? 1 : 0)
                 .fill(color.folderFront(isDark: colorScheme == .dark).color)
@@ -2991,7 +2992,7 @@ struct FolderIcon: View {
                         .foregroundStyle(outline)
                         .frame(width: size.width * 0.42, height: size.width * 0.42)
                         .modifier(FolderEmblemTilt(openness: isOpen ? 1 : 0))
-                        .position(x: size.width * (isOpen ? 0.555 : 0.5), y: size.height * (isOpen ? 0.625 : 0.61))
+                        .position(x: size.width * (isOpen ? 0.62 : 0.5), y: size.height * (isOpen ? 0.635 : 0.62))
                 }
                 .accessibilityHidden(true)
             }
@@ -3021,7 +3022,7 @@ private struct FolderEmblemTilt: GeometryEffect {
     }
 
     func effectValue(size: CGSize) -> ProjectionTransform {
-        let lean = CGAffineTransform(a: 1, b: 0, c: -0.34 * openness, d: 1 - 0.16 * openness, tx: 0, ty: 0)
+        let lean = CGAffineTransform(a: 1, b: 0, c: -0.2 * openness, d: 1 - 0.1 * openness, tx: 0, ty: 0)
         let centered = CGAffineTransform(translationX: -size.width / 2, y: -size.height / 2)
             .concatenating(lean)
             .concatenating(CGAffineTransform(translationX: size.width / 2, y: size.height / 2))
@@ -3068,31 +3069,40 @@ struct GitHubMark: Shape {
     }
 }
 
+/// The back and its tab. Opening leans it back: its left edge slants in
+/// toward the bottom, as in an open folder seen from the front.
 private struct FolderBack: Shape {
+    var openness: CGFloat = 0
+    var animatableData: CGFloat {
+        get { openness }
+        set { openness = newValue }
+    }
 
     func path(in rect: CGRect) -> Path {
-        var path = Path()
-        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
+        func point(_ x: CGFloat, _ y: CGFloat, _ openX: CGFloat, _ openY: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + (x + (openX - x) * openness) * rect.width,
+                    y: rect.minY + (y + (openY - y) * openness) * rect.height)
         }
-        let right: CGFloat = 0.88
-        path.move(to: point(0.18, 0.88))
-        path.addQuadCurve(to: point(0.06, 0.76), control: point(0.06, 0.88))
-        path.addLine(to: point(0.06, 0.23))
-        path.addQuadCurve(to: point(0.18, 0.11), control: point(0.06, 0.11))
-        path.addLine(to: point(0.34, 0.11))
-        path.addQuadCurve(to: point(0.41, 0.15), control: point(0.38, 0.11))
-        path.addLine(to: point(0.47, 0.23))
-        path.addQuadCurve(to: point(0.54, 0.27), control: point(0.50, 0.27))
-        path.addLine(to: point(right - 0.12, 0.27))
-        path.addQuadCurve(to: point(right, 0.39), control: point(right, 0.27))
-        path.addLine(to: point(right, 0.76))
-        path.addQuadCurve(to: point(right - 0.12, 0.88), control: point(right, 0.88))
+        var path = Path()
+        path.move(to: point(0.18, 0.88, 0.32, 0.88))
+        path.addQuadCurve(to: point(0.06, 0.76, 0.22, 0.79), control: point(0.06, 0.88, 0.20, 0.88))
+        path.addLine(to: point(0.06, 0.28, 0.07, 0.29))
+        path.addQuadCurve(to: point(0.16, 0.18, 0.16, 0.19), control: point(0.06, 0.18, 0.06, 0.19))
+        path.addLine(to: point(0.33, 0.18, 0.33, 0.19))
+        path.addQuadCurve(to: point(0.40, 0.21, 0.40, 0.22), control: point(0.37, 0.18, 0.37, 0.19))
+        path.addLine(to: point(0.46, 0.27, 0.46, 0.28))
+        path.addQuadCurve(to: point(0.53, 0.30, 0.53, 0.31), control: point(0.49, 0.30, 0.49, 0.31))
+        path.addLine(to: point(0.76, 0.30, 0.72, 0.31))
+        path.addQuadCurve(to: point(0.88, 0.41, 0.84, 0.42), control: point(0.88, 0.30, 0.84, 0.31))
+        path.addLine(to: point(0.88, 0.76, 0.80, 0.77))
+        path.addQuadCurve(to: point(0.76, 0.88, 0.69, 0.88), control: point(0.88, 0.88, 0.79, 0.88))
         path.closeSubpath()
         return path
     }
 }
 
+/// The front. Opening tips it forward: narrower at the bottom and moved
+/// right, its top reaching out past the back.
 private struct FolderCover: Shape {
     var openness: CGFloat
     var animatableData: CGFloat {
@@ -3101,24 +3111,23 @@ private struct FolderCover: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
-        }
-        func blended(_ x: CGFloat, _ y: CGFloat, _ openX: CGFloat, _ openY: CGFloat) -> CGPoint {
-            point(x + (openX - x) * openness, y + (openY - y) * openness)
+        func point(_ x: CGFloat, _ y: CGFloat, _ openX: CGFloat, _ openY: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + (x + (openX - x) * openness) * rect.width,
+                    y: rect.minY + (y + (openY - y) * openness) * rect.height)
         }
         var path = Path()
         // Matching control points let the cover smoothly unfold, without
         // crossfading two overlapping outlines halfway through the animation.
-        path.move(to: point(0.18, 0.88))
-        path.addQuadCurve(to: blended(0.06, 0.76, 0.12, 0.80), control: blended(0.06, 0.88, 0.10, 0.88))
-        path.addLine(to: blended(0.06, 0.46, 0.27, 0.43))
-        path.addQuadCurve(to: blended(0.18, 0.34, 0.37, 0.37), control: blended(0.06, 0.34, 0.30, 0.37))
-        path.addLine(to: blended(0.82, 0.34, 0.89, 0.37))
-        path.addQuadCurve(to: blended(0.94, 0.46, 0.96, 0.46), control: blended(0.94, 0.34, 1.00, 0.37))
-        path.addLine(to: blended(0.94, 0.76, 0.84, 0.81))
-        path.addQuadCurve(to: blended(0.82, 0.88, 0.74, 0.88), control: blended(0.94, 0.88, 0.81, 0.88))
+        path.move(to: point(0.18, 0.88, 0.37, 0.88))
+        path.addQuadCurve(to: point(0.06, 0.76, 0.27, 0.80), control: point(0.06, 0.88, 0.26, 0.88))
+        path.addLine(to: point(0.06, 0.48, 0.34, 0.46))
+        path.addQuadCurve(to: point(0.18, 0.36, 0.43, 0.38), control: point(0.06, 0.36, 0.36, 0.38))
+        path.addLine(to: point(0.82, 0.36, 0.88, 0.38))
+        path.addQuadCurve(to: point(0.94, 0.48, 0.95, 0.46), control: point(0.94, 0.36, 0.98, 0.38))
+        path.addLine(to: point(0.94, 0.76, 0.84, 0.80))
+        path.addQuadCurve(to: point(0.82, 0.88, 0.75, 0.88), control: point(0.94, 0.88, 0.82, 0.88))
         path.closeSubpath()
         return path
     }
 }
+
