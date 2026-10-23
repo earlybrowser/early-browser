@@ -96,20 +96,25 @@ struct PasswordApplicationTests {
         await fixture.cleanup()
     }
 
+    /// What the stand-in for Touch ID answers, and what it was asked.
+    @MainActor private final class Prompts {
+        var allow = false
+        var reasons: [String] = []
+    }
+
     @Test func theLockAsksBeforeShowingAndLocksInTheBackground() async {
         let lock = PasswordsLock()
-        var reasons: [String] = []
-        var allow = false
+        let prompts = Prompts()
         lock.authenticate = { reason in
-            reasons.append(reason)
-            return allow
+            prompts.reasons.append(reason)
+            return prompts.allow
         }
         #expect(await lock.unlock() == false && !lock.isUnlocked)
-        allow = true
+        prompts.allow = true
         #expect(await lock.unlock() && lock.isUnlocked)
-        #expect(await lock.unlock() && reasons.count == 2, "Already unlocked: no second prompt")
+        #expect(await lock.unlock() && prompts.reasons.count == 2, "Already unlocked: no second prompt")
         #expect(await lock.confirm("export your saved passwords"))
-        #expect(reasons == ["show your saved passwords", "show your saved passwords", "export your saved passwords"],
+        #expect(prompts.reasons == ["show your saved passwords", "show your saved passwords", "export your saved passwords"],
                 "Exporting always asks again")
         // A Touch ID or Keychain prompt makes Early inactive for a moment.
         await lock.prompting {
@@ -118,7 +123,7 @@ struct PasswordApplicationTests {
         #expect(lock.isUnlocked, "Early's own prompts don't lock Passwords")
         NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
         #expect(!lock.isUnlocked, "Switching away from Early locks Passwords")
-        allow = false
+        prompts.allow = false
         #expect(await lock.unlock() == false && !lock.isUnlocked)
     }
 

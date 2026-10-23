@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 @MainActor @Observable
 final class PasswordsLock {
     private(set) var isUnlocked = false
-    @ObservationIgnored var authenticate: (String) async -> Bool = PasswordsLock.deviceOwner
+    @ObservationIgnored var authenticate: @MainActor (String) async -> Bool = PasswordsLock.deviceOwner
     @ObservationIgnored private var relock: Task<Void, Never>?
     @ObservationIgnored private var observer: NSObjectProtocol?
     /// Touch ID and Keychain prompts are other apps' windows: Early is
@@ -33,7 +33,7 @@ final class PasswordsLock {
 
     /// Runs work that may show a system prompt.
     @discardableResult
-    func prompting<T>(_ work: () async -> T) async -> T {
+    func prompting<T>(_ work: @MainActor () async -> T) async -> T {
         prompts += 1
         defer { prompts -= 1 }
         return await work()

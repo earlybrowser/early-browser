@@ -52,7 +52,14 @@ struct BrowserCommands: Commands {
         .labelStyle(.titleAndIcon)
     }
 
+    // Older SDKs' command builders take at most ten items (CI's Xcode 26.6),
+    // so the menu bar comes in two parts.
     var body: some Commands {
+        applicationCommands
+        browsingMenus
+    }
+
+    @CommandsBuilder private var applicationCommands: some Commands {
         CommandGroup(after: .appSettings) {
             Button("Passwords…") {
                 if let model, model.perform(.showPasswords) { return }
@@ -158,6 +165,9 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(model?.canPerform(.showDownloads) != true)
         }
+    }
+
+    @CommandsBuilder private var browsingMenus: some Commands {
         CommandMenu("History") {
             Button("Back") { model?.perform(.back) }.keyboardShortcut("[")
                 .disabled(model?.canPerform(.back) != true)

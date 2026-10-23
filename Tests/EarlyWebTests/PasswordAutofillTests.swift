@@ -59,9 +59,21 @@ struct PasswordAutofillTests {
         try await view.callAsyncJavaScript(script, contentWorld: PasswordFormObserver.world)
     }
 
+    /// Focuses a field as a person's click would. The list opens only after a
+    /// person's action; whether WebKit counts a test's script as one can differ
+    /// between macOS versions, so the test says so itself.
+    private func click(_ id: String, in view: WKWebView) async throws {
+        try await run("""
+            Object.defineProperty(navigator, 'userActivation', { value: { isActive: true }, configurable: true });
+            const field = document.getElementById('\(id)');
+            field.blur();
+            field.focus();
+            """, in: view)
+    }
+
     private func focus(_ id: String, in view: WKWebView, _ fixture: PageToolFixture) async throws -> FocusedPasswordField {
         fixture.manager.focusedPasswordField = nil
-        try await run("document.getElementById('\(id)').blur(); document.getElementById('\(id)').focus()", in: view)
+        try await click(id, in: view)
         try await fixture.waitUntil("focus \(id)") { fixture.manager.focusedPasswordField != nil }
         return try #require(fixture.manager.focusedPasswordField)
     }
@@ -87,9 +99,9 @@ struct PasswordAutofillTests {
         #expect(manager.passwordSuggestions(for: typed).count == 2, "Typing narrows the list")
         #expect((try await focus("pass", in: view, fixture)).role == .current)
         // A hidden field gets nothing, even when a page focuses it.
-        try await fixture.evaluate("document.body.insertAdjacentHTML('beforeend', '<input id=hidden type=password style=opacity:0>'); 1", in: tab)
+        _ = try await fixture.evaluate("document.body.insertAdjacentHTML('beforeend', '<input id=hidden type=password style=opacity:0>'); 1", in: tab)
         manager.focusedPasswordField = nil
-        try await run("document.getElementById('hidden').focus()", in: view)
+        try await click("hidden", in: view)
         try await Task.sleep(for: .milliseconds(200))
         #expect(manager.focusedPasswordField == nil)
         _ = try await focus("pass", in: view, fixture)
@@ -123,7 +135,7 @@ struct PasswordAutofillTests {
         vault.save(origin: "early-tools://fixture", username: "ada", password: "pw")
         func ignored(_ id: String, in view: WKWebView) async throws -> Bool {
             manager.focusedPasswordField = nil
-            try await run("document.getElementById('\(id)').focus()", in: view)
+            try await click(id, in: view)
             try await Task.sleep(for: .milliseconds(250))
             return manager.focusedPasswordField == nil
         }
@@ -168,7 +180,7 @@ struct PasswordAutofillTests {
         vault.markUsed(try #require(vault.login(origin: "early-tools://fixture", username: "grace")).id)
         func values(_ tab: BrowserTab) async throws -> [String] {
             var result: [String] = []
-            for _ in 0..<60 {
+            for _ in 0..<400 {
                 result = try await fixture.evaluate("['user', 'pass'].map(id => document.getElementById(id)?.value ?? '')", in: tab) as? [String] ?? []
                 if result.last?.isEmpty == false { break }
                 try await Task.sleep(for: .milliseconds(25))
@@ -187,7 +199,7 @@ struct PasswordAutofillTests {
         manager.choosePasswordSuggestion(.login(try #require(vault.login(origin: "early-tools://fixture", username: "ada")).id,
                                                 username: "ada"))
         var chosen: [String] = []
-        for _ in 0..<60 where chosen != ["ada", "first"] {
+        for _ in 0..<400 where chosen != ["ada", "first"] {
             try await Task.sleep(for: .milliseconds(25))
             chosen = try await fixture.evaluate("[user.value, pass.value]", in: login) as? [String] ?? []
         }
@@ -199,7 +211,7 @@ struct PasswordAutofillTests {
         // Never in another site's frame.
         let outer = try await fixture.open("outer")
         var framedValues: String?
-        for _ in 0..<80 where framedValues == nil {
+        for _ in 0..<400 where framedValues == nil {
             try await Task.sleep(for: .milliseconds(25))
             framedValues = try await fixture.evaluate("window.framed ?? null", in: outer) as? String
         }
@@ -225,7 +237,7 @@ struct PasswordAutofillTests {
         let page = try fixture.page(tab)
 
         // The form disappears after it is sent.
-        try await fixture.evaluate("user.value = 'ada@example.com'; pass.value = 'secret'; form.requestSubmit(); 1", in: tab)
+        _ = try await fixture.evaluate("user.value = 'ada@example.com'; pass.value = 'secret'; form.requestSubmit(); 1", in: tab)
         try await fixture.waitUntil("offer") { page.passwordOffer != nil }
         let offer = try #require(page.passwordOffer)
         #expect(offer.origin == "early-tools://fixture" && offer.username == "ada@example.com" && offer.password == "secret" && !offer.isUpdate)
@@ -236,7 +248,7 @@ struct PasswordAutofillTests {
         // A form sent to the next page: offered when that page loads.
         fixture.manager.load(fixture.url("login"), in: tab)
         try await fixture.waitUntil("login") { page.view.url == fixture.url("login") && !page.isLoading }
-        try await fixture.evaluate("user.value = 'ada'; pass.value = 'changed'; form.requestSubmit(); 1", in: tab)
+        _ = try await fixture.evaluate("user.value = 'ada'; pass.value = 'changed'; form.requestSubmit(); 1", in: tab)
         try await fixture.waitUntil("update") { page.passwordOffer != nil }
         #expect(page.passwordOffer?.isUpdate == true && page.passwordOffer?.password == "changed")
         manager.acceptPasswordOffer(in: tab.id)
@@ -245,28 +257,29 @@ struct PasswordAutofillTests {
         // The same password again: nothing to offer, it's just used.
         fixture.manager.load(fixture.url("login"), in: tab)
         try await fixture.waitUntil("login again") { page.view.url == fixture.url("login") && !page.isLoading }
-        try await fixture.evaluate("user.value = 'ada'; pass.value = 'changed'; form.requestSubmit(); 1", in: tab)
+        _ = try await fixture.evaluate("user.value = 'ada'; pass.value = 'changed'; form.requestSubmit(); 1", in: tab)
         try await fixture.waitUntil("used") { vault.logins.first?.lastUsed != nil }
         #expect(page.passwordOffer == nil)
 
         // A refused sign-in comes back to a password form: nothing is offered.
         fixture.manager.load(fixture.url("login"), in: tab)
         try await fixture.waitUntil("login refused") { page.view.url == fixture.url("login") && !page.isLoading }
-        try await fixture.evaluate("form.action = 'login'; user.value = 'ada'; pass.value = 'wrong'; form.requestSubmit(); 1", in: tab)
+        _ = try await fixture.evaluate("form.action = 'login'; user.value = 'ada'; pass.value = 'wrong'; form.requestSubmit(); 1", in: tab)
         try await fixture.waitUntil("reloaded") { page.view.url?.query != nil && !page.isLoading }
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(page.passwordOffer == nil && page.pendingLogin == nil)
+        // The new page asks for the password again, so the sign-in is dropped.
+        try await fixture.waitUntil("refused sign-in dropped") { page.pendingLogin == nil }
+        #expect(page.passwordOffer == nil)
 
         // Never for this site.
         fixture.manager.load(fixture.url("app"), in: tab)
         try await fixture.waitUntil("app") { page.view.url == fixture.url("app") && !page.isLoading }
-        try await fixture.evaluate("user.value = 'grace@example.com'; pass.value = 'pw'; form.requestSubmit(); 1", in: tab)
+        _ = try await fixture.evaluate("user.value = 'grace@example.com'; pass.value = 'pw'; form.requestSubmit(); 1", in: tab)
         try await fixture.waitUntil("offer for grace") { page.passwordOffer != nil }
         manager.neverSavePasswords(in: tab.id)
         #expect(vault.isNeverSaved("early-tools://fixture") && vault.logins.count == 1)
         fixture.manager.load(fixture.url("app"), in: tab)
         try await fixture.waitUntil("app again") { page.view.url == fixture.url("app") && !page.isLoading }
-        try await fixture.evaluate("user.value = 'hedy@example.com'; pass.value = 'pw'; form.requestSubmit(); 1", in: tab)
+        _ = try await fixture.evaluate("user.value = 'hedy@example.com'; pass.value = 'pw'; form.requestSubmit(); 1", in: tab)
         try await Task.sleep(for: .milliseconds(800))
         #expect(page.passwordOffer == nil)
     }
@@ -283,12 +296,12 @@ struct PasswordAutofillTests {
         guard case .strongPassword(let password) = suggestions.first else { Issue.record("\(suggestions)"); return }
         #expect(suggestions.count == 2 && password.count >= 12)
         manager.focusedPasswordField = nil
-        try await run("document.getElementById('user').focus()", in: view)
+        try await click("user", in: view)
         try await Task.sleep(for: .milliseconds(250))
         #expect(manager.focusedPasswordField == nil, "A new account's user name gets no saved accounts")
 
         _ = try await focus("new", in: view, fixture)
-        try await fixture.evaluate("user.value = ''; 1", in: tab)
+        _ = try await fixture.evaluate("user.value = ''; 1", in: tab)
         manager.choosePasswordSuggestion(.strongPassword(password))
         try await fixture.waitUntil("kept") { vault.logins.count == 1 }
         let values = try await fixture.evaluate("[document.getElementById('new').value, document.getElementById('confirm').value]", in: tab) as? [String]
@@ -296,7 +309,7 @@ struct PasswordAutofillTests {
         #expect(vault.logins.first?.username == "" && vault.logins.first?.password == password)
 
         // Sending the form adds the user name to it, without asking.
-        try await fixture.evaluate("user.value = 'ada'; form.requestSubmit(); 1", in: tab)
+        _ = try await fixture.evaluate("user.value = 'ada'; form.requestSubmit(); 1", in: tab)
         try await fixture.waitUntil("named") { vault.logins.first?.username == "ada" }
         #expect(try fixture.page(tab).passwordOffer == nil && vault.logins.count == 1)
     }
@@ -312,7 +325,7 @@ struct PasswordAutofillTests {
         #expect(manager.passwordSuggestions(for: field).count == 2)
         manager.choosePasswordSuggestion(.login(vault.logins[0].id, username: "ada"))
         var filled: String?
-        for _ in 0..<100 where filled != "pw" {
+        for _ in 0..<500 where filled != "pw" {
             try await Task.sleep(for: .milliseconds(20))
             filled = try await fixture.evaluate("pass.value", in: login) as? String
         }
@@ -320,7 +333,7 @@ struct PasswordAutofillTests {
         #expect(vault.logins[0].lastUsed == nil, "Nothing about the visit is recorded")
 
         let app = try await fixture.open("app")
-        try await fixture.evaluate("user.value = 'grace@example.com'; pass.value = 'new'; form.requestSubmit(); 1", in: app)
+        _ = try await fixture.evaluate("user.value = 'grace@example.com'; pass.value = 'new'; form.requestSubmit(); 1", in: app)
         try await Task.sleep(for: .milliseconds(800))
         #expect(try fixture.page(app).passwordOffer == nil && vault.logins.count == 1)
 

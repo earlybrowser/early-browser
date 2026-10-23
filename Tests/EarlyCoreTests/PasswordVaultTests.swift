@@ -161,8 +161,10 @@ struct PasswordVaultTests {
         fresh.save(origin: "https://a.example", username: "a", password: "b")
         await fresh.flush()
         fresh.removeAll()
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(!FileManager.default.fileExists(atPath: url.path) && key.key == nil)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        // The key goes in the background.
+        for _ in 0..<200 where key.key != nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(key.key == nil)
     }
 
     @Test func passwordsFromAnEarlierBuildsKeyMoveToTheSharedOne() async throws {
@@ -182,6 +184,8 @@ struct PasswordVaultTests {
         #expect(vault.logins.map(\.password) == ["kept"])
         await vault.flush()
         let current = try #require(key.key)
+        // The old key goes in the background once the file is re-encrypted.
+        for _ in 0..<200 where key.legacyKey != nil { try await Task.sleep(for: .milliseconds(20)) }
         #expect(current != old && key.legacyKey == nil, "Re-encrypted with the current key; the old one is gone")
         let reopened = PasswordVault(fileURL: url, key: MemoryVaultKey(current))
         #expect(await reopened.load() && reopened.logins.map(\.username) == ["ada"])

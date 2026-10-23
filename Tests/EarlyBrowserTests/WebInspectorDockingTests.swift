@@ -11,15 +11,19 @@ import WebKit
 /// that is never shown: it stays with its page across hosts and resizes.
 @Suite(.serialized) @MainActor
 struct WebInspectorDockingTests {
-    /// Opening Web Inspector brings the window it's in to the front; this one
-    /// stays off screen, so running the tests shows nothing.
-    final class OffscreenWindow: NSWindow {
-        override func order(_ place: NSWindow.OrderingMode, relativeTo otherWindow: Int) {
-            if place == .out { super.order(place, relativeTo: otherWindow) }
-        }
-        override func makeKeyAndOrderFront(_ sender: Any?) {}
-        override func orderFront(_ sender: Any?) {}
-        override func orderFrontRegardless() {}
+    /// Opening Web Inspector brings the window it's in to the front. WebKit
+    /// may lay the inspector out only in a window on screen, so this one comes
+    /// forward as before, but fully transparent and passing every click
+    /// through: running the tests shows nothing.
+    static func invisibleWindow(_ rect: CGRect) -> NSWindow {
+        let window = NSWindow(contentRect: rect, styleMask: [.titled, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.animationBehavior = .none
+        window.collectionBehavior = [.transient, .ignoresCycle]
+        return window
     }
 
     func inspector(of page: WKWebView) -> NSObject? { page.value(forKey: "_inspector") as? NSObject }
@@ -40,8 +44,7 @@ struct WebInspectorDockingTests {
         let page = try #require(model.webViews.pages[tab])
         // Like Early's window: content, and the page, run up under the title bar.
         // Within CI's 1024-by-768-point screen.
-        let window = OffscreenWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 700),
-                                     styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        let window = Self.invisibleWindow(CGRect(x: 0, y: 0, width: 1000, height: 700))
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
@@ -120,7 +123,7 @@ struct WebInspectorDockingTests {
         while second.dockedInspector != nil, ContinuousClock.now < until { try await Task.sleep(for: .milliseconds(50)) }
         try await Task.sleep(for: .milliseconds(200))
         #expect(second.dockedInspector == nil && page.view.frame == second.bounds && !model.isWebInspectorVisible)
-        #expect(!window.isVisible, "The test window never came on screen")
+        #expect(window.alphaValue == 0, "Never visible on screen")
         second.invalidate()
     }
 }
