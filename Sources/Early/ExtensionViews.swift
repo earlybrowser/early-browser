@@ -61,7 +61,21 @@ extension BrowserWindowModel: ExtensionTabsOwner {
             return host.menuItems(for: tab)
         }
         webViews.extensionCommand = { [weak host] event in host?.performCommand(for: event) ?? false }
+        webViews.extensionPageConfiguration = { [weak host] url in host?.pageConfiguration(for: url) }
+        webViews.onNeedsNewView = { [weak self] id, url in
+            guard let self, let tab = self.coordinator.tabStore.tab(id: id), tab.isOpen else { return }
+            self.webViews.load(url, in: tab)
+        }
         host.register(window)
+    }
+
+    /// Its extension loaded: open tabs showing its pages get a view that works.
+    func reloadExtensionPages(from base: URL) {
+        let origin = WebViewManager.extensionOrigin(of: base)
+        for tab in coordinator.tabStore.tabs where tab.isOpen && webViews.pages[tab.id] != nil
+            && WebViewManager.extensionOrigin(of: tab.currentURL) == origin {
+            webViews.load(tab.currentURL, in: tab)
+        }
     }
 
     /// Tabs opened, closed or selected since extensions last heard.

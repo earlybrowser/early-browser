@@ -5,6 +5,7 @@ import AppKit
 import EarlyCore
 import EarlyWeb
 import Testing
+import WebKit
 
 /// Extensions in the application: each profile runs its own, private windows
 /// run only those allowed there, and deleting a profile removes them.
@@ -165,6 +166,67 @@ struct ExtensionApplicationTests {
         // Closing the window tells extensions its tabs went with it.
         app.closeWindow(nil)
         #expect(model.extensionWindow == nil && window.tab(tab.id) == nil)
+        await fixture.cleanup()
+    }
+
+    @Test(arguments: [false, true])
+    func extensionWindowRequestsNeverChangePrivacyMode(isPrivate: Bool) async throws {
+        guard #available(macOS 15.4, *) else { return }
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let regular = try #require(app.model)
+        let regularHost = try #require(regular.extensionHost as? ExtensionHost)
+        let folder = try Self.extensionFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data("<!doctype html><title>Window requests</title>".utf8).write(to: folder.appending(path: "window.html"))
+        let item = try await regularHost.add(files: folder)
+        await app.changeExtension(item.id, in: regular.coordinator.profileID, restart: true) { $0.allowsPrivateWindows = true }
+
+        let source: BrowserWindowModel
+        if isPrivate {
+            #expect(regular.perform(.newPrivateWindow))
+            source = try #require(app.windowModel(fixture.opened.last))
+        } else { source = regular }
+        let host = try #require(source.extensionHost as? ExtensionHost)
+        await host.loadEnabled()
+        let context = try #require(host.context(item.id))
+        let configuration = try #require(context.webViewConfiguration)
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
+        view.load(URLRequest(url: context.baseURL.appending(path: "window.html")))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while view.isLoading || view.title != "Window requests" {
+            try #require(ContinuousClock.now < deadline, "Extension page loaded")
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        func request(private requested: Bool) async throws -> [String: Any] {
+            let result = try await view.callAsyncJavaScript("""
+                try {
+                    const created = await browser.windows.create({incognito: requested, url: 'early-test://fixture/window'});
+                    return {incognito: created.incognito};
+                } catch (error) { return {error: error.message}; }
+                """, arguments: ["requested": requested], contentWorld: .page)
+            return try #require(result as? [String: Any])
+        }
+
+        // A regular extension must not open an ordinary window for a private
+        // request, nor may a private extension silently change a regular request.
+        let count = fixture.opened.count
+        let denied = try await request(private: !isPrivate)
+        #expect((denied["error"] as? String)?.contains("privacy mode") == true)
+        #expect(fixture.opened.count == count, "Rejected requests must not create any window")
+
+        let allowed = try await request(private: isPrivate)
+        #expect(allowed["incognito"] as? Bool == isPrivate)
+        #expect(fixture.opened.count == count + 1)
+        let created = try #require(app.windowModel(fixture.opened.last))
+        #expect(created.isPrivate == isPrivate)
+        #expect(created.webViews.websiteDataStore === source.webViews.websiteDataStore)
+        if isPrivate {
+            #expect(!created.webViews.websiteDataStore.isPersistent)
+            #expect(created.webViews.websiteDataStore !== regular.webViews.websiteDataStore)
+        }
         await fixture.cleanup()
     }
 

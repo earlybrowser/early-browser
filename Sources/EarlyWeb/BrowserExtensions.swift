@@ -124,6 +124,8 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     @ObservationIgnored public var openWindow: ((URL?) -> ExtensionWindow?)?
     /// Shows an extension's popup; false when it can't be shown now.
     @ObservationIgnored public var presentPopup: ((WKWebExtension.Action) -> Bool)?
+    /// An extension loaded (or loaded again): tabs showing its pages reload.
+    @ObservationIgnored public var onLoad: ((_ baseURL: URL) -> Void)?
     /// Asks the person to allow something; tests answer it.
     @ObservationIgnored public var askForAccess: ((_ extensionName: String, _ request: String) async -> Bool)?
 
@@ -175,6 +177,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
                 saved.name = webExtension.displayName ?? saved.name
                 saved.version = webExtension.displayVersion ?? webExtension.version ?? saved.version
             }
+            onLoad?(context.baseURL)
             return true
         } catch {
             problems[id] = error.localizedDescription
@@ -194,11 +197,12 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     }
 
     public enum ExtensionError: LocalizedError {
-        case missing, alreadyAdded
+        case missing, alreadyAdded, windowPrivacyMismatch
         public var errorDescription: String? {
             switch self {
             case .missing: "Its files are missing. If it came with an app, the app may have moved or been deleted."
             case .alreadyAdded: "This extension is already added."
+            case .windowPrivacyMismatch: "Extensions cannot create a window in a different privacy mode. Open the appropriate window in Early first."
             }
         }
     }
@@ -301,6 +305,13 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     public func context(_ id: UUID) -> WKWebExtensionContext? { contexts[id] }
 
+    /// The configuration a tab's view needs to show one of an extension's own
+    /// pages; WebKit refuses them in any other view (NSURLError -1008).
+    public func pageConfiguration(for url: URL) -> WKWebViewConfiguration? {
+        let origin = WebViewManager.extensionOrigin(of: url)
+        return contexts.values.first { WebViewManager.extensionOrigin(of: $0.baseURL) == origin }?.webViewConfiguration
+    }
+
     /// Loaded extensions with a button, in the order they were added.
     public var actionExtensions: [InstalledExtension] {
         catalog.extensions.filter { contexts[$0.id] != nil }
@@ -386,7 +397,10 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     public func webExtensionController(_ controller: WKWebExtensionController, openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
                                        for extensionContext: WKWebExtensionContext) async throws -> (any WKWebExtensionWindow)? {
-        openWindow?(configuration.tabURLs.first)
+        // Each host owns one regular or private session. Never silently replace
+        // the requested mode with the host's mode, or cross their data stores.
+        guard configuration.shouldBePrivate == isPrivate else { throw ExtensionError.windowPrivacyMismatch }
+        return openWindow?(configuration.tabURLs.first)
     }
 
     public func webExtensionController(_ controller: WKWebExtensionController,

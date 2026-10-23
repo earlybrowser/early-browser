@@ -401,6 +401,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             return owner.presentExtensionPopup(action)
         }
         host.askForAccess = { [weak self] name, request in await self?.askForExtensionAccess(name, request) ?? false }
+        host.onLoad = { [weak self, weak host] base in
+            guard let self, let host else { return }
+            for owner in self.extensionModels(of: host) { owner.reloadExtensionPages(from: base) }
+        }
     }
 
     private func extensionModels(of host: AnyObject) -> [BrowserWindowModel] {

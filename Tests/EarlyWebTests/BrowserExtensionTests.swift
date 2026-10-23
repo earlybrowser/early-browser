@@ -22,6 +22,16 @@ struct BrowserExtensionTests {
         try await ExtensionScenarios.siteAccess()
     }
 
+    @Test func anExtensionsOwnPagesOpenInTabs() async throws {
+        guard #available(macOS 15.4, *) else { return }
+        try await ExtensionScenarios.ownPages()
+    }
+
+    @Test func websitesCannotOpenProtectedExtensionPages() async throws {
+        guard #available(macOS 15.4, *) else { return }
+        try await ExtensionScenarios.protectedPages()
+    }
+
     @Test func turningOneBlockerOffKeepsTheOthersBlocking() async throws {
         guard #available(macOS 15.4, *) else { return }
         try await ExtensionScenarios.blockersStayOn()
@@ -114,14 +124,22 @@ enum ExtensionScenarios {
             _ = NSApplication.shared
             files = FileManager.default.temporaryDirectory.appending(path: "EarlyExtensions-\(UUID())", directoryHint: .isDirectory)
             let store = WKWebsiteDataStore.nonPersistent()
-            manager = WebViewManager(profileID: profile, ephemeral: true, input: NavigationInput(allowedSchemes: ["http", "https"]),
+            let input = NavigationInput(allowedSchemes: Set(["http", "https"]).union(NavigationInput.extensionSchemes))
+            manager = WebViewManager(profileID: profile, ephemeral: true, input: input,
                                      faviconStore: FaviconStore { _, _, _ in nil }, websiteDataStore: store,
                                      observesMemoryPressure: false)
             host = ExtensionHost(catalog: catalog, filesDirectory: files, websiteDataStore: store, storageIdentifier: nil,
                                  isPrivate: isPrivate)
             manager.extensionController = host.controller
+            let extensionHost = host
+            manager.extensionPageConfiguration = { extensionHost.pageConfiguration(for: $0) }
             owner = Owner(manager)
             window = ExtensionWindow(owner: owner, isPrivate: isPrivate)
+            let tabsOwner = owner, webViews = manager
+            manager.onNeedsNewView = { [weak tabsOwner, weak webViews] id, url in
+                guard let tab = tabsOwner?.tabs.first(where: { $0.id == id }) else { return }
+                webViews?.load(url, in: tab)
+            }
             host.register(window)
             host.focus(window)
         }
@@ -225,6 +243,106 @@ enum ExtensionScenarios {
         await setup.host.remove(item.id)
         #expect(!FileManager.default.fileExists(atPath: folder.path) && setup.host.catalog.extensions.isEmpty)
         #expect(setup.host.context(item.id) == nil)
+    }
+
+    /// Its own pages open in tabs (WebKit refuses them in an ordinary view),
+    /// and a tab moving between a website and one of them gets a new view.
+    static func ownPages() async throws {
+        let server = try HTMLServer(pages: ["/page": "<title>Page</title><p>Hello"])
+        defer { server.stop() }
+        let setup = Setup()
+        defer { setup.cleanup() }
+        let item = try await setup.host.add(files: try messenger())
+        let base = try #require(setup.host.context(item.id)?.baseURL)
+        let popup = base.appending(path: "popup.html")
+        let tab = try await setup.open(popup)
+        let first = try #require(setup.manager.pages[tab.id])
+        let title = try await first.view.evaluateJavaScript("document.title") as? String
+        #expect(first.failure == nil && first.view.url == popup && title == "Popup")
+
+        setup.manager.load(server.url("/page"), in: tab)
+        try await waitUntil("website") {
+            setup.manager.pages[tab.id]?.isLoading == false && setup.manager.pages[tab.id]?.view.url?.path == "/page"
+        }
+        let website = try #require(setup.manager.pages[tab.id])
+        #expect(website !== first && website.failure == nil)
+
+        setup.manager.load(popup, in: tab)
+        try await waitUntil("its page again") {
+            setup.manager.pages[tab.id]?.isLoading == false && setup.manager.pages[tab.id]?.view.url == popup
+        }
+        #expect(setup.manager.pages[tab.id] !== website && setup.manager.pages[tab.id]?.failure == nil)
+
+        // Following an extension's link out to the web must drop its configuration.
+        let own = try #require(setup.manager.pages[tab.id])
+        own.view.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        var popups: [URL] = []
+        setup.manager.onNewWindow = { url, _ in popups.append(url); return nil }
+        _ = try await own.view.callAsyncJavaScript("window.open(destination, '_blank'); return true;",
+            arguments: ["destination": popup.absoluteString], contentWorld: .page)
+        #expect(popups == [popup], "The extension can still open its own pages")
+
+        _ = try await own.view.callAsyncJavaScript("location.href = destination;",
+            arguments: ["destination": server.url("/page").absoluteString], contentWorld: .page)
+        try await waitUntil("extension link to website") {
+            setup.manager.pages[tab.id]?.isLoading == false && setup.manager.pages[tab.id]?.view.url == server.url("/page")
+        }
+        #expect(setup.manager.pages[tab.id] !== own && setup.manager.pages[tab.id]?.hasExtensionConfiguration == false)
+    }
+
+    static func protectedPages() async throws {
+        let server = try HTMLServer(pages: ["/page": "<title>Website</title><p>Ordinary web content"])
+        defer { server.stop() }
+        let setup = Setup()
+        defer { setup.cleanup() }
+        let folder = try extensionFolder([
+            "manifest.json": """
+                {"manifest_version": 3, "name": "Protected pages", "version": "1.0",
+                 "web_accessible_resources": [{"resources": ["public.txt"], "matches": ["http://127.0.0.1/*"]}]}
+                """,
+            "private.html": "<!doctype html><title>Protected extension page</title>",
+            "public.txt": "Public resource"
+        ])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let item = try await setup.host.add(files: folder)
+        let base = try #require(setup.host.context(item.id)?.baseURL)
+        let target = base.appending(path: "private.html")
+        let tab = try await setup.open(server.url("/page"))
+        let page = try #require(setup.manager.pages[tab.id])
+
+        // WebKit still allows resources the extension deliberately exposes.
+        let publicText = try await page.view.callAsyncJavaScript("return await (await fetch(url)).text();",
+            arguments: ["url": base.appending(path: "public.txt").absoluteString], contentWorld: .page) as? String
+        #expect(publicText == "Public resource")
+
+        // Browser shortcuts must not turn a page's link into a trusted load.
+        var opened: [URL] = []
+        setup.manager.onOpenBackgroundLink = { opened.append($0) }
+        setup.manager.onOpenWindowLink = { opened.append($0) }
+        #expect(!setup.manager.openContextLink(target, in: page.view, background: true))
+        #expect(!setup.manager.openContextLinkInWindow(target, in: page.view))
+        #expect(opened.isEmpty)
+
+        // Exercise the actual popup route, with an ordinary website popup as a
+        // control so popup blocking cannot hide a missing origin check.
+        page.view.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        var popups: [URL] = []
+        setup.manager.onNewWindow = { url, _ in popups.append(url); return nil }
+        _ = try await page.view.callAsyncJavaScript("window.open(destination, '_blank'); return true;",
+            arguments: ["destination": server.url("/page").absoluteString], contentWorld: .page)
+        #expect(popups == [server.url("/page")])
+        _ = try await page.view.callAsyncJavaScript("window.open(destination, '_blank'); return true;",
+            arguments: ["destination": target.absoluteString], contentWorld: .page)
+        #expect(popups == [server.url("/page")], "A protected page must not become a new tab")
+
+        _ = try await page.view.callAsyncJavaScript("location.href = destination;",
+            arguments: ["destination": target.absoluteString], contentWorld: .page)
+        try await waitUntil("protected navigation rejected") {
+            setup.manager.pages[tab.id] !== page || page.navigationNotice != nil
+        }
+        #expect(setup.manager.pages[tab.id] === page, "A website must never get an extension's privileged view")
+        #expect(page.view.url == server.url("/page") && page.requestedURL == server.url("/page"))
+        #expect(!page.hasExtensionConfiguration)
     }
 
     static func siteAccess() async throws {

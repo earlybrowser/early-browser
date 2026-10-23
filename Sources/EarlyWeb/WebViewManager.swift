@@ -11,6 +11,11 @@ public final class BrowserPage {
     /// Unique per live page; a reopened tab's new page never shares it (unlike
     /// an object address, which a new page can reuse).
     public let instanceID = UUID()
+    /// "scheme://host" of the extension whose page this view was made for;
+    /// nil for websites. The two never share a view.
+    var extensionOrigin: String?
+    /// Made from that extension's own configuration, so its pages load.
+    var hasExtensionConfiguration = false
     public var isLoading = false
     public var isPlayingMedia = false
     public fileprivate(set) var isMuted = false
@@ -142,6 +147,19 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var extensionMenuItems: ((UUID) -> [NSMenuItem])?
     /// An extension's keyboard shortcut.
     public var extensionCommand: ((NSEvent) -> Bool)?
+    /// An extension's own pages (options, pages it opens) load only in a view
+    /// made from its context's configuration: the one for an address, if any.
+    public var extensionPageConfiguration: ((URL) -> WKWebViewConfiguration?)?
+    /// An extension page follows a link out to the web: the owner replaces its
+    /// privileged view with an ordinary one. Never used to enter an extension.
+    public var onNeedsNewView: ((UUID, URL) -> Void)?
+
+    /// "scheme://host" of an extension's page; nil for anything else.
+    public static func extensionOrigin(of url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(), NavigationInput.extensionSchemes.contains(scheme),
+              let host = url.host?.lowercased(), !host.isEmpty else { return nil }
+        return "\(scheme)://\(host)"
+    }
     /// Manage Passwords… was chosen under a sign-in field, for this host.
     public var onManagePasswords: ((String?) -> Void)?
     /// Answers HTTP sign-in requests instead of Early's sheet; tests use it.
@@ -367,16 +385,27 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     /// Called by accepted navigation/selection, never by SwiftUI rendering.
     @discardableResult
-    public func prepare(_ tab: BrowserTab, configuration supplied: WKWebViewConfiguration? = nil) -> BrowserPage {
+    public func prepare(_ tab: BrowserTab, configuration supplied: WKWebViewConfiguration? = nil,
+                        loading url: URL? = nil) -> BrowserPage {
         precondition(tab.profileID == profileID, "A manager owns exactly one profile")
         if let page = pages[tab.id] { return page }
         let configuration: WKWebViewConfiguration
+        let extensionOrigin = Self.extensionOrigin(of: url ?? tab.currentURL)
+        var hasExtensionConfiguration = false
         if let supplied {
             // WebKit requires the exact supplied configuration for window.open.
             configuration = supplied
+            hasExtensionConfiguration = extensionOrigin != nil
         } else {
-            configuration = WKWebViewConfiguration()
-            configuration.websiteDataStore = websiteDataStore
+            if extensionOrigin != nil, let own = extensionPageConfiguration?(url ?? tab.currentURL) {
+                configuration = own
+                // Its copies share one; Early's message handlers stay this page's.
+                configuration.userContentController = WKUserContentController()
+                hasExtensionConfiguration = true
+            } else {
+                configuration = WKWebViewConfiguration()
+                configuration.websiteDataStore = websiteDataStore
+            }
             configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
             configuration.preferences.isElementFullscreenEnabled = true
             configuration.setURLSchemeHandler(sourcePages, forURLScheme: NavigationInput.pageSourceScheme)
@@ -384,7 +413,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             configuration.preferences.isFraudulentWebsiteWarningEnabled = true
             Self.enablePictureInPicture(configuration.preferences)
             Self.enableInspection(configuration.preferences)
-            if #available(macOS 15.4, *), let controller = extensionController as? WKWebExtensionController {
+            if #available(macOS 15.4, *), !hasExtensionConfiguration,
+               let controller = extensionController as? WKWebExtensionController {
                 configuration.webExtensionController = controller
             }
             configure(configuration)
@@ -423,6 +453,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         view.navigationDelegate = self
         view.uiDelegate = self
         let page = BrowserPage(view: view, url: tab.currentURL)
+        page.extensionOrigin = extensionOrigin
+        page.hasExtensionConfiguration = hasExtensionConfiguration
         if muteChoices.contains(tab.id) { page.isMuted = true; page.muteRevision = 1 }
         Self.enableInspection(view)
         if let zoom = zoomChoices[tab.id] {
@@ -540,7 +572,13 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     public func load(_ url: URL, in tab: BrowserTab) {
-        let page = prepare(tab)
+        // A website and an extension's page never share a view; nor does a
+        // page made before its extension loaded.
+        if let existing = pages[tab.id], existing.extensionOrigin != Self.extensionOrigin(of: url)
+            || (existing.extensionOrigin != nil && !existing.hasExtensionConfiguration) {
+            releasePage(tabID: tab.id, preservingSnapshot: true)
+        }
+        let page = prepare(tab, loading: url)
         cancelRecovery(tab.id)
         page.automaticRecoveryAttempted = false
         page.processTerminated = false
@@ -724,6 +762,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     func contextLinkURL(href: String, in view: WKWebView) -> URL? {
         guard identities[ObjectIdentifier(view)] != nil, href.utf8.count <= 16384,
               let url = URL(string: href), (try? input.validate(url)) != nil,
+              Self.extensionOrigin(of: url) == nil,
               !url.isFileURL || view.url?.isFileURL == true else { return nil }
         return url
     }
@@ -755,7 +794,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     @discardableResult
     func openContextLink(_ url: URL, in view: WKWebView, background: Bool) -> Bool {
         guard let id = identities[ObjectIdentifier(view)], let page = pages[id],
-              (try? input.validate(url)) != nil, !url.isFileURL || view.url?.isFileURL == true else { return false }
+              contextLinkURL(href: url.absoluteString, in: view) != nil else { return false }
         if background {
             guard let onOpenBackgroundLink else { return false }
             onOpenBackgroundLink(url)
@@ -851,8 +890,31 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             return
         }
         if (try? input.validate(url)) != nil {
+            // A website cannot obtain an extension's configuration by linking
+            // or redirecting to its origin. Trusted browser/extension commands
+            // already prepared the correct view before starting navigation.
+            // Subresources stay under WebKit's web_accessible_resources checks.
+            if mainFrame, let origin = Self.extensionOrigin(of: url),
+               let id = identities[ObjectIdentifier(webView)], let page = pages[id],
+               !page.hasExtensionConfiguration || page.extensionOrigin != origin {
+                decisionHandler(.cancel)
+                cancelForPolicy(id, url: url, mainFrame: true,
+                                notice: "This page can only be opened from its extension.")
+                keepCurrentDocument(id)
+                return
+            }
             if openCommandClickedLink(action, in: webView) {
                 decisionHandler(.cancel)
+                return
+            }
+            // Leaving an extension drops its privileged configuration. The
+            // reverse must never promote a website into an extension page.
+            if mainFrame, action.targetFrame != nil, let id = identities[ObjectIdentifier(webView)],
+               let page = pages[id], page.hasExtensionConfiguration, page.extensionOrigin != nil,
+               Self.extensionOrigin(of: url) == nil {
+                decisionHandler(.cancel)
+                cancelForPolicy(id, url: url, mainFrame: true, notice: nil)
+                DispatchQueue.main.async { [weak self] in self?.onNeedsNewView?(id, url) }
                 return
             }
             if mainFrame, action.targetFrame != nil,
@@ -1174,6 +1236,15 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         guard identities[ObjectIdentifier(webView)] != nil,
               let url = action.request.url, (try? input.validate(url)) != nil,
               !url.isFileURL || webView.url?.isFileURL == true else { return nil }
+        // Do not create a tab whose stored URL could later restore a protected
+        // extension page. Only that extension's own frame can open such a popup.
+        if let origin = Self.extensionOrigin(of: url) {
+            guard let id = identities[ObjectIdentifier(webView)], let page = pages[id],
+                  page.hasExtensionConfiguration, page.extensionOrigin == origin,
+                  action.sourceFrame.securityOrigin.protocol.lowercased() == url.scheme?.lowercased(),
+                  action.sourceFrame.securityOrigin.host.lowercased() == url.host?.lowercased()
+            else { return nil }
+        }
         // Target-blank links may arrive through the new-window delegate first.
         // Returning nil consumes the gesture without creating a second tab.
         if openCommandClickedLink(action, in: webView) { return nil }
