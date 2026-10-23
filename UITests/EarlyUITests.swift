@@ -530,7 +530,7 @@ final class EarlyUITests: XCTestCase {
         app.typeKey(",", modifierFlags: .command)
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "settings.window").firstMatch.waitForExistence(timeout: 5))
         // The Settings group must not overwrite its children's identifiers.
-        for key in ["appearance", "profiles", "passwords", "sidebar", "search", "sessions"] {
+        for key in ["appearance", "profiles", "passwords", "extensions", "sidebar", "search", "sessions"] {
             XCTAssertEqual(app.buttons.matching(identifier: "settings.section.\(key)").count, 1,
                            "Settings navigation should expose a unique identifier for \(key)")
         }

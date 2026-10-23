@@ -167,6 +167,8 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             context.hasAccessToPrivateData = item.allowsPrivateWindows
             applyPermissions(item, to: context)
             try controller.load(context)
+            // Some extensions start working when a window gains focus.
+            if let focusedWindow { context.didFocusWindow(focusedWindow) }
             contexts[id] = context
             problems[id] = nil
             catalog.change(id) { saved in
@@ -222,7 +224,19 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         try? controller.unload(context)
     }
 
-    /// A changed choice (website access, private windows) takes effect.
+    /// Every extension stops, as when its private session ends.
+    public func unloadAll() {
+        for id in Array(contexts.keys) { unload(id) }
+    }
+
+    /// Website access changed: the running extension gets it without restarting.
+    public func refreshAccess(_ id: UUID) {
+        guard let item = catalog.installed(id), let context = contexts[id] else { return }
+        for pattern in context.grantedPermissionMatchPatterns.keys { context.setPermissionStatus(.unknown, for: pattern) }
+        applyPermissions(item, to: context)
+    }
+
+    /// Turning it on or off, or allowing it in private windows, takes effect.
     public func reapply(_ id: UUID) async {
         guard let item = catalog.installed(id) else { return }
         let wanted = item.isEnabled && (!isPrivate || item.allowsPrivateWindows)
@@ -274,11 +288,9 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     public func remove(_ id: UUID) async {
         guard let item = catalog.installed(id) else { return }
         unload(id)
-        if let identifier = Optional(item.id.uuidString) {
-            let records = await controller.dataRecords(ofTypes: Set<WKWebExtension.DataType>([.local, .session, .synchronized]))
-            let own = records.filter { $0.uniqueIdentifier == identifier }
-            if !own.isEmpty { await controller.removeData(ofTypes: Set<WKWebExtension.DataType>([.local, .session, .synchronized]), from: own) }
-        }
+        let types = Set<WKWebExtension.DataType>([.local, .session, .synchronized])
+        let own = await controller.dataRecords(ofTypes: types).filter { $0.uniqueIdentifier == item.id.uuidString }
+        if !own.isEmpty { await controller.removeData(ofTypes: types, from: own) }
         if case .files(let folderName) = item.source, let filesDirectory {
             try? FileManager.default.removeItem(at: filesDirectory.appending(path: folderName, directoryHint: .isDirectory))
         }
@@ -307,7 +319,15 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             item.allowedSites.removeAll { $0 == site }
             if allowed { item.allowedSites.append(site) }
         }
-        await reapply(id)
+        refreshAccess(id)
+    }
+
+    /// What every extension stored, for deleting the profile.
+    public func removeAllData() async {
+        unloadAll()
+        let types = Set<WKWebExtension.DataType>([.local, .session, .synchronized])
+        let records = await controller.dataRecords(ofTypes: types)
+        if !records.isEmpty { await controller.removeData(ofTypes: types, from: records) }
     }
 
     /// Items extensions add to a page's menu.

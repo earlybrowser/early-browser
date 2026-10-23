@@ -159,6 +159,11 @@ struct SiteControlsButton: View {
             .help("Site Controls")
             .accessibilityLabel("Site Controls")
             .accessibilityIdentifier("address.siteControls")
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: SiteControlsFrameKey.self, value: geometry.frame(in: .named("browserWindow")))
+                }
+            }
             .popover(isPresented: $presented, arrowEdge: .bottom) {
                 SiteControlsPanel(model: model, tabID: id) { presented = false }
                     .spacePopoverBackground(model)
@@ -255,6 +260,11 @@ struct SiteControlsPanel: View {
                                active: false, tint: tint, identifier: "siteControls.passwords") {
                     dismiss()
                     model.perform(.showPasswords)
+                }
+            }
+            if #available(macOS 15.4, *) {
+                if let host = model.extensionHost as? ExtensionHost {
+                    SiteControlsExtensions(model: model, host: host, tabID: tabID, tint: tint, dismiss: dismiss)
                 }
             }
             if page != nil, let host = url?.host, model.currentSiteOrigin != nil {

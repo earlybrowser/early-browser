@@ -50,6 +50,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// The profile whose passwords Settings shows, and what it searches for.
     var passwordsProfileID: UUID?
     var passwordSearch = ""
+    /// Each profile's extensions at work (an `ExtensionHost`, macOS 15.4 and
+    /// later), and in private windows opened from it, only those allowed there.
+    @ObservationIgnored private var extensionHosts: [UUID: AnyObject] = [:]
+    @ObservationIgnored private var privateExtensionHosts: [UUID: AnyObject] = [:]
+    @ObservationIgnored private var extensionCatalogs: [UUID: ExtensionCatalog] = [:]
+    /// The profile whose extensions Settings shows.
+    var extensionsProfileID: UUID?
     /// All open private windows share one temporary profile and one website
     /// data store kept only in memory, released with the last private window.
     @ObservationIgnored private(set) var privateProfileID: UUID?
@@ -100,8 +107,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                    value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) { suite = value }
                 #endif
                 let testing = suite != nil || isTesting
-                let input = NavigationInput(allowedSchemes: testing ? ["http", "https", "file", "view-source", "early-test"]
-                                                                    : ["http", "https", "file", "view-source"])
+                let schemes: Set<String> = Set(testing ? ["http", "https", "file", "view-source", "early-test"]
+                                                         : ["http", "https", "file", "view-source"])
+                let input = NavigationInput(allowedSchemes: schemes.union(NavigationInput.extensionSchemes))
                 var directory = storageDirectory ?? URL.applicationSupportDirectory.appending(path: "Early", directoryHint: .isDirectory)
                 if storageDirectory == nil, let suite { directory.append(path: "UITests/\(suite)", directoryHint: .isDirectory) }
                 let repository = SessionRepository(fileURL: directory.appending(path: "session.sqlite"), input: input)
@@ -246,6 +254,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
               !visibleModels.contains(where: { $0.coordinator.profileID == profile }) else { return }
         privateProfileID = nil
         privateDataStore = nil
+        if #available(macOS 15.4, *) { privateExtensionHosts.values.forEach { ($0 as? ExtensionHost)?.unloadAll() } }
+        privateExtensionHosts.removeAll()
         sitePermissionStores.removeValue(forKey: profile)
         downloadStores.removeValue(forKey: profile)?.cancelAll()
     }
@@ -320,6 +330,140 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         visibleModels.lazy.filter { $0.coordinator.profileID == profileID }.compactMap { $0.webViews.favicons.image(for: url) }.first
     }
 
+    private func extensionsFile(for id: UUID) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "Extensions/\(id.uuidString).json", directoryHint: .notDirectory)
+    }
+
+    /// Folder and ZIP installs, copied per profile.
+    private func extensionFilesDirectory(for id: UUID) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "Extensions/Files/\(id.uuidString)", directoryHint: .isDirectory)
+    }
+
+    func extensionCatalog(for id: UUID) -> ExtensionCatalog {
+        if let catalog = extensionCatalogs[id] { return catalog }
+        let catalog = ExtensionCatalog(fileURL: extensionsFile(for: id))
+        extensionCatalogs[id] = catalog
+        return catalog
+    }
+
+    /// A profile's extension host, made when it's first needed. A private
+    /// window's runs those of the profile it came from that are allowed in
+    /// private windows, on the private session's data, and keeps nothing.
+    func extensionHost(for profile: UUID, from source: UUID? = nil) -> AnyObject? {
+        guard #available(macOS 15.4, *) else { return nil }
+        let isPrivate = isPrivateProfile(profile)
+        guard let owner = isPrivate ? source : profile, profiles.contains(where: { $0.id == owner }) else { return nil }
+        if let host = (isPrivate ? privateExtensionHosts : extensionHosts)[owner] { return host }
+        let host = ExtensionHost(catalog: extensionCatalog(for: owner), filesDirectory: extensionFilesDirectory(for: owner),
+                                 websiteDataStore: websiteDataStore(for: profile),
+                                 storageIdentifier: testing || isPrivate ? nil : owner, isPrivate: isPrivate)
+        configureExtensions(host)
+        if isPrivate { privateExtensionHosts[owner] = host } else { extensionHosts[owner] = host }
+        Task { await host.loadEnabled() }
+        return host
+    }
+
+    /// The hosts running a profile's extensions: its own and its private windows'.
+    @available(macOS 15.4, *)
+    func runningExtensionHosts(of profile: UUID) -> [ExtensionHost] {
+        [extensionHosts[profile], privateExtensionHosts[profile]].compactMap { $0 as? ExtensionHost }
+    }
+
+    /// The profile whose extensions a window runs.
+    func extensionsProfileID(of model: BrowserWindowModel) -> UUID? {
+        model.isPrivate ? model.passwordsProfileID : model.coordinator.profileID
+    }
+
+    /// Settings › Extensions for a profile.
+    func showExtensions(profileID: UUID?) {
+        extensionsProfileID = profileID ?? workspace?.activeProfileID
+        settingsSection = .extensions
+        presentSettingsWindow?()
+    }
+
+    @available(macOS 15.4, *)
+    private func configureExtensions(_ host: ExtensionHost) {
+        host.openTab = { [weak self, weak host] url, window, active in
+            guard let self, let host else { return nil }
+            if let owner = (window?.owner as? BrowserWindowModel) ?? self.extensionModels(of: host).first {
+                return owner.openExtensionTab(url, active: active)
+            }
+            return self.openExtensionWindow(for: host, url: url)?.activeTab
+        }
+        host.openWindow = { [weak self, weak host] url in
+            guard let self, let host else { return nil }
+            return self.openExtensionWindow(for: host, url: url)
+        }
+        host.presentPopup = { [weak self, weak host] action in
+            guard let self, let host,
+                  let owner = (host.focusedWindow?.owner as? BrowserWindowModel) ?? self.extensionModels(of: host).first
+            else { return false }
+            return owner.presentExtensionPopup(action)
+        }
+        host.askForAccess = { [weak self] name, request in await self?.askForExtensionAccess(name, request) ?? false }
+    }
+
+    private func extensionModels(of host: AnyObject) -> [BrowserWindowModel] {
+        visibleModels.filter { $0.extensionHost === host }
+    }
+
+    /// A window an extension asked for, in the host's profile (or private session).
+    @available(macOS 15.4, *)
+    private func openExtensionWindow(for host: ExtensionHost, url: URL?) -> ExtensionWindow? {
+        let source = extensionModels(of: host).first
+        var id: UUID?
+        if host.isPrivate {
+            guard let source else { return nil }
+            id = openPrivateWindow(from: source)
+        } else if let source {
+            id = openNewWindow(from: source)
+        } else if canOpenWindow, let profile = extensionHosts.first(where: { $0.value === host })?.key,
+                  let session = workspace?.session(for: profile) {
+            let window = addWindow(session: session.savedItemsOnly)
+            saveAll()
+            presentWindow?(window)
+            id = window
+        }
+        guard let id, let model = windowModel(id) else { return nil }
+        if let url { _ = model.openExtensionTab(url, active: true) }
+        return model.extensionWindow as? ExtensionWindow
+    }
+
+    /// An extension's own page, such as its options, in a window of its profile.
+    @available(macOS 15.4, *)
+    func openExtensionPage(_ url: URL, profile: UUID) {
+        guard let host = extensionHost(for: profile) as? ExtensionHost else { return }
+        if let owner = (host.focusedWindow?.owner as? BrowserWindowModel) ?? extensionModels(of: host).first {
+            owner.openExtensionTab(url, active: true)
+            owner.extensionFocusWindow()
+        } else {
+            _ = openExtensionWindow(for: host, url: url)
+        }
+    }
+
+    /// A window model's native window.
+    func nativeWindow(of owner: BrowserWindowModel) -> NSWindow? {
+        let identifier: String
+        if owner === model, primaryWindowIsOpen { identifier = "browser" }
+        else if let entry = windows.first(where: { $0.model === owner }) { identifier = "browser.\(entry.id)" }
+        else { return nil }
+        return NSApp.windows.first { $0.identifier?.rawValue == identifier }
+    }
+
+    /// An extension asks for more than it was given. Tests never see a prompt.
+    private func askForExtensionAccess(_ name: String, _ request: String) async -> Bool {
+        guard !testing else { return false }
+        let alert = NSAlert()
+        alert.messageText = "Allow “\(name)” to \(request)?"
+        alert.informativeText = "You can change this later in Settings › Extensions."
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Don’t Allow")
+        if let window = NSApp.keyWindow, window.attachedSheet == nil {
+            return await alert.beginSheetModal(for: window) == .alertFirstButtonReturn
+        }
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     func history(for id: UUID) -> HistoryStore? {
         if let store = historyStores[id] { return store }
         guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
@@ -337,7 +481,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             websiteDataStore: websiteDataStore(for: session.profileID), downloads: downloads(for: session.profileID),
             preferences: preferences, isPrivate: isPrivate, history: history(for: session.profileID),
             sitePermissions: sitePermissions(for: session.profileID),
-            passwords: passwordsProfile.flatMap { passwords(for: $0) }, passwordsProfileID: passwordsProfile)
+            passwords: passwordsProfile.flatMap { passwords(for: $0) }, passwordsProfileID: passwordsProfile,
+            extensionHost: extensionHost(for: session.profileID, from: passwordsProfile))
     }
 
     @discardableResult private func addWindow(session: BrowserSession, passwordsFrom: UUID? = nil) -> UUID {
@@ -419,6 +564,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     func focusedWindow(_ id: UUID?) {
         // Another window of the profile may have added to its history.
         windowModel(id)?.refreshRecentPages()
+        windowModel(id)?.extensionWindowDidFocus()
         guard !restoringFocus, let owner = windowModel(id), !owner.isPrivate,
               workspace?.activeProfileID != owner.coordinator.profileID else { return }
         workspace?.activeProfileID = owner.coordinator.profileID
@@ -548,6 +694,17 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         downloadStores.removeValue(forKey: id)?.cancelAll()
         let history = historyStores.removeValue(forKey: id)
         sitePermissionStores.removeValue(forKey: id)?.removeFile()
+        if #available(macOS 15.4, *) {
+            (privateExtensionHosts.removeValue(forKey: id) as? ExtensionHost)?.unloadAll()
+            // Without a host this run, one is made just to erase what its extensions stored.
+            let host = extensionHosts.removeValue(forKey: id) as? ExtensionHost ?? (testing ? nil
+                : ExtensionHost(catalog: ExtensionCatalog(fileURL: nil), filesDirectory: nil, websiteDataStore: .nonPersistent(),
+                                storageIdentifier: id, isPrivate: false))
+            await host?.removeAllData()
+        }
+        extensionCatalogs.removeValue(forKey: id)?.removeFile()
+        if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
+        if extensionsProfileID == id { extensionsProfileID = nil }
         if let vault = passwordVaults.removeValue(forKey: id) { vault.removeAll() }
         else { PasswordVault.remove(fileURL: passwordsFile(for: id), key: testing ? nil : KeychainVaultKey(profile: id)) }
         if passwordsProfileID == id { passwordsProfileID = nil }
@@ -582,6 +739,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                     }
                     if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
                     if let file = sitePermissionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
+                    if let file = extensionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
+                    if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
                     if let file = passwordsFile(for: id), FileManager.default.fileExists(atPath: file.path) {
                         PasswordVault.remove(fileURL: file, key: testing ? nil : KeychainVaultKey(profile: id))
                     }
@@ -610,6 +769,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             closedWindows.removeFirst(max(0, closedWindows.count - Self.closedWindowLimit))
         }
         closed.cancelCommandBarQueries()
+        closed.closeExtensionWindow()
         closed.webViews.discardAll()
         if closed.isPrivate {
             releasePrivateSessionIfUnused()
