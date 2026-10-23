@@ -155,6 +155,8 @@ final class BrowserWindowModel {
     var onSave: ((BrowserWindowModel) -> Void)?
     var onOpenWindow: ((URL, String?) -> Void)?
     var onOpenSettings: (() -> Void)?
+    /// Tests stand in for the native window's close button.
+    @ObservationIgnored var onCloseWindow: (() -> Void)?
     var sidebarWidth: Double {
         get { preferences.sidebarWidth }
         set { preferences.sidebarWidth = newValue }
@@ -822,6 +824,18 @@ final class BrowserWindowModel {
             window.makeKeyAndOrderFront(nil)
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// No tab open anywhere in the window, in any Space: ⌘W closes it. A
+    /// window with tabs open in another Space keeps them.
+    var isEmptyWindow: Bool {
+        coordinator.activeTabID == nil && !coordinator.tabStore.tabs.contains { $0.isOpen }
+    }
+
+    /// The window itself, as its close button would (saved pages stay).
+    func closeWindow() {
+        if let onCloseWindow { onCloseWindow() }
+        else { application?.nativeWindow(of: self)?.performClose(nil) }
     }
 
     func closeActiveTab() {

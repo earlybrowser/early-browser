@@ -169,12 +169,18 @@ struct PullRequestsApplicationTests {
         #expect(model.coordinator.setLiveFolderInterval(first, .fourHours))
         model.save()
         #expect(feed.interval == LiveFolder.Interval.fourHours.seconds)
+        // One per Space; another Space can have its own.
+        #expect(model.addGitHubLiveFolder() == nil)
+        let space = model.coordinator.activeSpaceID
+        let otherSpace = try #require(model.coordinator.createSpace(name: "Other"))
+        #expect(model.switchSpace(to: otherSpace))
         let second = try #require(model.addGitHubLiveFolder())
+        #expect(model.coordinator.moveFolder(second, toSpace: space) == false, "Moving it would make two")
         #expect(model.coordinator.setLiveFolderInterval(second, .oneHour))
         model.save()
         #expect(feed.interval == LiveFolder.Interval.oneHour.seconds, "One read serves both")
 
-        let live = try #require(model.coordinator.folders.first { $0.id == first })
+        let live = try #require(model.coordinator.tabStore.folders.first { $0.id == first })
         #expect(FolderEmblem(live) == .github)
         let own = try #require(model.coordinator.createFolder(name: "Work", icon: .symbol(.briefcase)))
         let folder = try #require(model.coordinator.folders.first { $0.id == own })

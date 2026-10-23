@@ -31,8 +31,6 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(query.value as? String, "example.com")
         app.typeKey(.escape, modifierFlags: [])
         expectRuntime(app, tabs: 0, views: 0, created: 0)
-        app.typeKey("w", modifierFlags: .command)
-        XCTAssertEqual(app.windows.count, 1)
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
         XCTAssertFalse(app.staticTexts["Open a new tab with ⌘T"].exists)
         app.typeKey("t", modifierFlags: .command)
@@ -49,6 +47,25 @@ final class EarlyUITests: XCTestCase {
         address.click()
         XCTAssertTrue(query.waitForExistence(timeout: 3))
         XCTAssertEqual(query.value as? String, "")
+    }
+
+    /// Like Arc and Chrome: ⌘W in a window with no tabs closes it, and Early
+    /// keeps running until ⌘Q.
+    func testCommandWClosesAnEmptyWindowButNeverQuits() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        let browsers = app.windows.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@", "browser", "browser."))
+        XCTAssertEqual(browsers.count, 1)
+        app.typeKey("w", modifierFlags: .command)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: browsers)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertEqual(app.state, .runningForeground, "Closing the last window doesn't quit")
+        app.typeKey("n", modifierFlags: .command)
+        let reopened = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 1"), object: browsers)
+        XCTAssertEqual(XCTWaiter.wait(for: [reopened], timeout: 5), .completed)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
     }
 
     func testThumbnailSwitcherCancelCommitAndCompactLayoutPreserveLivePages() {

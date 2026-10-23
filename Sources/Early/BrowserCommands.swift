@@ -91,9 +91,13 @@ struct BrowserCommands: Commands {
                 .disabled(model?.canPerform(.openFile) != true)
         }
         CommandGroup(replacing: .saveItem) {
-            Button(model == nil ? "Close Window" : "Close Tab") {
-                if let model {
+            // Like Arc and Chrome: ⌘W closes the tab, and an empty window
+            // itself. Only ⌘Q quits; closing the last window never does.
+            Button(model.map { $0.isEmptyWindow } ?? true ? "Close Window" : "Close Tab") {
+                if let model, !model.isEmptyWindow {
                     model.perform(.closeActiveTab)
+                } else if let model {
+                    model.closeWindow()
                 } else {
                     NSApp.keyWindow?.performClose(nil)
                 }

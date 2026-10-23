@@ -108,6 +108,30 @@ struct BrowserActionTests {
         #expect(model.webViews.pages[tabs[2].id] == nil && model.webViews.pages[closed.id] == nil)
     }
 
+    @Test func commandWClosesAWindowOnlyWhenNoTabIsOpenInIt() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        var closed = 0
+        model.onCloseWindow = { closed += 1 }
+        #expect(model.isEmptyWindow, "A fresh window has no tabs")
+        let tab = try fixture.open(firstURL)
+        #expect(!model.isEmptyWindow)
+        #expect(model.perform(.setPinned(tab, true)))
+        #expect(model.perform(.closeActiveTab))
+        #expect(model.isEmptyWindow, "A closed pin isn't an open tab")
+
+        // A Today tab in another Space keeps the window open.
+        let space = model.coordinator.activeSpaceID
+        let other = try #require(model.coordinator.createSpace(name: "Other"))
+        #expect(model.switchSpace(to: other))
+        _ = try fixture.open(secondURL)
+        #expect(model.switchSpace(to: space))
+        #expect(model.coordinator.activeTabID == nil && !model.isEmptyWindow)
+        model.closeWindow()
+        #expect(closed == 1, "Closing is the window's own, as its close button")
+    }
+
     @Test func presentingAndCancellingExplicitIntentsNeverCreatePlaceholderTabs() {
         let fixture = Fixture()
         defer { fixture.cleanup() }

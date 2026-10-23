@@ -658,8 +658,12 @@ struct BrowserWindowView: View {
             // A private window has no saved pages, folders or other Spaces.
             if !model.isPrivate {
                 Button("New Folder") { editFolder(nil, parent: nil) }
-                Button("GitHub Live Folder") { model.addGitHubLiveFolder() }
-                    .help("A folder of your open pull requests on GitHub, kept up to date")
+                // One per Space: a second would list the same pull requests.
+                if let space = model.coordinator.activeSpace,
+                   !model.coordinator.tabStore.hasLiveFolder(.githubPullRequests, in: space.id) {
+                    Button("GitHub Live Folder") { model.addGitHubLiveFolder() }
+                        .help("A folder of your open pull requests on GitHub, kept up to date")
+                }
                 Divider()
                 Button("New Space…") { model.perform(.newSpace) }
                 if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
@@ -1577,7 +1581,8 @@ struct BrowserWindowView: View {
                         focusedSidebarControl = nil
                         model.perform(.moveFolder(folder.id, toSpace: space.id))
                     }
-                    .disabled(space.id == folder.spaceID)
+                    .disabled(space.id == folder.spaceID
+                              || folder.live.map { model.coordinator.tabStore.hasLiveFolder($0.source, in: space.id) } == true)
                 }
             }
             .disabled(!model.canManageSpaces || model.coordinator.spaces.count <= 1)

@@ -26,7 +26,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Right-click menus | Page, link, image, and selected-text menus: download links, open, save, or copy images, search for selected text, and save or print the page. | Implemented. |
 | Quick renaming | Option-click a tab, Favorite, or folder to rename without opening it. Ordinary clicks open/toggle immediately; dragging still reorders items. | Implemented. |
 | Trackpad zoom | Native pinch-to-zoom and two-finger double-tap Smart Zoom. | Implemented. |
-| Browser navigation | Back and Forward with history lists (right-click or hold), Reload, Stop, tab shortcuts, Reopen Closed Tab or Window, and native website alerts, confirmations, and prompts. Copy the current page URL with `⌘⇧C`. | Implemented. |
+| Browser navigation | Back and Forward with history lists (right-click or hold), Reload, Stop, tab shortcuts, Reopen Closed Tab or Window, and native website alerts, confirmations, and prompts. Copy the current page URL with `⌘⇧C`. `⌘W` closes the current tab, and a window with no tabs; closing the last window keeps Early running until `⌘Q`. | Implemented. |
 | Tab media controls | Click the speaker beside a tab’s icon to mute/unmute HTML audio or video without selecting it. Favorites keep their clean cards; use their context menu instead. Muting is also available in the command bar. | Implemented. |
 | Website fullscreen | Let compatible website players enter and exit fullscreen. | Implemented. |
 | Spaces and profiles | Named Spaces with icons and adaptive themes, plus separate profiles for cookies, logins, website data, and Favorites. | Implemented. |

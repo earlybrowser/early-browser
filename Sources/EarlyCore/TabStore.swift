@@ -130,6 +130,9 @@ public struct TabStore: Equatable, Sendable {
         while let next = pending.popLast(), folderIDs.insert(next).inserted {
             pending.append(contentsOf: (children[next] ?? []).map(\.id))
         }
+        // One live folder per source in a Space.
+        let moving = folders.filter { folderIDs.contains($0.id) }.compactMap { $0.live?.source }
+        guard !moving.contains(where: { hasLiveFolder($0, in: spaceID) }) else { return nil }
         let destinationOrder = pinnedItems(in: spaceID, parentID: nil).map(\.id)
         var candidate = self
         for index in candidate.folders.indices where folderIDs.contains(candidate.folders[index].id) {
@@ -465,9 +468,16 @@ public struct TabStore: Equatable, Sendable {
         return folders.contains { $0.id == id && $0.live != nil }
     }
 
+    /// A Space has at most one live folder per source: a second would list
+    /// the same items.
+    public func hasLiveFolder(_ source: LiveFolder.Source, in spaceID: UUID) -> Bool {
+        folders.contains { $0.spaceID == spaceID && $0.live?.source == source }
+    }
+
     /// A live folder at the end of a Space's pins, open so it's seen filling.
     @discardableResult
     public mutating func createLiveFolder(name: String, source: LiveFolder.Source, spaceID: UUID) -> UUID? {
+        guard !hasLiveFolder(source, in: spaceID) else { return nil }
         let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128))
         let folder = BrowserFolder(spaceID: spaceID, name: name, isExpanded: true, live: LiveFolder(source: source))
         let candidate = folders + [folder]

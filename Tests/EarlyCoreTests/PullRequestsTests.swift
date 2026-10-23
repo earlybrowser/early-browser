@@ -183,6 +183,8 @@ struct PullRequestsTests {
         #expect(changed && !same && store.folders.first?.icon == .symbol(.star))
         let liveMade = store.createLiveFolder(name: "Pull Requests", source: .githubPullRequests, spaceID: space)
         let live = try #require(liveMade)
+        let second = store.createLiveFolder(name: "Again", source: .githubPullRequests, spaceID: space)
+        #expect(second == nil && store.hasLiveFolder(.githubPullRequests, in: space) && !store.hasLiveFolder(.githubPullRequests, in: other))
         let liveIcon = store.setFolderIcon(live, icon: .symbol(.star))
         #expect(!liveIcon, "A live folder shows its source's mark")
         #expect(store.folders.first { $0.id == live }?.live?.interval == .fifteenMinutes)
