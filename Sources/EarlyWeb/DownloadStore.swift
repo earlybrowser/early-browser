@@ -37,6 +37,15 @@ public final class DownloadItem: Identifiable {
     /// A stopped or interrupted transfer that keeps its partial file.
     public var canResume: Bool { (state == .paused || state == .failed) && resumeData != nil }
 
+    /// Finished, cancelled, or failed for good: nothing left to continue.
+    var canBeTrimmed: Bool {
+        switch state {
+        case .finished, .cancelled: true
+        case .failed: !canResume
+        case .preparing, .downloading, .paused: false
+        }
+    }
+
     @ObservationIgnored let originURL: URL?
     @ObservationIgnored let listed: Bool
     @ObservationIgnored let requestedDestination: URL?
@@ -364,8 +373,10 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         releaseReservation(item)
     }
 
+    /// The oldest settled entries go first. Paused and resumable downloads
+    /// stay, with their partial files, even past the limit.
     private func trimList() {
-        while items.count > Self.maximumListedItems, let index = items.lastIndex(where: { !$0.state.isActive }) {
+        while items.count > Self.maximumListedItems, let index = items.lastIndex(where: \.canBeTrimmed) {
             items.remove(at: index)
         }
     }
