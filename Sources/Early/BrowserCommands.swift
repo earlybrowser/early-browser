@@ -80,20 +80,32 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
             .disabled(model.map { !$0.canPerform(.newPrivateWindow) } ?? !application.canOpenWindow)
-            Button("New Tab") { model?.perform(.presentCommandBar(.newTab)) }
-                .keyboardShortcut("t")
-                .disabled(model?.canPerform(.presentCommandBar(.newTab)) != true)
-            Button("Open Location…") { model?.perform(.presentCommandBar(.navigateCurrentTab)) }
-                .keyboardShortcut("l")
-                .disabled(model?.canPerform(.presentCommandBar(.navigateCurrentTab)) != true)
+            // With no browser window in front, these bring one forward (or
+            // open one) with the command bar, like Arc and Chrome.
+            Button("New Tab") {
+                if let model { model.perform(.presentCommandBar(.newTab)) }
+                else { application.presentCommandBar(.newTab) }
+            }
+            .keyboardShortcut("t")
+            .disabled(model.map { !$0.canPerform(.presentCommandBar(.newTab)) } ?? !application.canOpenWindow)
+            Button("Open Location…") {
+                if let model { model.perform(.presentCommandBar(.navigateCurrentTab)) }
+                else { application.presentCommandBar(.navigateCurrentTab) }
+            }
+            .keyboardShortcut("l")
+            .disabled(model.map { !$0.canPerform(.presentCommandBar(.navigateCurrentTab)) } ?? !application.canOpenWindow)
             Button("Open File…") { model?.perform(.openFile) }
                 .keyboardShortcut("o")
                 .disabled(model?.canPerform(.openFile) != true)
         }
         CommandGroup(replacing: .saveItem) {
-            Button(model == nil ? "Close Window" : "Close Tab") {
-                if let model {
+            // Like Arc and Chrome: ⌘W closes the tab, and an empty window
+            // itself. Only ⌘Q quits; closing the last window never does.
+            Button(model.map { $0.isEmptyWindow } ?? true ? "Close Window" : "Close Tab") {
+                if let model, !model.isEmptyWindow {
                     model.perform(.closeActiveTab)
+                } else if let model {
+                    model.closeWindow()
                 } else {
                     NSApp.keyWindow?.performClose(nil)
                 }
@@ -366,13 +378,11 @@ struct BrowserCommands: Commands {
         }
         CommandMenu("Profile") {
             ForEach(application.profiles) { profile in
-                Button {
+                // A toggle, so the menu checks the window's profile.
+                Toggle(profile.name, isOn: Binding(get: { model?.coordinator.profileID == profile.id }, set: { _ in
                     if let model { model.perform(.openProfile(profile.id)) }
                     else { application.openProfile(profile.id) }
-                } label: {
-                    if model?.coordinator.profileID == profile.id { Label(profile.name, systemImage: "checkmark") }
-                    else { Text(profile.name) }
-                }
+                }))
                 .disabled(model.map { !$0.canPerform(.openProfile(profile.id)) } ?? application.profileOperationInProgress)
             }
             Divider()

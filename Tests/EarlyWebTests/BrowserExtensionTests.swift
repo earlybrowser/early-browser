@@ -447,15 +447,26 @@ enum ExtensionScenarios {
     }
 }
 
-/// A loopback server for a few fixed pages.
+/// A loopback server for a few fixed pages, or answers chosen per request.
 final class HTMLServer: @unchecked Sendable {
+    struct Response: Sendable {
+        var status = "200 OK"
+        var headers: [String: String] = [:]
+        var body: String
+    }
+
     private let listener: NWListener
     private let queue = DispatchQueue(label: "local.early.tests.html")
-    private let pages: [String: String]
+    private let respond: @Sendable (_ path: String, _ query: String) -> Response?
     private(set) var port: UInt16 = 0
 
-    init(pages: [String: String]) throws {
-        self.pages = pages
+    convenience init(pages: [String: String]) throws {
+        try self.init { path, _ in pages[path].map { Response(body: $0) } }
+    }
+
+    /// The query arrives as sent (percent-encoded).
+    init(respond: @escaping @Sendable (_ path: String, _ query: String) -> Response?) throws {
+        self.respond = respond
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)
@@ -472,14 +483,18 @@ final class HTMLServer: @unchecked Sendable {
 
     private func handle(_ connection: NWConnection) {
         connection.start(queue: queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [pages] data, _, _, _ in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [respond] data, _, _, _ in
             let request = String(decoding: data ?? Data(), as: UTF8.self)
-            let path = request.split(separator: " ").dropFirst().first.map { String($0.split(separator: "?").first ?? "") } ?? "/"
-            let body = pages[path]
-            let type = path.hasSuffix(".js") ? "text/javascript" : "text/html"
-            let status = body == nil ? "404 Not Found" : "200 OK"
-            let text = body ?? "missing"
-            let response = "HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(text.utf8.count)\r\nConnection: close\r\n\r\n\(text)"
+            let target = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+            let parts = target.split(separator: "?", maxSplits: 1).map(String.init)
+            let path = parts.first ?? "/"
+            let answer = respond(path, parts.count > 1 ? parts[1] : "") ?? Response(status: "404 Not Found", body: "missing")
+            var headers = answer.headers
+            headers["Content-Type"] = headers["Content-Type"] ?? (path.hasSuffix(".js") ? "text/javascript" : "text/html")
+            headers["Content-Length"] = "\(answer.body.utf8.count)"
+            headers["Connection"] = "close"
+            let lines = headers.map { "\($0.key): \($0.value)" }.joined(separator: "\r\n")
+            let response = "HTTP/1.1 \(answer.status)\r\n\(lines)\r\n\r\n\(answer.body)"
             connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
         }
     }

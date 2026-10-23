@@ -57,6 +57,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var extensionCatalogs: [UUID: ExtensionCatalog] = [:]
     /// The profile whose extensions Settings shows.
     var extensionsProfileID: UUID?
+    /// Each profile's open pull requests, read while one of its open windows
+    /// has a GitHub live folder. Never for private windows.
+    @ObservationIgnored private var pullRequestFeeds: [UUID: PullRequestFeed] = [:]
+    /// Tests read stand-in pages; UI automation never reaches GitHub.
+    @ObservationIgnored var pullRequestReader: PullRequestFeed.Read?
     /// All open private windows share one temporary profile and one website
     /// data store kept only in memory, released with the last private window.
     @ObservationIgnored private(set) var privateProfileID: UUID?
@@ -468,6 +473,54 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    /// A profile's open pull requests.
+    func pullRequests(for profile: UUID) -> PullRequestFeed? {
+        if let feed = pullRequestFeeds[profile] { return feed }
+        guard !isPrivateProfile(profile), profiles.contains(where: { $0.id == profile }) else { return nil }
+        let feed: PullRequestFeed
+        if let pullRequestReader { feed = PullRequestFeed(read: pullRequestReader) }
+        else if testing { feed = PullRequestFeed(read: { _ in [:] }) }
+        else { feed = PullRequestFeed(dataStore: { [weak self] in self?.websiteDataStore(for: profile) }) }
+        feed.onUpdate = { [weak self] in self?.applyPullRequests(profile: profile) }
+        pullRequestFeeds[profile] = feed
+        return feed
+    }
+
+    /// A feed runs while one of its profile's open windows has a GitHub live
+    /// folder; otherwise it stops and forgets what it read (the pins stay).
+    private func updatePullRequestFeeds() {
+        guard let workspace else { return }
+        for profile in workspace.profiles.map(\.id) {
+            let open = visibleModels.contains { $0.coordinator.profileID == profile && !$0.isPrivate }
+            let intervals = (workspace.session(for: profile)?.folders ?? []).compactMap { folder in
+                folder.live?.source == .githubPullRequests ? folder.live?.interval.seconds : nil
+            }
+            // One read serves every folder, so the most frequent choice wins.
+            if open, let interval = intervals.min(), let feed = pullRequests(for: profile) {
+                feed.interval = interval
+                feed.start()
+            } else {
+                pullRequestFeeds[profile]?.stop()
+            }
+        }
+    }
+
+    /// The profile's live folders follow what was read. One window changes
+    /// them; saving shares the pins with its other windows.
+    func applyPullRequests(profile: UUID) {
+        guard let feed = pullRequestFeeds[profile],
+              let owner = visibleModels.first(where: { $0.coordinator.profileID == profile && !$0.isPrivate }) else { return }
+        owner.applyPullRequests(feed)
+    }
+
+    /// Signing in to GitHub in a tab: a signed-out folder reads it again.
+    func noteVisit(_ url: URL, profile: UUID) {
+        guard let feed = pullRequestFeeds[profile], feed.status == .signedOut,
+              url.host?.lowercased() == PullRequest.github.host, !url.path.hasPrefix("/login"),
+              !url.path.hasPrefix("/session") else { return }
+        feed.refresh()
+    }
+
     func history(for id: UUID) -> HistoryStore? {
         if let store = historyStores[id] { return store }
         guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
@@ -547,6 +600,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard !applyingWorkspace else { return }
         captureWorkspace()
         if let workspace { persistence?.enqueue(workspace) }
+        updatePullRequestFeeds()
     }
 
     /// Every tab, pin and Favorite address in the profile's open windows.
@@ -569,6 +623,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         // Another window of the profile may have added to its history.
         windowModel(id)?.refreshRecentPages()
         windowModel(id)?.extensionWindowDidFocus()
+        if let owner = windowModel(id), !owner.isPrivate { pullRequestFeeds[owner.coordinator.profileID]?.refreshIfStale() }
         guard !restoringFocus, let owner = windowModel(id), !owner.isPrivate,
               workspace?.activeProfileID != owner.coordinator.profileID else { return }
         workspace?.activeProfileID = owner.coordinator.profileID
@@ -707,6 +762,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             await host?.removeAllData()
         }
         extensionCatalogs.removeValue(forKey: id)?.removeFile()
+        pullRequestFeeds.removeValue(forKey: id)?.stop()
         if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
         if extensionsProfileID == id { extensionsProfileID = nil }
         if let vault = passwordVaults.removeValue(forKey: id) { vault.removeAll() }
@@ -784,6 +840,39 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             workspace?.sessions[index] = closed.coordinator.session.savedItemsOnly
         }
         saveAll()
+    }
+
+    /// ⌘T or ⌘L with no browser window in front (none open, or Settings in
+    /// front): the frontmost browser window gets the command bar, or a new
+    /// window opens with it.
+    @discardableResult
+    func presentCommandBar(_ intent: CommandBarIntent) -> Bool {
+        guard canOpenWindow else { return false }
+        let front = NSApp.orderedWindows.lazy.compactMap { window -> BrowserWindowModel? in
+            guard window.isVisible, let identifier = window.identifier?.rawValue else { return nil }
+            if identifier == "browser" { return self.primaryWindowIsOpen ? self.model : nil }
+            guard identifier.hasPrefix("browser."), let id = UUID(uuidString: String(identifier.dropFirst("browser.".count))) else { return nil }
+            return self.windowModel(id)
+        }.first
+        if let front {
+            nativeWindow(of: front)?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return front.perform(.presentCommandBar(intent))
+        }
+        // A new window opens with the command bar ready.
+        return openNewWindow() != nil
+    }
+
+    /// Clicking the Dock icon with no window showing brings back a minimized
+    /// browser window, or opens one.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag, workspace != nil else { return true }
+        if let minimized = NSApp.windows.first(where: { $0.isMiniaturized && $0.identifier?.rawValue.hasPrefix("browser") == true }) {
+            minimized.deminiaturize(nil)
+        } else {
+            _ = openNewWindow()
+        }
+        return false
     }
 
     func applyAppearance() {

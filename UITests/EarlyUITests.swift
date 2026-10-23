@@ -31,8 +31,6 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(query.value as? String, "example.com")
         app.typeKey(.escape, modifierFlags: [])
         expectRuntime(app, tabs: 0, views: 0, created: 0)
-        app.typeKey("w", modifierFlags: .command)
-        XCTAssertEqual(app.windows.count, 1)
         XCTAssertFalse(app.textFields["commandBar.query"].exists)
         XCTAssertFalse(app.staticTexts["Open a new tab with ⌘T"].exists)
         app.typeKey("t", modifierFlags: .command)
@@ -49,6 +47,25 @@ final class EarlyUITests: XCTestCase {
         address.click()
         XCTAssertTrue(query.waitForExistence(timeout: 3))
         XCTAssertEqual(query.value as? String, "")
+    }
+
+    /// Like Arc and Chrome: ⌘W in a window with no tabs closes it, and Early
+    /// keeps running until ⌘Q.
+    func testCommandWClosesAnEmptyWindowButNeverQuits() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+        let browsers = app.windows.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@", "browser", "browser."))
+        XCTAssertEqual(browsers.count, 1)
+        app.typeKey("w", modifierFlags: .command)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: browsers)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertEqual(app.state, .runningForeground, "Closing the last window doesn't quit")
+        app.typeKey("n", modifierFlags: .command)
+        let reopened = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 1"), object: browsers)
+        XCTAssertEqual(XCTWaiter.wait(for: [reopened], timeout: 5), .completed)
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
     }
 
     func testThumbnailSwitcherCancelCommitAndCompactLayoutPreserveLivePages() {
@@ -2897,15 +2914,27 @@ final class EarlyUITests: XCTestCase {
             return CGFloat(largest)
         }
 
+        // A native widget redraws a moment after the pointer leaves or
+        // enters it; wait briefly for that, then judge it.
+        func settled(_ light: XCUIElement, idle: Bool) throws -> CGFloat {
+            let deadline = Date().addingTimeInterval(2)
+            var value = try colorBeyondBackdrop(light)
+            while (idle ? value >= 0.12 : value <= 0.25), Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.1)
+                value = try colorBeyondBackdrop(light)
+            }
+            return value
+        }
+
         away.hover()
-        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try settled(light, idle: true), 0.12) }
         let idle = XCTAttachment(screenshot: window.screenshot())
         idle.name = "\(appearance) muted native traffic lights"
         idle.lifetime = .keepAlways
         add(idle)
         close.hover()
         for light in lights {
-            XCTAssertGreaterThan(try colorBeyondBackdrop(light), 0.25)
+            XCTAssertGreaterThan(try settled(light, idle: false), 0.25)
             try assertHoverSymbol(light)
         }
         let hovered = XCTAttachment(screenshot: window.screenshot())
@@ -2913,7 +2942,7 @@ final class EarlyUITests: XCTestCase {
         hovered.lifetime = .keepAlways
         add(hovered)
         away.hover()
-        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try settled(light, idle: true), 0.12) }
         XCTAssertTrue(close.isEnabled)
         XCTAssertTrue(close.isHittable)
 
@@ -2921,10 +2950,10 @@ final class EarlyUITests: XCTestCase {
         // idle mask must survive those redraws, not just the first hover cycle.
         for light in lights {
             light.hover()
-            XCTAssertGreaterThan(try colorBeyondBackdrop(light), 0.25)
+            XCTAssertGreaterThan(try settled(light, idle: false), 0.25)
             away.hover()
             for idleLight in lights {
-                XCTAssertLessThan(try colorBeyondBackdrop(idleLight), 0.12)
+                XCTAssertLessThan(try settled(idleLight, idle: true), 0.12)
                 XCTAssertTrue(idleLight.isHittable)
             }
         }
@@ -2935,7 +2964,7 @@ final class EarlyUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["sidebar.newTab"].waitForExistence(timeout: 10))
         XCTAssertTrue(close.waitForExistence(timeout: 5))
-        for light in lights { XCTAssertLessThan(try colorBeyondBackdrop(light), 0.12) }
+        for light in lights { XCTAssertLessThan(try settled(light, idle: true), 0.12) }
         app.typeKey(.escape, modifierFlags: [])
         close.click()
         XCTAssertTrue(window.waitForNonExistence(timeout: 5))

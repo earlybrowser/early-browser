@@ -27,7 +27,8 @@ public struct TabStore: Equatable, Sendable {
 
     @discardableResult
     public mutating func placePin(_ id: UUID, before target: UUID?) -> Bool {
-        guard let tab = tab(id: id), tab.pinnedURL != nil, !tab.isFavorite else { return false }
+        // A live folder's pins keep their source's order.
+        guard let tab = tab(id: id), tab.pinnedURL != nil, !tab.isFavorite, tab.liveItemID == nil else { return false }
         var ids = pinnedItems(in: tab.spaceID, parentID: tab.folderID).map(\.id).filter { $0 != id }
         if let target {
             guard let index = ids.firstIndex(of: target) else { return false }
@@ -56,7 +57,7 @@ public struct TabStore: Equatable, Sendable {
     }
 
     private mutating func applyPlacement(_ id: UUID, in section: Section, folderID: UUID?, before: UUID?, spaceID: UUID) -> Bool {
-        guard let source = tab(id: id) else { return false }
+        guard let source = tab(id: id), source.liveItemID == nil, !isLiveFolder(folderID) else { return false }
         guard source.isFavorite || source.spaceID == spaceID else { return false }
         if self.section(of: source) != section {
             guard move(id, to: section, in: spaceID) else { return false }
@@ -109,7 +110,7 @@ public struct TabStore: Equatable, Sendable {
     }
 
     mutating func moveTab(_ id: UUID, toSpace spaceID: UUID) -> Bool {
-        guard let index = tabs.firstIndex(where: { $0.id == id && !$0.isFavorite }) else { return false }
+        guard let index = tabs.firstIndex(where: { $0.id == id && !$0.isFavorite && $0.liveItemID == nil }) else { return false }
         var tab = tabs.remove(at: index)
         tab.spaceID = spaceID
         tab.folderID = nil
@@ -129,6 +130,9 @@ public struct TabStore: Equatable, Sendable {
         while let next = pending.popLast(), folderIDs.insert(next).inserted {
             pending.append(contentsOf: (children[next] ?? []).map(\.id))
         }
+        // One live folder per source in a Space.
+        let moving = folders.filter { folderIDs.contains($0.id) }.compactMap { $0.live?.source }
+        guard !moving.contains(where: { hasLiveFolder($0, in: spaceID) }) else { return nil }
         let destinationOrder = pinnedItems(in: spaceID, parentID: nil).map(\.id)
         var candidate = self
         for index in candidate.folders.indices where folderIDs.contains(candidate.folders[index].id) {
@@ -136,7 +140,7 @@ public struct TabStore: Equatable, Sendable {
             guard original.spaceID == root.spaceID else { return nil }
             var moved = BrowserFolder(id: original.id, spaceID: spaceID,
                 parentID: original.id == id ? nil : original.parentID, name: original.name,
-                isExpanded: original.isExpanded)
+                isExpanded: original.isExpanded, live: original.live, icon: original.icon)
             moved.sidebarPosition = original.id == id ? nil : original.sidebarPosition
             candidate.folders[index] = moved
         }
@@ -166,12 +170,14 @@ public struct TabStore: Equatable, Sendable {
         let originals = folders.filter { $0.spaceID == source }
         let folderIDs = Dictionary(uniqueKeysWithValues: originals.map { ($0.id, UUID()) })
         let copies = originals.map { original in
+            // A live folder's copy fills itself from the same source.
             var copy = BrowserFolder(id: folderIDs[original.id]!, spaceID: destination,
-                parentID: original.parentID.flatMap { folderIDs[$0] }, name: original.name)
+                parentID: original.parentID.flatMap { folderIDs[$0] }, name: original.name,
+                live: original.live.map { LiveFolder(source: $0.source, interval: $0.interval) }, icon: original.icon)
             copy.sidebarPosition = original.sidebarPosition
             return copy
         }
-        let pins = tabs.filter { $0.spaceID == source && $0.pinnedURL != nil && !$0.isFavorite }.map { original in
+        let pins = tabs.filter { $0.spaceID == source && $0.pinnedURL != nil && !$0.isFavorite && $0.liveItemID == nil }.map { original in
             var copy = BrowserTab(spaceID: destination, profileID: original.profileID,
                 title: original.pinnedTitle ?? original.pinnedURL!.host ?? original.title,
                 currentURL: original.pinnedURL!, pinnedURL: original.pinnedURL, isOpen: false,
@@ -186,7 +192,7 @@ public struct TabStore: Equatable, Sendable {
 
     @discardableResult
     public mutating func move(_ id: UUID, to section: Section, in spaceID: UUID) -> Bool {
-        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        guard let index = tabs.firstIndex(where: { $0.id == id }), tabs[index].liveItemID == nil else { return false }
         switch section {
         case .favorites:
             return setFavorite(id, favorite: true, in: spaceID)
@@ -266,7 +272,7 @@ public struct TabStore: Equatable, Sendable {
     @discardableResult
     public mutating func setPinned(_ id: UUID, pinned: Bool) -> Bool {
         guard let index = tabs.firstIndex(where: { $0.id == id }),
-              !tabs[index].isFavorite,
+              !tabs[index].isFavorite, tabs[index].liveItemID == nil,
               (tabs[index].pinnedURL != nil) != pinned else { return false }
         if pinned {
             guard tabs[index].isOpen else { return false }
@@ -288,7 +294,7 @@ public struct TabStore: Equatable, Sendable {
     /// Removing one places a regular tab in the current space, without loading it.
     @discardableResult
     public mutating func setFavorite(_ id: UUID, favorite: Bool, in spaceID: UUID) -> Bool {
-        guard let index = tabs.firstIndex(where: { $0.id == id }),
+        guard let index = tabs.firstIndex(where: { $0.id == id }), tabs[index].liveItemID == nil,
               tabs[index].isFavorite != favorite else { return false }
         if favorite, tabs[index].pinnedURL == nil {
             guard setPinned(id, pinned: true) else { return false }
@@ -312,10 +318,10 @@ public struct TabStore: Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func createFolder(name: String, parentID: UUID?, spaceID: UUID) -> UUID? {
+    public mutating func createFolder(name: String, parentID: UUID?, spaceID: UUID, icon: SpaceIcon? = nil) -> UUID? {
         guard canCreateFolder(in: parentID, spaceID: spaceID) else { return nil }
         let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128))
-        let folder = BrowserFolder(spaceID: spaceID, parentID: parentID, name: name)
+        let folder = BrowserFolder(spaceID: spaceID, parentID: parentID, name: name, icon: icon)
         let candidate = folders + [folder]
         guard (try? BrowserFolder.validate(candidate)) != nil else { return nil }
         folders = candidate
@@ -331,6 +337,7 @@ public struct TabStore: Equatable, Sendable {
 
     public func canCreateFolder(in parentID: UUID?, spaceID: UUID) -> Bool {
         guard let parentID else { return true }
+        guard !isLiveFolder(parentID) else { return false }
         guard folders.contains(where: { $0.id == parentID && $0.spaceID == spaceID }),
               let depth = BrowserFolder.nestingDepth(of: parentID, in: folders) else { return false }
         return depth < BrowserFolder.maximumNestingDepth
@@ -364,7 +371,7 @@ public struct TabStore: Equatable, Sendable {
     }
 
     public func canMoveFolder(_ id: UUID, to parentID: UUID?) -> Bool {
-        guard let index = folders.firstIndex(where: { $0.id == id }) else { return false }
+        guard let index = folders.firstIndex(where: { $0.id == id }), !isLiveFolder(parentID) else { return false }
         var candidate = folders
         candidate[index].parentID = parentID
         guard (try? BrowserFolder.validate(candidate)) != nil else { return false }
@@ -385,6 +392,23 @@ public struct TabStore: Equatable, Sendable {
         guard canMoveFolder(id, to: parentID), let index = folders.firstIndex(where: { $0.id == id }) else { return false }
         folders[index].parentID = parentID
         folders[index].sidebarPosition = nil
+        return true
+    }
+
+    /// A live folder shows its source's mark instead.
+    @discardableResult
+    public mutating func setFolderIcon(_ id: UUID, icon: SpaceIcon?) -> Bool {
+        guard let index = folders.firstIndex(where: { $0.id == id }), folders[index].live == nil,
+              folders[index].icon != icon else { return false }
+        folders[index].icon = icon
+        return true
+    }
+
+    @discardableResult
+    public mutating func setLiveFolderInterval(_ id: UUID, _ interval: LiveFolder.Interval) -> Bool {
+        guard let index = folders.firstIndex(where: { $0.id == id }), folders[index].live?.interval != nil,
+              folders[index].live?.interval != interval else { return false }
+        folders[index].live?.interval = interval
         return true
     }
 
@@ -419,7 +443,8 @@ public struct TabStore: Equatable, Sendable {
 
     @discardableResult
     public mutating func moveTab(_ id: UUID, toFolder folderID: UUID?) -> Bool {
-        guard let index = tabs.firstIndex(where: { $0.id == id }), !tabs[index].isFavorite else { return false }
+        guard let index = tabs.firstIndex(where: { $0.id == id }), !tabs[index].isFavorite,
+              tabs[index].liveItemID == nil, !isLiveFolder(folderID) else { return false }
         if let folderID {
             guard let folder = folders.first(where: { $0.id == folderID }), folder.spaceID == tabs[index].spaceID else { return false }
             if tabs[index].pinnedURL == nil { guard setPinned(id, pinned: true) else { return false } }
@@ -432,6 +457,103 @@ public struct TabStore: Equatable, Sendable {
         }
         if tabs[index].folderID != folderID { tabs[index].sidebarPosition = nil }
         tabs[index].folderID = folderID
+        return true
+    }
+
+    // MARK: Live folders
+
+    /// Only its source adds or removes a live folder's pins.
+    public func isLiveFolder(_ id: UUID?) -> Bool {
+        guard let id else { return false }
+        return folders.contains { $0.id == id && $0.live != nil }
+    }
+
+    /// A Space has at most one live folder per source: a second would list
+    /// the same items.
+    public func hasLiveFolder(_ source: LiveFolder.Source, in spaceID: UUID) -> Bool {
+        folders.contains { $0.spaceID == spaceID && $0.live?.source == source }
+    }
+
+    /// A live folder at the end of a Space's pins, open so it's seen filling.
+    @discardableResult
+    public mutating func createLiveFolder(name: String, source: LiveFolder.Source, spaceID: UUID) -> UUID? {
+        guard !hasLiveFolder(source, in: spaceID) else { return nil }
+        let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128))
+        let folder = BrowserFolder(spaceID: spaceID, name: name, isExpanded: true, live: LiveFolder(source: source))
+        let candidate = folders + [folder]
+        guard (try? BrowserFolder.validate(candidate)) != nil else { return nil }
+        let order = pinnedItems(in: spaceID, parentID: nil).map(\.id)
+        folders = candidate
+        assignPositions(order + [folder.id])
+        return folder.id
+    }
+
+    /// Makes a live folder's pins what its source lists, in its order: new
+    /// items are added closed, titles follow, and items no longer listed
+    /// (merged, closed) or removed by hand leave. One open in a tab stays
+    /// open, as a Today tab, so a page being read never closes.
+    @discardableResult
+    public mutating func syncLiveFolder(_ folderID: UUID, items: [LiveFolderItem], profileID: UUID,
+                                        forgetsRemoved: Bool = true) -> Bool {
+        guard let folderIndex = folders.firstIndex(where: { $0.id == folderID }), var live = folders[folderIndex].live else { return false }
+        let before = self
+        let listed = Set(items.map(\.id))
+        // Remember removals only while the source still lists them.
+        if forgetsRemoved { live.dismissed.removeAll { !listed.contains($0) } }
+        folders[folderIndex].live = live
+        let folder = folders[folderIndex]
+        let dismissed = Set(live.dismissed)
+        var wanted: [LiveFolderItem] = []
+        var seen = Set<String>()
+        for item in items where !dismissed.contains(item.id) && seen.insert(item.id).inserted { wanted.append(item) }
+        let wantedIDs = Set(wanted.map(\.id))
+        // Leaving: unload closed pins; an open one becomes a Today tab.
+        for index in tabs.indices.reversed() where tabs[index].folderID == folderID {
+            guard let item = tabs[index].liveItemID, !wantedIDs.contains(item) else { continue }
+            if tabs[index].isOpen {
+                tabs[index].liveItemID = nil
+                tabs[index].folderID = nil
+                tabs[index].pinnedURL = nil
+                tabs[index].pinnedTitle = nil
+                tabs[index].sidebarPosition = nil
+            } else {
+                tabs.remove(at: index)
+            }
+        }
+        var order: [UUID] = []
+        for item in wanted {
+            if let index = tabs.firstIndex(where: { $0.folderID == folderID && $0.liveItemID == item.id }) {
+                if tabs[index].pinnedTitle != item.title {
+                    tabs[index].pinnedTitle = item.title
+                    if !tabs[index].isOpen { tabs[index].title = item.title }
+                }
+                order.append(tabs[index].id)
+            } else {
+                var pin = BrowserTab(spaceID: folder.spaceID, profileID: profileID, title: item.title, currentURL: item.url,
+                                     pinnedURL: item.url, isOpen: false, pinnedTitle: item.title)
+                pin.folderID = folderID
+                pin.liveItemID = item.id
+                tabs.append(pin)
+                order.append(pin.id)
+            }
+        }
+        assignPositions(order)
+        return self != before
+    }
+
+    /// Removes a live folder's pin by hand; its source won't add it back
+    /// while it still lists it.
+    @discardableResult
+    public mutating func dismissLiveItem(_ id: UUID) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }), let item = tabs[index].liveItemID,
+              let folderIndex = folders.firstIndex(where: { $0.id == tabs[index].folderID }),
+              folders[folderIndex].live != nil else { return false }
+        folders[folderIndex].live?.dismissed.removeAll { $0 == item }
+        folders[folderIndex].live?.dismissed.append(item)
+        if let count = folders[folderIndex].live?.dismissed.count, count > LiveFolder.dismissedLimit {
+            folders[folderIndex].live?.dismissed.removeFirst(count - LiveFolder.dismissedLimit)
+        }
+        tabs.remove(at: index)
         return true
     }
 

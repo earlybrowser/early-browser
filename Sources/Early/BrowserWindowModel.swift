@@ -155,6 +155,8 @@ final class BrowserWindowModel {
     var onSave: ((BrowserWindowModel) -> Void)?
     var onOpenWindow: ((URL, String?) -> Void)?
     var onOpenSettings: (() -> Void)?
+    /// Tests stand in for the native window's close button.
+    @ObservationIgnored var onCloseWindow: (() -> Void)?
     var sidebarWidth: Double {
         get { preferences.sidebarWidth }
         set { preferences.sidebarWidth = newValue }
@@ -232,6 +234,7 @@ final class BrowserWindowModel {
             if self.coordinator.tabStore.tab(id: id)?.isOpen == true { self.recordHistory(id, url: url, title: title) }
             let changed = self.coordinator.updateMetadata(id, url: url, title: title)
             self.extensionTabChanged(id)
+            if let url, !self.isPrivate { self.application?.noteVisit(url, profile: self.coordinator.profileID) }
             guard changed else { return }
             self.save()
         }
@@ -275,6 +278,7 @@ final class BrowserWindowModel {
         }
         webViews.onManagePasswords = { [weak self] host in self?.showPasswords(search: host) }
         webViews.automaticPictureInPicture = { [weak self] in self?.preferences.automaticPictureInPicture == true }
+        webViews.onReturnFromPictureInPicture = { [weak self] in self?.showTabFromPictureInPicture($0) }
         webViews.onPageLanguage = { [weak self] id, language in self?.updateTranslationOffer(id, language: language) }
         webViews.translationMenuTitle = { [weak self] in self?.translationTitle(for: $0) }
         webViews.onTranslatePage = { [weak self] in self?.toggleTranslation($0) }
@@ -757,6 +761,81 @@ final class BrowserWindowModel {
             || Set(selection.tabIDs) != Set(openTabs.map(\.id)) {
             cancelTabSwitcher(restoreFocus: false)
         }
+    }
+
+    // MARK: GitHub live folder
+
+    /// The profile's open pull requests on GitHub; none in private windows.
+    var pullRequests: PullRequestFeed? { isPrivate ? nil : application?.pullRequests(for: coordinator.profileID) }
+
+    static let pullRequestsFolderName = "Pull Requests"
+
+    /// A live folder at the end of this Space's pins whose pins are the
+    /// profile's open pull requests.
+    @discardableResult
+    func addGitHubLiveFolder() -> UUID? {
+        guard !isPrivate, let id = coordinator.createLiveFolder(name: Self.pullRequestsFolderName, source: .githubPullRequests)
+        else { return nil }
+        save()
+        // Another folder may already have read them.
+        if let feed = pullRequests {
+            applyPullRequests(feed)
+            feed.refreshIfStale()
+        }
+        return id
+    }
+
+    /// Live pins follow the list. A list that can't be read (signed out, or
+    /// GitHub's pages changed) empties them instead of leaving them out of
+    /// date; offline or throttled keeps them until the next read.
+    func applyPullRequests(_ feed: PullRequestFeed) {
+        let changed: Bool
+        switch feed.status {
+        case .ready:
+            changed = coordinator.syncLiveFolders(.githubPullRequests, items: feed.items.map {
+                LiveFolderItem(id: $0.id, url: $0.url(), title: $0.title)
+            })
+        case .signedOut, .unreadable:
+            changed = coordinator.syncLiveFolders(.githubPullRequests, items: [], forgetsRemoved: false)
+        case .idle, .loading, .offline, .throttled:
+            return
+        }
+        if changed { save() }
+    }
+
+    /// Removing a live pin by hand: it isn't added back while it's still listed.
+    func removeLiveItem(_ id: UUID) {
+        let previousActive = coordinator.activeTabID
+        let previousVisible = coordinator.visibleTabIDs
+        guard coordinator.dismissLiveItem(id) else { return }
+        webViews.discard(tabID: id)
+        if previousActive != coordinator.activeTabID || previousVisible != coordinator.visibleTabIDs { activateSelection() }
+        save()
+    }
+
+    /// Picture in Picture's return button: the video's tab comes forward, in
+    /// its Space and window, so WebKit can put the video back in its page.
+    func showTabFromPictureInPicture(_ id: UUID) {
+        guard let tab = coordinator.tabStore.tab(id: id), tab.isOpen else { return }
+        if !tab.isVisible(in: coordinator.activeSpaceID) { _ = switchSpace(to: tab.spaceID) }
+        if !coordinator.visibleTabIDs.contains(id) { selectTab(id) }
+        if let window = application?.nativeWindow(of: self) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// No tab open anywhere in the window, in any Space: ⌘W closes it. A
+    /// window with tabs open in another Space keeps them.
+    var isEmptyWindow: Bool {
+        coordinator.activeTabID == nil && !coordinator.tabStore.tabs.contains { $0.isOpen }
+    }
+
+    /// The window itself, as its close button would (saved pages stay).
+    func closeWindow() {
+        if let onCloseWindow { onCloseWindow() }
+        else { application?.nativeWindow(of: self)?.performClose(nil) }
     }
 
     func closeActiveTab() {

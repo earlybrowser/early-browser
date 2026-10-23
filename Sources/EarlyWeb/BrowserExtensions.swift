@@ -233,11 +233,19 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for id in Array(contexts.keys) { unload(id) }
     }
 
-    /// Website access changed: the running extension gets it without restarting.
+    /// Website access changed: the running extension gets it without
+    /// restarting. Only what changed is granted or withdrawn: WebKit updates
+    /// every page's injected content for each change.
     public func refreshAccess(_ id: UUID) {
         guard let item = catalog.installed(id), let context = contexts[id] else { return }
-        for pattern in context.grantedPermissionMatchPatterns.keys { context.setPermissionStatus(.unknown, for: pattern) }
-        applyPermissions(item, to: context)
+        var wanted = Set<WKWebExtension.MatchPattern>()
+        if item.siteAccess == .allSites { wanted.formUnion(context.webExtension.allRequestedMatchPatterns) }
+        for site in item.allowedSites {
+            if let pattern = try? WKWebExtension.MatchPattern(string: "*://\(site)/*") { wanted.insert(pattern) }
+        }
+        let granted = context.grantedPermissionMatchPatterns
+        for pattern in granted.keys where !wanted.contains(pattern) { context.setPermissionStatus(.unknown, for: pattern) }
+        for pattern in wanted where granted[pattern] == nil { context.setPermissionStatus(.grantedExplicitly, for: pattern) }
     }
 
     /// Turning it on or off, or allowing it in private windows, takes effect.

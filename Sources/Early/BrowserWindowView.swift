@@ -79,6 +79,10 @@ struct BrowserWindowView: View {
     @State private var editingFolder: UUID?
     @State private var folderParent: UUID?
     @State private var folderName = ""
+    @State private var folderIcon: SpaceIcon?
+    @State private var showingFolderIconPicker = false
+    /// The folder whose icon Change Icon… is choosing.
+    @State private var iconFolderID: UUID?
     #if DEBUG
     @State private var folderToggleActionCount = 0
 
@@ -200,6 +204,8 @@ struct BrowserWindowView: View {
         case tab(BrowserTab, Int)
         case folder(BrowserFolder, Int)
         case folderEnd(BrowserFolder, Int)
+        /// A live folder's note below its pins (reading, signed out…).
+        case liveStatus(BrowserFolder, Int)
 
         var id: String {
             switch self {
@@ -210,6 +216,7 @@ struct BrowserWindowView: View {
             case .tab(let tab, _): "tab-\(tab.id)"
             case .folder(let folder, _): "folder-\(folder.id)"
             case .folderEnd(let folder, _): "folder-end-\(folder.id)"
+            case .liveStatus(let folder, _): "live-status-\(folder.id)"
             }
         }
 
@@ -247,6 +254,9 @@ struct BrowserWindowView: View {
                 let preview = folderPreview(folder)
                 if preview.showsContents {
                     items += folderItems(in: spaceID, parent: folder.id, depth: depth + 1)
+                }
+                if folder.live != nil, isFolderOpen(folder), !model.isPrivate {
+                    items.append(.liveStatus(folder, depth + 1))
                 }
                 if preview.showsPanel {
                     items.append(.folderEnd(folder, depth))
@@ -512,13 +522,41 @@ struct BrowserWindowView: View {
           VStack(alignment: .leading, spacing: 16) {
             Text(editingFolder == nil ? "New Folder" : "Rename Folder").font(.headline)
             TextField("Folder name", text: $folderName).accessibilityIdentifier("folder.name")
+            if editingFolder == nil {
+                HStack(spacing: 12) {
+                    Button { showingFolderIconPicker.toggle() } label: {
+                        FolderIcon(isOpen: false, themeColor: model.preferences.spaceThemes
+                                   ? model.coordinator.activeSpace?.color ?? .gray : .gray,
+                                   emblem: folderIcon.flatMap { if case .symbol(let symbol) = $0 { .symbol(symbol.rawValue) } else { nil } })
+                            .frame(width: FolderIcon.width, height: FolderIcon.height)
+                            .frame(width: 38, height: 38)
+                            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+                            .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.12)) }
+                    }
+                    .buttonStyle(.plain)
+                    .browserKeyboardFocus(cornerRadius: 10)
+                    .accessibilityLabel("Choose folder icon")
+                    .accessibilityValue(folderIcon?.accessibilityName ?? "No icon")
+                    .accessibilityIdentifier("folder.iconPicker")
+                    .popover(isPresented: $showingFolderIconPicker, arrowEdge: .bottom) {
+                        SpaceIconPicker(selection: $folderIcon, noneTitle: "No icon", noneSymbol: "folder") {
+                            showingFolderIconPicker = false
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Folder icon")
+                        Text("Optional. Shown on the folder.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
             HStack {
             Button("Cancel") { folderEditor = false }.keyboardShortcut(.cancelAction)
             Spacer()
             Button("Save") {
                 let success: Bool
                 if let editingFolder { success = model.coordinator.renameFolder(editingFolder, to: folderName) }
-                else { success = model.coordinator.createFolder(name: folderName, parentID: folderParent) != nil }
+                else { success = model.coordinator.createFolder(name: folderName, parentID: folderParent, icon: folderIcon) != nil }
                 if success { model.save() } else { model.notice = "Could not save folder. Use a name and a parent with room for a subfolder (two nesting levels maximum)." }
                 folderEditor = false
             }
@@ -528,6 +566,22 @@ struct BrowserWindowView: View {
           }.padding(24).frame(width: 340).browserReducedMotion()
         }
         .onChange(of: folderEditor) { _, value in model.folderEditorIsPresented = value }
+        .sheet(isPresented: Binding(get: { iconFolderID != nil }, set: { if !$0 { iconFolderID = nil } })) {
+            if let id = iconFolderID, let folder = model.coordinator.folders.first(where: { $0.id == id }) {
+                VStack(spacing: 0) {
+                    SpaceIconPicker(selection: Binding(get: { folder.icon }, set: { icon in
+                        if model.coordinator.setFolderIcon(id, icon: icon) { model.save() }
+                    }), title: "Choose an icon for “\(folder.name)”", noneTitle: "No icon", noneSymbol: "folder") {
+                        iconFolderID = nil
+                    }
+                    HStack {
+                        Spacer()
+                        Button("Cancel") { iconFolderID = nil }.keyboardShortcut(.cancelAction)
+                    }
+                    .padding(.horizontal, 18).padding(.bottom, 16)
+                }
+            }
+        }
         .sheet(isPresented: $model.historyPresented) { HistoryView(model: model) }
         // Clear History from the menu without opening History first.
         .confirmationDialog("Clear history and website data?",
@@ -604,6 +658,12 @@ struct BrowserWindowView: View {
             // A private window has no saved pages, folders or other Spaces.
             if !model.isPrivate {
                 Button("New Folder") { editFolder(nil, parent: nil) }
+                // One per Space: a second would list the same pull requests.
+                if let space = model.coordinator.activeSpace,
+                   !model.coordinator.tabStore.hasLiveFolder(.githubPullRequests, in: space.id) {
+                    Button("GitHub Live Folder") { model.addGitHubLiveFolder() }
+                        .help("A folder of your open pull requests on GitHub, kept up to date")
+                }
                 Divider()
                 Button("New Space…") { model.perform(.newSpace) }
                 if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
@@ -808,6 +868,12 @@ struct BrowserWindowView: View {
                             case .folder(let folder, let depth):
                                 folderRow(folder).padding(.leading, CGFloat(min(depth, 8)) * 12)
                                     .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+                            case .liveStatus(let folder, let depth):
+                                if let feed = model.pullRequests {
+                                    LiveFolderStatusRow(model: model, feed: feed, hasPins: folderHasChildren(folder.id, in: folder.spaceID))
+                                        .padding(.leading, CGFloat(min(depth, 8)) * 12)
+                                        .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+                                }
                             case .folderEnd(let folder, let depth):
                                 Color.clear.frame(height: folderPreview(folder).footerHeight)
                                     .padding(.leading, CGFloat(min(depth, 8)) * 12)
@@ -1097,7 +1163,7 @@ struct BrowserWindowView: View {
             }
             .disabled(!model.canPerform(.setMuted(tab.id, !page.isMuted)))
         }
-        if !tab.isFavorite && !model.isPrivate {
+        if !tab.isFavorite && !model.isPrivate && tab.liveItemID == nil {
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
                     Button(space.name) { model.perform(.moveTab(tab.id, toSpace: space.id)) }
@@ -1110,15 +1176,18 @@ struct BrowserWindowView: View {
                     .disabled(tab.folderID == nil)
                 ForEach(model.coordinator.folders) { folder in
                     Button(folderPath(folder)) { _ = model.coordinator.moveTab(tab.id, toFolder: folder.id); model.save() }
-                        .disabled(tab.folderID == folder.id)
+                        .disabled(tab.folderID == folder.id || folder.live != nil)
                 }
             }
         }
-        Button("Move Up") { model.perform(.moveTabBy(tab.id, -1)) }
-            .disabled(model.coordinator.tabStore.siblingIDs(of: tab).first == tab.id)
-        Button("Move Down") { model.perform(.moveTabBy(tab.id, 1)) }
-            .disabled(model.coordinator.tabStore.siblingIDs(of: tab).last == tab.id)
-        if !model.isPrivate {
+        // A live folder's pins keep GitHub's order and stay in their folder.
+        if tab.liveItemID == nil {
+            Button("Move Up") { model.perform(.moveTabBy(tab.id, -1)) }
+                .disabled(model.coordinator.tabStore.siblingIDs(of: tab).first == tab.id)
+            Button("Move Down") { model.perform(.moveTabBy(tab.id, 1)) }
+                .disabled(model.coordinator.tabStore.siblingIDs(of: tab).last == tab.id)
+        }
+        if !model.isPrivate && tab.liveItemID == nil {
             Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
                 model.perform(.setFavorite(tab.id, !tab.isFavorite))
             }
@@ -1137,6 +1206,10 @@ struct BrowserWindowView: View {
         Divider()
         Button("Close Tab") { model.perform(.closeTab(tab.id)) }
             .disabled(!tab.isOpen)
+        if tab.liveItemID != nil {
+            Button("Remove from Folder") { model.removeLiveItem(tab.id) }
+                .help("Remove this pull request from the folder. It won’t come back while it’s open on GitHub.")
+        }
         if tab.pinnedURL == nil && !tab.isFavorite {
             Button("Close Other Tabs") { model.perform(.closeOtherTabs(tab.id)) }
                 .disabled(!model.canPerform(.closeOtherTabs(tab.id)))
@@ -1393,6 +1466,7 @@ struct BrowserWindowView: View {
         editingFolder = folder?.id
         folderParent = parent
         folderName = folder?.name ?? ""
+        folderIcon = folder?.icon
         folderEditor = true
     }
 
@@ -1412,8 +1486,8 @@ struct BrowserWindowView: View {
         let header = HStack(spacing: 4) {
             // Neither disclosure nor title waits for a possible second click.
             Button { toggleFolder(folder) } label: {
-                FolderIcon(isOpen: isFolderOpen(folder), themeColor: folderTheme(folder))
-                    .frame(width: 19, height: 20)
+                FolderIcon(isOpen: isFolderOpen(folder), themeColor: folderTheme(folder), emblem: FolderEmblem(folder))
+                    .frame(width: FolderIcon.width, height: FolderIcon.height)
                     .animation(folderExpansionAnimation, value: isFolderOpen(folder))
                     .frame(width: PinnedIsland.iconControlWidth, height: PinnedIsland.height)
                     .contentShape(Rectangle())
@@ -1475,9 +1549,28 @@ struct BrowserWindowView: View {
         .animation(dragSourceItem == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
         .background(tabFrame(folder.id))
         .contextMenu {
-            Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
-                .disabled(!model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID))
+            if let live = folder.live, let feed = model.pullRequests {
+                Text(Self.lastFetch(feed))
+                // A picker, so the menu checks the current choice.
+                Picker("Fetch Interval", selection: Binding(get: { live.interval }, set: { interval in
+                    if model.coordinator.setLiveFolderInterval(folder.id, interval) { model.save() }
+                })) {
+                    ForEach(LiveFolder.Interval.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.menu)
+                Button("Refresh") { feed.refresh() }
+                    .disabled(feed.isRefreshing)
+                Button("Open Pull Requests on GitHub") { _ = model.openLocations([PullRequest.github.appending(path: "pulls")]) }
+                Divider()
+            } else {
+                Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
+                    .disabled(!model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID))
+            }
             Button("Rename Folder…") { editFolder(folder, parent: folder.parentID) }
+            // A live folder shows its source's mark.
+            if folder.live == nil {
+                Button("Change Icon…") { iconFolderID = folder.id }
+            }
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
                     Button(space.name) {
@@ -1486,7 +1579,8 @@ struct BrowserWindowView: View {
                         focusedSidebarControl = nil
                         model.perform(.moveFolder(folder.id, toSpace: space.id))
                     }
-                    .disabled(space.id == folder.spaceID)
+                    .disabled(space.id == folder.spaceID
+                              || folder.live.map { model.coordinator.tabStore.hasLiveFolder($0.source, in: space.id) } == true)
                 }
             }
             .disabled(!model.canManageSpaces || model.coordinator.spaces.count <= 1)
@@ -1507,6 +1601,17 @@ struct BrowserWindowView: View {
             }
             .help("Delete this folder, all subfolders, and all their tabs")
         }
+    }
+
+    /// "Last fetch: 49 seconds ago", as of when the menu opens.
+    static func lastFetch(_ feed: PullRequestFeed, now: Date = Date()) -> String {
+        if feed.isRefreshing { return "Fetching…" }
+        guard let date = feed.lastRefreshed else { return "Not fetched yet" }
+        let elapsed = now.timeIntervalSince(date)
+        if elapsed < 60 { return "Last fetch: \(max(Int(elapsed), 1)) seconds ago" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last fetch: " + formatter.localizedString(for: date, relativeTo: now)
     }
 
     private func folderTheme(_ folder: BrowserFolder) -> BrowserSpace.Color {
@@ -1992,6 +2097,8 @@ struct BrowserWindowView: View {
         withAnimation(folderExpansionAnimation) {
             model.coordinator.toggleFolder(folder.id)
         }
+        // Opening a live folder reads it again if it's been a while.
+        if folder.live != nil, !folder.isExpanded { model.pullRequests?.refreshIfStale() }
         model.save()
     }
 
@@ -2013,7 +2120,8 @@ struct BrowserWindowView: View {
         DragGesture(minimumDistance: 4, coordinateSpace: .named("sidebarReordering"))
             .updating($dragGestureItemID) { _, state, _ in state = tab.id }
             .onChanged { value in
-                guard cancelledGestureItemID != tab.id,
+                // A live folder's pins stay where their source puts them.
+                guard cancelledGestureItemID != tab.id, tab.liveItemID == nil,
                       model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
                 dragPoint = value.location
                 if dragSourceFrame == .zero { beginDrag(.tab(tab)) }
@@ -2174,8 +2282,8 @@ struct BrowserWindowView: View {
                 .shadow(radius: lifted ? 5 : 0, y: lifted ? 2 : 0)
         case .folder(let folder):
             HStack(spacing: 4) {
-                FolderIcon(isOpen: false, themeColor: folderTheme(folder))
-                    .frame(width: 19, height: 20)
+                FolderIcon(isOpen: false, themeColor: folderTheme(folder), emblem: FolderEmblem(folder))
+                    .frame(width: FolderIcon.width, height: FolderIcon.height)
                     .frame(width: PinnedIsland.iconControlWidth, height: PinnedIsland.height)
                 Text(folder.name).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
@@ -2829,9 +2937,26 @@ private struct NavigationChevron: Shape {
 }
 
 /// Layered folder artwork shared by live rows, Space pages and drag previews.
+/// What a folder shows on its front: an icon from the Space set, or GitHub's
+/// mark on a GitHub live folder.
+enum FolderEmblem: Equatable {
+    case symbol(String), github
+
+    init?(_ folder: BrowserFolder) {
+        if folder.live?.source == .githubPullRequests { self = .github }
+        else if case .symbol(let symbol)? = folder.icon { self = .symbol(symbol.rawValue) }
+        else { return nil }
+    }
+}
+
 struct FolderIcon: View {
+    /// Room for an icon on the front.
+    static let width: CGFloat = 22
+    static let height: CGFloat = 24
+
     let isOpen: Bool
     var themeColor: BrowserSpace.Color = .gray
+    var emblem: FolderEmblem?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -2845,10 +2970,11 @@ struct FolderIcon: View {
 
     var body: some View {
         ZStack {
-            FolderBack()
+            FolderBack(openness: isOpen ? 1 : 0)
                 .fill(color.folderBack(isDark: colorScheme == .dark).color)
                 .overlay {
-                    FolderBack().stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+                    FolderBack(openness: isOpen ? 1 : 0)
+                        .stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
                 }
             FolderCover(openness: isOpen ? 1 : 0)
                 .fill(color.folderFront(isDark: colorScheme == .dark).color)
@@ -2856,35 +2982,140 @@ struct FolderIcon: View {
                     FolderCover(openness: isOpen ? 1 : 0)
                         .stroke(outline, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
                 }
+            if let emblem {
+                GeometryReader { geometry in
+                    let size = geometry.size
+                    FolderEmblemView(emblem: emblem)
+                        .foregroundStyle(outline)
+                        .frame(width: size.width * 0.42, height: size.width * 0.42)
+                        .position(x: size.width * 0.5, y: size.height * 0.62)
+                }
+                // On the front, moving with it as the folder opens.
+                .modifier(FolderFrontLean(openness: isOpen ? 1 : 0))
+                .accessibilityHidden(true)
+            }
         }
     }
 }
 
-private struct FolderBack: Shape {
+private struct FolderEmblemView: View {
+    let emblem: FolderEmblem
 
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
+    var body: some View {
+        switch emblem {
+        case .github:
+            GitHubMark().fill(style: FillStyle(eoFill: true))
+        case .symbol(let name):
+            Image(systemName: name).resizable().scaledToFit().fontWeight(.semibold)
         }
-        let right: CGFloat = 0.88
-        path.move(to: point(0.18, 0.88))
-        path.addQuadCurve(to: point(0.06, 0.76), control: point(0.06, 0.88))
-        path.addLine(to: point(0.06, 0.23))
-        path.addQuadCurve(to: point(0.18, 0.11), control: point(0.06, 0.11))
-        path.addLine(to: point(0.34, 0.11))
-        path.addQuadCurve(to: point(0.41, 0.15), control: point(0.38, 0.11))
-        path.addLine(to: point(0.47, 0.23))
-        path.addQuadCurve(to: point(0.54, 0.27), control: point(0.50, 0.27))
-        path.addLine(to: point(right - 0.12, 0.27))
-        path.addQuadCurve(to: point(right, 0.39), control: point(right, 0.27))
-        path.addLine(to: point(right, 0.76))
-        path.addQuadCurve(to: point(right - 0.12, 0.88), control: point(right, 0.88))
+    }
+}
+
+/// Moves a folder's icon exactly as its front moves.
+private struct FolderFrontLean: GeometryEffect {
+    var openness: CGFloat
+    var animatableData: CGFloat {
+        get { openness }
+        set { openness = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(FolderLean.front.transform(openness, in: CGRect(origin: .zero, size: size)))
+    }
+}
+
+/// GitHub's own mark (its logo, as GitHub's logo guidelines allow for linking
+/// to GitHub), drawn as a shape rather than taken from an icon set.
+struct GitHubMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height)
+        let origin = CGPoint(x: rect.midX - side / 2, y: rect.midY - side / 2)
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: origin.x + x * side, y: origin.y + y * side) }
+        var path = Path()
+        path.move(to: p(0.5, 0))
+        path.addCurve(to: p(1, 0.5), control1: p(0.7762, 0), control2: p(1, 0.2238))
+        path.addCurve(to: p(0.6594, 0.9744), control1: p(0.9999, 0.7148), control2: p(0.8629, 0.9057))
+        path.addCurve(to: p(0.625, 0.9506), control1: p(0.6344, 0.9794), control2: p(0.625, 0.9637))
+        path.addCurve(to: p(0.6256, 0.8131), control1: p(0.625, 0.9337), control2: p(0.6256, 0.88))
+        path.addCurve(to: p(0.5919, 0.7206), control1: p(0.6256, 0.7662), control2: p(0.61, 0.7362))
+        path.addCurve(to: p(0.82, 0.4737), control1: p(0.7031, 0.7081), control2: p(0.82, 0.6656))
+        path.addCurve(to: p(0.7687, 0.3394), control1: p(0.82, 0.4187), control2: p(0.8006, 0.3744))
+        path.addCurve(to: p(0.7637, 0.2069), control1: p(0.7737, 0.3269), control2: p(0.7912, 0.2756))
+        path.addCurve(to: p(0.6262, 0.2581), control1: p(0.7637, 0.2069), control2: p(0.7219, 0.1931))
+        path.addCurve(to: p(0.5012, 0.2412), control1: p(0.5862, 0.2469), control2: p(0.5437, 0.2412))
+        path.addCurve(to: p(0.3762, 0.2581), control1: p(0.4587, 0.2412), control2: p(0.4162, 0.2469))
+        path.addCurve(to: p(0.2387, 0.2069), control1: p(0.2806, 0.1937), control2: p(0.2387, 0.2069))
+        path.addCurve(to: p(0.2337, 0.3394), control1: p(0.2112, 0.2756), control2: p(0.2287, 0.3269))
+        path.addCurve(to: p(0.1825, 0.4737), control1: p(0.2019, 0.3744), control2: p(0.1825, 0.4194))
+        path.addCurve(to: p(0.41, 0.7206), control1: p(0.1825, 0.665), control2: p(0.2987, 0.7081))
+        path.addCurve(to: p(0.3781, 0.7875), control1: p(0.3956, 0.7331), control2: p(0.3825, 0.755))
+        path.addCurve(to: p(0.2325, 0.7462), control1: p(0.3494, 0.8006), control2: p(0.2775, 0.8219))
+        path.addCurve(to: p(0.1556, 0.695), control1: p(0.2231, 0.7312), control2: p(0.195, 0.6944))
+        path.addCurve(to: p(0.1562, 0.7281), control1: p(0.1137, 0.6956), control2: p(0.1387, 0.7187))
+        path.addCurve(to: p(0.2075, 0.7987), control1: p(0.1775, 0.74), control2: p(0.2019, 0.7844))
+        path.addCurve(to: p(0.3756, 0.8575), control1: p(0.2175, 0.8269), control2: p(0.25, 0.8806))
+        path.addCurve(to: p(0.3762, 0.9506), control1: p(0.3756, 0.8994), control2: p(0.3762, 0.9387))
+        path.addCurve(to: p(0.3419, 0.9744), control1: p(0.3762, 0.9637), control2: p(0.3669, 0.9787))
+        path.addCurve(to: p(-0, 0.5), control1: p(0.1376, 0.9064), control2: p(-0.0001, 0.7153))
+        path.addCurve(to: p(0.5, 0), control1: p(0, 0.2238), control2: p(0.2238, 0))
         path.closeSubpath()
         return path
     }
 }
 
+/// How a folder's half moves as it opens: hinged on the bottom edge, its top
+/// leans one way (`shear`) and comes forward or goes back (`squash`).
+struct FolderLean {
+    static let hinge: CGFloat = 0.88
+    static let back = FolderLean(shear: -0.16, squash: 0.04)
+    static let front = FolderLean(shear: 0.24, squash: 0.14)
+
+    let shear: CGFloat
+    let squash: CGFloat
+
+    /// From closed (0) to open (1), in a rect's own coordinates.
+    func transform(_ openness: CGFloat, in rect: CGRect) -> CGAffineTransform {
+        let narrow = 1 - 0.08 * openness, lean = shear * openness, height = 1 - squash * openness
+        // In the unit square: x' = 0.5 + (x − 0.5)·narrow + lean·(hinge − y), y' = hinge − (hinge − y)·height.
+        let unitX = 0.5 - 0.5 * narrow + Self.hinge * lean, unitY = Self.hinge * (1 - height)
+        let ratio = rect.height > 0 ? rect.width / rect.height : 1
+        return CGAffineTransform(a: narrow, b: 0, c: -lean * ratio, d: height,
+                                 tx: rect.minX + rect.width * unitX - narrow * rect.minX + lean * ratio * rect.minY,
+                                 ty: rect.minY + rect.height * unitY - height * rect.minY)
+    }
+}
+
+/// The back and its tab; opening tips it back.
+private struct FolderBack: Shape {
+    var openness: CGFloat = 0
+    var animatableData: CGFloat {
+        get { openness }
+        set { openness = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
+        }
+        var path = Path()
+        path.move(to: point(0.18, 0.88))
+        path.addQuadCurve(to: point(0.06, 0.76), control: point(0.06, 0.88))
+        path.addLine(to: point(0.06, 0.28))
+        path.addQuadCurve(to: point(0.16, 0.18), control: point(0.06, 0.18))
+        path.addLine(to: point(0.33, 0.18))
+        path.addQuadCurve(to: point(0.40, 0.21), control: point(0.37, 0.18))
+        path.addLine(to: point(0.46, 0.27))
+        path.addQuadCurve(to: point(0.53, 0.30), control: point(0.49, 0.30))
+        path.addLine(to: point(0.76, 0.30))
+        path.addQuadCurve(to: point(0.88, 0.41), control: point(0.88, 0.30))
+        path.addLine(to: point(0.88, 0.76))
+        path.addQuadCurve(to: point(0.76, 0.88), control: point(0.88, 0.88))
+        path.closeSubpath()
+        return path.applying(FolderLean.back.transform(openness, in: rect))
+    }
+}
+
+/// The front; opening tips it toward you.
 private struct FolderCover: Shape {
     var openness: CGFloat
     var animatableData: CGFloat {
@@ -2896,21 +3127,18 @@ private struct FolderCover: Shape {
         func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
             CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
         }
-        func blended(_ x: CGFloat, _ y: CGFloat, _ openX: CGFloat, _ openY: CGFloat) -> CGPoint {
-            point(x + (openX - x) * openness, y + (openY - y) * openness)
-        }
         var path = Path()
-        // Matching control points let the cover smoothly unfold, without
-        // crossfading two overlapping outlines halfway through the animation.
         path.move(to: point(0.18, 0.88))
-        path.addQuadCurve(to: blended(0.06, 0.76, 0.12, 0.80), control: blended(0.06, 0.88, 0.10, 0.88))
-        path.addLine(to: blended(0.06, 0.46, 0.27, 0.43))
-        path.addQuadCurve(to: blended(0.18, 0.34, 0.37, 0.37), control: blended(0.06, 0.34, 0.30, 0.37))
-        path.addLine(to: blended(0.82, 0.34, 0.89, 0.37))
-        path.addQuadCurve(to: blended(0.94, 0.46, 0.96, 0.46), control: blended(0.94, 0.34, 1.00, 0.37))
-        path.addLine(to: blended(0.94, 0.76, 0.84, 0.81))
-        path.addQuadCurve(to: blended(0.82, 0.88, 0.74, 0.88), control: blended(0.94, 0.88, 0.81, 0.88))
+        path.addQuadCurve(to: point(0.06, 0.76), control: point(0.06, 0.88))
+        path.addLine(to: point(0.06, 0.48))
+        path.addQuadCurve(to: point(0.18, 0.36), control: point(0.06, 0.36))
+        path.addLine(to: point(0.82, 0.36))
+        path.addQuadCurve(to: point(0.94, 0.48), control: point(0.94, 0.36))
+        path.addLine(to: point(0.94, 0.76))
+        path.addQuadCurve(to: point(0.82, 0.88), control: point(0.94, 0.88))
         path.closeSubpath()
-        return path
+        return path.applying(FolderLean.front.transform(openness, in: rect))
     }
 }
+
+
