@@ -302,7 +302,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard !isPrivateProfile(id), profiles.contains(where: { $0.id == id }) else { return nil }
         // UI automation keeps passwords in memory and never uses the Keychain.
         let vault = testing ? PasswordVault(fileURL: nil, key: nil)
-            : PasswordVault(fileURL: passwordsFile(for: id), key: KeychainVaultKey(account: id.uuidString))
+            : PasswordVault(fileURL: passwordsFile(for: id), key: KeychainVaultKey(profile: id))
         passwordVaults[id] = vault
         return vault
     }
@@ -549,7 +549,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let history = historyStores.removeValue(forKey: id)
         sitePermissionStores.removeValue(forKey: id)?.removeFile()
         if let vault = passwordVaults.removeValue(forKey: id) { vault.removeAll() }
-        else { PasswordVault.remove(fileURL: passwordsFile(for: id), key: testing ? nil : KeychainVaultKey(account: id.uuidString)) }
+        else { PasswordVault.remove(fileURL: passwordsFile(for: id), key: testing ? nil : KeychainVaultKey(profile: id)) }
         if passwordsProfileID == id { passwordsProfileID = nil }
         saveAll()
         guard await persistence?.flush() == true else {
@@ -583,7 +583,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                     if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
                     if let file = sitePermissionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
                     if let file = passwordsFile(for: id), FileManager.default.fileExists(atPath: file.path) {
-                        PasswordVault.remove(fileURL: file, key: testing ? nil : KeychainVaultKey(account: id.uuidString))
+                        PasswordVault.remove(fileURL: file, key: testing ? nil : KeychainVaultKey(profile: id))
                     }
                     var remaining = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
                     remaining.removeAll { $0 == value }

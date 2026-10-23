@@ -18,11 +18,17 @@ final class MemoryVaultKey: PasswordVaultKey, @unchecked Sendable {
         set { lock.withLock { _failure = newValue } }
     }
     private var _failure: OSStatus?
+    private var old: Data?
 
-    init(_ key: Data? = nil) { stored = key }
+    /// `legacy` is a key an earlier build kept.
+    init(_ key: Data? = nil, legacy: Data? = nil) {
+        stored = key
+        old = legacy
+    }
 
     var readCount: Int { lock.withLock { reads } }
     var key: Data? { lock.withLock { stored } }
+    var legacyKey: Data? { lock.withLock { old } }
 
     func existing() throws -> Data? {
         try lock.withLock {
@@ -32,8 +38,18 @@ final class MemoryVaultKey: PasswordVaultKey, @unchecked Sendable {
         }
     }
 
-    func create(_ key: Data) throws { lock.withLock { stored = key } }
+    func make() throws -> Data {
+        lock.withLock {
+            if let stored { return stored }
+            let fresh = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+            stored = fresh
+            return fresh
+        }
+    }
+
     func remove() throws { lock.withLock { stored = nil } }
+    func legacy() throws -> Data? { lock.withLock { old } }
+    func removeLegacy() throws { lock.withLock { old = nil } }
 }
 
 @Suite @MainActor
@@ -147,6 +163,37 @@ struct PasswordVaultTests {
         fresh.removeAll()
         try await Task.sleep(for: .milliseconds(100))
         #expect(!FileManager.default.fileExists(atPath: url.path) && key.key == nil)
+    }
+
+    @Test func passwordsFromAnEarlierBuildsKeyMoveToTheSharedOne() async throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        // An earlier build: one Keychain item per profile.
+        let earlier = MemoryVaultKey()
+        let saved = PasswordVault(fileURL: url, key: earlier)
+        #expect(await saved.load())
+        saved.save(origin: "https://example.com", username: "ada", password: "kept")
+        await saved.flush()
+        let old = try #require(earlier.key)
+
+        let key = MemoryVaultKey(legacy: old)
+        let vault = PasswordVault(fileURL: url, key: key)
+        #expect(await vault.load())
+        #expect(vault.logins.map(\.password) == ["kept"])
+        await vault.flush()
+        let current = try #require(key.key)
+        #expect(current != old && key.legacyKey == nil, "Re-encrypted with the current key; the old one is gone")
+        let reopened = PasswordVault(fileURL: url, key: MemoryVaultKey(current))
+        #expect(await reopened.load() && reopened.logins.map(\.username) == ["ada"])
+    }
+
+    @Test func eachProfilesKeyIsDerivedFromTheOneInTheKeychain() {
+        let shared = Data((0..<32).map { UInt8($0) })
+        let one = UUID(), two = UUID()
+        let first = KeychainVaultKey.derive(shared, profile: one)
+        #expect(first.count == 32 && first == KeychainVaultKey.derive(shared, profile: one), "The same key every time")
+        #expect(first != KeychainVaultKey.derive(shared, profile: two), "Profiles are encrypted separately")
+        #expect(first != shared && first != KeychainVaultKey.derive(Data(repeating: 7, count: 32), profile: one))
     }
 
     @Test func importsKeepSavedPasswordsAndExportsReadBackTheSame() async throws {

@@ -34,31 +34,80 @@ public struct SavedLogin: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var host: String { URL(string: origin)?.host ?? origin }
 }
 
-/// Where a vault's encryption key is kept. The Keychain in the app; tests
-/// keep it in memory.
+/// Where a vault's encryption key comes from. The Keychain in the app;
+/// tests keep it in memory.
 public protocol PasswordVaultKey: Sendable {
-    /// The saved key, or nil when none was saved yet.
+    /// The vault's key, or nil when none was made yet.
     func existing() throws -> Data?
-    func create(_ key: Data) throws
+    /// The vault's key, made now if there is none.
+    func make() throws -> Data
+    /// Forgets the vault's key, when its profile is deleted.
     func remove() throws
+    /// A key an earlier build of Early kept, to move its passwords over.
+    func legacy() throws -> Data?
+    func removeLegacy() throws
 }
 
-/// A generic password item in the login keychain, one per profile. Early is
-/// not signed by a developer team, so macOS asks once ("Always Allow") after
-/// each new build before Early may read it.
+extension PasswordVaultKey {
+    public func legacy() throws -> Data? { nil }
+    public func removeLegacy() throws {}
+}
+
+/// One generic password item in the login keychain for all of Early; each
+/// profile's key is derived from it with HKDF and the profile's identifier,
+/// so profiles are encrypted separately but macOS asks only once. Early is
+/// not signed by a developer team, so macOS asks again ("Always Allow")
+/// after each new build before Early may read it.
 public struct KeychainVaultKey: PasswordVaultKey {
     public static let service = "Early Passwords"
-    public let account: String
+    static let sharedAccount = "vault"
+    public let profile: UUID
 
-    public init(account: String) { self.account = account }
+    public init(profile: UUID) { self.profile = profile }
 
-    private var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service,
-         kSecAttrAccount as String: account]
+    /// A profile's own key from the shared one.
+    public static func derive(_ shared: Data, profile: UUID) -> Data {
+        HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: shared), salt: Data(service.utf8),
+                               info: Data("profile \(profile.uuidString)".utf8), outputByteCount: 32)
+            .withUnsafeBytes { Data($0) }
     }
 
     public func existing() throws -> Data? {
-        var request = query
+        try Self.read(Self.sharedAccount).map { Self.derive($0, profile: profile) }
+    }
+
+    public func make() throws -> Data {
+        if let shared = try Self.read(Self.sharedAccount) { return Self.derive(shared, profile: profile) }
+        let fresh = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+        var item = Self.query(Self.sharedAccount)
+        item[kSecValueData as String] = fresh
+        item[kSecAttrLabel as String] = Self.service
+        item[kSecAttrDescription as String] = "Encryption key for Early’s saved passwords"
+        let status = SecItemAdd(item as CFDictionary, nil)
+        // Another profile made it at the same moment.
+        if status == errSecDuplicateItem, let shared = try Self.read(Self.sharedAccount) { return Self.derive(shared, profile: profile) }
+        guard status == errSecSuccess else { throw PasswordVault.KeyError(status: status) }
+        return Self.derive(fresh, profile: profile)
+    }
+
+    /// The shared key stays for the other profiles; deleting the profile's
+    /// file is what makes its passwords unrecoverable.
+    public func remove() throws {}
+
+    /// Earlier builds kept one item per profile, named by its identifier.
+    public func legacy() throws -> Data? { try Self.read(profile.uuidString) }
+
+    public func removeLegacy() throws {
+        let status = SecItemDelete(Self.query(profile.uuidString) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw PasswordVault.KeyError(status: status) }
+    }
+
+    private static func query(_ account: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+    }
+
+    private static func read(_ account: String) throws -> Data? {
+        var request = query(account)
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
@@ -66,20 +115,6 @@ public struct KeychainVaultKey: PasswordVaultKey {
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = item as? Data else { throw PasswordVault.KeyError(status: status) }
         return data
-    }
-
-    public func create(_ key: Data) throws {
-        var item = query
-        item[kSecValueData as String] = key
-        item[kSecAttrLabel as String] = Self.service
-        item[kSecAttrDescription as String] = "Encryption key for Early’s saved passwords"
-        let status = SecItemAdd(item as CFDictionary, nil)
-        guard status == errSecSuccess else { throw PasswordVault.KeyError(status: status) }
-    }
-
-    public func remove() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw PasswordVault.KeyError(status: status) }
     }
 }
 
@@ -111,7 +146,7 @@ public final class PasswordVault {
 
     struct KeyError: Error, Equatable { let status: OSStatus }
 
-    private struct Contents: Codable {
+    private struct Contents: Codable, Sendable {
         var version = 1
         var logins: [SavedLogin] = []
         var neverSaved: [String] = []
@@ -126,9 +161,12 @@ public final class PasswordVault {
     @ObservationIgnored private var symmetricKey: SymmetricKey?
     @ObservationIgnored private var loading: Task<Bool, Never>?
     @ObservationIgnored private var writing: Task<Void, Never>?
+    /// Opened with an earlier build's key: re-encrypted with the current one,
+    /// then the old key goes.
+    @ObservationIgnored private var movesFromLegacyKey = false
     @ObservationIgnored private let now: () -> Date
 
-    static let magic = Data("EARLYPW1".utf8)
+    nonisolated static let magic = Data("EARLYPW1".utf8)
 
     /// Without a file or key, passwords stay in memory (private testing).
     public init(fileURL: URL?, key: (any PasswordVaultKey)?, now: @escaping () -> Date = { Date() }) {
@@ -150,14 +188,20 @@ public final class PasswordVault {
         guard let fileURL, let key else { state = .ready; return true }
         state = .loading
         let task = Task { @MainActor [weak self] () -> Bool in
-            let result = await Task.detached { () -> Result<(Data?, Data?), KeyError> in
+            let result = await Task.detached { () -> Result<(contents: Contents?, key: Data?), KeyError> in
                 guard let data = try? Data(contentsOf: fileURL) else {
                     // No file: nothing saved yet, and no reason to ask the Keychain.
                     return FileManager.default.fileExists(atPath: fileURL.path) ? .failure(KeyError(status: errSecIO)) : .success((nil, nil))
                 }
                 do {
-                    guard let saved = try key.existing() else { return .failure(KeyError(status: errSecItemNotFound)) }
-                    return .success((saved, data))
+                    let current = try key.existing()
+                    if let current, let contents = try? Self.decrypt(data, key: SymmetricKey(data: current)) {
+                        return .success((contents, current))
+                    }
+                    if let old = try key.legacy(), let contents = try? Self.decrypt(data, key: SymmetricKey(data: old)) {
+                        return .success((contents, nil))
+                    }
+                    return .failure(KeyError(status: current == nil ? errSecItemNotFound : errSecDecode))
                 } catch let error as KeyError {
                     return .failure(error)
                 } catch {
@@ -169,16 +213,16 @@ public final class PasswordVault {
             switch result {
             case .success((nil, _)):
                 self.state = .ready
-            case .success((let keyData?, let data)):
-                let symmetric = SymmetricKey(data: keyData)
-                guard let data, let contents = try? Self.decrypt(data, key: symmetric) else {
-                    self.state = .unavailable("Your saved passwords couldn’t be read.", canReset: true)
-                    return false
-                }
-                self.symmetricKey = symmetric
+            case .success((let contents?, let current)):
                 self.logins = contents.logins
                 self.neverSaved = contents.neverSaved
                 self.state = .ready
+                if let current {
+                    self.symmetricKey = SymmetricKey(data: current)
+                } else {
+                    self.movesFromLegacyKey = true
+                    self.persist()
+                }
             case .failure(let error):
                 self.state = Self.unavailable(error)
                 return false
@@ -193,6 +237,8 @@ public final class PasswordVault {
         switch error.status {
         case errSecItemNotFound:
             .unavailable("The key for your saved passwords is missing from the Keychain, so they can’t be opened.", canReset: true)
+        case errSecDecode:
+            .unavailable("Your saved passwords couldn’t be read.", canReset: true)
         case errSecIO:
             .unavailable("Your saved passwords couldn’t be read from disk.", canReset: false)
         default:
@@ -340,7 +386,10 @@ public final class PasswordVault {
     public nonisolated static func remove(fileURL: URL?, key: (any PasswordVaultKey)?) {
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
         guard let key else { return }
-        Task.detached { try? key.remove() }
+        Task.detached {
+            try? key.remove()
+            try? key.removeLegacy()
+        }
     }
 
     /// Waits for pending writes; tests and quitting use it.
@@ -356,12 +405,8 @@ public final class PasswordVault {
             await previous?.value
             guard let self else { return }
             if self.symmetricKey == nil {
-                // The first save: reuse a key left from before, or make one.
-                let made = await Task.detached { () -> Data? in
-                    if let saved = try? key.existing() { return saved }
-                    let fresh = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
-                    return (try? key.create(fresh)) == nil ? nil : fresh
-                }.value
+                // The first save, or passwords moving from an earlier build's key.
+                let made = await Task.detached { try? key.make() }.value
                 guard let made else {
                     self.state = .unavailable("Early couldn’t save a key for your passwords in the Keychain, so new passwords aren’t kept after you quit.", canReset: false)
                     return
@@ -370,11 +415,15 @@ public final class PasswordVault {
             }
             guard let symmetric = self.symmetricKey, let data = try? Self.encrypt(contents, key: symmetric) else { return }
             try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? data.write(to: fileURL, options: .atomic)
+            guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return }
+            if self.movesFromLegacyKey {
+                self.movesFromLegacyKey = false
+                Task.detached { try? key.removeLegacy() }
+            }
         }
     }
 
-    private static func encrypt(_ contents: Contents, key: SymmetricKey) throws -> Data {
+    private nonisolated static func encrypt(_ contents: Contents, key: SymmetricKey) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let sealed = try AES.GCM.seal(try encoder.encode(contents), using: key)
@@ -382,7 +431,7 @@ public final class PasswordVault {
         return magic + combined
     }
 
-    private static func decrypt(_ data: Data, key: SymmetricKey) throws -> Contents {
+    private nonisolated static func decrypt(_ data: Data, key: SymmetricKey) throws -> Contents {
         guard data.starts(with: magic) else { throw KeyError(status: errSecDecode) }
         let box = try AES.GCM.SealedBox(combined: data.dropFirst(magic.count))
         let decoder = JSONDecoder()
