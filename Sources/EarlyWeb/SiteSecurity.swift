@@ -119,6 +119,34 @@ extension WebViewManager {
     }
 }
 
+// MARK: Other apps' links
+
+extension WebViewManager {
+    /// Addresses the browser itself shows or refuses never go to another app.
+    static let browserSchemes: Set<String> = ["http", "https", "file", "about", "blob", "data", "javascript"]
+
+    /// A clicked link for another app (mailto:, tel:, an app's own link) opens
+    /// it once the person agrees, as in Safari. Nothing opens without a click.
+    func offerToOpenInApp(_ url: URL, action: WKNavigationAction, from view: WKWebView) -> Bool {
+        offerToOpenInApp(url, clicked: action.navigationType == .linkActivated, from: view)
+    }
+
+    func offerToOpenInApp(_ url: URL, clicked: Bool, from view: WKWebView) -> Bool {
+        guard clicked, let scheme = url.scheme?.lowercased(), !Self.browserSchemes.contains(scheme),
+              !input.allowedSchemes.contains(scheme), let app = appForLink(url) else { return false }
+        let name = FileManager.default.displayName(atPath: app.path)
+        let alert = NSAlert()
+        alert.messageText = "Allow “\(view.url?.host ?? "this page")” to open “\((name as NSString).deletingPathExtension)”?"
+        alert.informativeText = String(url.absoluteString.prefix(300))
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Cancel")
+        presentAlert(alert, in: view) { [openInApp] response, _ in
+            if response == .alertFirstButtonReturn { openInApp(url) }
+        }
+        return true
+    }
+}
+
 // MARK: Automatic Picture in Picture
 
 extension WebViewManager {

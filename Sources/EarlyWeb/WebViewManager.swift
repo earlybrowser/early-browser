@@ -121,6 +121,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var automaticPictureInPicture: () -> Bool = { false }
     /// Tabs whose video Early is moving, or moved, into Picture in Picture.
     @ObservationIgnored var automaticPictureInPictureTabs: [UUID: AutomaticPictureInPicture] = [:]
+    /// The app macOS would open a link with, and opening it; tests replace both.
+    @ObservationIgnored var appForLink: (URL) -> URL? = { NSWorkspace.shared.urlForApplication(toOpen: $0) }
+    @ObservationIgnored var openInApp: (URL) -> Void = { NSWorkspace.shared.open($0) }
     /// Runs a page script and reports whether it returned true; tests observe it.
     @ObservationIgnored var runPageScript: (WKWebView, String, WKFrameInfo?) async -> Bool = { view, script, frame in
         (try? await view.callAsyncJavaScript(script, in: frame, contentWorld: .defaultClient)) as? Bool == true
@@ -345,6 +348,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             configuration.websiteDataStore = websiteDataStore
             configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
             configuration.preferences.isElementFullscreenEnabled = true
+            // WebKit's phishing and malware warnings (Safari's Safe Browsing).
+            configuration.preferences.isFraudulentWebsiteWarningEnabled = true
             Self.enablePictureInPicture(configuration.preferences)
             configure(configuration)
             configuration.applicationNameForUserAgent = BrowserUserAgent.applicationName
@@ -812,8 +817,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         } else {
             decisionHandler(.cancel)
             if let id = identities[ObjectIdentifier(webView)] {
+                let offered = offerToOpenInApp(url, action: action, from: webView)
                 cancelForPolicy(id, url: url, mainFrame: mainFrame,
-                    notice: mainFrame ? "This link uses an unsupported address type (\(url.scheme ?? "unknown"))." : nil)
+                    notice: mainFrame && !offered ? "This link uses an unsupported address type (\(url.scheme ?? "unknown"))." : nil)
             }
         }
     }
@@ -1107,6 +1113,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                         for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if identities[ObjectIdentifier(webView)] != nil, let url = action.request.url,
+           offerToOpenInApp(url, action: action, from: webView) { return nil }
         guard identities[ObjectIdentifier(webView)] != nil,
               let url = action.request.url, (try? input.validate(url)) != nil,
               !url.isFileURL || webView.url?.isFileURL == true else { return nil }

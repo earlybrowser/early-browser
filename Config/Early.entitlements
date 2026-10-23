@@ -21,6 +21,7 @@
     <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
     <array>
         <string>com.apple.PIPAgent</string>
+        <string>com.apple.Safari.SafeBrowsing.Service</string>
     </array>
 </dict>
 </plist>

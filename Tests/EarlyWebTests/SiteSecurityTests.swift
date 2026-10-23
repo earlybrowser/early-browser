@@ -201,4 +201,25 @@ struct SiteSecurityTests {
         #expect(!WebViewManager.dataRecord("example.com", belongsTo: "notexample.com"), "Only a dot separates a subdomain")
         #expect(!WebViewManager.dataRecord("", belongsTo: "example.com"))
     }
+
+    @Test func clickedLinksForOtherAppsAskFirstAndPagesWarnAboutDangerousSites() async throws {
+        let fixture = PageToolFixture(pages: ["one": "<title>One</title>"])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager
+        let view = try fixture.page(try await fixture.open("one")).view
+        #expect(view.configuration.preferences.isFraudulentWebsiteWarningEnabled, "Safe Browsing warnings are on")
+
+        var opened: [URL] = []
+        manager.openInApp = { opened.append($0) }
+        manager.appForLink = { $0.scheme == "mailto" ? URL(fileURLWithPath: "/System/Applications/Mail.app") : nil }
+        let mail = URL(string: "mailto:hello@example.com")!
+        #expect(!manager.offerToOpenInApp(mail, clicked: false, from: view), "Nothing opens without a click")
+        #expect(!manager.offerToOpenInApp(URL(string: "zoommtg://join")!, clicked: true, from: view), "No app handles it")
+        for address in ["https://example.com", "javascript:alert(1)", "data:text/html,hi", "about:blank", "early-tools://fixture/one"] {
+            #expect(!manager.offerToOpenInApp(URL(string: address)!, clicked: true, from: view), "\(address) stays in the browser")
+        }
+        // A clicked link is offered; with no window to ask in, nothing opens.
+        #expect(manager.offerToOpenInApp(mail, clicked: true, from: view))
+        #expect(opened.isEmpty && manager.dialogs.isEmpty)
+    }
 }
