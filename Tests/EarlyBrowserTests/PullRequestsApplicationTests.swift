@@ -60,95 +60,108 @@ struct PullRequestsApplicationTests {
         }
     }
 
-    @Test func theFolderIsPerSpaceSharedByTheProfilesWindowsAndNeverPrivate() async throws {
+    static let other = PullRequest(owner: "team", repository: "tools", number: 40, title: "Fix the build")!
+    static func found(_ items: [PullRequest]) -> [PullRequestGroup: PullRequestReading] {
+        [.opened: .found(items), .assigned: .found([]), .reviewRequested: .found([])]
+    }
+
+    private func pins(_ model: BrowserWindowModel, in folder: UUID) -> [BrowserTab] {
+        model.coordinator.tabStore.tabs.filter { $0.folderID == folder }
+    }
+
+    @Test func aGitHubLiveFolderFillsWithPinsSharedByTheProfilesWindows() async throws {
         let fixture = Fixture()
         await fixture.start()
         let app = fixture.application
         let personal = try #require(app.model)
         let feed = try #require(personal.pullRequests)
-        let space = personal.coordinator.activeSpaceID
-        #expect(!feed.isActive && fixture.reads == 0, "Nothing is read before the folder is added")
+        #expect(!feed.isActive && fixture.reads == 0, "Nothing is read before a live folder is added")
 
-        personal.setPullRequestsFolder(true, in: space)
-        #expect(personal.coordinator.activeSpace?.showsPullRequests == true && personal.openPullRequestFolders == [space])
-        try await Self.waitUntil { feed.status == .ready }
-        #expect(feed.sections.first?.items == [Self.item] && fixture.reads == 1)
+        let folder = try #require(personal.addGitHubLiveFolder())
+        #expect(personal.coordinator.folders.first { $0.id == folder }?.live?.source == .githubPullRequests)
+        try await Self.waitUntil { self.pins(personal, in: folder).count == 1 }
+        let pin = try #require(pins(personal, in: folder).first)
+        #expect(pin.liveItemID == Self.item.id && pin.pinnedURL == Self.item.url() && pin.displayTitle == Self.item.title)
+        #expect(!pin.isOpen, "Nothing loads until it's chosen")
 
-        // Another window of the profile shares the folder and what was read.
+        // Another window of the profile shares the folder and its pins.
         #expect(personal.perform(.newWindow))
         let second = try #require(app.windowModel(fixture.opened.last))
-        #expect(second.coordinator.spaces.first { $0.id == space }?.showsPullRequests == true)
-        #expect(second.pullRequests === feed && second.openPullRequestFolders.isEmpty, "Closed until opened, like folders")
+        #expect(pins(second, in: folder).map(\.id) == [pin.id] && second.pullRequests === feed)
 
         // Never in private windows, and never another profile's.
         #expect(personal.perform(.newPrivateWindow))
         let privateWindow = try #require(app.windowModel(fixture.opened.last))
-        #expect(privateWindow.pullRequests == nil)
-        #expect(!privateWindow.coordinator.spaces.contains { $0.showsPullRequests })
+        #expect(privateWindow.pullRequests == nil && privateWindow.coordinator.folders.isEmpty)
         let workID = try #require(app.createProfile(name: "Work", color: .purple))
         app.openProfile(workID)
         let work = try #require(app.windowModel(fixture.opened.last))
         let workFeed = try #require(work.pullRequests)
-        #expect(workFeed !== feed && !workFeed.isActive)
+        #expect(workFeed !== feed && !workFeed.isActive && work.coordinator.folders.isEmpty)
 
-        // Removing it from any window removes it everywhere and forgets the list.
-        second.setPullRequestsFolder(false, in: space)
-        #expect(personal.coordinator.spaces.first { $0.id == space }?.showsPullRequests == false)
-        #expect(!feed.isActive && feed.sections.isEmpty && feed.status == .idle)
-        await fixture.cleanup()
-    }
+        // One being read when its pull request merges stays open, as a Today tab.
+        #expect(personal.coordinator.openTab(pin.id))
+        fixture.answer = Self.found([Self.other])
+        feed.refresh()
+        try await Self.waitUntil { self.pins(personal, in: folder).map(\.liveItemID) == [Self.other.id] }
+        #expect(personal.coordinator.tabStore.tab(id: pin.id).map { $0.isOpen && $0.pinnedURL == nil } == true)
+        #expect(pins(second, in: folder).map(\.liveItemID) == [Self.other.id], "Every window follows")
 
-    @Test func choosingAPullRequestUsesItsOpenTabAndClosedWindowsStopReading() async throws {
-        let fixture = Fixture()
-        await fixture.start()
-        let app = fixture.application
-        let model = try #require(app.model)
-        let space = model.coordinator.activeSpaceID
-        model.setPullRequestsFolder(true, in: space)
-        let feed = try #require(model.pullRequests)
-        try await Self.waitUntil { feed.status == .ready }
-
-        // Its files page is already open: that tab is chosen, nothing new opens.
-        let files = Self.item.url().appending(path: "files")
-        let open = try #require(model.coordinator.navigate(to: files, target: .newTab(spaceID: space)))
-        _ = try #require(model.coordinator.navigate(to: URL(string: "early-test://fixture/one")!, target: .newTab(spaceID: space)))
-        let count = model.coordinator.tabStore.tabs.count
-        model.openPullRequest(Self.item)
-        #expect(model.coordinator.focusedTabID == open && model.coordinator.tabStore.tabs.count == count)
-
-        // Opening and closing it only changes this window's view of it.
-        model.togglePullRequestsFolder(in: space)
-        #expect(!model.openPullRequestFolders.contains(space))
-        model.togglePullRequestsFolder(in: space)
-        #expect(model.openPullRequestFolders.contains(space) && fixture.reads == 1, "Just read: no second read")
-
-        // With no window of the profile open, it stops reading.
-        app.closeWindow(nil)
+        // Deleting the folder stops reading.
+        #expect(personal.perform(.deleteFolder(folder)))
         #expect(!feed.isActive && feed.sections.isEmpty)
         await fixture.cleanup()
     }
 
-    @Test func signingInToGitHubInATabReadsASignedOutFolderAgain() async throws {
+    @Test func removedPinsStayRemovedAndASignedOutFolderEmpties() async throws {
         let fixture = Fixture()
-        fixture.answer = [.opened: .signedOut]
+        fixture.answer = Self.found([Self.item, Self.other])
         await fixture.start()
         let app = fixture.application
         let model = try #require(app.model)
         let profile = model.coordinator.profileID
-        model.setPullRequestsFolder(true, in: model.coordinator.activeSpaceID)
+        let folder = try #require(model.addGitHubLiveFolder())
         let feed = try #require(model.pullRequests)
-        try await Self.waitUntil { feed.status == .signedOut }
-        #expect(feed.sections.isEmpty)
+        try await Self.waitUntil { self.pins(model, in: folder).count == 2 }
 
+        let first = try #require(pins(model, in: folder).first { $0.liveItemID == Self.item.id })
+        model.removeLiveItem(first.id)
+        #expect(pins(model, in: folder).map(\.liveItemID) == [Self.other.id])
+        feed.refresh()
+        try await Self.waitUntil { fixture.reads == 2 && !feed.isRefreshing }
+        #expect(pins(model, in: folder).map(\.liveItemID) == [Self.other.id], "Not added back while it's open")
+
+        // Signed out: the folder empties instead of showing an old list.
+        fixture.answer = [.opened: .signedOut]
+        feed.refresh()
+        try await Self.waitUntil { feed.status == .signedOut }
+        #expect(pins(model, in: folder).isEmpty)
+        #expect(LiveFolderStatusRow.message(for: .signedOut, hasPins: false)?.text == "Sign in to GitHub")
+
+        // Signing in on GitHub in a tab reads it again; the removed one stays out.
         app.noteVisit(URL(string: "https://github.com/login?return_to=%2Fpulls")!, profile: profile)
         app.noteVisit(URL(string: "https://example.com/")!, profile: profile)
         await Task.yield()
-        #expect(fixture.reads == 1, "Still signing in, or not GitHub")
-        fixture.answer = [.opened: .found([Self.item]), .assigned: .found([]), .reviewRequested: .found([])]
+        #expect(fixture.reads == 3, "Still signing in, or not GitHub")
+        fixture.answer = Self.found([Self.item, Self.other])
         app.noteVisit(URL(string: "https://github.com/")!, profile: profile)
-        try await Self.waitUntil { feed.status == .ready }
-        #expect(fixture.reads == 2 && feed.count == 1)
+        try await Self.waitUntil { feed.status == .ready && !self.pins(model, in: folder).isEmpty }
+        #expect(pins(model, in: folder).map(\.liveItemID) == [Self.other.id])
+
+        // With no window of the profile open, it stops reading; the pins stay saved.
+        app.closeWindow(nil)
+        #expect(!feed.isActive)
+        #expect(app.workspace?.session(for: profile)?.tabs.contains { $0.liveItemID == Self.other.id } == true)
         await fixture.cleanup()
+    }
+
+    @Test func liveFolderNotesSayWhatsHappening() {
+        #expect(LiveFolderStatusRow.message(for: .loading, hasPins: false)?.text == "Reading GitHub…")
+        #expect(LiveFolderStatusRow.message(for: .loading, hasPins: true) == nil)
+        #expect(LiveFolderStatusRow.message(for: .ready, hasPins: false)?.text == "No open pull requests")
+        #expect(LiveFolderStatusRow.message(for: .ready, hasPins: true) == nil)
+        #expect(LiveFolderStatusRow.message(for: .offline, hasPins: true)?.text == "Can’t reach GitHub", "Kept pins get the note too")
+        #expect(LiveFolderStatusRow.message(for: .unreadable, hasPins: false) != nil)
     }
 
     @Test func pictureInPicturesReturnButtonShowsTheVideosTabInItsSpace() async throws {

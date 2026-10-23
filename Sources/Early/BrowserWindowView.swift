@@ -200,6 +200,8 @@ struct BrowserWindowView: View {
         case tab(BrowserTab, Int)
         case folder(BrowserFolder, Int)
         case folderEnd(BrowserFolder, Int)
+        /// A live folder's note below its pins (reading, signed out…).
+        case liveStatus(BrowserFolder, Int)
 
         var id: String {
             switch self {
@@ -210,6 +212,7 @@ struct BrowserWindowView: View {
             case .tab(let tab, _): "tab-\(tab.id)"
             case .folder(let folder, _): "folder-\(folder.id)"
             case .folderEnd(let folder, _): "folder-end-\(folder.id)"
+            case .liveStatus(let folder, _): "live-status-\(folder.id)"
             }
         }
 
@@ -247,6 +250,9 @@ struct BrowserWindowView: View {
                 let preview = folderPreview(folder)
                 if preview.showsContents {
                     items += folderItems(in: spaceID, parent: folder.id, depth: depth + 1)
+                }
+                if folder.live != nil, isFolderOpen(folder), !model.isPrivate {
+                    items.append(.liveStatus(folder, depth + 1))
                 }
                 if preview.showsPanel {
                     items.append(.folderEnd(folder, depth))
@@ -604,9 +610,8 @@ struct BrowserWindowView: View {
             // A private window has no saved pages, folders or other Spaces.
             if !model.isPrivate {
                 Button("New Folder") { editFolder(nil, parent: nil) }
-                if let space = model.coordinator.activeSpace, !space.showsPullRequests {
-                    Button("New Pull Requests Folder") { model.setPullRequestsFolder(true, in: space.id) }
-                }
+                Button("GitHub Live Folder") { model.addGitHubLiveFolder() }
+                    .help("A folder of your open pull requests on GitHub, kept up to date")
                 Divider()
                 Button("New Space…") { model.perform(.newSpace) }
                 if let space = model.coordinator.activeSpace { SpaceActions(model: model, space: space) }
@@ -776,7 +781,6 @@ struct BrowserWindowView: View {
                                     .background(dropArea("pinnedEnd"))
                                     .accessibilityHidden(true)
                             case .divider:
-                                pullRequestsFolder(in: space)
                                 HStack(spacing: 6) {
                                     VStack { Divider() }
                                     if active && !model.todayTabs.isEmpty {
@@ -812,6 +816,12 @@ struct BrowserWindowView: View {
                             case .folder(let folder, let depth):
                                 folderRow(folder).padding(.leading, CGFloat(min(depth, 8)) * 12)
                                     .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+                            case .liveStatus(let folder, let depth):
+                                if let feed = model.pullRequests {
+                                    LiveFolderStatusRow(model: model, feed: feed, hasPins: folderHasChildren(folder.id, in: folder.spaceID))
+                                        .padding(.leading, CGFloat(min(depth, 8)) * 12)
+                                        .padding(.trailing, CGFloat(min(depth, 8)) * 4)
+                                }
                             case .folderEnd(let folder, let depth):
                                 Color.clear.frame(height: folderPreview(folder).footerHeight)
                                     .padding(.leading, CGFloat(min(depth, 8)) * 12)
@@ -871,15 +881,6 @@ struct BrowserWindowView: View {
         .allowsHitTesting(active && model.spaceSwipeProgress == 0 && !model.spaceSwipeIsSettling)
         .accessibilityHidden(!active)
         .transformPreference(SidebarFrames.self) { if !active { $0 = [:] } }
-    }
-
-    /// Below the Space's pins, above Today.
-    @ViewBuilder private func pullRequestsFolder(in space: BrowserSpace) -> some View {
-        if space.showsPullRequests, let feed = model.pullRequests {
-            PullRequestsFolder(model: model, space: space, feed: feed,
-                               themeColor: model.preferences.spaceThemes ? space.color : .gray)
-                .padding(.bottom, 8)
-        }
     }
 
     private var spacePager: some View {
@@ -1110,7 +1111,7 @@ struct BrowserWindowView: View {
             }
             .disabled(!model.canPerform(.setMuted(tab.id, !page.isMuted)))
         }
-        if !tab.isFavorite && !model.isPrivate {
+        if !tab.isFavorite && !model.isPrivate && tab.liveItemID == nil {
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
                     Button(space.name) { model.perform(.moveTab(tab.id, toSpace: space.id)) }
@@ -1123,15 +1124,18 @@ struct BrowserWindowView: View {
                     .disabled(tab.folderID == nil)
                 ForEach(model.coordinator.folders) { folder in
                     Button(folderPath(folder)) { _ = model.coordinator.moveTab(tab.id, toFolder: folder.id); model.save() }
-                        .disabled(tab.folderID == folder.id)
+                        .disabled(tab.folderID == folder.id || folder.live != nil)
                 }
             }
         }
-        Button("Move Up") { model.perform(.moveTabBy(tab.id, -1)) }
-            .disabled(model.coordinator.tabStore.siblingIDs(of: tab).first == tab.id)
-        Button("Move Down") { model.perform(.moveTabBy(tab.id, 1)) }
-            .disabled(model.coordinator.tabStore.siblingIDs(of: tab).last == tab.id)
-        if !model.isPrivate {
+        // A live folder's pins keep GitHub's order and stay in their folder.
+        if tab.liveItemID == nil {
+            Button("Move Up") { model.perform(.moveTabBy(tab.id, -1)) }
+                .disabled(model.coordinator.tabStore.siblingIDs(of: tab).first == tab.id)
+            Button("Move Down") { model.perform(.moveTabBy(tab.id, 1)) }
+                .disabled(model.coordinator.tabStore.siblingIDs(of: tab).last == tab.id)
+        }
+        if !model.isPrivate && tab.liveItemID == nil {
             Button(tab.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
                 model.perform(.setFavorite(tab.id, !tab.isFavorite))
             }
@@ -1150,6 +1154,10 @@ struct BrowserWindowView: View {
         Divider()
         Button("Close Tab") { model.perform(.closeTab(tab.id)) }
             .disabled(!tab.isOpen)
+        if tab.liveItemID != nil {
+            Button("Remove from Folder") { model.removeLiveItem(tab.id) }
+                .help("Remove this pull request from the folder. It won’t come back while it’s open on GitHub.")
+        }
         if tab.pinnedURL == nil && !tab.isFavorite {
             Button("Close Other Tabs") { model.perform(.closeOtherTabs(tab.id)) }
                 .disabled(!model.canPerform(.closeOtherTabs(tab.id)))
@@ -1488,8 +1496,15 @@ struct BrowserWindowView: View {
         .animation(dragSourceItem == nil || reduceMotion ? nil : .easeInOut(duration: 0.16), value: previewOffset(folder.id))
         .background(tabFrame(folder.id))
         .contextMenu {
-            Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
-                .disabled(!model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID))
+            if folder.live != nil, let feed = model.pullRequests {
+                Button("Refresh") { feed.refresh() }
+                    .disabled(feed.isRefreshing)
+                Button("Open Pull Requests on GitHub") { _ = model.openLocations([PullRequest.github.appending(path: "pulls")]) }
+                Divider()
+            } else {
+                Button("New Subfolder…") { editFolder(nil, parent: folder.id) }
+                    .disabled(!model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID))
+            }
             Button("Rename Folder…") { editFolder(folder, parent: folder.parentID) }
             Menu("Move to Space") {
                 ForEach(model.coordinator.spaces) { space in
@@ -2005,6 +2020,8 @@ struct BrowserWindowView: View {
         withAnimation(folderExpansionAnimation) {
             model.coordinator.toggleFolder(folder.id)
         }
+        // Opening a live folder reads it again if it's been a while.
+        if folder.live != nil, !folder.isExpanded { model.pullRequests?.refreshIfStale() }
         model.save()
     }
 
@@ -2026,7 +2043,8 @@ struct BrowserWindowView: View {
         DragGesture(minimumDistance: 4, coordinateSpace: .named("sidebarReordering"))
             .updating($dragGestureItemID) { _, state, _ in state = tab.id }
             .onChanged { value in
-                guard cancelledGestureItemID != tab.id,
+                // A live folder's pins stay where their source puts them.
+                guard cancelledGestureItemID != tab.id, tab.liveItemID == nil,
                       model.coordinator.commandBar == nil, model.renamingTabID == nil else { return }
                 dragPoint = value.location
                 if dragSourceFrame == .zero { beginDrag(.tab(tab)) }

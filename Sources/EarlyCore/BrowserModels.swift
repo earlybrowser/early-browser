@@ -18,6 +18,9 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
     public var pinnedTitle: String?
     public var isFavorite: Bool
     public var isOpen: Bool
+    /// A live folder's pin: the item it stands for (a pull request's
+    /// "owner/repo#number"). Live pins stay in their folder.
+    public var liveItemID: String?
     /// Local command-bar ranking signals for this existing record only. This
     /// is not browsing history and is removed with the tab.
     public var lastActivatedAt: Date?
@@ -62,7 +65,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, spaceID, profileID, title, customTitle, folderID, sidebarPosition, currentURL, pinnedURL, pinnedTitle, isOpen, isFavorite
-        case lastActivatedAt, activationCount
+        case lastActivatedAt, activationCount, liveItemID
     }
 
     public init(from decoder: any Decoder) throws {
@@ -79,6 +82,7 @@ public struct BrowserTab: Identifiable, Codable, Equatable, Sendable {
         pinnedTitle = try values.decodeIfPresent(String.self, forKey: .pinnedTitle)
         isOpen = try values.decode(Bool.self, forKey: .isOpen)
         isFavorite = try values.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        liveItemID = (try? values.decodeIfPresent(String.self, forKey: .liveItemID)) ?? nil
         // Ranking signals are optional and advisory: older sessions lack them,
         // and an unusable value must not prevent restoring the tab.
         lastActivatedAt = (try? values.decodeIfPresent(Date.self, forKey: .lastActivatedAt))

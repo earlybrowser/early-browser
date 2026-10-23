@@ -80,22 +80,95 @@ struct PullRequestsTests {
         #expect(PullRequests.retryDelay(after: .signedOut, failures: 4) == PullRequests.interval)
     }
 
-    @Test @MainActor func aSpaceKeepsItsFolderAndOlderSpacesHaveNone() throws {
-        let profile = UUID()
-        var space = BrowserSpace(profileID: profile, name: "Work")
-        #expect(!space.showsPullRequests)
-        space.showsPullRequests = true
-        let data = try JSONEncoder().encode(space)
-        #expect(try JSONDecoder().decode(BrowserSpace.self, from: data).showsPullRequests)
-        let old = Data(#"{"id":"\#(UUID().uuidString)","profileID":"\#(profile.uuidString)","name":"Old","color":"blue"}"#.utf8)
-        #expect(try !JSONDecoder().decode(BrowserSpace.self, from: old).showsPullRequests)
+    private func item(_ number: Int, _ title: String = "Title") -> LiveFolderItem {
+        LiveFolderItem(id: "octo/early#\(number)", url: page("octo/early/pull/\(number)"), title: title)
+    }
 
-        let one = BrowserSpace(profileID: profile, name: "One")
-        let coordinator = BrowserCoordinator(startup: .returningSession, activeSpaceID: one.id, profileID: profile, spaces: [one])
-        let id = one.id
-        #expect(coordinator.setShowsPullRequests(true, in: id) && coordinator.spaces[0].showsPullRequests)
-        #expect(!coordinator.setShowsPullRequests(true, in: id), "Already there")
-        #expect(!coordinator.setShowsPullRequests(true, in: UUID()))
-        #expect(coordinator.setShowsPullRequests(false, in: id) && !coordinator.spaces[0].showsPullRequests)
+    @Test func aLiveFolderFollowsItsSourceAndKeepsOpenPages() throws {
+        let profile = UUID(), space = UUID()
+        var store = TabStore()
+        let created = store.createLiveFolder(name: "Pull Requests", source: .githubPullRequests, spaceID: space)
+        let folder = try #require(created)
+        #expect(store.folders.first?.isExpanded == true && store.isLiveFolder(folder))
+        let filled = store.syncLiveFolder(folder, items: [item(1, "One"), item(2, "Two"), item(1, "Again")], profileID: profile)
+        #expect(filled)
+        func pins() -> [BrowserTab] {
+            store.pinnedItems(in: space, parentID: folder).compactMap { if case .tab(let tab) = $0 { tab } else { nil } }
+        }
+        #expect(pins().map(\.liveItemID) == ["octo/early#1", "octo/early#2"], "Each once, in the source's order")
+        #expect(pins().allSatisfy { !$0.isOpen && $0.pinnedURL == $0.currentURL && $0.folderID == folder && $0.profileID == profile })
+        #expect(pins().first?.displayTitle == "One")
+        let unchanged = store.syncLiveFolder(folder, items: [item(1, "One"), item(2, "Two")], profileID: profile)
+        #expect(!unchanged, "Nothing changed")
+
+        // Reading one: it's opened like any pin. Then its pull request merges.
+        let reading = pins()[1].id
+        store.reopen(reading)
+        let merged = store.syncLiveFolder(folder, items: [item(3, "Three"), item(1, "Renamed")], profileID: profile)
+        #expect(merged)
+        #expect(pins().map(\.liveItemID) == ["octo/early#3", "octo/early#1"] && pins().last?.displayTitle == "Renamed")
+        let kept = try #require(store.tab(id: reading))
+        #expect(kept.isOpen && kept.pinnedURL == nil && kept.folderID == nil && kept.liveItemID == nil,
+                "The page being read stays open, as a Today tab")
+        #expect(store.todayTabs(in: space).map(\.id) == [reading])
+
+        // Removed by hand: gone, and not added back while it's listed.
+        let removed = store.dismissLiveItem(pins()[0].id)
+        store.syncLiveFolder(folder, items: [item(3), item(1, "Renamed")], profileID: profile)
+        #expect(removed)
+        #expect(store.tabs.compactMap(\.liveItemID) == ["octo/early#1"])
+        // Once it's no longer listed it's forgotten, so a reopened one comes back.
+        let forgotten = store.syncLiveFolder(folder, items: [item(1, "Renamed")], profileID: profile)
+        #expect(forgotten && store.folders.first?.live?.dismissed.isEmpty == true)
+        // A list that couldn't be read empties the folder but keeps removals.
+        let last = try #require(store.tabs.first { $0.liveItemID == "octo/early#1" })
+        let dismissed = store.dismissLiveItem(last.id)
+        let cleared = store.syncLiveFolder(folder, items: [], profileID: profile, forgetsRemoved: false)
+        #expect(dismissed && !cleared && store.folders.first?.live?.dismissed == ["octo/early#1"])
+    }
+
+    @Test func liveFoldersTakeNothingInAndTheirPinsStayPut() throws {
+        let profile = UUID(), space = UUID(), other = UUID()
+        var store = TabStore()
+        let created = store.createLiveFolder(name: "Pull Requests", source: .githubPullRequests, spaceID: space)
+        let live = try #require(created)
+        let mine = store.createFolder(name: "Mine", parentID: nil, spaceID: space)
+        let own = try #require(mine)
+        store.syncLiveFolder(live, items: [item(1), item(2)], profileID: profile)
+        let tab = BrowserTab(spaceID: space, profileID: profile, title: "Page", currentURL: page("x"))
+        store.insert(tab)
+        let pin = try #require(store.tabs.first { $0.liveItemID == "octo/early#1" })
+        let movedIn = store.moveTab(tab.id, toFolder: live)
+        let placedIn = store.place(tab.id, in: .pinned, folderID: live, spaceID: space)
+        #expect(!movedIn && !placedIn, "Only GitHub fills it")
+        #expect(!store.canCreateFolder(in: live, spaceID: space) && !store.canMoveFolder(own, to: live))
+        let movedOut = store.moveTab(pin.id, toFolder: own)
+        let toTop = store.moveTab(pin.id, toFolder: nil)
+        let unpinned = store.setPinned(pin.id, pinned: false)
+        let favorite = store.setFavorite(pin.id, favorite: true, in: space)
+        let reordered = store.placePin(pin.id, before: nil)
+        let toToday = store.move(pin.id, to: .regular, in: space)
+        #expect(!movedOut && !toTop && !unpinned && !favorite && !reordered && !toToday)
+        #expect(store.canMoveFolder(live, to: own), "The folder itself can go anywhere")
+
+        // Moving its Space keeps it live; a copied Space gets an empty live folder.
+        let moved = store.moveFolder(live, toSpace: other)
+        #expect(moved != nil && store.folders.first { $0.id == live }?.live?.source == .githubPullRequests)
+        #expect(store.tabs.filter { $0.liveItemID != nil }.allSatisfy { $0.spaceID == other })
+        store.duplicateSavedItems(in: other, to: space)
+        let copy = try #require(store.folders.first { $0.spaceID == space && $0.live != nil })
+        #expect(store.pinnedItems(in: space, parentID: copy.id).isEmpty)
+    }
+
+    @Test func liveFoldersAndPinsAreSavedAndOldSessionsHaveNone() throws {
+        var folder = BrowserFolder(spaceID: UUID(), name: "Pull Requests", live: LiveFolder(source: .githubPullRequests, dismissed: ["a/b#1"]))
+        folder.sidebarPosition = 2
+        #expect(try JSONDecoder().decode(BrowserFolder.self, from: JSONEncoder().encode(folder)) == folder)
+        var pin = BrowserTab(spaceID: UUID(), profileID: UUID(), title: "One", currentURL: page("a/b/pull/1"),
+                             pinnedURL: page("a/b/pull/1"), isOpen: false)
+        pin.liveItemID = "a/b#1"
+        #expect(try JSONDecoder().decode(BrowserTab.self, from: JSONEncoder().encode(pin)).liveItemID == "a/b#1")
+        let old = Data(#"{"id":"\#(UUID().uuidString)","spaceID":"\#(UUID().uuidString)","name":"Old","isExpanded":false}"#.utf8)
+        #expect(try JSONDecoder().decode(BrowserFolder.self, from: old).live == nil)
     }
 }

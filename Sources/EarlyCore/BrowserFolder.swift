@@ -2,6 +2,40 @@
 
 import Foundation
 
+/// A folder whose pins come from somewhere else and keep up with it, like
+/// Arc's live folders. Its pins are added and removed for the person.
+public struct LiveFolder: Codable, Equatable, Sendable {
+    public enum Source: String, Codable, Sendable {
+        /// The profile's open pull requests on GitHub.
+        case githubPullRequests
+    }
+
+    public var source: Source
+    /// Items removed by hand: not added again while the source still lists them.
+    public var dismissed: [String]
+
+    public init(source: Source, dismissed: [String] = []) {
+        self.source = source
+        self.dismissed = dismissed
+    }
+
+    /// The most items remembered as removed.
+    public static let dismissedLimit = 200
+}
+
+/// One item a live folder's source lists: a pin, known by `id`.
+public struct LiveFolderItem: Equatable, Sendable {
+    public let id: String
+    public let url: URL
+    public let title: String
+
+    public init(id: String, url: URL, title: String) {
+        self.id = id
+        self.url = url
+        self.title = title
+    }
+}
+
 public struct BrowserFolder: Identifiable, Codable, Equatable, Sendable {
     /// Root = 0, child = 1, grandchild = 2. Sibling count is unrestricted.
     public static let maximumNestingDepth = 2
@@ -12,13 +46,17 @@ public struct BrowserFolder: Identifiable, Codable, Equatable, Sendable {
     public var name: String
     public var isExpanded: Bool
     public var sidebarPosition: Int?
+    /// Set for a live folder; nil for the person's own folders.
+    public var live: LiveFolder?
 
-    public init(id: UUID = UUID(), spaceID: UUID, parentID: UUID? = nil, name: String, isExpanded: Bool = false) {
+    public init(id: UUID = UUID(), spaceID: UUID, parentID: UUID? = nil, name: String, isExpanded: Bool = false,
+                live: LiveFolder? = nil) {
         self.id = id
         self.spaceID = spaceID
         self.parentID = parentID
         self.name = name
         self.isExpanded = isExpanded
+        self.live = live
     }
 
     public static func validate(_ folders: [BrowserFolder]) throws {

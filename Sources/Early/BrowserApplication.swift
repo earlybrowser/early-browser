@@ -57,8 +57,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var extensionCatalogs: [UUID: ExtensionCatalog] = [:]
     /// The profile whose extensions Settings shows.
     var extensionsProfileID: UUID?
-    /// Each profile's Pull Requests folder contents, read while one of its
-    /// open windows' Spaces shows the folder. Never for private windows.
+    /// Each profile's open pull requests, read while one of its open windows
+    /// has a GitHub live folder. Never for private windows.
     @ObservationIgnored private var pullRequestFeeds: [UUID: PullRequestFeed] = [:]
     /// Tests read stand-in pages; UI automation never reaches GitHub.
     @ObservationIgnored var pullRequestReader: PullRequestFeed.Read?
@@ -473,7 +473,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    /// A profile's Pull Requests folder contents.
+    /// A profile's open pull requests.
     func pullRequests(for profile: UUID) -> PullRequestFeed? {
         if let feed = pullRequestFeeds[profile] { return feed }
         guard !isPrivateProfile(profile), profiles.contains(where: { $0.id == profile }) else { return nil }
@@ -481,22 +481,31 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let pullRequestReader { feed = PullRequestFeed(read: pullRequestReader) }
         else if testing { feed = PullRequestFeed(read: { _ in [:] }) }
         else { feed = PullRequestFeed(dataStore: { [weak self] in self?.websiteDataStore(for: profile) }) }
+        feed.onUpdate = { [weak self] in self?.applyPullRequests(profile: profile) }
         pullRequestFeeds[profile] = feed
         return feed
     }
 
-    /// A feed runs while a Space of one of its profile's open windows shows
-    /// the folder; otherwise it stops and forgets what it read.
+    /// A feed runs while one of its profile's open windows has a GitHub live
+    /// folder; otherwise it stops and forgets what it read (the pins stay).
     private func updatePullRequestFeeds() {
         guard let workspace else { return }
         for profile in workspace.profiles.map(\.id) {
             let open = visibleModels.contains { $0.coordinator.profileID == profile && !$0.isPrivate }
-            if open, workspace.session(for: profile)?.spaces.contains(where: \.showsPullRequests) == true {
+            if open, workspace.session(for: profile)?.folders.contains(where: { $0.live?.source == .githubPullRequests }) == true {
                 pullRequests(for: profile)?.start()
             } else {
                 pullRequestFeeds[profile]?.stop()
             }
         }
+    }
+
+    /// The profile's live folders follow what was read. One window changes
+    /// them; saving shares the pins with its other windows.
+    func applyPullRequests(profile: UUID) {
+        guard let feed = pullRequestFeeds[profile],
+              let owner = visibleModels.first(where: { $0.coordinator.profileID == profile && !$0.isPrivate }) else { return }
+        owner.applyPullRequests(feed)
     }
 
     /// Signing in to GitHub in a tab: a signed-out folder reads it again.

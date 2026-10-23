@@ -410,6 +410,38 @@ public final class BrowserCoordinator {
         tabStore.createFolder(name: name, parentID: parentID, spaceID: activeSpaceID)
     }
 
+    /// A live folder at the end of this Space's pins.
+    @discardableResult
+    public func createLiveFolder(name: String, source: LiveFolder.Source) -> UUID? {
+        tabStore.createLiveFolder(name: name, source: source, spaceID: activeSpaceID)
+    }
+
+    /// Brings every live folder filled from `source` up to date. Keeping
+    /// removals remembered is for clearing a list that couldn't be read.
+    @discardableResult
+    public func syncLiveFolders(_ source: LiveFolder.Source, items: [LiveFolderItem], forgetsRemoved: Bool = true) -> Bool {
+        var changed = false
+        for folder in tabStore.folders where folder.live?.source == source {
+            changed = tabStore.syncLiveFolder(folder.id, items: items, profileID: profileID, forgetsRemoved: forgetsRemoved) || changed
+        }
+        guard changed else { return false }
+        let remaining = Set(tabStore.tabs.map(\.id))
+        recentlyClosed.removeAll { $0.tab.liveItemID != nil && !remaining.contains($0.tab.id) }
+        pruneSelections()
+        return true
+    }
+
+    /// Removes a live folder's pin by hand, closing it first if it's open.
+    @discardableResult
+    public func dismissLiveItem(_ id: UUID) -> Bool {
+        guard let tab = tabStore.tab(id: id), canAccess(tab), tab.liveItemID != nil else { return false }
+        if tab.isOpen { closeTab(id) }
+        guard tabStore.dismissLiveItem(id) else { return false }
+        recentlyClosed.removeAll { $0.tab.id == id }
+        pruneSelections()
+        return true
+    }
+
     @discardableResult
     public func renameFolder(_ id: UUID, to name: String) -> Bool {
         guard folders.contains(where: { $0.id == id }) else { return false }
@@ -631,15 +663,6 @@ public final class BrowserCoordinator {
         spaces[index].name = name
         spaces[index].color = color
         spaces[index].icon = icon
-        return true
-    }
-
-    /// Adds or removes the Pull Requests live folder in a Space.
-    @discardableResult
-    public func setShowsPullRequests(_ shown: Bool, in id: UUID) -> Bool {
-        guard let index = spaces.firstIndex(where: { $0.id == id && $0.profileID == profileID }),
-              spaces[index].showsPullRequests != shown else { return false }
-        spaces[index].showsPullRequests = shown
         return true
     }
 

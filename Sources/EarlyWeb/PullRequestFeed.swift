@@ -5,10 +5,10 @@ import Foundation
 import Observation
 import WebKit
 
-/// A profile's Pull Requests folder, shared by its windows. While a Space
-/// shows the folder it's read from GitHub on start, every ten minutes and
-/// when asked, with the GitHub sign-in the profile already has. Entries are
-/// kept only in memory and cleared when the folder goes.
+/// A profile's open pull requests on GitHub, for its GitHub live folders.
+/// While one of its open windows has such a folder it's read on start, every
+/// ten minutes and when asked, with the GitHub sign-in the profile already
+/// has; the folders' pins follow it.
 @MainActor @Observable
 public final class PullRequestFeed {
     public typealias Read = @MainActor ([PullRequestGroup]) async -> [PullRequestGroup: PullRequestReading]
@@ -19,6 +19,10 @@ public final class PullRequestFeed {
     public private(set) var isRefreshing = false
     public private(set) var isActive = false
     public var count: Int { sections.reduce(0) { $0 + $1.items.count } }
+    /// Each pull request once, in group order.
+    public var items: [PullRequest] { sections.flatMap(\.items) }
+    /// A read finished, with a list or a failure.
+    @ObservationIgnored public var onUpdate: (() -> Void)?
 
     @ObservationIgnored private let read: Read
     @ObservationIgnored private let now: () -> Date
@@ -99,6 +103,7 @@ public final class PullRequestFeed {
         guard current == generation, isActive else { return PullRequests.interval }
         isRefreshing = false
         lastRefreshed = now()
+        defer { onUpdate?() }
         switch PullRequests.combine(readings) {
         case .sections(let found):
             sections = found
@@ -106,7 +111,6 @@ public final class PullRequestFeed {
             failures = 0
             return PullRequests.interval
         case .failed(let failure):
-            // Say so instead of showing what may be out of date.
             sections = []
             status = failure
             failures += 1

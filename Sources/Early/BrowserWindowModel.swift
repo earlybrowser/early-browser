@@ -71,9 +71,6 @@ final class BrowserWindowModel {
     /// and this window as they see it (an `ExtensionWindow`).
     let extensionHost: AnyObject?
     @ObservationIgnored var extensionWindow: AnyObject?
-    /// Spaces whose Pull Requests folder is open in this window. Like other
-    /// folders, it starts closed.
-    var openPullRequestFolders: Set<UUID> = []
     /// Where extension popups point from: the Site Controls button's frame in
     /// the window's top-left coordinate space.
     @ObservationIgnored var siteControlsFrame: CGRect?
@@ -764,35 +761,54 @@ final class BrowserWindowModel {
         }
     }
 
-    // MARK: Pull Requests folder
+    // MARK: GitHub live folder
 
     /// The profile's open pull requests on GitHub; none in private windows.
     var pullRequests: PullRequestFeed? { isPrivate ? nil : application?.pullRequests(for: coordinator.profileID) }
 
-    /// Adds the folder to a Space (open, so it's seen) or removes it.
-    func setPullRequestsFolder(_ shown: Bool, in spaceID: UUID) {
-        guard !isPrivate, coordinator.setShowsPullRequests(shown, in: spaceID) else { return }
-        if shown { openPullRequestFolders.insert(spaceID) } else { openPullRequestFolders.remove(spaceID) }
+    static let pullRequestsFolderName = "Pull Requests"
+
+    /// A live folder at the end of this Space's pins whose pins are the
+    /// profile's open pull requests.
+    @discardableResult
+    func addGitHubLiveFolder() -> UUID? {
+        guard !isPrivate, let id = coordinator.createLiveFolder(name: Self.pullRequestsFolderName, source: .githubPullRequests)
+        else { return nil }
         save()
+        // Another folder may already have read them.
+        if let feed = pullRequests {
+            applyPullRequests(feed)
+            feed.refreshIfStale()
+        }
+        return id
     }
 
-    func togglePullRequestsFolder(in spaceID: UUID) {
-        if openPullRequestFolders.remove(spaceID) == nil {
-            openPullRequestFolders.insert(spaceID)
-            pullRequests?.refreshIfStale()
+    /// Live pins follow the list. A list that can't be read (signed out, or
+    /// GitHub's pages changed) empties them instead of leaving them out of
+    /// date; offline or throttled keeps them until the next read.
+    func applyPullRequests(_ feed: PullRequestFeed) {
+        let changed: Bool
+        switch feed.status {
+        case .ready:
+            changed = coordinator.syncLiveFolders(.githubPullRequests, items: feed.items.map {
+                LiveFolderItem(id: $0.id, url: $0.url(), title: $0.title)
+            })
+        case .signedOut, .unreadable:
+            changed = coordinator.syncLiveFolders(.githubPullRequests, items: [], forgetsRemoved: false)
+        case .idle, .loading, .offline, .throttled:
+            return
         }
+        if changed { save() }
     }
 
-    /// A pull request's tab if it's open in this Space, else a new Today tab.
-    func openPullRequest(_ pullRequest: PullRequest) {
-        let space = coordinator.activeSpaceID
-        if let open = coordinator.tabStore.tabs.first(where: {
-            $0.isOpen && $0.isVisible(in: space) && pullRequest.isShown(at: webViews.pages[$0.id]?.view.url ?? $0.currentURL)
-        }) {
-            selectTab(open.id)
-        } else {
-            _ = openLocations([pullRequest.url()])
-        }
+    /// Removing a live pin by hand: it isn't added back while it's still listed.
+    func removeLiveItem(_ id: UUID) {
+        let previousActive = coordinator.activeTabID
+        let previousVisible = coordinator.visibleTabIDs
+        guard coordinator.dismissLiveItem(id) else { return }
+        webViews.discard(tabID: id)
+        if previousActive != coordinator.activeTabID || previousVisible != coordinator.visibleTabIDs { activateSelection() }
+        save()
     }
 
     /// Picture in Picture's return button: the video's tab comes forward, in
