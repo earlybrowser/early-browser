@@ -251,6 +251,11 @@ enum ExtensionScenarios {
         setup.host.performAction(item.id, in: extensionTab)
         try await waitUntil("popup") { !popups.isEmpty }
         #expect(popups.first?.popupWebView != nil)
+        // Closed before the extension goes, as Early's popover closes when
+        // the person clicks elsewhere. (A popup outliving its extension makes
+        // WebKit trap on macOS 26 as the popup's process pool is torn down.)
+        popups.forEach { $0.closePopup() }
+        popups.removeAll()
 
         // Removed: its files and catalog entry go.
         let folder = setup.files.appending(path: item.id.uuidString)
