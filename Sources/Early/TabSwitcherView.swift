@@ -93,12 +93,10 @@ struct TabSwitcherView: View {
                     if let preview = model.webViews.snapshots.image(for: tab.id) {
                         Image(nsImage: preview).resizable().scaledToFill()
                     } else {
-                        VStack(spacing: 8) {
-                            Image(systemName: "rectangle.on.rectangle").font(.system(size: 22, weight: .light))
-                            Text("Preview unavailable").font(.system(size: 11))
-                        }
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // No picture yet (not loaded since launch): just the card.
+                        Image(systemName: "rectangle.on.rectangle").font(.system(size: 22, weight: .light))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
                 .frame(width: max(1, width - 16), height: max(1, (width - 16) * 0.625))
