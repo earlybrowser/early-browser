@@ -1,0 +1,37 @@
+# Temporary: finds where the extension tests crash on macOS 26.
+name: Diagnose extension crash
+
+on:
+  push:
+    branches: [chore/release-distribution]
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  extensions:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build tests
+        run: swift build --build-tests
+      - name: Run extension tests under the debugger
+        run: |
+          sudo DevToolsSecurity -enable || true
+          sw_vers
+          bundle="$(swift build --show-bin-path)/EarlyCorePackageTests.xctest/Contents/MacOS/EarlyCorePackageTests"
+          helper="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/libexec/swift/pm/swiftpm-testing-helper"
+          for i in 1 2 3 4 5 6; do
+            echo "::group::Attempt $i"
+            lldb --batch -o "process handle SIGPIPE -n true -p true -s false" -o run -k "thread backtrace all" -k "quit 1" -- \
+              "$helper" --test-bundle-path "$bundle" --no-parallel "$bundle" --testing-library swift-testing \
+              --filter BrowserExtensionTests 2>&1 | tee "attempt-$i.log"
+            echo "::endgroup::"
+            if grep -q "stop reason" "attempt-$i.log"; then echo "Crashed on attempt $i"; grep -n -A 60 "stop reason" "attempt-$i.log" | head -120; exit 1; fi
+          done
