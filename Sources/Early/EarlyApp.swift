@@ -64,6 +64,13 @@ private struct BrowserWindowRoot: View {
             }
         }
         .frame(minWidth: 640, minHeight: 420)
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+        // Links from other apps come to an open window rather than a new one.
+        // A window SwiftUI opens for one, with none open, is the browser window.
+        .onOpenURL { url in
+            if windowID == nil { appDelegate.ensurePrimaryWindow() }
+            appDelegate.openExternalLinks([url])
+        }
         .background(WindowRegistration(identifier: windowID.map { "browser.\($0)" } ?? "browser",
             onClose: { appDelegate.closeWindow(windowID) }, onFocus: { appDelegate.focusedWindow(windowID) },
             onRegister: { appDelegate.windowDidRegister(windowID) }))

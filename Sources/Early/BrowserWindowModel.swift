@@ -81,6 +81,11 @@ final class BrowserWindowModel {
     var submissionMessage: String?
     var commandBarIsComposing = false
     var notice: String?
+    /// The first window's welcome, below the command bar, until it's
+    /// dismissed or a page opens. Shown once on this Mac.
+    private(set) var showsWelcome: Bool
+    @ObservationIgnored private let welcomeDefaults: UserDefaults
+    static let welcomeCompletedKey = "hasCompletedWelcome"
     var toast: Toast?
     var downloadsPresented = false
     var zoomNotice: ZoomNotice?
@@ -190,6 +195,8 @@ final class BrowserWindowModel {
         self.input = input
         self.isTesting = isTesting
         self.isPrivate = isPrivate
+        welcomeDefaults = defaults
+        showsWelcome = startup == .firstLaunch && !isPrivate && !defaults.bool(forKey: Self.welcomeCompletedKey)
         self.history = isPrivate ? nil : history
         self.sitePermissions = sitePermissions ?? SitePermissions(fileURL: nil)
         self.passwords = passwords
@@ -529,6 +536,12 @@ final class BrowserWindowModel {
         NSPasteboard.general.clearContents()
         guard NSPasteboard.general.setString(url.absoluteString, forType: .string) else { return }
         showToast(.copiedURL)
+    }
+
+    func finishWelcome() {
+        guard showsWelcome else { return }
+        showsWelcome = false
+        welcomeDefaults.set(true, forKey: Self.welcomeCompletedKey)
     }
 
     private func showNewTabToastIfNeeded() {
