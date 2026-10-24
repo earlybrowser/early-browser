@@ -191,7 +191,7 @@ struct StateImportSheet: View {
             HStack {
                 if importing { ProgressView().controlSize(.small) }
                 Spacer()
-                Button("Cancel") { onFinish(nil) }
+                Button("Cancel") { if !importing { onFinish(nil) } }
                     .keyboardShortcut(.cancelAction)
                 Button("Import") {
                     importing = true
@@ -208,6 +208,8 @@ struct StateImportSheet: View {
         }
         .padding(24)
         .frame(width: 480)
+        .disabled(importing)
+        .interactiveDismissDisabled(importing)
     }
 
     static func contents(_ profile: EarlyStateArchive.ProfileSummary) -> String {
