@@ -290,7 +290,6 @@ final class BrowserWindowModel {
             _ = self.openLocations([url])
         }
         webViews.searchEngineName = { [weak self] in self?.preferences.searchEngine.name ?? SearchEngine.google.name }
-        webViews.capturesSnapshots = { [weak self] in self?.preferences.tabSwitcherPreviews ?? true }
         coordinator.pinsResetWhenClosed = { [weak self] in self?.preferences.pinsResetWhenClosed ?? true }
         if #available(macOS 15.4, *) { connectExtensions() }
         activateSelection()

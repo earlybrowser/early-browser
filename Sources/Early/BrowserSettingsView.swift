@@ -363,9 +363,6 @@ struct BrowserSettingsView: View {
             }
             SettingsCard {
                 SettingsToggle("Control-Tab shows the tab switcher", detail: "Hold Control and press Tab to pick from your recent tabs. Turn this off to go straight to the next tab in the sidebar.", isOn: $preferences.controlTabShowsSwitcher, identifier: "settings.controlTabSwitcher")
-                Divider().padding(.vertical, 6)
-                SettingsToggle("Page previews in the tab switcher", detail: "Show a picture of each page. Turn this off to show icons and titles only; Early then takes no pictures of your pages.", isOn: $preferences.tabSwitcherPreviews, identifier: "settings.tabSwitcherPreviews")
-                    .disabled(!preferences.controlTabShowsSwitcher)
             }
         }
     }

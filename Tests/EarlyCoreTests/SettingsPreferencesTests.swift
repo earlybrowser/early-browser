@@ -46,7 +46,7 @@ struct SettingsPreferencesTests {
         let preferences = BrowserPreferences(defaults: store)
         #expect(preferences.searchEngine == .google, "Existing users keep Google")
         #expect(preferences.showsCommandBarInEmptyWindows && preferences.pinsResetWhenClosed)
-        #expect(preferences.controlTabShowsSwitcher && preferences.tabSwitcherPreviews)
+        #expect(preferences.controlTabShowsSwitcher)
         #expect(preferences.checksForUpdatesAutomatically && !preferences.installsUpdatesAutomatically)
         #expect(!preferences.shortcuts.hasChanges)
 
@@ -54,13 +54,12 @@ struct SettingsPreferencesTests {
         preferences.showsCommandBarInEmptyWindows = false
         preferences.pinsResetWhenClosed = false
         preferences.controlTabShowsSwitcher = false
-        preferences.tabSwitcherPreviews = false
         preferences.installsUpdatesAutomatically = true
         preferences.shortcuts.assign(BrowserShortcut("k"), to: .newTab)
         preferences.shortcuts.remove(.printPage)
         let reloaded = BrowserPreferences(defaults: store)
         #expect(reloaded.searchEngine == .ecosia && !reloaded.showsCommandBarInEmptyWindows && !reloaded.pinsResetWhenClosed)
-        #expect(!reloaded.controlTabShowsSwitcher && !reloaded.tabSwitcherPreviews && reloaded.installsUpdatesAutomatically)
+        #expect(!reloaded.controlTabShowsSwitcher && reloaded.installsUpdatesAutomatically)
         #expect(reloaded.shortcuts.shortcut(for: .newTab) == BrowserShortcut("k"))
         #expect(reloaded.shortcuts.shortcut(for: .printPage) == nil, "A removed shortcut stays removed")
 

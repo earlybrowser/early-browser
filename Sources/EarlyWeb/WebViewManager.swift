@@ -158,8 +158,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onNeedsNewView: ((UUID, URL) -> Void)?
     /// The search engine a page's "Search with…" item names.
     public var searchEngineName: () -> String = { SearchEngine.google.name }
-    /// Settings › Sidebar: the tab switcher shows page previews. Off, none are taken.
-    public var capturesSnapshots: () -> Bool = { true }
 
     /// "scheme://host" of an extension's page; nil for anything else.
     public static func extensionOrigin(of url: URL) -> String? {
@@ -379,7 +377,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     private func captureSnapshot(_ id: UUID) {
-        guard capturesSnapshots(), pressure == .normal, let page = pages[id], !page.isLoading,
+        guard pressure == .normal, let page = pages[id], !page.isLoading,
               page.failure == nil, !page.hasUnsavedInput, !page.hasDialog,
               page.view.bounds.width > 0, page.view.bounds.height > 0 else { return }
         snapshots.request(tabID: id, navigationID: page.navigationGeneration, view: page.view)

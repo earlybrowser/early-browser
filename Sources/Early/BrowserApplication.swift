@@ -167,10 +167,6 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             if ["onlineSearchSuggestions", "privateSearchSuggestions", "commandBarActions"].contains(key) { self?.visibleModels.forEach { $0.refreshSuggestions() } }
             if key == "spaceSwipes" { self?.visibleModels.forEach { $0.cancelSpaceSwipePresentation() } }
             if key == "searchEngine" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
-            // Turning previews off forgets the ones already taken.
-            if key == "tabSwitcherPreviews", self?.preferences?.tabSwitcherPreviews == false {
-                self?.visibleModels.forEach { $0.webViews.snapshots.clear() }
-            }
         }
         applyAppearance()
         save(primary)

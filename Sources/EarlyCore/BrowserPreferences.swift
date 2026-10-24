@@ -36,8 +36,6 @@ public final class BrowserPreferences {
     public var pinsResetWhenClosed: Bool { didSet { store(pinsResetWhenClosed, for: "pinsResetWhenClosed") } }
     /// Control-Tab shows the tab switcher; off, it steps through tabs in sidebar order.
     public var controlTabShowsSwitcher: Bool { didSet { store(controlTabShowsSwitcher, for: "controlTabShowsSwitcher") } }
-    /// The tab switcher shows page previews. Off, no previews are taken at all.
-    public var tabSwitcherPreviews: Bool { didSet { store(tabSwitcherPreviews, for: "tabSwitcherPreviews") } }
     /// Update preferences, for when Early has an updater (Phase 10). Nothing
     /// checks for updates yet, so Settings doesn't show them.
     public var checksForUpdatesAutomatically: Bool {
@@ -65,7 +63,7 @@ public final class BrowserPreferences {
         defaults.register(defaults: ["onlineSearchSuggestions": true, "commandBarActions": true, "spaceSwipes": true,
             "haptics": true, "spaceThemes": true, "translucentChrome": true, "restoreSession": true,
             "automaticPictureInPicture": true, "fillsPasswordsAutomatically": true, "showsCommandBarInEmptyWindows": true,
-            "pinsResetWhenClosed": true, "controlTabShowsSwitcher": true, "tabSwitcherPreviews": true,
+            "pinsResetWhenClosed": true, "controlTabShowsSwitcher": true,
             "checksForUpdatesAutomatically": true])
         appearance = Appearance(rawValue: defaults.string(forKey: "browserAppearance") ?? "") ?? .system
         onlineSuggestions = defaults.bool(forKey: "onlineSearchSuggestions")
@@ -83,7 +81,6 @@ public final class BrowserPreferences {
         showsCommandBarInEmptyWindows = defaults.bool(forKey: "showsCommandBarInEmptyWindows")
         pinsResetWhenClosed = defaults.bool(forKey: "pinsResetWhenClosed")
         controlTabShowsSwitcher = defaults.bool(forKey: "controlTabShowsSwitcher")
-        tabSwitcherPreviews = defaults.bool(forKey: "tabSwitcherPreviews")
         checksForUpdatesAutomatically = defaults.bool(forKey: "checksForUpdatesAutomatically")
         installsUpdatesAutomatically = defaults.bool(forKey: "installsUpdatesAutomatically")
         // An unreadable list never takes anyone's shortcuts away: the defaults apply.

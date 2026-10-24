@@ -87,7 +87,7 @@ struct SettingsApplicationTests {
         #expect(model.coordinator.tabStore.tab(id: id)?.currentURL == one, "Back to its saved page")
     }
 
-    @Test func controlTabSwitchesInSidebarOrderWithoutTheSwitcherAndPreviewsCanStop() throws {
+    @Test func controlTabSwitchesInSidebarOrderWithoutTheSwitcher() throws {
         let fixture = Fixture()
         let model = fixture.model()
         defer { fixture.cleanup(model) }
@@ -104,10 +104,6 @@ struct SettingsApplicationTests {
         fixture.preferences.controlTabShowsSwitcher = true
         #expect(model.controlTab(1) && model.tabSwitcher != nil)
         model.cancelTabSwitcher(restoreFocus: false)
-
-        #expect(model.webViews.capturesSnapshots())
-        fixture.preferences.tabSwitcherPreviews = false
-        #expect(!model.webViews.capturesSnapshots(), "No pictures of pages are taken")
     }
 
     @Test func shortcutsReachMenusAndRecordedKeys() throws {
