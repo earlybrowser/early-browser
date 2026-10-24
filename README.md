@@ -10,6 +10,32 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 
 > **Note**: This project is currently in active development.
 
+## Install
+
+Early needs a Mac with Apple Silicon and macOS 14 or later.
+
+```sh
+brew install --cask earlybrowser/tap/early
+```
+
+Or download `Early-<version>.zip` from [Releases](https://github.com/earlybrowser/early-browser/releases),
+check it against `SHA256SUMS`, and move Early to Applications. Early isn't
+notarized by Apple yet, so macOS blocks the first launch of a downloaded copy:
+open it once, then choose **Open Anyway** in System Settings › Privacy &
+Security, or run `xattr -dr com.apple.quarantine /Applications/Early.app`.
+Homebrew does this for you. After that, Early updates itself.
+
+## Current limitations
+
+We're working on these and will fix them as soon as we can.
+
+- **Not notarized yet:** macOS asks you to allow Early the first time you open a downloaded copy.
+- **Password prompt after updates:** macOS asks once after each update before Early can open your saved passwords. Choose Always Allow.
+- **No passkeys yet:** sign in with a password instead.
+- **Apple Silicon only:** no Intel build.
+- **Extensions:** Safari Web Extensions only (macOS 15.4 and later); no Chrome Web Store.
+- **Local files** you opened don't reopen after Early restarts.
+
 ## Features
 
 | Feature | Description | Status |
@@ -37,7 +63,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | Downloads and documents | Download files from the sidebar footer with progress, stop and resume, and Finder reveal; saved pages and PDFs appear there too. Upload files, print, view PDFs, save pages as HTML, and open local files or dropped links in new tabs. | Implemented. |
 | Find and zoom | Find text on a page with a match count, and zoom each tab from the keyboard or View menu. | Implemented. |
 | Reading tools | Reader Mode for articles, on-device page translation (macOS 15 and later), and link addresses previewed on hover. | Implemented. |
-| Passwords | Save and update sign-ins, fill them in as secure sign-in pages open (or pick an account from the list under the field), suggest strong passwords, and fill websites’ HTTP sign-in prompts. Settings › Passwords, behind Touch ID or your Mac’s password, lists, edits, imports, and exports them (CSV from Chrome, Safari, Firefox, 1Password, or Bitwarden). They’re encrypted on this Mac with a key in your Keychain, which macOS asks about once after each update until Early is signed. Private windows fill passwords but never save them. Passkeys need an Apple entitlement and are planned with signing. | Partial. |
+| Passwords | Save and update sign-ins, fill them in as secure sign-in pages open (or pick an account from the list under the field), suggest strong passwords, and fill websites’ HTTP sign-in prompts. Settings › Passwords, behind Touch ID or your Mac’s password, lists, edits, imports, and exports them (CSV from Chrome, Safari, Firefox, 1Password, or Bitwarden). They’re encrypted on this Mac with a key in your Keychain, which macOS asks about once after each update until Early is signed by an Apple developer account (development builds keep the key in a file instead, so rebuilding never asks). Private windows fill passwords but never save them. Passkeys need an Apple entitlement and are planned with signing. | Partial. |
 | Extensions | Safari Web Extensions, through the same part of macOS that Safari uses (macOS 15.4 and later). Settings › Extensions adds those that come with Mac apps from the App Store (such as uBlock Origin Lite) or installs one from a folder or ZIP file. Each profile has its own; choose which websites each can use, whether it runs in private windows, and open its options. Use one on a page from the address bar’s site controls or the Extensions menu. Parts of an extension that talk to its Mac app work only in Safari, and Chrome Web Store installs aren’t supported. | Partial. |
 | Default browser | Make Early the default browser from Settings › General or the welcome (macOS asks first, and your answer is kept). Links from other apps, and web pages opened from Finder, open as new tabs in the frontmost window, or a new one when none is open, even when the link launched Early; never in a private window. | Implemented. |
 | State portability | Settings › Sessions exports your profiles, Spaces, folders, pins, Favorites, windows, open tabs and settings to a file, and imports one after showing what it holds: add its profiles beside yours, or replace the matching ones (which keep their website data). Imports are checked in full, a backup of what you had is saved first, and tabs load only when you choose them. Passwords, cookies, history, website data and private windows are never exported, so websites ask you to sign in again. | Implemented. |
@@ -48,7 +74,7 @@ Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Ear
 | GitHub live folder | Right-click the sidebar and choose GitHub Live Folder for a Pull Requests folder whose pins are your open pull requests on GitHub: ones you opened, ones assigned to you, and ones waiting for your review, each listed once. They're ordinary pinned tabs, so nothing loads until you choose one. Merged and closed ones leave the folder (one you're reading stays open as a Today tab), and right-click › Remove from Folder takes one out for good. It uses the GitHub account you're signed in to in that profile: Early reads GitHub's own pull-request pages in a hidden page and stores no GitHub sign-in or token. It refreshes at the interval you choose in the folder's menu (15 minutes to 8 hours; Last fetch shows when it last did), backs off when GitHub asks it to, and says so when you're offline. Signed out, or when GitHub's pages can't be read, it empties rather than show an old list. Never in private windows; each profile has its own. A GitHub redesign can stop it reading until Early is updated. | Implemented. |
 | Picture in Picture | Websites’ Picture in Picture works, and videos playing in a tab you switch away from continue in a floating window and return when you come back, or when you click the window's return button; turn that off in Settings. macOS offers this to web views only through a WebKit preference that isn’t public API, so Early uses it only where WebKit still has it. | Partial. |
 | Settings and customization | Native Settings for profiles, passwords, privacy (website permissions, website data and history for each profile), extensions, Space assignment, appearance, sidebar behavior, search, keyboard shortcuts and sessions. Change or remove the shortcut of almost any command in Settings › Shortcuts (numbered tabs and Spaces, ⌃Tab and macOS's own shortcuts stay). Choose whether pins and Favorites return to their saved page when closed, whether ⌃Tab shows the tab switcher, and whether empty windows show the command bar. | Implemented. |
-| macOS distribution | Install packaged releases or use Homebrew, with optional signing and notarization. | Planned. |
+| Installing and updates | Install with Homebrew or from GitHub Releases. Early checks for updates once a day and installs them when you agree (or automatically, if you choose in Settings); each update is signed with Early's own key. Not notarized by Apple yet. | Partial. |
 
 Early uses a Safari-compatible browser identity to improve website compatibility.
 
@@ -107,6 +133,17 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -derivedDataPath build/DerivedData \
   test
 ```
+
+### Make a release
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer Scripts/release.sh 0.2.0
+```
+
+This builds `build/Release/Early-0.2.0.zip` and `SHA256SUMS`. To publish one,
+push a tag (`git tag v0.2.0 && git push origin v0.2.0`): GitHub Actions builds
+it, signs the update and drafts the release, and publishing the draft updates
+the Homebrew tap.
 
 ### Measure page lifecycle
 

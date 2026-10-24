@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: MPL-2.0
+
+# Publishing a release (not a pre-release) updates the Homebrew cask in
+# earlybrowser/homebrew-tap. To run it again by hand, choose the release's
+# tag under "Use workflow from".
+name: Publish to Homebrew
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-tap
+
+jobs:
+  cask:
+    name: Update the cask
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    runs-on: macos-26
+    timeout-minutes: 15
+    # Its secrets are available only to runs from v* tags.
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Read the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          gh release download "$tag" --pattern SHA256SUMS --dir build
+          sha256="$(awk -v zip="Early-$version.zip" '$2 == zip { print $1 }' build/SHA256SUMS)"
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No checksum for Early-$version.zip"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: earlybrowser/homebrew-tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+          path: tap
+      - name: Write the cask
+        id: cask
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA256: ${{ steps.release.outputs.sha256 }}
+        working-directory: tap
+        run: |
+          mkdir -p Casks
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$SHA256/" ../Packaging/early.rb > Casks/early.rb
+          git add Casks/early.rb
+          if git diff --cached --quiet; then
+            echo "The cask is already at $VERSION."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update Early to $VERSION"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      # Homebrew checks casks only inside a tap; tapping clones the commit above.
+      - name: Check the cask
+        if: steps.cask.outputs.changed == 'true'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          brew tap earlybrowser/tap "$PWD/tap"
+          brew style --cask earlybrowser/tap/early
+          brew audit --cask --strict earlybrowser/tap/early
+      - name: Push the cask
+        if: steps.cask.outputs.changed == 'true'
+        working-directory: tap
+        run: git push

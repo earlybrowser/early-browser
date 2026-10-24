@@ -22,6 +22,8 @@
     <array>
         <string>com.apple.PIPAgent</string>
         <string>com.apple.Safari.SafeBrowsing.Service</string>
+        <string>$(PRODUCT_BUNDLE_IDENTIFIER)-spks</string>
+        <string>$(PRODUCT_BUNDLE_IDENTIFIER)-spki</string>
     </array>
 </dict>
 </plist>

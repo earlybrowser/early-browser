@@ -64,6 +64,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     private(set) var isDefaultBrowser = false
     /// Tests use their own, so nothing changes the Mac's default browser.
     @ObservationIgnored var defaultBrowser: DefaultBrowser?
+    /// Early's own updates; nil in tests and UI automation.
+    private(set) var updater: SoftwareUpdater?
     /// Links from other apps that arrived before the windows were ready.
     @ObservationIgnored private var pendingLinks: [URL] = []
     /// The most links taken from other apps at once.
@@ -178,8 +180,12 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         workspace = snapshot
         pendingRestoredWindows = Set(restored)
         restoringFocus = !restored.isEmpty
+        if !loaded.testing { updater = SoftwareUpdater(preferences: preferences) }
         preferences.onChange = { [weak self] key in
             if key == "browserAppearance" { self?.applyAppearance() }
+            if ["checksForUpdatesAutomatically", "installsUpdatesAutomatically"].contains(key), let preferences = self?.preferences {
+                self?.updater?.apply(preferences)
+            }
             if ["onlineSearchSuggestions", "privateSearchSuggestions", "commandBarActions"].contains(key) { self?.visibleModels.forEach { $0.refreshSuggestions() } }
             if key == "spaceSwipes" { self?.visibleModels.forEach { $0.cancelSpaceSwipePresentation() } }
             if key == "searchEngine" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
@@ -338,9 +344,21 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard !isPrivateProfile(id), profiles.contains(where: { $0.id == id }) else { return nil }
         // UI automation keeps passwords in memory and never uses the Keychain.
         let vault = testing ? PasswordVault(fileURL: nil, key: nil)
-            : PasswordVault(fileURL: passwordsFile(for: id), key: KeychainVaultKey(profile: id))
+            : PasswordVault(fileURL: passwordsFile(for: id), key: vaultKey(for: id))
         passwordVaults[id] = vault
         return vault
+    }
+
+    /// Releases keep the passwords' key in the Keychain. Development builds
+    /// keep it in a file beside the vaults: to the Keychain each new build is
+    /// a different app, so it would ask for your password after every build.
+    private func vaultKey(for id: UUID) -> any PasswordVaultKey {
+        #if DEBUG
+        if let directory = storageURL?.deletingLastPathComponent() {
+            return FileVaultKey(file: directory.appending(path: "Passwords/Development Key", directoryHint: .notDirectory), profile: id)
+        }
+        #endif
+        return KeychainVaultKey(profile: id)
     }
 
     /// Settings › Passwords for a profile, searching for a website.
@@ -956,7 +974,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
         if extensionsProfileID == id { extensionsProfileID = nil }
         if let vault = passwordVaults.removeValue(forKey: id) { vault.removeAll() }
-        else { PasswordVault.remove(fileURL: passwordsFile(for: id), key: testing ? nil : KeychainVaultKey(profile: id)) }
+        else { PasswordVault.remove(fileURL: passwordsFile(for: id), key: testing ? nil : vaultKey(for: id)) }
         if passwordsProfileID == id { passwordsProfileID = nil }
         applyingWorkspace = false
         saveAll()
@@ -993,7 +1011,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                     if let file = extensionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
                     if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
                     if let file = passwordsFile(for: id), FileManager.default.fileExists(atPath: file.path) {
-                        PasswordVault.remove(fileURL: file, key: testing ? nil : KeychainVaultKey(profile: id))
+                        PasswordVault.remove(fileURL: file, key: testing ? nil : vaultKey(for: id))
                     }
                     var remaining = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
                     remaining.removeAll { $0 == value }

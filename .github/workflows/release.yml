@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: MPL-2.0
+
+# Pushing a v* tag builds that version and drafts its GitHub release. Nothing
+# reaches anyone until the draft is published.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  release:
+    name: Build and draft the release
+    runs-on: macos-26
+    timeout-minutes: 45
+    # Its secrets are available only to runs from v* tags.
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read the version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Release tags look like v1.2.3 or v1.2.3-beta.1."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Test Swift package
+        run: swift test --no-parallel
+      - name: Build, sign and package
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: Scripts/release.sh "${{ steps.version.outputs.version }}" --appcast --output build/Release
+      - name: Draft the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed "s/@VERSION@/$VERSION/g" Packaging/release-notes.md > build/Release/notes.md
+          flags=(--draft --verify-tag --generate-notes --title "Early $VERSION" --notes-file build/Release/notes.md)
+          [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
+            "build/Release/Early-$VERSION.zip" build/Release/SHA256SUMS build/Release/appcast.xml
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-build-log
+          path: build/Release/build.log
+          retention-days: 7

@@ -307,6 +307,9 @@ struct BrowserSettingsView: View {
                 }
             }
             DefaultBrowserCard(application: application)
+            if let updater = application.updater, updater.isAvailable {
+                UpdatesCard(updater: updater, preferences: preferences)
+            }
         }
     }
 

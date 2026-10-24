@@ -64,6 +64,13 @@ struct BrowserCommands: Commands {
     }
 
     @CommandsBuilder private var applicationCommands: some Commands {
+        CommandGroup(after: .appInfo) {
+            // Only where Early updates itself: never an inert command.
+            if let updater = application.updater, updater.isAvailable {
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheck)
+            }
+        }
         CommandGroup(after: .appSettings) {
             Button("Passwords…") {
                 if let model, model.perform(.showPasswords) { return }
