@@ -193,6 +193,23 @@ struct BrowserAccessibilityTests {
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
+    func theSelectedSpaceDotHasAShapeCueEvenWithIdenticalIconColors(_ scheme: ColorScheme) throws {
+        func bitmap(selected: Bool) throws -> NSBitmapImageRep {
+            let renderer = ImageRenderer(content: SpaceDotLabel(icon: nil, selected: selected, opacity: 1)
+                .environment(\.colorScheme, scheme))
+            renderer.scale = 2
+            return try #require(renderer.nsImage?.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        }
+        let selected = try bitmap(selected: true), unselected = try bitmap(selected: false)
+        #expect(selected.pixelsWide == unselected.pixelsWide && selected.pixelsHigh == 56)
+        let x = selected.pixelsWide / 2, y = selected.pixelsHigh - 8
+        let mark = try #require(selected.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+        #expect(mark.alphaComponent > 0.99)
+        #expect((unselected.colorAt(x: x, y: y)?.alphaComponent ?? 1) == 0)
+        #expect(scheme == .dark ? mark.redComponent > 0.8 : mark.redComponent < 0.2)
+    }
+
+    @Test(arguments: [ColorScheme.light, .dark])
     func selectedIconChoiceHasANonColorCueWithStableDimensions(_ scheme: ColorScheme) throws {
         func bitmap(selected: Bool) throws -> NSBitmapImageRep {
             let renderer = ImageRenderer(content: BrowserSelectionMark(selected: selected).environment(\.colorScheme, scheme))

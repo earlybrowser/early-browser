@@ -211,6 +211,41 @@ struct DownloadStoreTests {
         #expect(fixture.store.items.count == 1, "Resume continues the same row and file")
     }
 
+    @Test func anActiveDownloadFinishesAfterItsSourceTabIsClosed() async throws {
+        let body = Data(repeating: 19, count: 400_000)
+        let server = try LocalHTTPServer(body: body, initialChunk: 80_000)
+        let fixture = Fixture()
+        defer { server.stop(); fixture.cleanup() }
+        #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id))
+        try await waitUntil("transfer started") {
+            fixture.store.items.first.map { $0.state == .downloading && $0.completedBytes >= 80_000 } == true
+        }
+        let item = try #require(fixture.store.items.first)
+        fixture.manager.discard(tabID: fixture.tab.id)
+        #expect(fixture.manager.liveViewCount == 0 && fixture.store.hasActiveDownloads)
+        server.finishTransfers()
+        try await waitUntil("transfer after tab close") { item.state == .finished }
+        let destination = try #require(item.destination)
+        #expect(try Data(contentsOf: destination) == body)
+        #expect(fixture.manager.liveViewCount == 0 && fixture.manager.creationCount == 1)
+    }
+
+    @Test func anInterruptedDownloadReportsFailureAndReleasesItsPageLease() async throws {
+        let server = try LocalHTTPServer(body: Data(repeating: 19, count: 400_000), initialChunk: 80_000)
+        let fixture = Fixture()
+        defer { server.stop(); fixture.cleanup() }
+        #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id))
+        try await waitUntil("transfer started") {
+            fixture.store.items.first.map { $0.state == .downloading && $0.completedBytes >= 80_000 } == true
+        }
+        let item = try #require(fixture.store.items.first)
+        server.finishTransfers(sendingRemaining: false)
+        try await waitUntil("network failure") { item.state == .failed }
+        #expect(item.failureReason != nil && !fixture.store.hasActiveDownloads)
+        #expect(!fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download))
+        #expect(fixture.manager.pages[fixture.tab.id] === fixture.page, "A failed transfer must keep its source page")
+    }
+
     @Test func cancellingAStoppedTransferDeletesOnlyItsPartialFile() async throws {
         let server = try LocalHTTPServer(body: Data(repeating: 7, count: 400_000), initialChunk: 80_000)
         let fixture = Fixture()

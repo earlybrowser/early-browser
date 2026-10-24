@@ -453,6 +453,7 @@ final class HTMLServer: @unchecked Sendable {
         var status = "200 OK"
         var headers: [String: String] = [:]
         var body: String
+        var delay: TimeInterval = 0
     }
 
     private let listener: NWListener
@@ -495,7 +496,10 @@ final class HTMLServer: @unchecked Sendable {
             headers["Connection"] = "close"
             let lines = headers.map { "\($0.key): \($0.value)" }.joined(separator: "\r\n")
             let response = "HTTP/1.1 \(answer.status)\r\n\(lines)\r\n\r\n\(answer.body)"
-            connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            let payload = Data(response.utf8)
+            DispatchQueue.global().asyncAfter(deadline: .now() + answer.delay) {
+                connection.send(content: payload, completion: .contentProcessed { _ in connection.cancel() })
+            }
         }
     }
 }

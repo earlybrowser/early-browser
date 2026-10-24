@@ -15,7 +15,8 @@ extension BrowserWindowModel {
     /// rules. A stale/foreign result must not dismiss an editor or change focus.
     func canPerform(_ action: BrowserAction) -> Bool {
         if case .dismissCommandBar = action { return coordinator.commandBar != nil }
-        guard !sidebarInteractionInProgress, splitResize == nil, !spaceSwipeIsSettling,
+        guard application?.profileOperationInProgress != true,
+              !sidebarInteractionInProgress, splitResize == nil, !spaceSwipeIsSettling,
               !folderEditorIsPresented, renamingTabID == nil, spaceEditor == nil,
               spaceDeletionID == nil, !hasVisibleDialog, !documentPanelIsPresented, !historyPresented else { return false }
         switch action {

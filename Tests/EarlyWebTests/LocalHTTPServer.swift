@@ -33,6 +33,18 @@ final class LocalHTTPServer: @unchecked Sendable {
 
     var url: URL { URL(string: "http://127.0.0.1:\(port)/large.bin")! }
 
+    /// Finish a held transfer, or deliberately drop it to exercise failure.
+    func finishTransfers(sendingRemaining: Bool = true) {
+        queue.async {
+            let remainder = self.body.dropFirst(self.initialChunk)
+            for connection in self.connections {
+                if sendingRemaining {
+                    connection.send(content: Data(remainder), completion: .contentProcessed { _ in connection.cancel() })
+                } else { connection.cancel() }
+            }
+        }
+    }
+
     func stop() {
         queue.sync {
             connections.forEach { $0.cancel() }

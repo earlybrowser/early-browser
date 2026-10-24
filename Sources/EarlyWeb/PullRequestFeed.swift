@@ -137,13 +137,19 @@ final class GitHubPullRequestReader: NSObject, WKNavigationDelegate {
     private enum Outcome { case loaded, failed(PullRequestReading) }
 
     private let base: URL
+    private let navigationTimeout: Duration
     private var pending: (id: UUID, continuation: CheckedContinuation<Outcome, Never>)?
+    private var timeoutTask: Task<Void, Never>?
     private var statusCode: Int?
 
-    init(base: URL) { self.base = base }
+    init(base: URL, navigationTimeout: Duration = .seconds(25)) {
+        self.base = base
+        self.navigationTimeout = navigationTimeout
+    }
 
     /// Each group's page in turn, in one view discarded afterwards.
     func read(_ groups: [PullRequestGroup], store: WKWebsiteDataStore) async -> [PullRequestGroup: PullRequestReading] {
+        guard !Task.isCancelled else { return [:] }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -156,6 +162,7 @@ final class GitHubPullRequestReader: NSObject, WKNavigationDelegate {
         }
         var readings: [PullRequestGroup: PullRequestReading] = [:]
         for group in groups {
+            guard !Task.isCancelled else { break }
             let reading = await read(group.url(base: base), in: view)
             readings[group] = reading
             // One failure fails the folder, and the other pages would mostly say the same.
@@ -165,22 +172,38 @@ final class GitHubPullRequestReader: NSObject, WKNavigationDelegate {
     }
 
     private func read(_ url: URL, in view: WKWebView) async -> PullRequestReading {
+        guard !Task.isCancelled else { return .unreadable }
         statusCode = nil
         let id = UUID()
-        let outcome = await withCheckedContinuation { continuation in
-            pending = (id, continuation)
-            view.load(URLRequest(url: url, timeoutInterval: 20))
-            Task { [weak self, weak view] in
-                try? await Task.sleep(for: .seconds(25))
+        let timeout = navigationTimeout
+        let outcome = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                pending = (id, continuation)
+                guard !Task.isCancelled else { finish(.failed(.unreadable), id: id); return }
+                timeoutTask = Task { [weak self, weak view] in
+                    do { try await Task.sleep(for: timeout) } catch { return }
+                    // A completed search must never stop the next search in
+                    // this same view, even if its timeout was already queued.
+                    guard let self, self.pending?.id == id else { return }
+                    self.finish(.failed(.offline), id: id)
+                    view?.stopLoading()
+                }
+                view.load(URLRequest(url: url, timeoutInterval: 20))
+            }
+        } onCancel: {
+            Task { @MainActor [weak self, weak view] in
+                guard let self, self.pending?.id == id else { return }
+                self.finish(.failed(.unreadable), id: id)
                 view?.stopLoading()
-                self?.finish(.failed(.offline), id: id)
             }
         }
+        guard !Task.isCancelled else { return .unreadable }
         if case .failed(let reading) = outcome { return reading }
         // Pages that build their list after loading get a moment; an empty
         // list is believed only after that.
         var reading = PullRequestReading.unreadable
         for attempt in 0..<8 {
+            guard !Task.isCancelled else { return .unreadable }
             let result = try? await view.callAsyncJavaScript(Self.script, arguments: [:], in: nil, contentWorld: Self.world)
             reading = PullRequests.reading(from: result, finalURL: view.url, statusCode: statusCode, base: base)
             switch reading {
@@ -196,6 +219,8 @@ final class GitHubPullRequestReader: NSObject, WKNavigationDelegate {
     private func finish(_ outcome: Outcome, id: UUID? = nil) {
         guard let pending, id == nil || pending.id == id else { return }
         self.pending = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
         pending.continuation.resume(returning: outcome)
     }
 
