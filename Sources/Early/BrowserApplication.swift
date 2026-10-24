@@ -623,10 +623,19 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         profileOperationInProgress = true
         defer {
+            applyingWorkspace = false
             profileOperationInProgress = false
             deliverExternalLinks()
         }
         applyingWorkspace = true
+        // Commit the validated replacement before discarding live documents or
+        // changing settings. A locked/full/unavailable database leaves the
+        // existing workspace and its windows usable, with the backup intact.
+        persistence?.enqueue(result.workspace)
+        guard await persistence?.flush() == true else {
+            return ImportOutcome(message: "Nothing was imported because the session couldn’t be saved. \(persistence?.error ?? "")",
+                                 succeeded: false, backup: backup)
+        }
         workspace = result.workspace
         var opening: [BrowserSession] = []
         for profile in result.profiles {
@@ -897,8 +906,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             profileError = "Close this profile’s dialogs before deleting it."
             return
         }
+        captureWorkspace()
+        guard var draft = workspace, draft.deleteProfile(id) else { return }
         profileOperationInProgress = true
         defer {
+            applyingWorkspace = false
             profileOperationInProgress = false
             deliverExternalLinks()
         }
@@ -907,6 +919,16 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         var pending = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
         if !pending.contains(id.uuidString) { pending.append(id.uuidString) }
         defaults.set(pending, forKey: "pendingProfileCleanup")
+        applyingWorkspace = true
+        persistence?.enqueue(draft)
+        guard await persistence?.flush() == true else {
+            profileError = "The profile could not be deleted because the session couldn’t be saved. Its windows and data were kept. \(persistence?.error ?? "")"
+            return
+        }
+        // The on-disk catalog no longer references this profile. Only now may
+        // its windows, credentials, extension data and permissions be removed.
+        workspace = draft
+        profileError = nil
         let icons = visibleModels.filter { $0.coordinator.profileID == id }.map { $0.webViews.favicons }
         let closing = windows.filter { $0.model.coordinator.profileID == id }.map(\.id)
         for windowID in closing {
@@ -917,7 +939,6 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             NSApp.windows.first { $0.identifier?.rawValue == "browser" }?.close()
             closeWindow(nil)
         }
-        guard workspace?.deleteProfile(id) == true else { return }
         dataStores.removeValue(forKey: id)
         downloadStores.removeValue(forKey: id)?.cancelAll()
         let history = historyStores.removeValue(forKey: id)
@@ -937,6 +958,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let vault = passwordVaults.removeValue(forKey: id) { vault.removeAll() }
         else { PasswordVault.remove(fileURL: passwordsFile(for: id), key: testing ? nil : KeychainVaultKey(profile: id)) }
         if passwordsProfileID == id { passwordsProfileID = nil }
+        applyingWorkspace = false
         saveAll()
         guard await persistence?.flush() == true else {
             profileError = "The profile change could not be saved. Its website data was kept. \(persistence?.error ?? "")"

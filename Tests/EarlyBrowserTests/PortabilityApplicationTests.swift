@@ -152,6 +152,64 @@ struct PortabilityApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test func aStorageFailureLeavesImportUnappliedAndRetrySucceeds() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let model = try #require(app.model)
+        _ = try openTab(one, in: model)
+        fixture.preferences.searchEngine = .bing
+        let archive = try #require(app.stateArchive())
+        fixture.preferences.searchEngine = .google
+        let later = try openTab(two, in: model)
+        let view = try #require(model.webViews.existingView(for: later))
+        app.saveAll()
+        #expect(await app.persistence?.flush() == true)
+        let before = app.workspace
+        let file = fixture.directory.appendingPathComponent("session.sqlite")
+        let repository = SessionRepository(fileURL: file, input: input)
+        let durable = try await repository.loadWorkspace()
+
+        try await withLockedSession(at: file) {
+            let operation = Task { await app.importState(archive, mode: .replaceMatching, includeSettings: true) }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !app.profileOperationInProgress {
+                try #require(ContinuousClock.now < deadline, "Import started")
+                await Task.yield()
+            }
+            #expect(!model.canPerform(.closeTab(later)), "Editing waits for the import transaction")
+            let failed = await operation.value
+            #expect(!failed.succeeded)
+            #expect(app.workspace == before)
+            #expect(model.webViews.existingView(for: later) === view, "Failed import must preserve the live document")
+            #expect(model.coordinator.activeTabID == later && fixture.preferences.searchEngine == .google)
+            let saved = try await repository.loadWorkspace()
+            #expect(saved == durable)
+        }
+        let retried = await app.importState(archive, mode: .replaceMatching, includeSettings: true)
+        #expect(retried.succeeded && fixture.preferences.searchEngine == .bing)
+        #expect(model.coordinator.tabStore.tabs.filter(\.isOpen).map(\.currentURL) == [one])
+        #expect(try await repository.loadWorkspace() == app.workspace)
+        await fixture.cleanup()
+    }
+
+    @Test func anUnwritableBackupLeavesTheWorkspaceAndSettingsUntouched() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let model = try #require(app.model)
+        _ = try openTab(one, in: model)
+        let archive = try #require(app.stateArchive())
+        let before = app.workspace
+        let directory = try #require(app.backupsDirectory)
+        try FileManager.default.createDirectory(at: fixture.directory, withIntermediateDirectories: true)
+        try Data("not a directory".utf8).write(to: URL(fileURLWithPath: directory.path, isDirectory: false))
+        let failed = await app.importState(archive, mode: .replaceMatching, includeSettings: true)
+        #expect(!failed.succeeded && failed.backup == nil && app.workspace == before)
+        #expect(model.coordinator.tabStore.tabs.filter(\.isOpen).map(\.currentURL) == [one])
+        await fixture.cleanup()
+    }
+
     @Test func linksFromOtherAppsOpenInTheFrontOrdinaryWindowOrANewOne() async throws {
         let fixture = Fixture()
         let app = fixture.application

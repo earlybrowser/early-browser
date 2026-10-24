@@ -355,6 +355,48 @@ struct ProfileApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test func aFailedProfileDeletionKeepsItsWindowsPasswordsAndDurableState() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let workID = try #require(app.createProfile(name: "Work", color: .green))
+        app.openProfile(workID)
+        let windowID = try #require(fixture.opened.last)
+        let work = try #require(app.windowModel(windowID))
+        #expect(work.openLocations([url]))
+        let tab = try #require(work.coordinator.activeTabID)
+        let view = try #require(work.webViews.existingView(for: tab))
+        let vault = try #require(work.passwords)
+        #expect(await vault.load())
+        #expect(vault.save(origin: "https://example.com", username: "work", password: "keep-this-password") != nil)
+        app.saveAll()
+        #expect(await app.persistence?.flush() == true)
+        let file = fixture.directory.appendingPathComponent("session.sqlite")
+        let repository = SessionRepository(fileURL: file, input: input)
+        let durable = try await repository.loadWorkspace()
+
+        try await withLockedSession(at: file) {
+            let operation = Task { await app.deleteProfile(workID) }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !app.profileOperationInProgress {
+                try #require(ContinuousClock.now < deadline, "Profile deletion started")
+                await Task.yield()
+            }
+            #expect(!work.canPerform(.closeTab(tab)), "Editing waits for the profile transaction")
+            await operation.value
+            #expect(app.profileError != nil)
+            #expect(app.profiles.contains { $0.id == workID })
+            #expect(app.windowModel(windowID) === work && work.webViews.existingView(for: tab) === view)
+            #expect(vault.logins.first?.password == "keep-this-password")
+            let saved = try await repository.loadWorkspace()
+            #expect(saved == durable)
+        }
+        await app.deleteProfile(workID)
+        #expect(!app.profiles.contains { $0.id == workID } && vault.logins.isEmpty)
+        #expect(try await repository.loadWorkspace()?.profiles.contains { $0.id == workID } == false)
+        await fixture.cleanup()
+    }
+
     @Test func corruptStorageIsNotOverwrittenAndDisablesProfileMutations() async throws {
         let fixture = Fixture()
         try FileManager.default.createDirectory(at: fixture.directory, withIntermediateDirectories: true)
