@@ -215,6 +215,33 @@ struct PasswordVaultTests {
         #expect(first != shared && first != KeychainVaultKey.derive(Data(repeating: 7, count: 32), profile: one))
     }
 
+    @Test func developmentBuildsKeepTheKeyInAPrivateFileSharedByProfiles() async throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let keyFile = url.deletingLastPathComponent().appending(path: "Development Key")
+        let one = UUID(), two = UUID()
+        #expect(try FileVaultKey(file: keyFile, profile: one).existing() == nil, "Nothing is made until the first save")
+        let made = try FileVaultKey(file: keyFile, profile: one).make()
+        let shared = try Data(contentsOf: keyFile)
+        #expect(shared.count == 32 && made == KeychainVaultKey.derive(shared, profile: one))
+        let permissions = try FileManager.default.attributesOfItem(atPath: keyFile.path)[.posixPermissions] as? Int
+        #expect(permissions == 0o600, "Only this user can read it")
+        #expect(try FileVaultKey(file: keyFile, profile: two).make() == KeychainVaultKey.derive(shared, profile: two),
+                "Another profile derives its own key from the same file")
+        try FileVaultKey(file: keyFile, profile: one).remove()
+        #expect(FileManager.default.fileExists(atPath: keyFile.path), "Removing a profile keeps the shared key")
+
+        let vault = PasswordVault(fileURL: url, key: FileVaultKey(file: keyFile, profile: one))
+        #expect(await vault.load())
+        _ = vault.save(origin: "https://example.com", username: "ada", password: "pw")
+        await vault.flush()
+        let reopened = PasswordVault(fileURL: url, key: FileVaultKey(file: keyFile, profile: one))
+        #expect(await reopened.load() && reopened.logins.map(\.username) == ["ada"])
+
+        try Data("short".utf8).write(to: keyFile)
+        #expect(throws: (any Error).self) { try FileVaultKey(file: keyFile, profile: one).existing() }
+    }
+
     @Test func deletingPasswordsStopsSavesAndOpensStillUnderWay() async throws {
         let url = file()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

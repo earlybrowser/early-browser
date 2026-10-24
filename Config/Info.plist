@@ -42,6 +42,18 @@
             </array>
         </dict>
     </array>
+    <key>SUFeedURL</key>
+    <string>https://github.com/earlybrowser/early-browser/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>buypqtrNw4UY29nfkHAdSHK2TxhSsbX0NQWUMyEdN4Q=</string>
+    <key>SUEnableInstallerLauncherService</key>
+    <true/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SURequireSignedFeed</key>
+    <true/>
+    <key>SUEnableSystemProfiling</key>
+    <false/>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoadsInWebContent</key>

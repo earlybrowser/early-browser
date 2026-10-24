@@ -38,6 +38,12 @@ struct ExtensionApplicationTests {
             _ = await application.persistence?.flush()
             for id in opened { application.closeWindow(id) }
             application.closeWindow(nil)
+            // Extensions stop before their hosts go, as when a profile is deleted.
+            if #available(macOS 15.4, *) {
+                for profile in application.profiles {
+                    application.runningExtensionHosts(of: profile.id).forEach { $0.unloadAll() }
+                }
+            }
             _ = await application.persistence?.flush()
             defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: directory)

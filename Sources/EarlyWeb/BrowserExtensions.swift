@@ -235,7 +235,10 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     /// Website access changed: the running extension gets it without
     /// restarting. Only what changed is granted or withdrawn: WebKit updates
-    /// every page's injected content for each change.
+    /// every page's injected content for each change. Withdrawing goes
+    /// through denied: set straight back to unknown, WebKit stops reporting
+    /// access but keeps injecting the extension's scripts into new pages
+    /// (macOS 27). Unknown, not denied, lets a click still grant a page.
     public func refreshAccess(_ id: UUID) {
         guard let item = catalog.installed(id), let context = contexts[id] else { return }
         var wanted = Set<WKWebExtension.MatchPattern>()
@@ -244,7 +247,10 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             if let pattern = try? WKWebExtension.MatchPattern(string: "*://\(site)/*") { wanted.insert(pattern) }
         }
         let granted = context.grantedPermissionMatchPatterns
-        for pattern in granted.keys where !wanted.contains(pattern) { context.setPermissionStatus(.unknown, for: pattern) }
+        for pattern in granted.keys where !wanted.contains(pattern) {
+            context.setPermissionStatus(.deniedExplicitly, for: pattern)
+            context.setPermissionStatus(.unknown, for: pattern)
+        }
         for pattern in wanted where granted[pattern] == nil { context.setPermissionStatus(.grantedExplicitly, for: pattern) }
     }
 

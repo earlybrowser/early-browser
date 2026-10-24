@@ -266,7 +266,10 @@ struct DownloadStoreTests {
     }
 
     @Test func savedDocumentsAreListedAndPagesSaveAsStaticUTF8HTML() async throws {
-        let fixture = Fixture(page: "<meta charset='iso-8859-1'><meta http-equiv='refresh' content='0;url=https://example.com/away'>"
+        // The refresh only has to be there for saving to strip it; an hour's
+        // delay keeps it from leaving the page (and reaching the network)
+        // before the test reads it.
+        let fixture = Fixture(page: "<meta charset='iso-8859-1'><meta http-equiv='refresh' content='3600;url=https://example.com/away'>"
             + "<script>document.title = 'changed'</script><p><a href='next.html'>Next</a> Café</p>")
         defer { fixture.cleanup() }
         let source = URL(string: "early-test://fixture/article/page")!

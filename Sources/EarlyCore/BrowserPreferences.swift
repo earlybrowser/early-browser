@@ -36,8 +36,8 @@ public final class BrowserPreferences {
     public var pinsResetWhenClosed: Bool { didSet { store(pinsResetWhenClosed, for: "pinsResetWhenClosed") } }
     /// Control-Tab shows the tab switcher; off, it steps through tabs in sidebar order.
     public var controlTabShowsSwitcher: Bool { didSet { store(controlTabShowsSwitcher, for: "controlTabShowsSwitcher") } }
-    /// Update preferences, for when Early has an updater (Phase 10). Nothing
-    /// checks for updates yet, so Settings doesn't show them.
+    /// How Early updates itself (Sparkle). Settings shows them only in
+    /// releases, the only builds that update.
     public var checksForUpdatesAutomatically: Bool {
         didSet { store(checksForUpdatesAutomatically, for: "checksForUpdatesAutomatically") }
     }

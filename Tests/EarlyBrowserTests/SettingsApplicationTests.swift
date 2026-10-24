@@ -129,6 +129,28 @@ struct SettingsApplicationTests {
         #expect(press("\u{1b}", keyCode: 53, []) == nil, "Escape stops recording")
     }
 
+    @Test func onlyReleasesUpdateThemselves() async {
+        let fixture = Fixture()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suite) }
+        // Tests and development builds have no Sparkle, so nothing checks and
+        // Settings and the Early menu show no update controls.
+        let updater = SoftwareUpdater(preferences: fixture.preferences, environment: [:])
+        #expect(!updater.isAvailable && !updater.canCheck)
+        updater.checkForUpdates()
+        updater.apply(fixture.preferences)
+        #expect(!SoftwareUpdater.currentVersion.isEmpty)
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyUpdates-\(UUID())", isDirectory: true)
+        let app = EarlyAppDelegate()
+        app.presentWindow = { _ in }
+        _ = await app.bootstrap(launchStore: FirstLaunchStore(defaults: fixture.defaults), preferences: fixture.preferences,
+                                defaults: fixture.defaults, storageDirectory: directory, isTesting: true)
+        #expect(app.updater == nil)
+        app.closeWindow(nil)
+        _ = await app.persistence?.flush()
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     @Test func privacyListsPermissionsAndClearsAProfileWithoutAWindow() async throws {
         let rows = PrivacySettingsSection.permissionRows([
             "https://zoom.example": [.camera: .allow, .microphone: .block],

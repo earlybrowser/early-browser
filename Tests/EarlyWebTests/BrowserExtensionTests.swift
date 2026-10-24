@@ -164,6 +164,11 @@ enum ExtensionScenarios {
         }
 
         func cleanup() {
+            // Unload before the host goes, as Early does when a private
+            // session ends or a profile is deleted. Dropping a controller
+            // with extensions loaded makes WebKit (macOS 26) trap later, as
+            // its process pool is torn down.
+            host.unloadAll()
             manager.discardAll()
             window.close()
             try? FileManager.default.removeItem(at: files)
@@ -246,6 +251,11 @@ enum ExtensionScenarios {
         setup.host.performAction(item.id, in: extensionTab)
         try await waitUntil("popup") { !popups.isEmpty }
         #expect(popups.first?.popupWebView != nil)
+        // Closed before the extension goes, as Early's popover closes when
+        // the person clicks elsewhere. (A popup outliving its extension makes
+        // WebKit trap on macOS 26 as the popup's process pool is torn down.)
+        popups.forEach { $0.closePopup() }
+        popups.removeAll()
 
         // Removed: its files and catalog entry go.
         let folder = setup.files.appending(path: item.id.uuidString)
@@ -361,9 +371,18 @@ enum ExtensionScenarios {
         let setup = Setup()
         defer { setup.cleanup() }
         let item = try await setup.host.add(files: try messenger())
-        setup.host.catalog.change(item.id) { $0.siteAccess = .whenClicked }
-        await setup.host.reapply(item.id)
+        // Running everywhere first, as an extension is when someone changes
+        // its access in Settings. (Changing permissions while it's still
+        // starting up intermittently trips WebKit on macOS 26.)
         let tab = try await setup.open(server.url("/page"))
+        try await waitUntil("runs on every site") {
+            await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == "ran"
+        }
+        // As Settings does: access changes without restarting the extension.
+        setup.host.catalog.change(item.id) { $0.siteAccess = .whenClicked }
+        setup.host.refreshAccess(item.id)
+        setup.manager.reload(tab.id)
+        try await waitUntil("reloaded") { setup.manager.pages[tab.id]?.isLoading == false }
         try await Task.sleep(for: .milliseconds(800))
         #expect(await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == nil, "Nothing runs until allowed")
 
@@ -374,6 +393,12 @@ enum ExtensionScenarios {
         try await waitUntil("runs on the allowed site") {
             await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == "ran"
         }
+
+        await setup.host.setAllowed(false, site: "127.0.0.1", for: item.id)
+        setup.manager.reload(tab.id)
+        try await waitUntil("reloaded again") { setup.manager.pages[tab.id]?.isLoading == false }
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == nil, "Taking a site back stops it there")
     }
 
     static func blocker(_ name: String, path: String) throws -> URL {
@@ -440,6 +465,7 @@ enum ExtensionScenarios {
         // The private host reads the same files.
         let privateHost = ExtensionHost(catalog: catalog, filesDirectory: normal.files, websiteDataStore: .nonPersistent(),
                                         storageIdentifier: nil, isPrivate: true)
+        defer { privateHost.unloadAll() }
         await privateHost.loadEnabled()
         #expect(privateHost.context(allowed.id) != nil && privateHost.context(other.id) == nil)
         #expect(privateHost.context(allowed.id)?.hasAccessToPrivateData == true)

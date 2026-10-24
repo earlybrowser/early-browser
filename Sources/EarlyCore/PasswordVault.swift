@@ -57,7 +57,10 @@ extension PasswordVaultKey {
 /// profile's key is derived from it with HKDF and the profile's identifier,
 /// so profiles are encrypted separately but macOS asks only once. Early is
 /// not signed by a developer team, so macOS asks again ("Always Allow")
-/// after each new build before Early may read it.
+/// after each new build before Early may read it: without a team, the
+/// Keychain admits only the exact build that last had access, whatever the
+/// item's access list says (checked 2026-10-24, also with a self-signed
+/// certificate).
 public struct KeychainVaultKey: PasswordVaultKey {
     public static let service = "Early Passwords"
     static let sharedAccount = "vault"
@@ -114,6 +117,56 @@ public struct KeychainVaultKey: PasswordVaultKey {
         let status = SecItemCopyMatching(request as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = item as? Data else { throw PasswordVault.KeyError(status: status) }
+        return data
+    }
+}
+
+/// Development builds only: the shared key in a file beside the vaults, so
+/// rebuilding Early never asks for the Keychain. Releases use the Keychain.
+public struct FileVaultKey: PasswordVaultKey {
+    public let file: URL
+    public let profile: UUID
+
+    public init(file: URL, profile: UUID) {
+        self.file = file
+        self.profile = profile
+    }
+
+    public func existing() throws -> Data? {
+        try read().map { KeychainVaultKey.derive($0, profile: profile) }
+    }
+
+    public func make() throws -> Data {
+        if let shared = try read() { return KeychainVaultKey.derive(shared, profile: profile) }
+        let fresh = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        do {
+            try fresh.write(to: file, options: .withoutOverwriting)
+        } catch CocoaError.fileWriteFileExists {
+            // Another profile made it at the same moment.
+            guard let shared = try read() else { throw PasswordVault.KeyError(status: errSecIO) }
+            return KeychainVaultKey.derive(shared, profile: profile)
+        }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        return KeychainVaultKey.derive(fresh, profile: profile)
+    }
+
+    /// The file is shared by every profile, like the Keychain item.
+    public func remove() throws {}
+
+    /// Passwords saved by a build that used the Keychain open once more, then
+    /// move to the file. The Keychain item stays for installed releases.
+    public func legacy() throws -> Data? {
+        let keychain = KeychainVaultKey(profile: profile)
+        return try keychain.existing() ?? keychain.legacy()
+    }
+
+    public func removeLegacy() throws {}
+
+    private func read() throws -> Data? {
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        let data = try Data(contentsOf: file)
+        guard data.count == 32 else { throw PasswordVault.KeyError(status: errSecDecode) }
         return data
     }
 }
