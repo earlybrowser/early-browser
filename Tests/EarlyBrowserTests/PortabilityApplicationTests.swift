@@ -224,6 +224,27 @@ struct PortabilityApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test func theWindowInFrontIsFoundByItsIdentifier() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let primary = try #require(app.model)
+        func window(_ identifier: String?) -> NSWindow {
+            let window = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
+            window.isReleasedWhenClosed = false
+            window.identifier = identifier.map { NSUserInterfaceItemIdentifier($0) }
+            return window
+        }
+        #expect(app.browserModel(for: window("browser")) === primary)
+        let id = try #require(app.openNewWindow())
+        #expect(app.browserModel(for: window("browser.\(id)")) === app.windowModel(id))
+        #expect(app.browserModel(for: window("com_apple_SwiftUI_Settings_window")) == nil, "Settings isn't a browser window")
+        #expect(app.browserModel(for: window(nil)) == nil && app.browserModel(for: nil) == nil)
+        app.closeWindow(nil)
+        #expect(app.browserModel(for: window("browser")) == nil, "A closed window is never the one in front")
+        await fixture.cleanup()
+    }
+
     @Test func linksFromOtherAppsOpenInTheFrontOrdinaryWindowOrANewOne() async throws {
         let fixture = Fixture()
         let app = fixture.application
