@@ -1955,7 +1955,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertFalse(firstClose.exists) // Active Today tab also waits for hover.
         app.buttons[firstID].hover()
         XCTAssertTrue(firstClose.waitForExistence(timeout: 3))
-        XCTAssertTrue(firstClose.isHittable)
+        XCTAssertTrue(waitUntilHittable(firstClose))
         app.webViews.firstMatch.hover()
         XCTAssertFalse(firstClose.exists)
         pinAction("Pin Tab", on: app.buttons[firstID])
@@ -1985,7 +1985,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertFalse(firstClose.exists) // Reopened active pin is hover-only too.
         app.buttons[firstID].hover()
         XCTAssertTrue(firstClose.waitForExistence(timeout: 3))
-        XCTAssertTrue(firstClose.isHittable)
+        XCTAssertTrue(waitUntilHittable(firstClose))
         XCTAssertFalse(secondClose.exists)
         app.buttons[secondID].hover()
         XCTAssertTrue(secondClose.waitForExistence(timeout: 3))
@@ -2120,6 +2120,13 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(query.waitForExistence(timeout: 5))
         app.typeKey("a", modifierFlags: .command)
         app.typeText(address + "\n")
+    }
+
+    /// A control that just appeared can still be fading in, and isn't
+    /// clickable until it's drawn.
+    private func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
+        let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: element)
+        return XCTWaiter.wait(for: [hittable], timeout: timeout) == .completed
     }
 
     private func expectRuntime(_ app: XCUIApplication, tabs: Int, views: Int, created: Int,
