@@ -243,7 +243,7 @@ struct TabSwitcherKeyboardMonitor: NSViewRepresentable {
                                                      presented: model.tabSwitcher != nil)
             switch route {
             case .advance(let delta):
-                guard model.advanceTabSwitcher(delta, commitsOnControlRelease: event.modifierFlags.contains(.control)) else { return event }
+                guard model.controlTab(delta, commitsOnControlRelease: event.modifierFlags.contains(.control)) else { return event }
             case .commit: model.commitTabSwitcher()
             case .cancel: model.cancelTabSwitcher()
             case .cancelAndPass:

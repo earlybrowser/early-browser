@@ -208,7 +208,7 @@ struct CommandBarView: View {
                         .browserKeyboardFocus()
                         .disabled(model.suggestions.isRefreshing)
                         .opacity(model.suggestions.isRefreshing ? 0.75 : 1)
-                        .accessibilityLabel("Search Google for \(suggestion)")
+                        .accessibilityLabel("Search \(model.preferences.searchEngine.name) for \(suggestion)")
                         .accessibilityIdentifier("commandBar.suggestion.\(index)")
                         .accessibilityAddTraits(selected ? .isSelected : [])
                         .onContinuousHover { phase in

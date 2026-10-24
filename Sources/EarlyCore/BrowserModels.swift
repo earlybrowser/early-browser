@@ -120,7 +120,7 @@ public struct CommandBarPresentation: Equatable, Sendable {
     }
 }
 
-public enum StartupContext: Sendable {
+public enum StartupContext: Equatable, Sendable {
     case firstLaunch
     case returningSession
 }

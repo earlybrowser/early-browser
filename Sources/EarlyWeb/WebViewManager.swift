@@ -156,6 +156,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     /// An extension page follows a link out to the web: the owner replaces its
     /// privileged view with an ordinary one. Never used to enter an extension.
     public var onNeedsNewView: ((UUID, URL) -> Void)?
+    /// The search engine a page's "Search with…" item names.
+    public var searchEngineName: () -> String = { SearchEngine.google.name }
+    /// Settings › Sidebar: the tab switcher shows page previews. Off, none are taken.
+    public var capturesSnapshots: () -> Bool = { true }
 
     /// "scheme://host" of an extension's page; nil for anything else.
     public static func extensionOrigin(of url: URL) -> String? {
@@ -375,7 +379,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     private func captureSnapshot(_ id: UUID) {
-        guard pressure == .normal, let page = pages[id], !page.isLoading,
+        guard capturesSnapshots(), pressure == .normal, let page = pages[id], !page.isLoading,
               page.failure == nil, !page.hasUnsavedInput, !page.hasDialog,
               page.view.bounds.width > 0, page.view.bounds.height > 0 else { return }
         snapshots.request(tabID: id, navigationID: page.navigationGeneration, view: page.view)
@@ -442,6 +446,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             return self.extensionMenuItems?(id) ?? []
         }
         view.extensionCommand = { [weak self] event in self?.extensionCommand?(event) ?? false }
+        view.searchEngineName = { [weak self] in self?.searchEngineName() ?? SearchEngine.google.name }
         view.pageTranslationTitle = { [weak self, weak view] in
             guard let self, let view, let id = self.tabID(for: view) else { return nil }
             return self.translationMenuTitle?(id)

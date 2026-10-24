@@ -11,19 +11,19 @@ struct SearchSuggestionPolicyTests {
                       "file:///secret", "hello\nworld", String(repeating: "a", count: 201)])
     func rejectsAddressesAndIneligibleInput(query: String) {
         #expect(SearchSuggestionPolicy.query(query) == nil)
-        #expect(GoogleSearchSuggestions.request(for: query) == nil)
+        #expect(OnlineSearchSuggestions.request(for: query) == nil)
     }
 
     @Test func encodesSearchPhrasesWithoutCookiesOrPersistentCache() throws {
         #expect(SearchSuggestionPolicy.query("  café ideas  ") == "café ideas")
-        let request = try #require(GoogleSearchSuggestions.request(for: "café & tea"))
+        let request = try #require(OnlineSearchSuggestions.request(for: "café & tea"))
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         #expect(components.scheme == "https")
         #expect(components.host == "www.google.com")
         #expect(components.queryItems?.first(where: { $0.name == "q" })?.value == "café & tea")
         #expect(components.queryItems?.first(where: { $0.name == "oe" })?.value == "utf-8")
-        let configuration = GoogleSearchSuggestions.configuration()
+        let configuration = OnlineSearchSuggestions.configuration()
         #expect(configuration.httpCookieStorage == nil)
         #expect(configuration.urlCredentialStorage == nil)
         #expect(configuration.urlCache == nil)
@@ -212,6 +212,41 @@ struct SearchSuggestionCacheTests {
         #expect(cache.lookup("empty", now: now) == [])
         cache.insert((1...20).map { "result \($0)" }, for: "many", now: now)
         #expect(cache.lookup("many", now: now)?.count == 6)
+    }
+}
+
+extension SearchSuggestionsTests {
+    @Test func suggestionsComeFromTheChosenEngineOnly() async throws {
+        let provider = EngineSuggestions()
+        let state = SearchSuggestions(debounce: .zero, fetchFrom: { query, engine in await provider.fetch(query, engine) })
+        state.update(query: "swift", enabled: true, engine: .duckDuckGo)
+        try await waitUntil { state.results == ["swift on duckDuckGo"] }
+        // Another engine never shows this one's cached suggestions.
+        state.update(query: "swift", enabled: true, engine: .bing)
+        #expect(state.results.isEmpty || state.isRefreshing)
+        try await waitUntil { state.results == ["swift on bing"] }
+        // An engine without suggestions sends nothing, anywhere.
+        state.update(query: "swiftui", enabled: true, engine: .kagi)
+        #expect(state.results.isEmpty && !state.isRefreshing)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await provider.calls == ["swift duckDuckGo", "swift bing"])
+    }
+
+    @Test func eachEnginesSuggestionRequestGoesToItself() throws {
+        for engine in SearchEngine.allCases {
+            let request = OnlineSearchSuggestions.request(for: "swift", engine: engine)
+            #expect(request?.url == engine.suggestionURL(for: "swift"))
+            #expect((request == nil) == !engine.offersSuggestions)
+        }
+        #expect(OnlineSearchSuggestions.request(for: "example.com", engine: .bing) == nil, "Addresses are never suggested")
+    }
+}
+
+private actor EngineSuggestions {
+    var calls: [String] = []
+    func fetch(_ query: String, _ engine: SearchEngine) -> [String] {
+        calls.append("\(query) \(engine.rawValue)")
+        return ["\(query) on \(engine.rawValue)"]
     }
 }
 

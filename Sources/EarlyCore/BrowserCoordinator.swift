@@ -18,6 +18,8 @@ public final class BrowserCoordinator {
     public private(set) var focusedPaneByGroupID: [UUID: UUID]
     private var selectionBySpace: [UUID: UUID]
     @ObservationIgnored private let now: @Sendable () -> Date
+    /// Settings › Sidebar: closing a pin or Favorite returns it to its saved page.
+    @ObservationIgnored public var pinsResetWhenClosed: () -> Bool = { true }
 
     public init(
         startup: StartupContext,
@@ -564,7 +566,7 @@ public final class BrowserCoordinator {
         let tab = tabStore.tabs[index]
         let closeSpace = tab.isFavorite ? activeSpaceID : tab.spaceID
         let sibling = splitGroups.first { $0.spaceID == closeSpace && $0.panes.contains { $0.tabID == id } }?.panes.first { $0.tabID != id }?.tabID
-        let fallback = tabStore.close(id: id, in: closeSpace)
+        let fallback = tabStore.close(id: id, in: closeSpace, resetsPin: pinsResetWhenClosed())
         let nextID = sibling ?? fallback
         recentlyClosed.removeAll { $0.tab.id == id }
         // History must use the reset pin too, including persisted reopen paths.

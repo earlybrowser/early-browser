@@ -57,6 +57,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var extensionCatalogs: [UUID: ExtensionCatalog] = [:]
     /// The profile whose extensions Settings shows.
     var extensionsProfileID: UUID?
+    /// The profile Settings › Privacy shows.
+    var privacyProfileID: UUID?
     /// Each profile's open pull requests, read while one of its open windows
     /// has a GitHub live folder. Never for private windows.
     @ObservationIgnored private var pullRequestFeeds: [UUID: PullRequestFeed] = [:]
@@ -164,6 +166,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             if key == "browserAppearance" { self?.applyAppearance() }
             if ["onlineSearchSuggestions", "privateSearchSuggestions", "commandBarActions"].contains(key) { self?.visibleModels.forEach { $0.refreshSuggestions() } }
             if key == "spaceSwipes" { self?.visibleModels.forEach { $0.cancelSpaceSwipePresentation() } }
+            if key == "searchEngine" { self?.visibleModels.forEach { $0.refreshSuggestions() } }
+            // Turning previews off forgets the ones already taken.
+            if key == "tabSwitcherPreviews", self?.preferences?.tabSwitcherPreviews == false {
+                self?.visibleModels.forEach { $0.webViews.snapshots.clear() }
+            }
         }
         applyAppearance()
         save(primary)
@@ -471,6 +478,33 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             return await alert.beginSheetModal(for: window) == .alertFirstButtonReturn
         }
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    // MARK: Settings › Privacy
+
+    /// Websites that stored data in a profile.
+    func websiteData(for profile: UUID) async -> [WKWebsiteDataRecord] {
+        guard profiles.contains(where: { $0.id == profile }) else { return [] }
+        return await websiteDataStore(for: profile).dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
+    }
+
+    func removeWebsiteData(_ records: [WKWebsiteDataRecord], profile: UUID) async {
+        guard profiles.contains(where: { $0.id == profile }), !records.isEmpty else { return }
+        await websiteDataStore(for: profile).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: records)
+    }
+
+    /// Clears a profile's history and website data from the period's start:
+    /// through one of its windows (which also clears their icons), or
+    /// directly when none is open.
+    func clearHistory(_ range: HistoryClearRange, profile: UUID) async {
+        if let owner = visibleModels.first(where: { $0.coordinator.profileID == profile && !$0.isPrivate }) {
+            await owner.clearHistory(range)
+            return
+        }
+        guard profiles.contains(where: { $0.id == profile }) else { return }
+        let since = range.start(now: Date())
+        try? await history(for: profile)?.deleteVisits(since: since)
+        await websiteDataStore(for: profile).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: since ?? .distantPast)
     }
 
     /// A profile's open pull requests.

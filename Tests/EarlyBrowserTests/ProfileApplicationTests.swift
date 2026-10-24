@@ -465,7 +465,7 @@ struct ProfileApplicationTests {
     }
 
     @Test func settingsNavigationStartsWithGeneralAndKeepsTheRequestedOrder() {
-        #expect(BrowserSettingsSection.allCases.map(\.rawValue) == ["General", "Profiles", "Passwords", "Extensions", "Sidebar", "Search", "Sessions"])
+        #expect(BrowserSettingsSection.allCases.map(\.rawValue) == ["General", "Profiles", "Passwords", "Privacy", "Extensions", "Sidebar", "Search", "Shortcuts", "Sessions"])
         #expect(EarlyAppDelegate().settingsSection == .appearance)
     }
 
