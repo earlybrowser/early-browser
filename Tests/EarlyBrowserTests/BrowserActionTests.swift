@@ -68,6 +68,33 @@ struct BrowserActionTests {
         #expect(model.coordinator.tabStore.tabs.count == 1 && model.coordinator.commandBar == nil)
     }
 
+    @Test func deletingANestedFolderReleasesItsPagesAndPreservesUnrelatedFavorites() throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let model = fixture.model
+        let root = try #require(model.coordinator.createFolder(name: "Root"))
+        let child = try #require(model.coordinator.createFolder(name: "Child", parentID: root))
+        let first = try fixture.open(firstURL)
+        #expect(model.placeTab(first, in: .pinned, folderID: root))
+        let second = try fixture.open(secondURL)
+        #expect(model.placeTab(second, in: .pinned, folderID: child))
+        let favorite = try fixture.open(firstURL)
+        #expect(model.perform(.setFavorite(favorite, true)))
+        let kept = try #require(model.webViews.existingView(for: favorite))
+        let created = model.webViews.creationCount
+
+        #expect(model.perform(.deleteFolder(root)))
+        #expect(model.coordinator.folders.isEmpty)
+        #expect(model.coordinator.tabStore.tabs.map(\.id) == [favorite])
+        #expect(model.webViews.existingView(for: first) == nil && model.webViews.existingView(for: second) == nil)
+        #expect(model.webViews.existingView(for: favorite) === kept && model.webViews.liveViewCount == 1)
+        #expect(model.coordinator.activeTabID == favorite && model.webViews.creationCount == created)
+        let restored = try JSONDecoder().decode(BrowserSession.self, from: JSONEncoder().encode(model.coordinator.session))
+        try restored.validate(using: NavigationInput(allowedSchemes: ["early-test"]))
+        #expect(restored.folders.isEmpty && restored.tabs.map(\.id) == [favorite])
+        #expect(restored.recentlyClosed.allSatisfy { ![first, second].contains($0.tab.id) })
+    }
+
     @Test func restoringASplitActivatesEveryVisibleMemberAndResumesAnEvictedPaneWithoutChangingFocus() throws {
         let profile = UUID(), space = UUID()
         let tabs = ["left", "right", "background"].map { side in

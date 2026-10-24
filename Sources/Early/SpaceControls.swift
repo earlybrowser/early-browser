@@ -59,6 +59,23 @@ struct SpaceActions: View {
     }
 }
 
+/// The active Space has a shape cue as well as its brighter icon. Keep the
+/// mark inside the existing hit area so selection never shifts the footer.
+struct SpaceDotLabel: View {
+    let icon: SpaceIcon?
+    let selected: Bool
+    let opacity: Double
+
+    var body: some View {
+        SpaceIconView(icon: icon)
+            .opacity(opacity)
+            .frame(width: SpaceNavigation.footerItemWidth, height: 28)
+            .overlay(alignment: .bottom) {
+                BrowserSelectionMark(selected: selected).padding(.bottom, 3)
+            }
+    }
+}
+
 struct SpaceFooter: View {
     @Bindable var model: BrowserWindowModel
     @FocusState private var focusedSpace: UUID?
@@ -216,9 +233,8 @@ struct SpaceFooter: View {
             guard spaceDrag == nil else { return }
             model.perform(.switchSpace(space.id))
         } label: {
-            SpaceIconView(icon: space.icon)
-                .opacity((contrast == .increased ? 0.8 : 0.55) + (contrast == .increased ? 0.2 : 0.45) * fill)
-                .frame(width: SpaceNavigation.footerItemWidth, height: 28)
+            SpaceDotLabel(icon: space.icon, selected: selected,
+                opacity: (contrast == .increased ? 0.8 : 0.55) + (contrast == .increased ? 0.2 : 0.45) * fill)
                 .contentShape(Rectangle())
                 .overlay {
                     BrowserFocusOutline(focused: focusedSpace == space.id, cornerRadius: 6)
