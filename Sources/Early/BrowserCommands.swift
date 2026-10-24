@@ -110,15 +110,16 @@ struct BrowserCommands: Commands {
                 .disabled(model?.canPerform(.openFile) != true)
         }
         CommandGroup(replacing: .saveItem) {
-            // Like Arc and Chrome: ⌘W closes the tab, and an empty window
-            // itself. Only ⌘Q quits; closing the last window never does.
+            // Like Arc and Chrome: ⌘W closes the tab, and the window itself
+            // when it shows no page. Only ⌘Q quits. The window in front
+            // decides: the menu's focused value can still name another
+            // window after windows open, close and change focus.
             Button(model.map { $0.showsNoPage } ?? true ? "Close Window" : "Close Tab") {
-                if let model, !model.showsNoPage {
-                    model.perform(.closeActiveTab)
-                } else if let model {
-                    model.closeWindow()
+                let window = NSApp.keyWindow
+                if let front = application.browserModel(for: window), !front.showsNoPage {
+                    front.perform(.closeActiveTab)
                 } else {
-                    NSApp.keyWindow?.performClose(nil)
+                    window?.performClose(nil)
                 }
             }
             .keyboardShortcut(key(.closeTab))

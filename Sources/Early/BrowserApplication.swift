@@ -1076,15 +1076,15 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Browser windows from front to back.
     private var windowsInOrder: [(window: NSWindow, model: BrowserWindowModel)] {
-        NSApp.orderedWindows.compactMap { window in
-            guard let identifier = window.identifier?.rawValue else { return nil }
-            let owner: BrowserWindowModel?
-            if identifier == "browser" { owner = primaryWindowIsOpen ? model : nil }
-            else if identifier.hasPrefix("browser."), let id = UUID(uuidString: String(identifier.dropFirst("browser.".count))) {
-                owner = windowModel(id)
-            } else { owner = nil }
-            return owner.map { (window, $0) }
-        }
+        NSApp.orderedWindows.compactMap { window in browserModel(for: window).map { (window, $0) } }
+    }
+
+    /// The model of a native browser window, by the identifier it registered.
+    func browserModel(for window: NSWindow?) -> BrowserWindowModel? {
+        guard let identifier = window?.identifier?.rawValue else { return nil }
+        if identifier == "browser" { return primaryWindowIsOpen ? model : nil }
+        guard identifier.hasPrefix("browser."), let id = UUID(uuidString: String(identifier.dropFirst("browser.".count))) else { return nil }
+        return windowModel(id)
     }
 
     // MARK: Links from other apps
