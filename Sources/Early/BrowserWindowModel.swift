@@ -865,11 +865,10 @@ final class BrowserWindowModel {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// No tab open anywhere in the window, in any Space: ⌘W closes it. A
-    /// window with tabs open in another Space keeps them.
-    var isEmptyWindow: Bool {
-        coordinator.activeTabID == nil && !coordinator.tabStore.tabs.contains { $0.isOpen }
-    }
+    /// No page on screen, as in an empty Space: ⌘W closes the window, as its
+    /// close button would. Today tabs in its other Spaces can be reopened
+    /// from History › Recently Closed.
+    var showsNoPage: Bool { coordinator.activeTabID == nil }
 
     /// The window itself, as its close button would (saved pages stay).
     func closeWindow() {

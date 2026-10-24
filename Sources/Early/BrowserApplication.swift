@@ -335,8 +335,16 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func passwordsFile(for id: UUID) -> URL? {
-        storageURL?.deletingLastPathComponent().appending(path: "Passwords/\(id.uuidString).vault", directoryHint: .notDirectory)
+        storageURL?.deletingLastPathComponent().appending(path: "\(Self.passwordsFolder)/\(id.uuidString).vault", directoryHint: .notDirectory)
     }
+
+    /// Development builds share a release's data folder but keep their own
+    /// passwords, under their own key, so they never re-encrypt a release's.
+    #if DEBUG
+    static let passwordsFolder = "Passwords/Development"
+    #else
+    static let passwordsFolder = "Passwords"
+    #endif
 
     /// A profile's saved passwords. Private sessions have none of their own.
     func passwords(for id: UUID) -> PasswordVault? {
@@ -350,12 +358,12 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Releases keep the passwords' key in the Keychain. Development builds
-    /// keep it in a file beside the vaults: to the Keychain each new build is
-    /// a different app, so it would ask for your password after every build.
+    /// keep theirs in a file beside their own vaults: to the Keychain each new
+    /// build is a different app, so it would ask for your password every time.
     private func vaultKey(for id: UUID) -> any PasswordVaultKey {
         #if DEBUG
         if let directory = storageURL?.deletingLastPathComponent() {
-            return FileVaultKey(file: directory.appending(path: "Passwords/Development Key", directoryHint: .notDirectory), profile: id)
+            return FileVaultKey(file: directory.appending(path: "\(Self.passwordsFolder)/Key", directoryHint: .notDirectory), profile: id)
         }
         #endif
         return KeychainVaultKey(profile: id)

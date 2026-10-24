@@ -59,25 +59,28 @@ struct SpaceActions: View {
     }
 }
 
-/// The active Space has a shape cue as well as its brighter icon. Keep the
-/// mark inside the existing hit area so selection never shifts the footer.
+/// The active Space is the brighter icon. With Differentiate Without Color
+/// on, it also gets a mark beneath it, inside the existing hit area so
+/// selection never shifts the footer.
 struct SpaceDotLabel: View {
     let icon: SpaceIcon?
     let selected: Bool
     let opacity: Double
+    var marksSelection = false
 
     var body: some View {
         SpaceIconView(icon: icon)
             .opacity(opacity)
             .frame(width: SpaceNavigation.footerItemWidth, height: 28)
             .overlay(alignment: .bottom) {
-                BrowserSelectionMark(selected: selected).padding(.bottom, 3)
+                if marksSelection { BrowserSelectionMark(selected: selected).padding(.bottom, 3) }
             }
     }
 }
 
 struct SpaceFooter: View {
     @Bindable var model: BrowserWindowModel
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @FocusState private var focusedSpace: UUID?
     @State private var spaceDrag: SpaceReorderDrag?
     @GestureState private var spaceDragGestureActive = false
@@ -234,7 +237,8 @@ struct SpaceFooter: View {
             model.perform(.switchSpace(space.id))
         } label: {
             SpaceDotLabel(icon: space.icon, selected: selected,
-                opacity: (contrast == .increased ? 0.8 : 0.55) + (contrast == .increased ? 0.2 : 0.45) * fill)
+                opacity: (contrast == .increased ? 0.8 : 0.55) + (contrast == .increased ? 0.2 : 0.45) * fill,
+                marksSelection: differentiateWithoutColor)
                 .contentShape(Rectangle())
                 .overlay {
                     BrowserFocusOutline(focused: focusedSpace == space.id, cornerRadius: 6)

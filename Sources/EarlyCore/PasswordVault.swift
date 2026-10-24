@@ -121,8 +121,9 @@ public struct KeychainVaultKey: PasswordVaultKey {
     }
 }
 
-/// Development builds only: the shared key in a file beside the vaults, so
-/// rebuilding Early never asks for the Keychain. Releases use the Keychain.
+/// Development builds only: the shared key in a file beside their own
+/// vaults, so rebuilding Early never asks for the Keychain. Releases use the
+/// Keychain, and their vaults are never opened with this key.
 public struct FileVaultKey: PasswordVaultKey {
     public let file: URL
     public let profile: UUID
@@ -153,15 +154,6 @@ public struct FileVaultKey: PasswordVaultKey {
 
     /// The file is shared by every profile, like the Keychain item.
     public func remove() throws {}
-
-    /// Passwords saved by a build that used the Keychain open once more, then
-    /// move to the file. The Keychain item stays for installed releases.
-    public func legacy() throws -> Data? {
-        let keychain = KeychainVaultKey(profile: profile)
-        return try keychain.existing() ?? keychain.legacy()
-    }
-
-    public func removeLegacy() throws {}
 
     private func read() throws -> Data? {
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
