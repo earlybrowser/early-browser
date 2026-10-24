@@ -27,9 +27,11 @@ jobs:
           sw_vers
           bundle="$(swift build --show-bin-path)/EarlyCorePackageTests.xctest/Contents/MacOS/EarlyCorePackageTests"
           helper="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/libexec/swift/pm/swiftpm-testing-helper"
+          fw="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+          lib="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/usr/lib"
           for i in 1 2 3 4 5 6; do
             echo "::group::Attempt $i"
-            lldb --batch -o "process handle SIGPIPE -n true -p true -s false" -o run -k "thread backtrace all" -k "quit 1" -- \
+            lldb --batch -o "settings set target.env-vars DYLD_FRAMEWORK_PATH=$fw DYLD_LIBRARY_PATH=$lib" -o "process handle SIGPIPE -n true -p true -s false" -o run -k "thread backtrace all" -k "quit 1" -- \
               "$helper" --test-bundle-path "$bundle" --no-parallel "$bundle" --testing-library swift-testing \
               --filter BrowserExtensionTests 2>&1 | tee "attempt-$i.log"
             echo "::endgroup::"
