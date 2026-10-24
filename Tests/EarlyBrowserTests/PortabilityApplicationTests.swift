@@ -53,6 +53,16 @@ struct PortabilityApplicationTests {
         return id
     }
 
+    /// Waits until the test pages ("Page One", "Page Two") have their titles.
+    /// A title arriving after a snapshot would change the workspace by itself.
+    private func waitUntilLoaded(_ models: [BrowserWindowModel]) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while models.flatMap({ $0.coordinator.tabStore.tabs.filter(\.isOpen) }).contains(where: { !$0.title.hasPrefix("Page ") }) {
+            try #require(ContinuousClock.now < deadline, "Test pages loaded")
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     @Test func anExportLeavesOutPrivateWindowsAndImportingAddsAProfileThatLoadsNothing() async throws {
         let fixture = Fixture()
         await fixture.start()
@@ -128,6 +138,8 @@ struct PortabilityApplicationTests {
         let model = try #require(app.model)
         _ = try openTab(one, in: model)
         model.onOpenWindow?(two, "Sibling")
+        let sibling = try #require(fixture.opened.last.flatMap { app.windowModel($0) })
+        try await waitUntilLoaded([model, sibling])
         var archive = try #require(app.stateArchive())
         #expect(archive.workspace.sessions.first?.additionalWindows.count == 1)
 
@@ -163,6 +175,7 @@ struct PortabilityApplicationTests {
         fixture.preferences.searchEngine = .google
         let later = try openTab(two, in: model)
         let view = try #require(model.webViews.existingView(for: later))
+        try await waitUntilLoaded([model])
         app.saveAll()
         #expect(await app.persistence?.flush() == true)
         let before = app.workspace
@@ -199,6 +212,7 @@ struct PortabilityApplicationTests {
         let app = fixture.application
         let model = try #require(app.model)
         _ = try openTab(one, in: model)
+        try await waitUntilLoaded([model])
         let archive = try #require(app.stateArchive())
         let before = app.workspace
         let directory = try #require(app.backupsDirectory)
