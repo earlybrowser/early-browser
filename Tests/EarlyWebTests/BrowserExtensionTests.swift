@@ -361,8 +361,11 @@ enum ExtensionScenarios {
         let setup = Setup()
         defer { setup.cleanup() }
         let item = try await setup.host.add(files: try messenger())
+        // As Settings does: website access changes without restarting the
+        // extension. (Restarting it here also hid that its scripts kept
+        // running, and intermittently tripped WebKit on CI.)
         setup.host.catalog.change(item.id) { $0.siteAccess = .whenClicked }
-        await setup.host.reapply(item.id)
+        setup.host.refreshAccess(item.id)
         let tab = try await setup.open(server.url("/page"))
         try await Task.sleep(for: .milliseconds(800))
         #expect(await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == nil, "Nothing runs until allowed")
@@ -374,6 +377,12 @@ enum ExtensionScenarios {
         try await waitUntil("runs on the allowed site") {
             await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == "ran"
         }
+
+        await setup.host.setAllowed(false, site: "127.0.0.1", for: item.id)
+        setup.manager.reload(tab.id)
+        try await waitUntil("reloaded") { setup.manager.pages[tab.id]?.isLoading == false }
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == nil, "Taking a site back stops it there")
     }
 
     static func blocker(_ name: String, path: String) throws -> URL {
