@@ -34,12 +34,19 @@ jobs:
           # WebKit/AppKit fixtures share native process and run-loop resources.
           # Explicitly opt out of Swift Testing's concurrent fixture startup.
           swift test --no-parallel 2>&1 | tee build/TestResults/package.log
+      - name: Collect crash reports
+        if: failure()
+        run: |
+          mkdir -p build/TestResults/CrashReports
+          find ~/Library/Logs/DiagnosticReports -name '*.ips' -mmin -60 -exec cp {} build/TestResults/CrashReports/ \; || true
       - name: Upload package log
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: package-results
-          path: build/TestResults/package.log
+          path: |
+            build/TestResults/package.log
+            build/TestResults/CrashReports/
           retention-days: 7
 
   ui:

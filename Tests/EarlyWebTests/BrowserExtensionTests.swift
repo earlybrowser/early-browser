@@ -361,12 +361,18 @@ enum ExtensionScenarios {
         let setup = Setup()
         defer { setup.cleanup() }
         let item = try await setup.host.add(files: try messenger())
-        // As Settings does: website access changes without restarting the
-        // extension. (Restarting it here also hid that its scripts kept
-        // running, and intermittently tripped WebKit on CI.)
+        // Running everywhere first, as an extension is when someone changes
+        // its access in Settings. (Changing permissions while it's still
+        // starting up intermittently trips WebKit on macOS 26.)
+        let tab = try await setup.open(server.url("/page"))
+        try await waitUntil("runs on every site") {
+            await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == "ran"
+        }
+        // As Settings does: access changes without restarting the extension.
         setup.host.catalog.change(item.id) { $0.siteAccess = .whenClicked }
         setup.host.refreshAccess(item.id)
-        let tab = try await setup.open(server.url("/page"))
+        setup.manager.reload(tab.id)
+        try await waitUntil("reloaded") { setup.manager.pages[tab.id]?.isLoading == false }
         try await Task.sleep(for: .milliseconds(800))
         #expect(await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == nil, "Nothing runs until allowed")
 
@@ -380,7 +386,7 @@ enum ExtensionScenarios {
 
         await setup.host.setAllowed(false, site: "127.0.0.1", for: item.id)
         setup.manager.reload(tab.id)
-        try await waitUntil("reloaded") { setup.manager.pages[tab.id]?.isLoading == false }
+        try await waitUntil("reloaded again") { setup.manager.pages[tab.id]?.isLoading == false }
         try await Task.sleep(for: .milliseconds(800))
         #expect(await attribute("data-extension", in: setup.manager.pages[tab.id]?.view) == nil, "Taking a site back stops it there")
     }
