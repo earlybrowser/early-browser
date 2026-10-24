@@ -86,6 +86,14 @@ struct SplitContentView: View {
                             .padding(.bottom, max(0, geometry.size.height * 0.08))
                             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
                             .allowsHitTesting(false)
+                    } else if model.showsWelcome, model.coordinator.commandBar?.query.isEmpty ?? true {
+                        // Below the command bar too, out of the way of its results while
+                        // typing. A short window gets only its buttons.
+                        WelcomeCard(model: model, compact: geometry.size.height < 700)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, max(16, geometry.size.height * 0.05))
+                            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottom)
+                            .transition(reduceMotion ? .identity : .opacity)
                     }
                 }
                 ForEach(tabIDs, id: \.self) { id in
@@ -130,6 +138,9 @@ struct SplitContentView: View {
                 }
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: model.splitDropSourceID != nil)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.showsWelcome)
+            // The welcome is done once a page opens.
+            .onChange(of: tabIDs.isEmpty) { _, empty in if !empty { model.finishWelcome() } }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .coordinateSpace(name: "splitContent")
         }

@@ -59,6 +59,15 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     var extensionsProfileID: UUID?
     /// The profile Settings › Privacy shows.
     var privacyProfileID: UUID?
+    /// Whether Early opens web links from other apps. Checked again whenever
+    /// Early comes to the front, since it can change in System Settings.
+    private(set) var isDefaultBrowser = false
+    /// Tests use their own, so nothing changes the Mac's default browser.
+    @ObservationIgnored var defaultBrowser: DefaultBrowser?
+    /// Links from other apps that arrived before the windows were ready.
+    @ObservationIgnored private var pendingLinks: [URL] = []
+    /// The most links taken from other apps at once.
+    static let externalLinkLimit = 10
     /// Each profile's open pull requests, read while one of its open windows
     /// has a GitHub live folder. Never for private windows.
     @ObservationIgnored private var pullRequestFeeds: [UUID: PullRequestFeed] = [:]
@@ -147,6 +156,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         // A closed profile keeps saved organization, not abandoned Today tabs.
         let active = snapshot.activeProfileID
+        #if DEBUG
+        // UI automation sees the welcome only when it asks to.
+        let environment = ProcessInfo.processInfo.environment
+        if loaded.testing, environment["EARLY_TEST_DEFAULTS_SUITE"] != nil, environment["EARLY_TEST_WELCOME"] == nil {
+            defaults.set(true, forKey: BrowserWindowModel.welcomeCompletedKey)
+        }
+        #endif
         let startup = loaded.error == nil ? launchStore.claimStartupContext() : .returningSession
         workspace = snapshot
         let primary = makeModel(session: snapshot.session(for: active)!, startup: startup)
@@ -170,6 +186,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         applyAppearance()
         save(primary)
+        refreshDefaultBrowser()
+        deliverExternalLinks()
         Task { await retryWebsiteDataCleanup() }
         return restored
     }
@@ -551,6 +569,123 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         feed.refresh()
     }
 
+    // MARK: Export and import
+
+    /// What an export holds right now: every profile's Spaces, folders,
+    /// pins, Favorites, windows and open tabs, and the settings that move.
+    func stateArchive() -> EarlyStateArchive? {
+        captureWorkspace()
+        guard let workspace else { return nil }
+        return EarlyStateArchive(workspace: workspace, settings: preferences?.portableSettings)
+    }
+
+    /// A file to import, checked in full before anything changes.
+    func readStateArchive(at url: URL) throws -> EarlyStateArchive {
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > EarlyStateArchive.maximumSize {
+            throw EarlyStateArchive.Problem.tooLarge
+        }
+        guard let data = try? Data(contentsOf: url) else { throw EarlyStateArchive.Problem.notAnArchive }
+        return try EarlyStateArchive.decode(data, using: input)
+    }
+
+    /// Copies of what was here before each import, newest kept.
+    var backupsDirectory: URL? { storageURL?.deletingLastPathComponent().appending(path: "Backups", directoryHint: .isDirectory) }
+    static let backupLimit = 5
+
+    struct ImportOutcome: Equatable {
+        let message: String
+        let succeeded: Bool
+        /// What was here before, to import again if needed.
+        var backup: URL?
+    }
+
+    /// The whole result is checked, a backup of what's here is saved, then
+    /// every window changes at once. Nothing changes if any step fails.
+    func importState(_ archive: EarlyStateArchive, mode: EarlyStateArchive.ImportMode, includeSettings: Bool) async -> ImportOutcome {
+        guard canEditProfiles, let preferences else {
+            return ImportOutcome(message: "Early can’t import right now. Try again in a moment.", succeeded: false)
+        }
+        guard !visibleModels.contains(where: {
+            $0.webViews.pages.values.contains(where: \.hasDialog) || $0.sidebarInteractionInProgress || $0.splitResize != nil
+        }) else {
+            return ImportOutcome(message: "Close any open website dialogs, then import again.", succeeded: false)
+        }
+        captureWorkspace()
+        guard let current = workspace else { return ImportOutcome(message: EarlyStateArchive.Problem.invalid.message, succeeded: false) }
+        let result: EarlyStateArchive.ImportResult
+        do { result = try archive.merged(into: current, mode: mode, using: input) }
+        catch { return ImportOutcome(message: (error as? EarlyStateArchive.Problem ?? .invalid).message, succeeded: false) }
+        let backup: URL
+        do { backup = try writeBackup(EarlyStateArchive(workspace: current, settings: preferences.portableSettings)) }
+        catch {
+            return ImportOutcome(message: "Nothing was imported, because a backup of what you have couldn’t be saved. \(error.localizedDescription)",
+                                 succeeded: false)
+        }
+        profileOperationInProgress = true
+        defer {
+            profileOperationInProgress = false
+            deliverExternalLinks()
+        }
+        applyingWorkspace = true
+        workspace = result.workspace
+        var opening: [BrowserSession] = []
+        for profile in result.profiles {
+            guard let session = result.workspace.session(for: profile) else { continue }
+            let snapshots = [session] + session.additionalWindows
+            let open = visibleModels.filter { $0.coordinator.profileID == profile }
+            if !open.isEmpty {
+                // A replaced profile's windows show what was imported; any
+                // extra ones close, and the backup keeps what they had.
+                for (owner, snapshot) in zip(open, snapshots) { owner.applyProfileSnapshot(snapshot) }
+                for owner in open.dropFirst(snapshots.count) { closeWindow(of: owner) }
+                opening += snapshots.dropFirst(open.count)
+            } else if result.openProfiles.contains(profile) {
+                opening += snapshots
+            }
+        }
+        let opened = opening.map { addWindow(session: $0) }
+        applyingWorkspace = false
+        if includeSettings, let settings = archive.settings { preferences.apply(settings) }
+        saveAll()
+        opened.forEach { presentWindow?($0) }
+        let names = result.profiles.compactMap { id in profiles.first { $0.id == id }?.name }
+        let imported = names.count == 1 ? names[0] : "\(names.count) profiles"
+        guard await persistence?.flush() == true else {
+            return ImportOutcome(message: "Imported \(imported), but it couldn’t be saved yet. \(persistence?.error ?? "")",
+                                 succeeded: true, backup: backup)
+        }
+        return ImportOutcome(message: "Imported \(imported). Tabs load when you choose them, and websites will ask you to sign in again.",
+                             succeeded: true, backup: backup)
+    }
+
+    private func writeBackup(_ archive: EarlyStateArchive) throws -> URL {
+        guard let directory = backupsDirectory else { throw CocoaError(.fileWriteUnknown) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        var file = directory.appending(path: "Before Import \(formatter.string(from: archive.exportedAt)).json")
+        if FileManager.default.fileExists(atPath: file.path) {
+            file = directory.appending(path: "Before Import \(formatter.string(from: archive.exportedAt)) \(UUID().uuidString.prefix(4)).json")
+        }
+        try archive.encoded().write(to: file, options: .atomic)
+        let backups = ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("Before Import ") && $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for old in backups.dropLast(Self.backupLimit) where old != file { try? FileManager.default.removeItem(at: old) }
+        return file
+    }
+
+    /// Closes a browser window as if its close button were pressed.
+    private func closeWindow(of owner: BrowserWindowModel) {
+        let id: UUID?
+        if owner === model, primaryWindowIsOpen { id = nil }
+        else if let entry = windows.first(where: { $0.model === owner }) { id = entry.id }
+        else { return }
+        nativeWindow(of: owner)?.close()
+        closeWindow(id)
+    }
+
     func history(for id: UUID) -> HistoryStore? {
         if let store = historyStores[id] { return store }
         guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
@@ -678,10 +813,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let model, primaryWindowIsOpen, model.coordinator.profileID == id { identifier = "browser" }
         else if let existing = windows.first(where: { $0.model.coordinator.profileID == id }) { identifier = "browser.\(existing.id)" }
         else {
-            let window = addWindow(session: session)
+            // Its windows as they were saved, or as they were imported.
+            let opened = ([session] + session.additionalWindows).map { addWindow(session: $0) }
             workspace?.activeProfileID = id
             saveAll()
-            presentWindow?(window)
+            opened.forEach { presentWindow?($0) }
             return
         }
         NSApp.windows.first { $0.identifier?.rawValue == identifier }?.makeKeyAndOrderFront(nil)
@@ -762,7 +898,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         profileOperationInProgress = true
-        defer { profileOperationInProgress = false }
+        defer {
+            profileOperationInProgress = false
+            deliverExternalLinks()
+        }
         // Record cleanup before removing metadata; a failed save must never
         // delete a website store still referenced by the on-disk catalog.
         var pending = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
@@ -878,19 +1017,76 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     func presentCommandBar(_ intent: CommandBarIntent) -> Bool {
         guard canOpenWindow else { return false }
-        let front = NSApp.orderedWindows.lazy.compactMap { window -> BrowserWindowModel? in
-            guard window.isVisible, let identifier = window.identifier?.rawValue else { return nil }
-            if identifier == "browser" { return self.primaryWindowIsOpen ? self.model : nil }
-            guard identifier.hasPrefix("browser."), let id = UUID(uuidString: String(identifier.dropFirst("browser.".count))) else { return nil }
-            return self.windowModel(id)
-        }.first
-        if let front {
+        if let front = windowsInOrder.first(where: { $0.window.isVisible })?.model {
             nativeWindow(of: front)?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return front.perform(.presentCommandBar(intent))
         }
         // A new window opens with the command bar ready.
         return openNewWindow() != nil
+    }
+
+    /// Browser windows from front to back.
+    private var windowsInOrder: [(window: NSWindow, model: BrowserWindowModel)] {
+        NSApp.orderedWindows.compactMap { window in
+            guard let identifier = window.identifier?.rawValue else { return nil }
+            let owner: BrowserWindowModel?
+            if identifier == "browser" { owner = primaryWindowIsOpen ? model : nil }
+            else if identifier.hasPrefix("browser."), let id = UUID(uuidString: String(identifier.dropFirst("browser.".count))) {
+                owner = windowModel(id)
+            } else { owner = nil }
+            return owner.map { (window, $0) }
+        }
+    }
+
+    // MARK: Links from other apps
+
+    /// Links and web pages from other apps and Finder, which SwiftUI hands to
+    /// a window's `onOpenURL` (including the link that launched Early), open
+    /// as new Today tabs in the frontmost ordinary window, or in a new window
+    /// of the current profile when none is open; never in a private window.
+    /// Only web addresses and files.
+    func openExternalLinks(_ urls: [URL]) {
+        pendingLinks = Array((pendingLinks + urls).prefix(Self.externalLinkLimit))
+        deliverExternalLinks()
+    }
+
+    private func deliverExternalLinks() {
+        guard !pendingLinks.isEmpty, workspace != nil, !isTerminating, !profileOperationInProgress else { return }
+        let schemes: Set<String> = testing ? ["http", "https", "file", "early-test"] : ["http", "https", "file"]
+        let links = pendingLinks.filter { schemes.contains($0.scheme?.lowercased() ?? "") }.compactMap { try? input.validate($0) }
+        pendingLinks = []
+        guard !links.isEmpty else { return }
+        let front = windowsInOrder.first { !$0.model.isPrivate && ($0.window.isVisible || $0.window.isMiniaturized) }
+        // The first window may still be appearing when Early was launched by the link.
+        let target = front?.model ?? (primaryWindowIsOpen && model?.isPrivate == false ? model : nil)
+        if let target {
+            if front?.window.isMiniaturized == true { front?.window.deminiaturize(nil) }
+            target.openLocations(links)
+            nativeWindow(of: target)?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else if let id = openNewWindow() {
+            windowModel(id)?.openLocations(links)
+        }
+    }
+
+    // MARK: Default browser
+
+    private var browserHandler: DefaultBrowser { defaultBrowser ?? (testing ? .unavailable : .system) }
+
+    func refreshDefaultBrowser() {
+        let value = browserHandler.isDefault()
+        if isDefaultBrowser != value { isDefaultBrowser = value }
+    }
+
+    /// macOS asks the person first; keeping their browser is respected.
+    func makeDefaultBrowser() async {
+        await browserHandler.makeDefault()
+        refreshDefaultBrowser()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if workspace != nil { refreshDefaultBrowser() }
     }
 
     /// Clicking the Dock icon with no window showing brings back a minimized

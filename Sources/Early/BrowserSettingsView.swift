@@ -40,7 +40,7 @@ enum BrowserSettingsSection: String, CaseIterable, Identifiable {
         case .appearance: "Make Early feel at home."
         case .sidebar: "Your tabs, organized your way."
         case .search: "Choose what happens as you type."
-        case .sessions: "Pick up where you left off."
+        case .sessions: "Pick up where you left off, here or on another Mac."
         }
     }
 }
@@ -306,6 +306,7 @@ struct BrowserSettingsView: View {
                     SettingsToggle("Automatic Picture in Picture", detail: "When you switch away from a tab that’s playing a video, keep watching it in a floating window. It returns to the page when you come back.", isOn: $preferences.automaticPictureInPicture, identifier: "settings.automaticPictureInPicture")
                 }
             }
+            DefaultBrowserCard(application: application)
         }
     }
 
@@ -430,6 +431,7 @@ struct BrowserSettingsView: View {
                 }
                 if let sessionMessage { Text(sessionMessage).font(.caption).foregroundStyle(.secondary) }
             }
+            StatePortabilityCard(application: application)
         }
     }
 }
