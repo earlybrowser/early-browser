@@ -164,6 +164,11 @@ enum ExtensionScenarios {
         }
 
         func cleanup() {
+            // Unload before the host goes, as Early does when a private
+            // session ends or a profile is deleted. Dropping a controller
+            // with extensions loaded makes WebKit (macOS 26) trap later, as
+            // its process pool is torn down.
+            host.unloadAll()
             manager.discardAll()
             window.close()
             try? FileManager.default.removeItem(at: files)
@@ -455,6 +460,7 @@ enum ExtensionScenarios {
         // The private host reads the same files.
         let privateHost = ExtensionHost(catalog: catalog, filesDirectory: normal.files, websiteDataStore: .nonPersistent(),
                                         storageIdentifier: nil, isPrivate: true)
+        defer { privateHost.unloadAll() }
         await privateHost.loadEnabled()
         #expect(privateHost.context(allowed.id) != nil && privateHost.context(other.id) == nil)
         #expect(privateHost.context(allowed.id)?.hasAccessToPrivateData == true)
