@@ -193,9 +193,9 @@ struct BrowserAccessibilityTests {
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
-    func theSelectedSpaceDotHasAShapeCueEvenWithIdenticalIconColors(_ scheme: ColorScheme) throws {
-        func bitmap(selected: Bool) throws -> NSBitmapImageRep {
-            let renderer = ImageRenderer(content: SpaceDotLabel(icon: nil, selected: selected, opacity: 1)
+    func theSelectedSpaceDotHasAShapeCueWhenColorAloneIsntEnough(_ scheme: ColorScheme) throws {
+        func bitmap(selected: Bool, differentiate: Bool = true) throws -> NSBitmapImageRep {
+            let renderer = ImageRenderer(content: SpaceDotLabel(icon: nil, selected: selected, opacity: 1, marksSelection: differentiate)
                 .environment(\.colorScheme, scheme))
             renderer.scale = 2
             return try #require(renderer.nsImage?.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
@@ -207,6 +207,9 @@ struct BrowserAccessibilityTests {
         #expect(mark.alphaComponent > 0.99)
         #expect((unselected.colorAt(x: x, y: y)?.alphaComponent ?? 1) == 0)
         #expect(scheme == .dark ? mark.redComponent > 0.8 : mark.redComponent < 0.2)
+        // Otherwise the brighter icon alone shows the selection.
+        let plain = try bitmap(selected: true, differentiate: false)
+        #expect(plain.pixelsHigh == selected.pixelsHigh && (plain.colorAt(x: x, y: y)?.alphaComponent ?? 1) == 0)
     }
 
     @Test(arguments: [ColorScheme.light, .dark])

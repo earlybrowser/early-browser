@@ -112,8 +112,8 @@ struct BrowserCommands: Commands {
         CommandGroup(replacing: .saveItem) {
             // Like Arc and Chrome: ⌘W closes the tab, and an empty window
             // itself. Only ⌘Q quits; closing the last window never does.
-            Button(model.map { $0.isEmptyWindow } ?? true ? "Close Window" : "Close Tab") {
-                if let model, !model.isEmptyWindow {
+            Button(model.map { $0.showsNoPage } ?? true ? "Close Window" : "Close Tab") {
+                if let model, !model.showsNoPage {
                     model.perform(.closeActiveTab)
                 } else if let model {
                     model.closeWindow()

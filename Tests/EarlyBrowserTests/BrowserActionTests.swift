@@ -135,26 +135,28 @@ struct BrowserActionTests {
         #expect(model.webViews.pages[tabs[2].id] == nil && model.webViews.pages[closed.id] == nil)
     }
 
-    @Test func commandWClosesAWindowOnlyWhenNoTabIsOpenInIt() throws {
+    @Test func commandWClosesTheWindowWhenNoPageIsOnScreen() throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
         let model = fixture.model
         var closed = 0
         model.onCloseWindow = { closed += 1 }
-        #expect(model.isEmptyWindow, "A fresh window has no tabs")
+        #expect(model.showsNoPage, "A fresh window has no tabs")
         let tab = try fixture.open(firstURL)
-        #expect(!model.isEmptyWindow)
+        #expect(!model.showsNoPage)
         #expect(model.perform(.setPinned(tab, true)))
         #expect(model.perform(.closeActiveTab))
-        #expect(model.isEmptyWindow, "A closed pin isn't an open tab")
+        #expect(model.showsNoPage, "A closed pin isn't an open page")
 
-        // A Today tab in another Space keeps the window open.
+        // An empty Space shows no page either, even with a Today tab open in
+        // another Space: ⌘W closes the window there too.
         let space = model.coordinator.activeSpaceID
         let other = try #require(model.coordinator.createSpace(name: "Other"))
         #expect(model.switchSpace(to: other))
         _ = try fixture.open(secondURL)
+        #expect(!model.showsNoPage)
         #expect(model.switchSpace(to: space))
-        #expect(model.coordinator.activeTabID == nil && !model.isEmptyWindow)
+        #expect(model.showsNoPage)
         model.closeWindow()
         #expect(closed == 1, "Closing is the window's own, as its close button")
     }
