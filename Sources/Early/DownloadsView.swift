@@ -74,7 +74,7 @@ struct DownloadsButton: View {
         .accessibilityLabel("Downloads")
         .accessibilityValue(DownloadStatus.summary(for: store))
         .accessibilityIdentifier("downloads.button")
-        .help("Downloads (⌥⌘L)")
+        .help("Downloads\(model.preferences.shortcutHint(.showDownloads))")
         .onChange(of: DownloadRing.Input(active: active, progress: store.activeProgress)) { _, input in
             guard !finishing else { return }
             ringValue = DownloadRing.next(current: ringValue, active: input.active, progress: input.progress)

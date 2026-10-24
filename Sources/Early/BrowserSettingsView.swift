@@ -6,12 +6,13 @@ import EarlyWeb
 import SwiftUI
 
 enum BrowserSettingsSection: String, CaseIterable, Identifiable {
-    case appearance = "General", profiles = "Profiles", passwords = "Passwords", extensions = "Extensions", sidebar = "Sidebar"
-    case search = "Search", sessions = "Sessions"
+    case appearance = "General", profiles = "Profiles", passwords = "Passwords", privacy = "Privacy", extensions = "Extensions"
+    case sidebar = "Sidebar", search = "Search", shortcuts = "Shortcuts", sessions = "Sessions"
     var id: Self { self }
     var key: String {
         switch self {
         case .profiles: "profiles"; case .appearance: "appearance"; case .passwords: "passwords"; case .extensions: "extensions"
+        case .privacy: "privacy"; case .shortcuts: "shortcuts"
         case .sidebar: "sidebar"
         case .search: "search"; case .sessions: "sessions"
         }
@@ -21,6 +22,8 @@ enum BrowserSettingsSection: String, CaseIterable, Identifiable {
         case .profiles: "person.crop.circle"
         case .passwords: "key"
         case .extensions: "puzzlepiece.extension"
+        case .privacy: "hand.raised"
+        case .shortcuts: "keyboard"
         case .appearance: "gearshape"
         case .sidebar: "sidebar.left"
         case .search: "magnifyingglass"
@@ -32,6 +35,8 @@ enum BrowserSettingsSection: String, CaseIterable, Identifiable {
         case .profiles: "A little separation for the different parts of your day."
         case .passwords: "Saved on this Mac, filled in when you sign in."
         case .extensions: "Add features to Early, one profile at a time."
+        case .privacy: "Choose what websites can use and keep."
+        case .shortcuts: "Make Early’s commands your own."
         case .appearance: "Make Early feel at home."
         case .sidebar: "Your tabs, organized your way."
         case .search: "Choose what happens as you type."
@@ -166,6 +171,8 @@ struct BrowserSettingsView: View {
         case .profiles: profilesSection
         case .passwords: PasswordsSettingsSection(application: application, preferences: preferences, lock: application.passwordsLock)
         case .extensions: ExtensionsSettingsSection(application: application)
+        case .privacy: PrivacySettingsSection(application: application)
+        case .shortcuts: ShortcutsSettingsSection(preferences: preferences)
         case .appearance: appearanceSection
         case .sidebar: sidebarSection
         case .search: searchSection
@@ -351,22 +358,40 @@ struct BrowserSettingsView: View {
                 Divider().padding(.vertical, 6)
                 SettingsToggle("Haptic feedback", detail: "Subtle feedback when moving tabs, folders, and Favorites, or changing Spaces. Requires a supported device and enabled system feedback.", isOn: $preferences.haptics, identifier: "settings.haptics")
             }
+            SettingsCard {
+                SettingsToggle("Return pins and Favorites to their saved page", detail: "Closing a pin or Favorite takes it back to the page you saved. Turn this off to keep the page it was on; Reset to Pinned URL still returns it.", isOn: $preferences.pinsResetWhenClosed, identifier: "settings.pinsResetWhenClosed")
+            }
+            SettingsCard {
+                SettingsToggle("Control-Tab shows the tab switcher", detail: "Hold Control and press Tab to pick from your recent tabs. Turn this off to go straight to the next tab in the sidebar.", isOn: $preferences.controlTabShowsSwitcher, identifier: "settings.controlTabSwitcher")
+            }
         }
     }
 
     private var searchSection: some View {
-        SettingsCard {
+        let engine = preferences.searchEngine
+        return SettingsCard {
             HStack {
                 Label("Search engine", systemImage: "magnifyingglass").font(.headline)
-                Spacer(); Text("Google").foregroundStyle(.secondary)
+                Spacer()
+                Picker("Search engine", selection: $preferences.searchEngine) {
+                    ForEach(SearchEngine.allCases, id: \.self) { Text($0.name).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+                .accessibilityIdentifier("settings.searchEngine")
             }
-            Text("Searches from the command bar use Google. You can also enter a website address directly.")
+            Text("Searches from the command bar and from selected text use \(engine.name). You can also enter a website address directly.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Divider().padding(.vertical, 6)
-            SettingsToggle("Online search suggestions", detail: "Send what you type in the command bar to Google for suggestions. Turn this off to keep typed queries local until you search.", isOn: $preferences.onlineSuggestions, identifier: "settings.onlineSuggestions")
-            Divider().padding(.vertical, 6)
-            SettingsToggle("Suggestions in private windows", detail: "Also send what you type in a private window’s command bar to Google. Off by default, so private typing stays local until you search.", isOn: $preferences.privateOnlineSuggestions, identifier: "settings.privateOnlineSuggestions")
-                .disabled(!preferences.onlineSuggestions)
+            if engine.offersSuggestions {
+                SettingsToggle("Online search suggestions", detail: "Send what you type in the command bar to \(engine.name) for suggestions. Turn this off to keep typed queries local until you search.", isOn: $preferences.onlineSuggestions, identifier: "settings.onlineSuggestions")
+                Divider().padding(.vertical, 6)
+                SettingsToggle("Suggestions in private windows", detail: "Also send what you type in a private window’s command bar to \(engine.name). Off by default, so private typing stays local until you search.", isOn: $preferences.privateOnlineSuggestions, identifier: "settings.privateOnlineSuggestions")
+                    .disabled(!preferences.onlineSuggestions)
+            } else {
+                Label("\(engine.name) doesn’t offer suggestions Early can use without your sign-in, so what you type stays on this Mac until you search. Nothing is sent to another search engine instead.", systemImage: "info.circle")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings.noSuggestions")
+            }
             Divider().padding(.vertical, 6)
             SettingsToggle("Command bar actions", detail: "Include browser commands, Spaces, and profiles when searching in the command bar. Turn this off to show only matching tabs, pins, Favorites, and web suggestions.", isOn: $preferences.commandBarActions, identifier: "settings.commandBarActions")
         }
@@ -377,6 +402,8 @@ struct BrowserSettingsView: View {
             SettingsCard {
                 SettingsToggle("Restore previous session", detail: "Reopen your profiles, windows, Spaces, and tabs on launch. When off, keep saved Spaces, folders, pins, and Favorites, but start without open tabs.", isOn: $preferences.restoreSession, identifier: "settings.restoreSession")
                 Text("Applies the next time Early launches.").font(.caption).foregroundStyle(.secondary)
+                Divider().padding(.vertical, 6)
+                SettingsToggle("Show the command bar in empty windows", detail: "When Early opens, or a new window opens, without a tab, show the command bar ready to type. Early’s first launch always shows it.", isOn: $preferences.showsCommandBarInEmptyWindows, identifier: "settings.commandBarInEmptyWindows")
             }
             SettingsCard {
                 HStack {

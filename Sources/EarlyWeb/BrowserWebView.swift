@@ -63,6 +63,8 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     var onOpenWindowLink: ((URL) -> Void)?
     /// "Translate to …" or "Show Original" for the page menu; nil leaves it out.
     var pageTranslationTitle: (() -> String?)?
+    /// The search engine selected text is searched with.
+    var searchEngineName: () -> String = { SearchEngine.google.name }
     var onOpenBackgroundLink: ((URL) -> Void)?
     var onContextAction: ((ContextAction) -> Void)?
     var shareLink: ((URL) -> Void)?
@@ -128,7 +130,7 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         if let text = target.selection {
             let excerpt = Self.menuExcerpt(text)
             sections.append([
-                item("Search with Google for “\(excerpt)”", perform, ContextAction.searchSelection(text)),
+                item("Search with \(searchEngineName()) for “\(excerpt)”", perform, ContextAction.searchSelection(text)),
                 item("Copy", #selector(copySelection(_:))),
                 item("Look Up “\(excerpt)”", #selector(lookUpSelection(_:)), text),
                 item("Share", #selector(shareSelection(_:)), text)

@@ -120,6 +120,13 @@ public final class SitePermissions {
         save()
     }
 
+    /// Every site back to asking.
+    public func removeAll() {
+        guard !decisions.isEmpty else { return }
+        decisions.removeAll()
+        save()
+    }
+
     public func removeFile() {
         decisions.removeAll()
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }

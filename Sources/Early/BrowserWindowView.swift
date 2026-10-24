@@ -2542,7 +2542,9 @@ struct BrowserWindowView: View {
             HStack {
                 Label("New Tab", systemImage: "plus")
                 Spacer()
-                Text("⌘T").foregroundStyle(.secondary)
+                if let shortcut = model.preferences.shortcuts.shortcut(for: .newTab) {
+                    Text(shortcut.display).foregroundStyle(.secondary)
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
@@ -2551,7 +2553,7 @@ struct BrowserWindowView: View {
         .buttonStyle(SidebarButtonStyle())
         .browserKeyboardFocus()
         .accessibilityIdentifier("sidebar.newTab")
-        .help("Open the command bar (Command-T)")
+        .help("Open the command bar\(model.preferences.shortcutHint(.newTab))")
     }
 
     private var navigationControls: some View {
@@ -2566,9 +2568,9 @@ struct BrowserWindowView: View {
             .browserKeyboardFocus(cornerRadius: 8)
             .accessibilityLabel(sidebarAutoHides ? "Keep sidebar visible" : "Auto-hide sidebar")
             .accessibilityValue(sidebarAutoHides ? "Auto-hide enabled" : "Always visible")
-            .keyboardShortcut("s", modifiers: [.command, .shift])
+            .keyboardShortcut(model.preferences.keyboardShortcut(.toggleSidebar))
             .accessibilityIdentifier("sidebar.toggle")
-            .help("Toggle sidebar auto-hide (Command-Shift-S). Reveal at the left edge.")
+            .help("Toggle sidebar auto-hide\(model.preferences.shortcutHint(.toggleSidebar)). Reveal at the left edge.")
             Spacer(minLength: 0)
             NavigationButton(kind: .back, history: { historyEntries(forward: false) },
                              onHistory: { model.perform(.goToHistory(offset: $0)) }) { model.perform(.back) }
@@ -2661,8 +2663,8 @@ struct BrowserWindowView: View {
         .accessibilityValue(currentURL ?? "No active tab")
         .accessibilityHint(model.activePage?.security.isInsecure == true ? SiteSecurityRow.title(model.activePage?.security ?? .none) : "")
         .accessibilityIdentifier("sidebar.addressBar")
-        .help(currentURL.map { "\($0) — Open Location (Command-L)" }
-              ?? "Search or enter a URL (Command-L)")
+        .help(currentURL.map { "\($0) — Open Location\(model.preferences.shortcutHint(.openLocation))" }
+              ?? "Search or enter a URL\(model.preferences.shortcutHint(.openLocation))")
         // Its own controls, outside the pill's single accessibility element.
         .overlay(alignment: .trailing) { SiteControlsButton(model: model).padding(.trailing, 5) }
     }

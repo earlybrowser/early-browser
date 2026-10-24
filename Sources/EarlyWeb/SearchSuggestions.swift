@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import EarlyCore
 import Foundation
 import Observation
 
@@ -41,7 +42,8 @@ public enum SearchSuggestionPolicy {
 }
 
 /// Separate from WebKit's website sessions: no cookies, credentials or disk cache.
-public struct GoogleSearchSuggestions: Sendable {
+/// Suggestions from the chosen search engine's own endpoint.
+public struct OnlineSearchSuggestions: Sendable {
     private let session: URLSession
 
     public init() {
@@ -60,20 +62,16 @@ public struct GoogleSearchSuggestions: Sendable {
         return configuration
     }
 
-    static func request(for query: String) -> URLRequest? {
-        guard SearchSuggestionPolicy.query(query) == query else { return nil }
-        // Google documents this suggest URL in its Chrome search-provider policy.
-        var components = URLComponents(string: "https://www.google.com/complete/search")!
-        components.queryItems = [URLQueryItem(name: "output", value: "chrome"),
-                                 URLQueryItem(name: "oe", value: "utf-8"),
-                                 URLQueryItem(name: "q", value: query)]
-        var request = URLRequest(url: components.url!)
+    /// Nil when the engine offers no suggestions: nothing is sent anywhere else.
+    static func request(for query: String, engine: SearchEngine = .google) -> URLRequest? {
+        guard SearchSuggestionPolicy.query(query) == query, let url = engine.suggestionURL(for: query) else { return nil }
+        var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request
     }
 
-    public func fetch(_ query: String) async throws -> [String] {
-        guard let request = Self.request(for: query) else { return [] }
+    public func fetch(_ query: String, engine: SearchEngine = .google) async throws -> [String] {
+        guard let request = Self.request(for: query, engine: engine) else { return [] }
         let (bytes, response) = try await session.bytes(for: request, delegate: NoSuggestionRedirects())
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               response.expectedContentLength <= 65_536 else { throw URLError(.badServerResponse) }
@@ -139,15 +137,22 @@ public final class SearchSuggestions {
     public private(set) var unavailable = false
     private var generation = 0
     private var request: Task<Void, Never>?
-    private let fetch: @Sendable (String) async throws -> [String]
+    private let fetch: @Sendable (String, SearchEngine) async throws -> [String]
     private let debounce: Duration
     private var activeQuery: String?
     private var cache = SearchSuggestionCache()
+    /// The cache holds one engine's suggestions.
+    private var cachedEngine: SearchEngine?
 
     public init(debounce: Duration = .milliseconds(60),
-                fetch: @escaping @Sendable (String) async throws -> [String]) {
+                fetchFrom fetch: @escaping @Sendable (String, SearchEngine) async throws -> [String]) {
         self.debounce = debounce
         self.fetch = fetch
+    }
+
+    public convenience init(debounce: Duration = .milliseconds(60),
+                            fetch: @escaping @Sendable (String) async throws -> [String]) {
+        self.init(debounce: debounce) { query, _ in try await fetch(query) }
     }
 
     public var selectedSuggestion: String? {
@@ -181,7 +186,15 @@ public final class SearchSuggestions {
         unavailable = false
     }
 
-    public func update(query: String, enabled: Bool) {
+    /// Suggestions from `engine`; one that offers none gets none.
+    public func update(query: String, enabled: Bool, engine: SearchEngine = .google) {
+        if cachedEngine != engine {
+            // Another engine's suggestions are never shown for this one.
+            cache.clear()
+            if cachedEngine != nil { cancel() }
+            cachedEngine = engine
+        }
+        let enabled = enabled && engine.offersSuggestions
         if !enabled { cache.clear() }
         guard enabled, let query = SearchSuggestionPolicy.query(query) else {
             cancel()
@@ -215,7 +228,7 @@ public final class SearchSuggestions {
                 try await Task.sleep(for: debounce)
                 guard let self, !Task.isCancelled, self.generation == revision else { return }
                 self.isLoading = true
-                let values = try await fetch(query)
+                let values = try await fetch(query, engine)
                 guard !Task.isCancelled, self.generation == revision else { return }
                 self.results = Array(values.prefix(6))
                 self.cache.insert(self.results, for: query)

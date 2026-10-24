@@ -96,7 +96,7 @@ struct ReaderBadge: View {
                 .buttonStyle(.plain)
                 .font(.system(size: 12, weight: .medium))
                 .browserKeyboardFocus(cornerRadius: 5)
-                .help("Return to the original page (Command-Shift-R)")
+                .help("Return to the original page\(model.preferences.shortcutHint(.toggleReader))")
                 .accessibilityIdentifier("reader.original")
         }
         .padding(.horizontal, 10).frame(height: 30)
@@ -244,7 +244,7 @@ struct SiteControlsPanel: View {
                             zoomButton("plus", "Zoom In", .zoomIn, identifier: "siteControls.zoomIn")
                         }
                     }
-                    .help(page.zoom == 1 ? "Actual size" : "Return to actual size (Command-0)")
+                    .help(page.zoom == 1 ? "Actual size" : "Return to actual size\(model.preferences.shortcutHint(.actualSize))")
                 }
             }
             if model.currentSiteOrigin != nil {
@@ -290,7 +290,7 @@ struct SiteControlsPanel: View {
                 .buttonStyle(.plain)
                 .browserKeyboardFocus(cornerRadius: 8)
                 .disabled(!model.canPerform(.copyCurrentURL))
-                .help("Copy Current URL (Command-Shift-C)")
+                .help("Copy Current URL\(model.preferences.shortcutHint(.copyURL))")
                 .accessibilityIdentifier("siteControls.copyLink")
                 Spacer(minLength: 0)
                 Menu {
@@ -628,9 +628,9 @@ struct PageFindBar: View {
                 .fixedSize()
                 .accessibilityIdentifier("find.status")
             Divider().frame(height: 16).padding(.horizontal, 2)
-            control("chevron.up", "Previous Match (Command-Shift-G)", identifier: "find.previous") { step(backwards: true) }
+            control("chevron.up", "Previous Match\(model.preferences.shortcutHint(.findPrevious))", identifier: "find.previous") { step(backwards: true) }
                 .disabled(state.matchCount == 0)
-            control("chevron.down", "Next Match (Command-G)", identifier: "find.next") { step(backwards: false) }
+            control("chevron.down", "Next Match\(model.preferences.shortcutHint(.findNext))", identifier: "find.next") { step(backwards: false) }
                 .disabled(state.matchCount == 0)
             control("xmark", "Close Find (Escape)", identifier: "find.close") { model.closeFind(tabID) }
         }
@@ -742,6 +742,8 @@ struct PageShortcutMonitor: NSViewRepresentable {
                 guard let self, let window = self.window, event.window === window, window.isKeyWindow,
                       window.attachedSheet == nil,
                       (window.firstResponder as? NSTextInputClient)?.hasMarkedText() != true,
+                      // Only while Zoom In keeps its own ⌘+, which ⌘= stands in for.
+                      self.model?.preferences.shortcuts.isChanged(.zoomIn) == false,
                       PageShortcutMonitor.isZoomIn(characters: event.charactersIgnoringModifiers, modifiers: event.modifierFlags),
                       self.model?.perform(.zoomIn) == true else { return event }
                 return nil

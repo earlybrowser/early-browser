@@ -16,7 +16,8 @@ public struct NavigationInput: Sendable {
         self.allowedSchemes = allowedSchemes
     }
 
-    public func resolve(_ input: String) throws -> URL {
+    /// An address, or a search on `engine` for anything else.
+    public func resolve(_ input: String, engine: SearchEngine = .google) throws -> URL {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NavigationInputError.empty }
         let authority = String(text.prefix { $0 != "/" && $0 != "?" && $0 != "#" })
@@ -36,7 +37,7 @@ public struct NavigationInput: Sendable {
             }
             return try validate(url)
         }
-        return try searchURL(for: text)
+        return try searchURL(for: text, engine: engine)
     }
 
     /// A provider suggestion is always a search, never permission to visit a URL.
@@ -65,12 +66,10 @@ public struct NavigationInput: Sendable {
         return URL(string: String(url.absoluteString.dropFirst(pageSourceScheme.count + 1)))
     }
 
-    public func searchURL(for query: String) throws -> URL {
+    public func searchURL(for query: String, engine: SearchEngine = .google) throws -> URL {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NavigationInputError.empty }
-        var search = URLComponents(string: "https://www.google.com/search")!
-        search.queryItems = [URLQueryItem(name: "q", value: text)]
-        return search.url!
+        return engine.searchURL(for: text)
     }
 
     public func validate(_ url: URL) throws -> URL {

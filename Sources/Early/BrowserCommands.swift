@@ -18,6 +18,8 @@ extension FocusedValues {
 
 struct BrowserCommands: Commands {
     let application: EarlyAppDelegate
+    /// Settings › Shortcuts decides each command's key.
+    let preferences: BrowserPreferences
     @FocusedValue(\.browserWindow) private var model
     @Environment(\.openSettings) private var openSettings
 
@@ -52,6 +54,8 @@ struct BrowserCommands: Commands {
         .labelStyle(.titleAndIcon)
     }
 
+    private func key(_ command: BrowserCommand) -> KeyboardShortcut? { preferences.keyboardShortcut(command) }
+
     // Older SDKs' command builders take at most ten items (CI's Xcode 26.6),
     // so the menu bar comes in two parts.
     var body: some Commands {
@@ -72,13 +76,13 @@ struct BrowserCommands: Commands {
                 if let model { _ = model.perform(.newWindow) }
                 else { _ = application.openNewWindow() }
             }
-            .keyboardShortcut("n")
+            .keyboardShortcut(key(.newWindow))
             .disabled(model.map { !$0.canPerform(.newWindow) } ?? !application.canOpenWindow)
             Button("New Private Window") {
                 if let model { _ = model.perform(.newPrivateWindow) }
                 else { _ = application.openPrivateWindow() }
             }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .keyboardShortcut(key(.newPrivateWindow))
             .disabled(model.map { !$0.canPerform(.newPrivateWindow) } ?? !application.canOpenWindow)
             // With no browser window in front, these bring one forward (or
             // open one) with the command bar, like Arc and Chrome.
@@ -86,16 +90,16 @@ struct BrowserCommands: Commands {
                 if let model { model.perform(.presentCommandBar(.newTab)) }
                 else { application.presentCommandBar(.newTab) }
             }
-            .keyboardShortcut("t")
+            .keyboardShortcut(key(.newTab))
             .disabled(model.map { !$0.canPerform(.presentCommandBar(.newTab)) } ?? !application.canOpenWindow)
             Button("Open Location…") {
                 if let model { model.perform(.presentCommandBar(.navigateCurrentTab)) }
                 else { application.presentCommandBar(.navigateCurrentTab) }
             }
-            .keyboardShortcut("l")
+            .keyboardShortcut(key(.openLocation))
             .disabled(model.map { !$0.canPerform(.presentCommandBar(.navigateCurrentTab)) } ?? !application.canOpenWindow)
             Button("Open File…") { model?.perform(.openFile) }
-                .keyboardShortcut("o")
+                .keyboardShortcut(key(.openFile))
                 .disabled(model?.canPerform(.openFile) != true)
         }
         CommandGroup(replacing: .saveItem) {
@@ -110,94 +114,97 @@ struct BrowserCommands: Commands {
                     NSApp.keyWindow?.performClose(nil)
                 }
             }
-            .keyboardShortcut("w")
+            .keyboardShortcut(key(.closeTab))
             Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
-                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .keyboardShortcut(key(.closeWindow))
             Divider()
             Button("Save Page As…") { model?.perform(.savePage) }
-                .keyboardShortcut("s")
+                .keyboardShortcut(key(.savePage))
                 .disabled(model?.canPerform(.savePage) != true)
             Button("Export as PDF…") { model?.perform(.exportPDF) }
+                .keyboardShortcut(key(.exportPDF))
                 .disabled(model?.canPerform(.exportPDF) != true)
         }
         CommandGroup(after: .pasteboard) {
             Divider()
             Menu("Find") {
                 Button("Find…") { model?.perform(.find) }
-                    .keyboardShortcut("f")
+                    .keyboardShortcut(key(.find))
                     .disabled(model?.canPerform(.find) != true)
                 Button("Find Next") { model?.perform(.findNext) }
-                    .keyboardShortcut("g")
+                    .keyboardShortcut(key(.findNext))
                     .disabled(model?.canPerform(.findNext) != true)
                 Button("Find Previous") { model?.perform(.findPrevious) }
-                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                    .keyboardShortcut(key(.findPrevious))
                     .disabled(model?.canPerform(.findPrevious) != true)
                 Button("Use Selection for Find") { model?.perform(.useSelectionForFind) }
-                    .keyboardShortcut("e")
+                    .keyboardShortcut(key(.useSelectionForFind))
                     .disabled(model?.canPerform(.useSelectionForFind) != true)
             }
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") { model?.perform(.printPage) }
-                .keyboardShortcut("p")
+                .keyboardShortcut(key(.printPage))
                 .disabled(model?.canPerform(.printPage) != true)
         }
         CommandGroup(after: .toolbar) {
             // Command-= also zooms in; see PageShortcutMonitor.
             Button("Actual Size") { model?.perform(.resetZoom) }
-                .keyboardShortcut("0")
+                .keyboardShortcut(key(.actualSize))
                 .disabled(model?.canPerform(.resetZoom) != true)
             Button("Zoom In") { model?.perform(.zoomIn) }
-                .keyboardShortcut("+")
+                .keyboardShortcut(key(.zoomIn))
                 .disabled(model?.canPerform(.zoomIn) != true)
             Button("Zoom Out") { model?.perform(.zoomOut) }
-                .keyboardShortcut("-")
+                .keyboardShortcut(key(.zoomOut))
                 .disabled(model?.canPerform(.zoomOut) != true)
             Divider()
             Button(model?.activePage?.isReaderShown == true ? "Hide Reader" : "Show Reader") { model?.perform(.toggleReader) }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .keyboardShortcut(key(.toggleReader))
                 .disabled(model?.canPerform(.toggleReader) != true)
             Button(model.flatMap { model in model.coordinator.focusedTabID.flatMap(model.translationTitle) } ?? "Translate Page") {
                 model?.perform(.toggleTranslation)
             }
+            .keyboardShortcut(key(.translatePage))
             .disabled(model?.canPerform(.toggleTranslation) != true)
             Divider()
             Button("View Page Source") { model?.perform(.viewPageSource) }
-                .keyboardShortcut("u", modifiers: [.command, .option])
+                .keyboardShortcut(key(.viewPageSource))
                 .disabled(model?.canPerform(.viewPageSource) != true)
             if WebViewManager.supportsWebInspector {
                 Button(model?.isWebInspectorVisible == true ? "Hide Web Inspector" : "Show Web Inspector") {
                     model?.perform(.toggleWebInspector)
                 }
-                .keyboardShortcut("i", modifiers: [.command, .option])
+                .keyboardShortcut(key(.webInspector))
                 .disabled(model?.canPerform(.toggleWebInspector) != true)
             }
             Divider()
             Button("Show Downloads") { model?.perform(.showDownloads) }
-                .keyboardShortcut("l", modifiers: [.command, .option])
+                .keyboardShortcut(key(.showDownloads))
                 .disabled(model?.canPerform(.showDownloads) != true)
         }
     }
 
     @CommandsBuilder private var browsingMenus: some Commands {
         CommandMenu("History") {
-            Button("Back") { model?.perform(.back) }.keyboardShortcut("[")
+            Button("Back") { model?.perform(.back) }.keyboardShortcut(key(.back))
                 .disabled(model?.canPerform(.back) != true)
-            Button("Forward") { model?.perform(.forward) }.keyboardShortcut("]")
+            Button("Forward") { model?.perform(.forward) }.keyboardShortcut(key(.forward))
                 .disabled(model?.canPerform(.forward) != true)
             Divider()
             Button("Show All History") { model?.perform(.showHistory) }
-                .keyboardShortcut("y")
+                .keyboardShortcut(key(.showHistory))
                 .disabled(model?.canPerform(.showHistory) != true)
             Divider()
             Button("Reopen Closed Tab") { model?.perform(.reopenLastTab) }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .keyboardShortcut(key(.reopenClosedTab))
                 .disabled(model?.canPerform(.reopenLastTab) != true)
             // Works with no window open, after closing the last one.
             Button("Reopen Closed Window") {
                 if let model { _ = model.perform(.reopenClosedWindow) }
                 else { _ = application.reopenClosedWindow() }
             }
+            .keyboardShortcut(key(.reopenClosedWindow))
             .disabled(model.map { !$0.canPerform(.reopenClosedWindow) } ?? !application.canReopenClosedWindow)
             Menu("Recently Closed") {
                 if let model {
@@ -231,15 +238,16 @@ struct BrowserCommands: Commands {
             }
             Divider()
             Button("Clear History…") { model?.perform(.clearHistory) }
+                .keyboardShortcut(key(.clearHistory))
                 .disabled(model?.canPerform(.clearHistory) != true)
         }
         CommandMenu("Tab") {
-            Button("Next Tab") { model?.advanceTabSwitcher(1) }
+            Button("Next Tab") { model?.controlTab(1) }
                 .keyboardShortcut(.tab, modifiers: .control)
-                .disabled(model?.canPresentTabSwitcher != true)
-            Button("Previous Tab") { model?.advanceTabSwitcher(-1) }
+                .disabled(model?.canControlTab(1) != true)
+            Button("Previous Tab") { model?.controlTab(-1) }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift])
-                .disabled(model?.canPresentTabSwitcher != true)
+                .disabled(model?.canControlTab(-1) != true)
             // Shortcuts in a submenu still work from anywhere, like Find's.
             Menu("Go to Tab") {
                 ForEach(1...9, id: \.self) { number in
@@ -249,31 +257,35 @@ struct BrowserCommands: Commands {
                 }
             }
             Divider()
-            Button("Reload Page") { model?.perform(.reload) }.keyboardShortcut("r")
+            Button("Reload Page") { model?.perform(.reload) }.keyboardShortcut(key(.reload))
                 .disabled(model?.canPerform(.reload) != true)
-            Button("Stop Loading") { model?.perform(.stop) }.keyboardShortcut(".")
+            Button("Stop Loading") { model?.perform(.stop) }.keyboardShortcut(key(.stopLoading))
                 .disabled(model?.canPerform(.stop) != true)
             Button("Copy Current URL") { model?.perform(.copyCurrentURL) }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .keyboardShortcut(key(.copyURL))
                 .disabled(model?.canPerform(.copyCurrentURL) != true)
             Divider()
             Button("Duplicate Tab") {
                 if let tab = model?.activeTab { model?.perform(.duplicateTab(tab.id)) }
             }
+            .keyboardShortcut(key(.duplicateTab))
             .disabled(model?.activeTab.map { model?.canPerform(.duplicateTab($0.id)) == true } != true)
             Button("Open Tab in New Window") {
                 if let tab = model?.activeTab { model?.perform(.openTabInNewWindow(tab.id)) }
             }
+            .keyboardShortcut(key(.openTabInNewWindow))
             .disabled(model?.activeTab.map { model?.canPerform(.openTabInNewWindow($0.id)) == true } != true)
             Button("Rename Tab…") {
                 if let id = model?.activeTab?.id { model?.perform(.requestRename(id)) }
             }
+            .keyboardShortcut(key(.renameTab))
             .disabled(model?.activeTab.map { model?.canPerform(.requestRename($0.id)) == true } != true)
             Button(model?.activePage?.isMuted == true ? "Unmute Tab" : "Mute Tab") {
                 if let tab = model?.activeTab {
                     model?.perform(.setMuted(tab.id, model?.activePage?.isMuted != true))
                 }
             }
+            .keyboardShortcut(key(.muteTab))
             .disabled(model?.activeTab.map { model?.canPerform(.setMuted($0.id, model?.activePage?.isMuted != true)) == true } != true)
             Menu("Move Tab to Space") {
                 if let model, let tab = model.activeTab {
@@ -288,14 +300,17 @@ struct BrowserCommands: Commands {
             Button(model?.activeTab?.pinnedURL == nil ? "Pin Tab" : "Unpin Tab") {
                 if let tab = model?.activeTab { model?.perform(.setPinned(tab.id, tab.pinnedURL == nil)) }
             }
+            .keyboardShortcut(key(.pinTab))
             .disabled(model?.activeTab.map { model?.canPerform(.setPinned($0.id, $0.pinnedURL == nil)) == true } != true)
             Button("Reset to Pinned URL") {
                 if let id = model?.activeTab?.id { model?.perform(.resetPinnedTab(id)) }
             }
+            .keyboardShortcut(key(.resetPinnedTab))
             .disabled(model?.activeTab.map { model?.canPerform(.resetPinnedTab($0.id)) == true } != true)
             Button(model?.activeTab?.isFavorite == true ? "Remove from Favorites" : "Add to Favorites") {
                 if let tab = model?.activeTab { model?.perform(.setFavorite(tab.id, !tab.isFavorite)) }
             }
+            .keyboardShortcut(key(.toggleFavorite))
             .disabled(model?.activeTab.map { model?.canPerform(.setFavorite($0.id, !$0.isFavorite)) == true } != true)
             Divider()
             Menu("Split View") {
@@ -315,18 +330,23 @@ struct BrowserCommands: Commands {
                 if let model, let group = model.coordinator.activeSplitGroup {
                     Divider()
                     Button("Swap Sides") { model.perform(.swapSplit(group.id)) }
+                        .keyboardShortcut(key(.swapSplit))
                         .disabled(!model.canPerform(.swapSplit(group.id)))
                     Button("Focus Left Pane") { model.perform(.focusSplitPane(group.panes[0].id)) }
+                        .keyboardShortcut(key(.focusLeftPane))
                         .disabled(!model.canPerform(.focusSplitPane(group.panes[0].id)))
                     Button("Focus Right Pane") { model.perform(.focusSplitPane(group.panes[1].id)) }
+                        .keyboardShortcut(key(.focusRightPane))
                         .disabled(!model.canPerform(.focusSplitPane(group.panes[1].id)))
                     Button("Remove Current Pane from Split") {
                         if let pane = group.panes.first(where: { $0.tabID == model.coordinator.focusedTabID }) {
                             model.perform(.removeSplitPane(pane.id))
                         }
                     }
+                    .keyboardShortcut(key(.removeSplitPane))
                     .disabled(!model.canPerform(.exitSplit(group.id)))
                     Button("Exit Split View") { model.perform(.exitSplit(group.id)) }
+                        .keyboardShortcut(key(.exitSplit))
                         .disabled(!model.canPerform(.exitSplit(group.id)))
                 }
             }
@@ -336,18 +356,20 @@ struct BrowserCommands: Commands {
             Button("Close Other Tabs") {
                 if let id = model?.activeTab?.id { model?.perform(.closeOtherTabs(id)) }
             }
-            .keyboardShortcut("w", modifiers: [.command, .option])
+            .keyboardShortcut(key(.closeOtherTabs))
             .disabled(model?.activeTab.map { model?.canPerform(.closeOtherTabs($0.id)) == true } != true)
             Button("Close Tabs Below") {
                 if let id = model?.activeTab?.id { model?.perform(.closeTabsBelow(id)) }
             }
+            .keyboardShortcut(key(.closeTabsBelow))
             .disabled(model?.activeTab.map { model?.canPerform(.closeTabsBelow($0.id)) == true } != true)
             Button("Clear Today Tabs") { model?.perform(.clearTodayTabs) }
+                .keyboardShortcut(key(.clearTodayTabs))
                 .disabled(model?.canPerform(.clearTodayTabs) != true)
         }
         CommandMenu("Space") {
             Button("New Space…") { model?.perform(.newSpace) }
-                .keyboardShortcut("n", modifiers: [.command, .option])
+                .keyboardShortcut(key(.newSpace))
                 .disabled(model?.canPerform(.newSpace) != true)
             if let model, let space = model.coordinator.activeSpace {
                 Group { SpaceActions(model: model, space: space) }
@@ -355,10 +377,10 @@ struct BrowserCommands: Commands {
             }
             Divider()
             Button("Previous Space") { model?.perform(.cycleSpace(-1)) }
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .keyboardShortcut(key(.previousSpace))
                 .disabled(model?.canPerform(.cycleSpace(-1)) != true)
             Button("Next Space") { model?.perform(.cycleSpace(1)) }
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .keyboardShortcut(key(.nextSpace))
                 .disabled(model?.canPerform(.cycleSpace(1)) != true)
             Button("Last Space") { model?.perform(.selectSpaceNumber(9)) }
                 .keyboardShortcut("9", modifiers: [.command, .option])

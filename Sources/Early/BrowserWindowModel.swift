@@ -167,7 +167,10 @@ final class BrowserWindowModel {
     }
     var onlineSuggestionsEnabled: Bool {
         // Private windows need both settings; the private one is off by default.
-        get { preferences.onlineSuggestions && (!isPrivate || preferences.privateOnlineSuggestions) }
+        get {
+            preferences.onlineSuggestions && preferences.searchEngine.offersSuggestions
+                && (!isPrivate || preferences.privateOnlineSuggestions)
+        }
         set { preferences.onlineSuggestions = newValue; refreshSuggestions() }
     }
     var commandBarActionsEnabled: Bool {
@@ -194,8 +197,8 @@ final class BrowserWindowModel {
         self.extensionHost = extensionHost
         self.now = now
         self.preferences = preferences ?? BrowserPreferences(defaults: defaults)
-        let service = GoogleSearchSuggestions()
-        suggestions = SearchSuggestions { query in
+        let service = OnlineSearchSuggestions()
+        suggestions = SearchSuggestions { query, engine in
             #if DEBUG
             // Isolated UI tests never send typed text to an external provider.
             if isTesting {
@@ -203,7 +206,7 @@ final class BrowserWindowModel {
                 return ["\(query) guide", "\(query) examples", "\(query) tips"]
             }
             #endif
-            return try await service.fetch(query)
+            return try await service.fetch(query, engine: engine)
         }
         commandSearch = CommandSearch(providers: searchProviders + (history.map { [HistorySearchProvider(store: $0)] } ?? []),
                                       now: now)
@@ -283,12 +286,17 @@ final class BrowserWindowModel {
         webViews.translationMenuTitle = { [weak self] in self?.translationTitle(for: $0) }
         webViews.onTranslatePage = { [weak self] in self?.toggleTranslation($0) }
         webViews.onOpenSearch = { [weak self] text in
-            guard let self, let url = try? self.input.searchURL(for: text) else { return }
+            guard let self, let url = try? self.input.searchURL(for: text, engine: self.preferences.searchEngine) else { return }
             _ = self.openLocations([url])
         }
+        webViews.searchEngineName = { [weak self] in self?.preferences.searchEngine.name ?? SearchEngine.google.name }
+        coordinator.pinsResetWhenClosed = { [weak self] in self?.preferences.pinsResetWhenClosed ?? true }
         if #available(macOS 15.4, *) { connectExtensions() }
         activateSelection()
-        if coordinator.activeTabID == nil { coordinator.presentCommandBar(.newTab) }
+        // The very first launch always shows it; other empty windows as set in Settings › Sessions.
+        if coordinator.activeTabID == nil, startup == .firstLaunch || self.preferences.showsCommandBarInEmptyWindows {
+            coordinator.presentCommandBar(.newTab)
+        }
         refreshRecentPages()
         // The app installs the shared writer before publishing the first snapshot.
     }
@@ -325,7 +333,9 @@ final class BrowserWindowModel {
     }
 
     func pasteKind(for query: String) -> PasteKind {
-        guard let url = try? input.resolve(query), let search = try? input.searchURL(for: query) else { return .search }
+        let engine = preferences.searchEngine
+        guard let url = try? input.resolve(query, engine: engine), let search = try? input.searchURL(for: query, engine: engine)
+        else { return .search }
         return url == search ? .search : .address
     }
 
@@ -561,7 +571,7 @@ final class BrowserWindowModel {
             return
         }
         commandSearch.update(query: bar.query, candidates: commandSearchCandidates())
-        suggestions.update(query: bar.query, enabled: onlineSuggestionsEnabled)
+        suggestions.update(query: bar.query, enabled: onlineSuggestionsEnabled, engine: preferences.searchEngine)
     }
 
     func updateQuery(_ query: String, isComposing: Bool = false) {
@@ -591,9 +601,9 @@ final class BrowserWindowModel {
             if let targetURL {
                 url = try input.validate(targetURL)
             } else if let searchSuggestion {
-                url = try input.searchURL(for: searchSuggestion)
+                url = try input.searchURL(for: searchSuggestion, engine: preferences.searchEngine)
             } else {
-                url = try input.resolve(request.query)
+                url = try input.resolve(request.query, engine: preferences.searchEngine)
             }
             guard let id = coordinator.navigate(to: url, target: request.target),
                   let tab = coordinator.tabStore.tab(id: id) else { return false }
@@ -811,6 +821,22 @@ final class BrowserWindowModel {
         webViews.discard(tabID: id)
         if previousActive != coordinator.activeTabID || previousVisible != coordinator.visibleTabIDs { activateSelection() }
         save()
+    }
+
+    func canControlTab(_ delta: Int) -> Bool {
+        preferences.controlTabShowsSwitcher ? canPresentTabSwitcher : canPerform(.cycleTab(delta))
+    }
+
+    /// Control-Tab: the tab switcher, or the next tab in sidebar order as set
+    /// in Settings › Sidebar.
+    @discardableResult
+    func controlTab(_ delta: Int, commitsOnControlRelease: Bool = false) -> Bool {
+        guard preferences.controlTabShowsSwitcher else {
+            guard canPerform(.cycleTab(delta)) else { return false }
+            cycleTab(delta)
+            return true
+        }
+        return advanceTabSwitcher(delta, commitsOnControlRelease: commitsOnControlRelease)
     }
 
     /// Picture in Picture's return button: the video's tab comes forward, in
