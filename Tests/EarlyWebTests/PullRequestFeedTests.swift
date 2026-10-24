@@ -71,6 +71,38 @@ struct PullRequestFeedTests {
         #expect(sections[1].items.map(\.id) == ["team/tools#40"], "Listed once, in the first group")
     }
 
+    @Test func aCompletedSearchTimeoutCannotInterruptTheNextSearch() async throws {
+        _ = NSApplication.shared
+        let server = try HTMLServer { _, query in
+            guard let group = Self.group(of: query) else { return nil }
+            return .init(body: Self.resultsPage(query: group.query, rows: [("octo", "early", 1, "One")]), delay: 1.8)
+        }
+        defer { server.stop() }
+        let readings = await GitHubPullRequestReader(base: server.url(""), navigationTimeout: .seconds(3))
+            .read(PullRequestGroup.allCases, store: .nonPersistent())
+        #expect(readings.count == PullRequestGroup.allCases.count)
+        #expect(readings.values.allSatisfy { if case .found = $0 { return true }; return false })
+    }
+
+    @Test func cancellingARefreshStopsItsReaderImmediately() async throws {
+        _ = NSApplication.shared
+        let requested = Mode()
+        let server = try HTMLServer { _, query in
+            guard let group = Self.group(of: query) else { return nil }
+            requested.value = "started"
+            return .init(body: Self.resultsPage(query: group.query, rows: [("octo", "early", 1, "One")]), delay: 2)
+        }
+        defer { server.stop() }
+        let reader = GitHubPullRequestReader(base: server.url(""))
+        let task = Task { await reader.read([.opened], store: .nonPersistent()) }
+        try await Self.waitUntil { requested.value == "started" }
+        let cancelledAt = ContinuousClock.now
+        task.cancel()
+        let readings = await task.value
+        #expect(cancelledAt.duration(to: .now) < .seconds(1), "Removing a live folder must not leave its reader running")
+        #expect(readings[.opened] == .unreadable)
+    }
+
     @Test func signedOutThrottledAndUnreadablePagesSaySo() async throws {
         _ = NSApplication.shared
         let mode = Mode()
