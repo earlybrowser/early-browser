@@ -15,6 +15,39 @@ struct HistoryStoreTests {
     private let swift = URL(string: "https://swift.org/documentation/")!
     private let early = URL(string: "https://github.com/earlybrowser/early-browser")!
 
+    /// 210 visits at one moment: pages of 200 and 10, none skipped or repeated.
+    @Test func pagingContinuesThroughVisitsThatShareATime() async throws {
+        let history = store()
+        defer { Task { try? await history.removeFile() } }
+        for index in 0..<210 {
+            try await history.record(URL(string: "https://example.com/\(index)")!, title: "Page \(index)", at: start)
+        }
+        let first = try await history.visits(limit: 200)
+        let second = try await history.visits(continuing: first.last, limit: 200)
+        #expect(first.count == 200 && second.count == 10)
+        #expect(Set((first + second).map(\.id)).count == 210, "Every visit once")
+        #expect(try await history.visits(continuing: second.last, limit: 200).isEmpty)
+    }
+
+    /// Deleting recounts only the pages it touched; the rest keep their totals.
+    @Test func deletingUpdatesOnlyThePagesItTouched() async throws {
+        let history = store()
+        defer { Task { try? await history.removeFile() } }
+        try await history.record(swift, title: "Swift", at: start)
+        try await history.record(swift, title: nil, at: start.addingTimeInterval(60))
+        try await history.record(early, title: "Early", at: start.addingTimeInterval(120))
+        let newestSwift = try #require(try await history.visits(matching: "swift").first)
+        try await history.deleteVisits([newestSwift.id])
+        let swiftPage = try #require(try await history.search("swift", limit: 5).first)
+        #expect(swiftPage.visitCount == 1 && swiftPage.lastVisit == start, "Its count and last visit follow")
+        #expect(try await history.search("early", limit: 5).first?.visitCount == 1, "Another page keeps its total")
+        try await history.deleteVisits(before: start.addingTimeInterval(45))
+        #expect(try await history.search("swift", limit: 5).isEmpty, "A page without visits goes")
+        #expect(try await history.search("early", limit: 5).first?.visitCount == 1)
+        try await history.deletePages([early])
+        #expect(try await history.recentPages(since: .distantPast, limit: 5).isEmpty)
+    }
+
     @Test func visitsAreCountedTitlesFollowAndSearchMatchesEveryWord() async throws {
         let history = store()
         defer { Task { try? await history.removeFile() } }
