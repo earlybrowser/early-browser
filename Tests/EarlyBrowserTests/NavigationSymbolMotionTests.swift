@@ -5,6 +5,18 @@ import Testing
 
 @MainActor
 struct NavigationSymbolMotionTests {
+    @Test func reloadTugsBackOnHoverAndPressButStopAndReduceMotionKeepStill() {
+        func turn(_ kind: NavigationControlStyle.Kind, hovered: Bool = false, pressed: Bool = false, reduceMotion: Bool = false) -> Double {
+            NavigationControlStyle.reloadTurn(kind: kind, hovered: hovered, pressed: pressed, reduceMotion: reduceMotion)
+        }
+        #expect(turn(.reload) == 0)
+        #expect(turn(.reload, hovered: true) == -20, "Back, against its clockwise arrow")
+        #expect(turn(.reload, hovered: true, pressed: true) == -30)
+        #expect(turn(.stop, hovered: true, pressed: true) == 0)
+        #expect(turn(.back, hovered: true) == 0 && turn(.forward, pressed: true) == 0, "Their chevrons open instead")
+        #expect(turn(.reload, hovered: true, pressed: true, reduceMotion: true) == 0)
+    }
+
     @Test func fullClockwiseCycleShowsStopAtTheMidpoint() {
         var motion = NavigationSymbolMotion(isLoading: false)
         #expect(motion.rotationDegrees == 0 && motion.reloadOpacity == 1)

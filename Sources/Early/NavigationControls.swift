@@ -242,6 +242,13 @@ struct NavigationControlStyle: ButtonStyle {
                    overlayHovered: hovered, overlayPressed: pressed)
     }
 
+    /// Reload tugs back a little on hover and a little more on press, as Back
+    /// and Forward's chevrons open; Stop keeps still, and so does Reduce Motion.
+    static func reloadTurn(kind: Kind, hovered: Bool, pressed: Bool, reduceMotion: Bool) -> Double {
+        guard kind == .reload, !reduceMotion else { return 0 }
+        return pressed ? -30 : (hovered ? -20 : 0)
+    }
+
     private struct Appearance: View {
         let configuration: ButtonStyleConfiguration
         let kind: Kind
@@ -266,6 +273,8 @@ struct NavigationControlStyle: ButtonStyle {
                                 ? (kind == .back ? -1 : 1) * (clickFeedback ? 3 : 1.5) : 0)
                 } else {
                     configuration.label
+                        .rotationEffect(.degrees(NavigationControlStyle.reloadTurn(
+                            kind: kind, hovered: highlighted, pressed: pressed, reduceMotion: reduceMotion)))
                 }
             }
             .scaleEffect((kind == .back || kind == .forward) && pressed && !reduceMotion ? 0.88 : 1)
@@ -278,6 +287,8 @@ struct NavigationControlStyle: ButtonStyle {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: highlighted)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: pressed)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: clickFeedback)
+            // Reload becoming Stop eases out of its tug while the X turns in.
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: kind)
         }
     }
 }
