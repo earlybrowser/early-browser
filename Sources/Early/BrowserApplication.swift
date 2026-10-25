@@ -104,19 +104,36 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var pendingRestoredWindows: Set<UUID> = []
     @ObservationIgnored private var cleaningWebsiteData = false
     private var primaryWindowIsOpen = false
-    /// Changes as windows become and stop being key, and once a browser window
-    /// has its name. SwiftUI doesn't observe `NSApp.keyWindow`, so ⌘W's title
-    /// reads this to follow the window in front.
-    private(set) var keyWindowChanges = 0
+    /// Whether the window in front shows a page, for ⌘W's title. SwiftUI
+    /// doesn't observe the key window, and a menu that read it itself kept
+    /// "Close Window" after a new window loaded a page (macOS 26).
+    let frontWindowState = FrontWindowState()
+    @ObservationIgnored private var frontWindowGeneration = 0
 
     override init() {
         super.init()
-        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
-            NotificationCenter.default.addObserver(self, selector: #selector(keyWindowChanged(_:)), name: name, object: nil)
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSMenu.didBeginTrackingNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(frontWindowMayHaveChanged(_:)), name: name, object: nil)
         }
     }
 
-    @objc private func keyWindowChanged(_ notification: Notification) { keyWindowChanges &+= 1 }
+    @objc private func frontWindowMayHaveChanged(_ notification: Notification) { updateFrontWindow() }
+
+    /// Looks at the window in front (the browser window behind a website
+    /// dialog), and again whenever its page comes or goes.
+    func updateFrontWindow(_ window: NSWindow? = NSApp.keyWindow) {
+        frontWindowGeneration &+= 1
+        let generation = frontWindowGeneration
+        let front = browserModel(for: window.map { $0.sheetParent ?? $0 })
+        let showsPage = withObservationTracking { front.map { !$0.showsNoPage } ?? false } onChange: { [weak self, weak window] in
+            Task { @MainActor in
+                // A newer look, at another window or this one, replaces this one.
+                guard let self, self.frontWindowGeneration == generation else { return }
+                self.updateFrontWindow(window)
+            }
+        }
+        if frontWindowState.showsPage != showsPage { frontWindowState.showsPage = showsPage }
+    }
 
     var profiles: [BrowserProfile] { workspace?.profiles ?? [] }
     var canOpenWindow: Bool { workspace != nil && presentWindow != nil && !isTerminating && !profileOperationInProgress }
@@ -873,7 +890,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     func windowDidRegister(_ id: UUID?) {
         // A new window can become key before it has its name.
-        keyWindowChanges &+= 1
+        updateFrontWindow()
         if let id { pendingRestoredWindows.remove(id) }
         guard restoringFocus, pendingRestoredWindows.isEmpty else { return }
         restoringFocus = false
@@ -1292,4 +1309,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         return .terminateLater
     }
+}
+
+/// Published for the menu bar, which SwiftUI rebuilds as this changes. The
+/// title reads nothing else, so whenever SwiftUI builds it, it's current.
+@MainActor final class FrontWindowState: ObservableObject {
+    @Published var showsPage = false
 }

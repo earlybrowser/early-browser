@@ -30,7 +30,7 @@ struct EarlyApp: App {
         .defaultSize(width: 1120, height: 760)
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
-        .commands { BrowserCommands(application: appDelegate, preferences: preferences) }
+        .commands { BrowserCommands(application: appDelegate, preferences: preferences, front: appDelegate.frontWindowState) }
 
         Settings {
             BrowserSettingsView(application: appDelegate, preferences: preferences)

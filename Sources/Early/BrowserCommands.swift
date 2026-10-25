@@ -30,11 +30,9 @@ struct BrowserCommands: Commands {
     /// The window in front, for ⌘W: the key window, or the browser window
     /// behind a website dialog's sheet.
     private var frontWindow: NSWindow? { NSApp.keyWindow.map { $0.sheetParent ?? $0 } }
-    private var frontBrowser: BrowserWindowModel? {
-        // Read so the title follows the window in front as it changes.
-        _ = application.keyWindowChanges
-        return application.browserModel(for: frontWindow)
-    }
+    private var frontBrowser: BrowserWindowModel? { application.browserModel(for: frontWindow) }
+    /// The title's state, which Early keeps on the window in front.
+    @ObservedObject var front: FrontWindowState
     @Environment(\.openSettings) private var openSettings
 
     static let recentlyClosedTabLimit = 10
@@ -135,7 +133,7 @@ struct BrowserCommands: Commands {
             // decides: the menu's focused value can still name another
             // window after windows open, close and change focus.
             // The title follows the same window the command acts on.
-            Button(frontBrowser?.showsNoPage == false ? "Close Tab" : "Close Window") {
+            Button(front.showsPage ? "Close Tab" : "Close Window") {
                 if let front = frontBrowser, !front.showsNoPage {
                     front.perform(.closeActiveTab)
                 } else {

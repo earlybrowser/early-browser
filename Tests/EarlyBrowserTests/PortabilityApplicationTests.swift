@@ -240,12 +240,28 @@ struct PortabilityApplicationTests {
         #expect(app.browserModel(for: window("browser.\(id)")) === app.windowModel(id))
         #expect(app.browserModel(for: window("com_apple_SwiftUI_Settings_window")) == nil, "Settings isn't a browser window")
         #expect(app.browserModel(for: window(nil)) == nil && app.browserModel(for: nil) == nil)
-        // SwiftUI doesn't observe the key window; ⌘W's title follows this.
-        let changes = app.keyWindowChanges
-        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window("browser"))
-        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window("browser"))
-        app.windowDidRegister(id)
-        #expect(app.keyWindowChanges == changes + 3, "Each key change, and a window named after it became key")
+        // ⌘W's title: whether the window in front shows a page, kept as its
+        // page comes and goes.
+        func eventually(_ condition: () -> Bool) async -> Bool {
+            var attempts = 0
+            while !condition(), attempts < 200 { attempts += 1; try? await Task.sleep(for: .milliseconds(10)) }
+            return condition()
+        }
+        let front = window("browser")
+        app.updateFrontWindow(front)
+        #expect(primary.showsNoPage && !app.frontWindowState.showsPage)
+        app.openExternalLinks([one])
+        #expect(await eventually { app.frontWindowState.showsPage }, "A page opened in the window in front")
+        primary.perform(.closeActiveTab)
+        #expect(await eventually { !app.frontWindowState.showsPage }, "Its page closed")
+        app.openExternalLinks([one])
+        app.updateFrontWindow(window("com_apple_SwiftUI_Settings_window"))
+        #expect(!app.frontWindowState.showsPage, "Settings in front, before the browser window's page")
+        primary.perform(.closeActiveTab)
+        app.openExternalLinks([one])
+        #expect(await eventually { primary.coordinator.activeTabID != nil })
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(!app.frontWindowState.showsPage, "Only the window in front is followed")
         app.closeWindow(nil)
         #expect(app.browserModel(for: window("browser")) == nil, "A closed window is never the one in front")
         await fixture.cleanup()
