@@ -78,6 +78,37 @@ struct TestRuntimeState: NSViewRepresentable {
     }
 }
 
+/// Read-only test seam: what Early takes for the window in front, which ⌘W's
+/// title follows, read as the test asks.
+struct TestFrontWindowState: NSViewRepresentable {
+    let application: EarlyAppDelegate?
+
+    func makeNSView(context: Context) -> StateView { StateView() }
+    func updateNSView(_ view: StateView, context: Context) { view.application = application }
+
+    final class StateView: NSView {
+        weak var application: EarlyAppDelegate?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+        override func accessibilityIdentifier() -> String { "test.frontWindow" }
+        override func accessibilityValue() -> Any? {
+            func describe(_ window: NSWindow?) -> String {
+                guard let window else { return "none" }
+                let state = [window.isKeyWindow ? "key" : nil, window.isMainWindow ? "main" : nil, window.isVisible ? nil : "hidden"]
+                return "\(window.identifier?.rawValue ?? "unnamed") \(type(of: window)) \(state.compactMap { $0 }.joined(separator: " "))"
+            }
+            let key = NSApp.keyWindow
+            let front = application?.browserModel(for: key.map { $0.sheetParent ?? $0 })
+            return ["active \(NSApp.isActive)", "key \(describe(key))",
+                    "front \(front.map { $0.showsNoPage ? "no page" : "page" } ?? "unknown")",
+                    "published \(application?.frontWindowState.showsPage == true ? "page" : "no page")",
+                    "this \(describe(window))", "windows \(NSApp.windows.map(describe).joined(separator: ", "))"]
+                .joined(separator: " · ")
+        }
+    }
+}
+
 /// Read-only test seam: fullscreen state must not be inferred from window width
 /// (a maximized window can have the same width). Not installed in normal runs.
 struct TestWindowState: NSViewRepresentable {

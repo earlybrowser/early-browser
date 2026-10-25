@@ -2761,8 +2761,15 @@ final class EarlyUITests: XCTestCase {
             XCTFail("The File menu didn't open", file: file, line: line)
             return nil
         }
+        print("Front window while the File menu is open:\n\(frontWindowDiagnostics(app))")
         if items["Close Tab"].waitForExistence(timeout: 2) { return "Close Tab" }
         return items.matching(NSPredicate(format: "title == %@", "Close Window")).count == 2 ? "Close Window" : nil
+    }
+
+    /// What Early takes for the window in front, from each browser window's test seam.
+    private func frontWindowDiagnostics(_ app: XCUIApplication) -> String {
+        app.staticTexts.matching(identifier: "test.frontWindow").allElementsBoundByIndex
+            .compactMap { $0.value as? String }.joined(separator: "\n")
     }
 
     /// ⌘W acts on the window in front, and its menu title says what it will do.
@@ -2790,7 +2797,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(second.textFields["commandBar.query"].waitForExistence(timeout: 5))
         second.textFields["commandBar.query"].typeText("early-test://fixture/two\n")
         XCTAssertTrue(second.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
-        XCTAssertEqual(closeCommandTitle(app), "Close Tab")
+        XCTAssertEqual(closeCommandTitle(app), "Close Tab", frontWindowDiagnostics(app))
         app.typeKey("w", modifierFlags: .command)
         XCTAssertTrue(second.webViews.staticTexts["Page Two"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.windows["browser"].webViews.staticTexts["Page One"].exists, "The other window keeps its page")
