@@ -719,23 +719,31 @@ extension WebViewManager {
             return
         }
         let origin = SitePermissions.origin(scheme: scheme, host: space.host, port: space.port)
+        // Only the website the tab shows or is loading (through redirects) may
+        // ask, as in Chrome: another site's image, script or frame can't put a
+        // sign-in sheet over this page. Refused quietly, it loads without one.
+        let id = tabID(for: view)
+        let page = (view.url ?? id.flatMap { pages[$0]?.requestedURL }).flatMap(SitePermissions.origin(of:))
+        guard let origin, page == origin else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
         let failed = challenge.previousFailureCount > 0
         let proposed = challenge.proposedCredential?.user
         // Asking again means the website refused what it was sent: it's never saved.
-        if failed, let id = tabID(for: view), let pending = pendingHTTPSignIns[id], pending.origin == origin, pending.realm == space.realm {
+        if failed, let id, let pending = pendingHTTPSignIns[id], pending.origin == origin, pending.realm == space.realm {
             pendingHTTPSignIns[id] = nil
         }
         Task { @MainActor [weak self, weak view] in
             guard let self, let view else { completionHandler(.performDefaultHandling, nil); return }
-            let tabID = self.tabID(for: view)
             var saved: SavedLogin?
-            if let vault = self.passwords, let origin, await vault.load() {
+            if let vault = self.passwords, await vault.load() {
                 let logins = vault.logins(for: origin)
                 saved = logins.first { $0.realm == space.realm } ?? logins.first
             }
             let request = SignInRequest(host: space.host, realm: space.realm, isSecure: space.receivesCredentialSecurely, failed: failed,
                                         username: proposed ?? saved?.username ?? "", password: failed ? "" : saved?.password ?? "",
-                                        canSave: self.savesPasswords && self.passwords != nil && origin != nil)
+                                        canSave: self.savesPasswords && self.passwords != nil)
             let answer: @MainActor (SignInResponse?) -> Void = { [weak self] response in
                 guard let response, !(response.username.isEmpty && response.password.isEmpty) else {
                     // Cancel shows the website's own page for a refused sign-in.
@@ -746,8 +754,8 @@ extension WebViewManager {
                 }
                 // Saved, or marked used, only once the website accepts it.
                 let save = response.save && request.canSave
-                if let self, let tabID, let origin, self.passwords != nil, save || self.savesPasswords {
-                    self.pendingHTTPSignIns[tabID] = PendingHTTPSignIn(origin: origin, realm: space.realm, username: response.username,
+                if let self, let id, self.passwords != nil, save || self.savesPasswords {
+                    self.pendingHTTPSignIns[id] = PendingHTTPSignIn(origin: origin, realm: space.realm, username: response.username,
                                                                        password: response.password, save: save)
                 }
                 completionHandler(.useCredential, URLCredential(user: response.username, password: response.password, persistence: .forSession))

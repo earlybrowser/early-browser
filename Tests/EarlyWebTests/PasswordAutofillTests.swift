@@ -496,6 +496,43 @@ struct PasswordAutofillTests {
         try await other.waitUntil("the site's page") { refused.view.title == "Sign in required" }
     }
 
+    @Test func onlyThePagesOwnWebsiteCanShowASignInSheetOverIt() async throws {
+        let image = { (server: BasicAuthServer) in
+            "<title>Photo</title><img src=\"\(server.url.absoluteString)\" onerror=\"document.title = 'refused'\" onload=\"document.title = 'shown'\">"
+        }
+        // Another website's image or frame (another port is another origin)
+        // is refused quietly. WebKit already refuses images and scripts; a
+        // frame reaches Early, which refuses it.
+        let staff = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff")
+        let other = try BasicAuthServer(username: "x", password: "y", realm: "Other", pages: [
+            "/photo": image(staff),
+            "/framed": "<title>Framed</title><iframe src=\"\(staff.url.absoluteString)\"></iframe>"
+        ])
+        defer { staff.stop(); other.stop() }
+        let fixture = makeFixture([:])
+        defer { fixture.cleanup() }
+        var asked: [SignInRequest] = []
+        fixture.manager.askForSignIn = { request, _, answer in
+            asked.append(request)
+            answer(SignInResponse(username: "ada", password: "open sesame", save: false))
+        }
+        let tab = try await fixture.open("photo", url: URL(string: "http://127.0.0.1:\(other.port)/photo")!)
+        let page = try fixture.page(tab)
+        try await fixture.waitUntil("another website's image refused") { page.view.title == "refused" }
+        _ = try await fixture.open("framed", url: URL(string: "http://127.0.0.1:\(other.port)/framed")!)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(asked.isEmpty, "Another website can't ask: \(asked.map(\.host))")
+
+        // The page's own website still can, for its images as for the page.
+        let host = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff", pages: ["/photo": "<title>Photo</title>"
+            + "<img src=\"/staff\" onerror=\"document.title = 'refused'\" onload=\"document.title = 'shown'\">"])
+        defer { host.stop() }
+        let same = try await fixture.open("same", url: URL(string: "http://127.0.0.1:\(host.port)/photo")!)
+        let samePage = try fixture.page(same)
+        try await fixture.waitUntil("the page's own image asked") { !asked.isEmpty && samePage.view.title != "Photo" }
+        #expect(asked.count == 1 && asked.first?.host == "127.0.0.1")
+    }
+
     @Test func aRefusedHTTPSignInNeverReplacesTheWorkingPassword() async throws {
         let server = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff")
         defer { server.stop() }
@@ -577,11 +614,14 @@ final class BasicAuthServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "local.early.tests.basic-auth")
     private let expected: String
     private let realm: String
+    /// Open pages, by path, served without signing in.
+    private let pages: [String: String]
     private(set) var port: UInt16 = 0
 
-    init(username: String, password: String, realm: String) throws {
+    init(username: String, password: String, realm: String, pages: [String: String] = [:]) throws {
         expected = "Basic " + Data("\(username):\(password)".utf8).base64EncodedString()
         self.realm = realm
+        self.pages = pages
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)
@@ -599,8 +639,14 @@ final class BasicAuthServer: @unchecked Sendable {
 
     private func handle(_ connection: NWConnection) {
         connection.start(queue: queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [expected, realm] data, _, _, _ in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [expected, realm, pages] data, _, _, _ in
             let request = String(decoding: data ?? Data(), as: UTF8.self)
+            let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+            if let page = pages[path] {
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(page.utf8.count)\r\nConnection: close\r\n\r\n\(page)"
+                connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                return
+            }
             let authorized = request.components(separatedBy: "\r\n").contains { $0.lowercased() == "authorization: \(expected.lowercased())" }
             let body = authorized ? "<title>Welcome</title><p>Staff only" : "<title>Sign in required</title><p>401"
             var response = authorized ? "HTTP/1.1 200 OK\r\n" : "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"\(realm)\"\r\n"
