@@ -275,6 +275,23 @@ struct PasswordVaultTests {
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
+    /// Saves are encrypted and written off the main actor. Whenever the
+    /// profile goes, before, during or after a write, no file is left behind.
+    @Test func deletingWhileAWriteIsUnderWayLeavesNoFile() async throws {
+        for yields in 0..<12 {
+            let url = file()
+            defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            let vault = PasswordVault(fileURL: url, key: MemoryVaultKey())
+            #expect(await vault.load())
+            for index in 0..<2_000 { vault.save(origin: "https://site\(index).example", username: "ada", password: "pw\(index)") }
+            for _ in 0..<yields { await Task.yield() }
+            vault.removeAll()
+            #expect(await vault.flush())
+            try await Task.sleep(for: .milliseconds(20))
+            #expect(!FileManager.default.fileExists(atPath: url.path), "No file after \(yields) yields")
+        }
+    }
+
     @Test func failedSavesAreReportedAndCanBeTriedAgain() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswords-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
