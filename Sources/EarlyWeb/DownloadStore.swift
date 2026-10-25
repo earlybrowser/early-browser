@@ -49,6 +49,9 @@ public final class DownloadItem: Identifiable {
     @ObservationIgnored let originURL: URL?
     @ObservationIgnored let listed: Bool
     @ObservationIgnored let requestedDestination: URL?
+    /// A file a save panel chose to replace. It stays as it is until the new
+    /// file has fully arrived in `destination`, a staging copy beside it.
+    @ObservationIgnored var replacing: URL?
     @ObservationIgnored var download: WKDownload?
     /// A transient, never-displayed view that restarts a transfer when the
     /// profile has no page open. Released when the transfer settles.
@@ -218,7 +221,9 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         }
         guard item.state.isActive else { return }
         item.state = .cancelled
-        let partial = item.destination
+        // A replacement's staging folder goes with its partial file; the file
+        // it was going to replace stays.
+        let partial = item.replacing == nil ? item.destination : item.destination?.deletingLastPathComponent()
         if let download = item.download {
             tracked.removeValue(forKey: ObjectIdentifier(download))
             // Settles immediately: WebKit does not always report a cancelled
@@ -256,15 +261,16 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         return FileManager.default.fileExists(atPath: destination.path)
     }
 
-    /// A finished file, or the partial file of a stopped transfer.
+    /// A finished file, or the partial file of a stopped transfer (the file it
+    /// will replace, when it replaces one).
     public func canReveal(_ item: DownloadItem) -> Bool {
         guard item.state == .finished || item.state == .paused || item.canResume,
-              let destination = item.destination else { return false }
+              let destination = item.replacing ?? item.destination else { return false }
         return FileManager.default.fileExists(atPath: destination.path)
     }
 
     public func reveal(_ item: DownloadItem) {
-        guard canReveal(item), let destination = item.destination else { return }
+        guard canReveal(item), let destination = item.replacing ?? item.destination else { return }
         NSWorkspace.shared.activateFileViewerSelecting([destination])
     }
 
@@ -283,20 +289,32 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         if let existing = item.destination {
             destination = existing // A resumed transfer continues its own file.
         } else if let requested = item.requestedDestination {
-            // A save panel already confirmed replacing this exact file. WebKit
-            // refuses an existing destination, so remove only that chosen file.
             if FileManager.default.fileExists(atPath: requested.path) {
-                try? FileManager.default.removeItem(at: requested)
+                // A save panel confirmed replacing this file. WebKit refuses an
+                // existing destination, and a stopped, failed or cancelled save
+                // must not lose it: the new file arrives in a staging copy and
+                // takes its place only once complete.
+                guard let staging = Self.stagingFile(replacing: requested) else { return nil }
+                item.replacing = requested
+                destination = staging
+            } else {
+                destination = requested
             }
-            destination = requested
         } else {
             let directory = directory
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            destination = Self.uniqueDestination(for: suggestedFilename, in: directory, reserved: reserved)
+            var candidate = Self.uniqueDestination(for: suggestedFilename, in: directory, reserved: reserved)
+            // A name this disk still refuses (other file systems allow less)
+            // becomes a plain one, rather than failing the download.
+            if !Self.acceptsName(candidate) {
+                let ext = candidate.pathExtension
+                candidate = Self.uniqueDestination(for: ext.isEmpty ? "Download" : "Download.\(ext)", in: directory, reserved: reserved)
+            }
+            destination = candidate
         }
         reserved.insert(destination.standardizedFileURL.path)
         item.destination = destination
-        item.filename = destination.lastPathComponent
+        item.filename = (item.replacing ?? destination).lastPathComponent
         item.state = .downloading
         return destination
     }
@@ -304,6 +322,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     public func downloadDidFinish(_ download: WKDownload) {
         guard let item = tracked.removeValue(forKey: ObjectIdentifier(download)) else { return }
         synchronizeProgress(item)
+        releaseReservation(item)
         if let destination = item.destination {
             if let size = try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize {
                 item.completedBytes = Int64(size)
@@ -312,11 +331,45 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
             // Gatekeeper and Finder treat the file as downloaded from the web.
             let addresses = quarantineAddresses(for: item)
             Self.applyQuarantine(to: destination, source: addresses.source, origin: addresses.origin)
+            if let original = item.replacing, !replace(original, with: destination, for: item) {
+                releaseTransfer(item)
+                return
+            }
         }
         item.state = .finished
         if item.listed { finishedRevision += 1 }
         releaseTransfer(item)
-        releaseReservation(item)
+    }
+
+    /// The complete new file takes the chosen file's place in one step. If it
+    /// can't, the chosen file stays as it was and the save reports why.
+    private func replace(_ original: URL, with staged: URL, for item: DownloadItem) -> Bool {
+        defer {
+            item.replacing = nil
+            try? FileManager.default.removeItem(at: staged.deletingLastPathComponent())
+        }
+        do {
+            let result = try FileManager.default.replaceItemAt(original, withItemAt: staged)
+            // The chosen address, unless the system had to give it another name.
+            let same = result.map { $0.resolvingSymlinksInPath() == original.resolvingSymlinksInPath() } ?? true
+            item.destination = same ? original : result
+            return true
+        } catch {
+            item.destination = nil
+            item.state = .failed
+            item.failureReason = "The file couldn’t be replaced. \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// A new, empty folder on the chosen file's volume, so the replacement is
+    /// a single move. Early's own temporary folder when the system has none.
+    static func stagingFile(replacing original: URL) -> URL? {
+        let files = FileManager.default
+        let folder = (try? files.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: original, create: true))
+            ?? files.temporaryDirectory.appending(path: "Early-Replacement-\(UUID().uuidString)", directoryHint: .isDirectory)
+        guard (try? files.createDirectory(at: folder, withIntermediateDirectories: true)) != nil else { return nil }
+        return folder.appending(path: original.lastPathComponent, directoryHint: .notDirectory)
     }
 
     public func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
@@ -370,6 +423,9 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         if let destination = item.destination, FileManager.default.fileExists(atPath: destination.path) {
             try? FileManager.default.removeItem(at: destination)
         }
+        if item.replacing != nil, let staging = item.destination?.deletingLastPathComponent() {
+            try? FileManager.default.removeItem(at: staging)
+        }
         releaseReservation(item)
     }
 
@@ -386,8 +442,15 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         return url
     }
 
+    /// APFS and HFS+ allow 255 UTF-16 units in a name; this leaves room for
+    /// the number a duplicate gets ("Report 12.pdf").
+    static let filenameLimit = 247
+    /// Longer than any real extension: it stays part of the name.
+    static let extensionLimit = 16
+
     /// A plain file name: no path components, control characters or leading
-    /// dot that would create a hidden file.
+    /// dot that would create a hidden file, and short enough for the disk,
+    /// cut between characters, never inside one.
     static func sanitizedFilename(_ suggested: String) -> String {
         let forbidden = CharacterSet(charactersIn: "/:\\").union(.controlCharacters).union(.newlines)
         var name = suggested.components(separatedBy: forbidden).joined(separator: "-")
@@ -395,12 +458,37 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         while name.hasPrefix(".") { name.removeFirst() }
         name = name.trimmingCharacters(in: .whitespaces)
         if name.isEmpty { return "Download" }
-        let ext = (name as NSString).pathExtension
-        if name.count > 200 {
-            let base = (name as NSString).deletingPathExtension
-            name = ext.isEmpty ? String(base.prefix(200)) : String(base.prefix(max(1, 199 - ext.count))) + "." + ext
+        guard name.utf16.count > filenameLimit else { return name }
+        var ext = (name as NSString).pathExtension
+        var base = (name as NSString).deletingPathExtension
+        if ext.utf16.count > extensionLimit || base.isEmpty { (base, ext) = (name, "") }
+        base = truncated(base, toUTF16: filenameLimit - (ext.isEmpty ? 0 : ext.utf16.count + 1))
+            .trimmingCharacters(in: .whitespaces)
+        if base.isEmpty { base = "Download" }
+        return ext.isEmpty ? base : base + "." + ext
+    }
+
+    /// Whole characters only, so an emoji or accented letter is never split.
+    static func truncated(_ text: String, toUTF16 limit: Int) -> String {
+        var result = ""
+        var used = 0
+        for character in text {
+            let size = character.utf16.count
+            guard used + size <= limit else { break }
+            result.append(character)
+            used += size
         }
-        return name
+        return result
+    }
+
+    /// Whether this disk takes the name: some file systems allow less than APFS.
+    /// Short plain names are taken everywhere, so only others are tried.
+    static func acceptsName(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        if name.utf16.count <= 64, name.allSatisfy({ $0.isASCII && !"?*<>|\"".contains($0) }) { return true }
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else { return false }
+        try? FileManager.default.removeItem(at: url)
+        return true
     }
 
     /// Finder-style numbering ("Report 2.pdf") avoids replacing existing files

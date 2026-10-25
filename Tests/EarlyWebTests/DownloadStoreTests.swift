@@ -74,7 +74,8 @@ struct DownloadStoreTests {
             #expect(!name.contains("/") && !name.contains(":") && !name.hasPrefix(".") && !name.isEmpty, "\(suggested) -> \(name)")
         }
         #expect(DownloadStore.sanitizedFilename("Report.pdf") == "Report.pdf")
-        #expect(DownloadStore.sanitizedFilename(String(repeating: "x", count: 300) + ".zip").count <= 200)
+        let long = DownloadStore.sanitizedFilename(String(repeating: "x", count: 300) + ".zip")
+        #expect(long.utf16.count <= DownloadStore.filenameLimit && long.hasSuffix(".zip"))
         let folder = URL(filePath: "/tmp/early-downloads", directoryHint: .isDirectory)
         let existing: Set<String> = ["/tmp/early-downloads/Report.pdf", "/tmp/early-downloads/Report 2.pdf"]
         let reserved: Set<String> = ["/tmp/early-downloads/Report 3.pdf"]
@@ -82,6 +83,32 @@ struct DownloadStoreTests {
         #expect(unique.lastPathComponent == "Report 4.pdf")
         #expect(DownloadStore.uniqueDestination(for: "notes", in: folder, reserved: []) { $0.lastPathComponent == "notes" }
             .lastPathComponent == "notes 2")
+    }
+
+    /// The disk counts UTF-16 units (255 at most), not characters or bytes:
+    /// 255 Japanese characters fit, 128 emoji or 128 combined accents don't.
+    @Test func longUnicodeNamesAndExtensionsFitTheDiskWithRoomForANumber() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "early-names-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let japanese = String(repeating: "日", count: 100) + ".pdf"
+        #expect(DownloadStore.sanitizedFilename(japanese) == japanese, "Names that fit stay as they are")
+        let names = [String(repeating: "😀", count: 200) + ".png", String(repeating: "e\u{301}", count: 200) + ".txt",
+                     String(repeating: "日", count: 300), "report." + String(repeating: "x", count: 300),
+                     String(repeating: "a", count: 240) + ".longextension"]
+        for suggested in names {
+            let name = DownloadStore.sanitizedFilename(suggested)
+            #expect(name.utf16.count <= DownloadStore.filenameLimit, "\(name.utf16.count)")
+            #expect(name.unicodeScalars.first.map { $0.properties.generalCategory != .nonspacingMark } ?? false)
+            // The longest number a duplicate might get still fits.
+            let numbered = folder.appending(path: (name as NSString).deletingPathExtension + " 99999"
+                + ((name as NSString).pathExtension.isEmpty ? "" : "." + (name as NSString).pathExtension))
+            #expect(FileManager.default.createFile(atPath: numbered.path, contents: nil), "\(numbered.lastPathComponent.utf16.count)")
+        }
+        #expect(DownloadStore.sanitizedFilename(String(repeating: "😀", count: 200) + ".png").hasSuffix("😀.png"),
+                "An emoji is never cut in half")
+        #expect(DownloadStore.sanitizedFilename("report." + String(repeating: "x", count: 300)).hasPrefix("report."),
+                "An overlong extension is cut as part of the name")
     }
 
     @Test func downloadFinishesInTheProfileFolderWithQuarantineAndReleasesItsPageProtection() async throws {
@@ -177,6 +204,60 @@ struct DownloadStoreTests {
         #expect(try String(contentsOf: neighbor, encoding: .utf8) == "keep")
         #expect(fixture.store.items.isEmpty && fixture.started.isEmpty)
         #expect(fixture.store.startedRevision == 0 && fixture.store.finishedRevision == 0, "An internal save stays quiet")
+    }
+
+    @Test func savingOverAFileKeepsItUntilTheNewOneIsCompleteThroughStopAndResume() async throws {
+        let body = Data((0..<600_000).map { UInt8($0 % 241) })
+        let server = try LocalHTTPServer(body: body, initialChunk: 120_000)
+        let fixture = Fixture()
+        defer { server.stop(); fixture.cleanup() }
+        try FileManager.default.createDirectory(at: fixture.directory, withIntermediateDirectories: true)
+        let chosen = fixture.directory.appending(path: "Report.bin")
+        try "old".write(to: chosen, atomically: true, encoding: .utf8)
+        #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id, to: chosen))
+        try await waitUntil("partial transfer") {
+            fixture.store.items.first.map { $0.state == .downloading && $0.completedBytes >= 120_000 } == true
+        }
+        let item = try #require(fixture.store.items.first)
+        let staging = try #require(item.destination)
+        #expect(staging != chosen && item.filename == "Report.bin")
+        #expect(try String(contentsOf: chosen, encoding: .utf8) == "old", "The chosen file stays while the new one arrives")
+        fixture.store.stop(item)
+        try await waitUntil("resume data") { item.canResume }
+        #expect(try String(contentsOf: chosen, encoding: .utf8) == "old")
+        #expect(fixture.store.canReveal(item), "A stopped replacement reveals the file it will replace")
+        #expect(fixture.store.resume(item))
+        try await waitUntil("resumed") { item.state == .finished }
+        let replaced = try Data(contentsOf: chosen)
+        #expect(item.destination == chosen && replaced == body)
+        #expect(!FileManager.default.fileExists(atPath: staging.deletingLastPathComponent().path), "The staging folder goes")
+    }
+
+    @Test func aCancelledOrFailedSaveOverAFileLeavesItAsItWas() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        try FileManager.default.createDirectory(at: fixture.directory, withIntermediateDirectories: true)
+        let chosen = fixture.directory.appending(path: "Report.bin")
+        try "old".write(to: chosen, atomically: true, encoding: .utf8)
+        for failing in [false, true] {
+            let server = try LocalHTTPServer(body: Data(repeating: 3, count: 400_000), initialChunk: 80_000)
+            defer { server.stop() }
+            #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id, to: chosen))
+            try await waitUntil("partial transfer") {
+                fixture.store.items.first.map { $0.state == .downloading && $0.completedBytes >= 80_000 } == true
+            }
+            let item = try #require(fixture.store.items.first)
+            let staging = try #require(item.destination).deletingLastPathComponent()
+            if failing {
+                server.finishTransfers(sendingRemaining: false)
+                try await waitUntil("network failure") { item.state == .failed }
+                if item.canResume { fixture.store.cancel(item) }
+            } else {
+                fixture.store.cancel(item)
+            }
+            try await waitUntil("staging removed") { !FileManager.default.fileExists(atPath: staging.path) }
+            #expect(try String(contentsOf: chosen, encoding: .utf8) == "old", failing ? "A failed save keeps the file" : "Cancel keeps the file")
+        }
     }
 
     @Test func stoppingKeepsThePartialFileAndResumeFinishesTheSameFile() async throws {
