@@ -6,80 +6,6 @@ import Observation
 import WebKit
 
 @MainActor @Observable
-public final class BrowserPage {
-    public let view: WKWebView
-    /// Unique per live page; a reopened tab's new page never shares it (unlike
-    /// an object address, which a new page can reuse).
-    public let instanceID = UUID()
-    /// "scheme://host" of the extension whose page this view was made for;
-    /// nil for websites. The two never share a view.
-    var extensionOrigin: String?
-    /// Made from that extension's own configuration, so its pages load.
-    var hasExtensionConfiguration = false
-    public var isLoading = false
-    public var isPlayingMedia = false
-    public fileprivate(set) var isMuted = false
-    var playingFrames: Set<String> = []
-    var mediaFrames: [String: WKFrameInfo] = [:]
-    fileprivate var muteRevision = 0
-    public var progress = 0.0
-    public var canGoBack = false
-    public var canGoForward = false
-    public var failure: String?
-    public fileprivate(set) var navigationNotice: String?
-    public var hasDialog = false
-    public fileprivate(set) var hasUnsavedInput = false
-    public fileprivate(set) var processTerminated = false
-    fileprivate var editedFrames: Set<String> = []
-    fileprivate var automaticRecoveryAttempted = false
-    fileprivate var awaitsNavigationCommit = false
-    public var requestedURL: URL
-    /// This tab's page zoom; 1 is actual size. Not remembered per site.
-    public internal(set) var zoom = 1.0
-    /// The find bar's state; nil while it is closed.
-    public internal(set) var find: PageFindState?
-    var findRevision = 0
-    /// The link under the pointer, for the pane's address preview.
-    public internal(set) var hoveredLink: LinkHover?
-    public internal(set) var isFullscreen = false
-    /// Readability judged this document an article.
-    public internal(set) var isReaderAvailable = false
-    public internal(set) var isPreparingReader = false
-    public internal(set) var isReaderShown = false
-    public internal(set) var readerArticle: ReaderArticle?
-    /// The page's language (BCP 47), detected from its text after loading.
-    public internal(set) var language: String?
-    public internal(set) var translation = PageTranslationPhase.original
-    /// The connection's trust, from WebKit's public secure-content state.
-    public internal(set) var security = PageSecurity.none
-    /// The certificate behind `security`, for the certificate panel.
-    public internal(set) var serverTrust: SecTrust?
-    /// A navigation refused for its certificate, until the next one starts.
-    var certificateFailure: CertificateFailure?
-    /// A sign-in Early offers to save or update, until it is answered.
-    public internal(set) var passwordOffer: PasswordOffer?
-    var pendingLogin: PendingLogin?
-    var recentUsername: RecentUsername?
-    public internal(set) var cameraCapture = WKMediaCaptureState.none
-    public internal(set) var microphoneCapture = WKMediaCaptureState.none
-    /// The committed main document's MIME type, e.g. a viewed PDF.
-    public fileprivate(set) var documentMIMEType: String?
-    fileprivate var pendingDocumentMIMEType: String?
-    fileprivate var observations: [NSKeyValueObservation] = []
-    fileprivate var reportedURL: URL?
-    var reportedTitle: String?
-    var navigationGeneration = UUID()
-    fileprivate var activeNavigation: ObjectIdentifier?
-    fileprivate var policyCancellations: [NavigationPolicyCancellation] = []
-    fileprivate init(view: WKWebView, url: URL) { self.view = view; requestedURL = url }
-
-    struct CertificateFailure {
-        let url: URL?
-        let trust: SecTrust?
-    }
-}
-
-@MainActor @Observable
 public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate {
     public private(set) var pages: [UUID: BrowserPage] = [:]
     public private(set) var creationCount = 0
@@ -97,7 +23,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         didSet { if !interactionInProgress { scheduleRetention() } }
     }
     public enum Protection: Hashable, Sendable { case interaction, download }
-    private var protections: [UUID: [UUID: Protection]] = [:]
+    var protections: [UUID: [UUID: Protection]] = [:]
     private var muteChoices: Set<UUID> = []
     /// Zoom belongs to the tab, so it survives background discard and recovery.
     var zoomChoices: [UUID: Double] = [:]
@@ -167,12 +93,16 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
     /// Manage Passwords… was chosen under a sign-in field, for this host.
     public var onManagePasswords: ((String?) -> Void)?
+    /// Answers "Allow downloads?" for a host instead of Early's sheet (nil: dismissed); tests use it.
+    @ObservationIgnored var askForDownloads: ((String, @escaping @MainActor (Bool?) -> Void) -> Void)?
     /// Answers HTTP sign-in requests instead of Early's sheet; tests use it.
     @ObservationIgnored var askForSignIn: ((SignInRequest, WKWebView, @escaping @MainActor (SignInResponse?) -> Void) -> Void)?
     /// Other schemes whose pages tests treat as websites for passwords.
     @ObservationIgnored var passwordTestSchemes: Set<String> = []
     let passwordPanel = PasswordSuggestionPanel()
     @ObservationIgnored var focusedPasswordField: FocusedPasswordField?
+    /// Lets local files the person opened open again after a restart; nil in tests.
+    @ObservationIgnored public var localFiles: LocalFileBookmarks?
     /// The app macOS would open a link with, and opening it; tests replace both.
     @ObservationIgnored var appForLink: (URL) -> URL? = { NSWorkspace.shared.urlForApplication(toOpen: $0) }
     @ObservationIgnored var openInApp: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -185,12 +115,12 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     let input: NavigationInput
     private let configure: (WKWebViewConfiguration) -> Void
     private var store: WKWebsiteDataStore?
-    private var identities: [ObjectIdentifier: UUID] = [:]
+    var identities: [ObjectIdentifier: UUID] = [:]
     var dialogs: [UUID: PendingDialog] = [:]
     var documentPanels: [UUID: PendingPanel] = [:]
     private var controllerOwners: [ObjectIdentifier: Set<UUID>] = [:]
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
-    @ObservationIgnored private var recoveryTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored var recoveryTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var memoryMonitor: PageMemoryPressureMonitor?
     private var pressure: PageRetentionPolicy.Pressure = .normal
     // Diagnostic work counts do not trigger SwiftUI observation or record URLs.
@@ -200,7 +130,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         var presentationVisits = 0
     }
     @ObservationIgnored private(set) var workMetrics = WorkMetrics()
-    @ObservationIgnored public private(set) var navigationDiagnostics: [NavigationDiagnostic] = []
+    @ObservationIgnored public internal(set) var navigationDiagnostics: [NavigationDiagnostic] = []
 
     public init(profileID: UUID, ephemeral: Bool = false,
                 input: NavigationInput = NavigationInput(),
@@ -376,14 +306,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         scheduleRetention()
     }
 
-    private func captureSnapshot(_ id: UUID) {
+    func captureSnapshot(_ id: UUID) {
         guard pressure == .normal, let page = pages[id], !page.isLoading,
               page.failure == nil, !page.hasUnsavedInput, !page.hasDialog,
               page.view.bounds.width > 0, page.view.bounds.height > 0 else { return }
         snapshots.request(tabID: id, navigationID: page.navigationGeneration, view: page.view)
     }
 
-    private func transition(_ id: UUID, _ event: PageLifecycle.Event) {
+    func transition(_ id: UUID, _ event: PageLifecycle.Event) {
         var runtime = lifecycle(for: id)
         if runtime.transition(event) { lifecycles[id] = runtime }
     }
@@ -561,7 +491,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         controller.removeScriptMessageHandler(forName: PasswordFormObserver.name, contentWorld: PasswordFormObserver.world)
     }
 
-    private func beginLoading(_ id: UUID) {
+    func beginLoading(_ id: UUID) {
         guard let page = pages[id] else { return }
         page.failure = nil
         page.certificateFailure = nil
@@ -589,14 +519,42 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.automaticRecoveryAttempted = false
         page.processTerminated = false
         page.requestedURL = url
+        page.earlyRequested = url
         beginLoading(tab.id)
         page.activeNavigation = startNavigation(to: url, in: page.view).map(ObjectIdentifier.init)
     }
 
     /// Local documents receive read access to the chosen file only, which is
-    /// all the sandbox grants for a user-selected or dropped file.
-    private func startNavigation(to url: URL, in view: WKWebView) -> WKNavigation? {
-        url.isFileURL ? view.loadFileURL(url, allowingReadAccessTo: url) : view.load(URLRequest(url: url))
+    /// all the sandbox grants for a user-selected or dropped file. One opened
+    /// before Early restarted reads through its bookmark, and one that can't be
+    /// read says why instead of showing a blank page.
+    func startNavigation(to url: URL, in view: WKWebView) -> WKNavigation? {
+        guard url.isFileURL else { return view.load(URLRequest(url: url)) }
+        guard let localFiles, let id = identities[ObjectIdentifier(view)], let page = pages[id] else {
+            return view.loadFileURL(url, allowingReadAccessTo: url)
+        }
+        releaseLocalFile(of: page)
+        switch localFiles.access(url) {
+        case .readable(let file):
+            page.localFile = url
+            return view.loadFileURL(file, allowingReadAccessTo: file)
+        case .unavailable:
+            page.failure = Self.unavailableFileMessage(url)
+            transition(id, .fail)
+            refresh(id)
+            return nil
+        }
+    }
+
+    static func unavailableFileMessage(_ url: URL) -> String {
+        "“\(url.lastPathComponent)” can’t be opened. It may have been moved or deleted, or it was opened before Early "
+            + "kept local files across restarts. Open it again from Finder or with File › Open File…"
+    }
+
+    func releaseLocalFile(of page: BrowserPage) {
+        guard let file = page.localFile else { return }
+        page.localFile = nil
+        localFiles?.release(file)
     }
 
     public func activate(_ tab: BrowserTab) {
@@ -710,6 +668,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         if preservingSnapshot { snapshots.cancelCapture(tabID: tabID) }
         else { snapshots.invalidate(tabID: tabID) }
         protections[tabID] = nil
+        if let page = pages[tabID] { releaseLocalFile(of: page) }
         if focusedPasswordField?.tabID == tabID { hidePasswordSuggestions() }
         if lifecycles[tabID] != nil { transition(tabID, .discard) }
         guard let page = pages[tabID] else { return }
@@ -842,7 +801,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         scheduleRetention()
     }
 
-    private func refresh(_ id: UUID) {
+    func refresh(_ id: UUID) {
         guard let page = pages[id] else { return }
         let view = page.view
         page.isLoading = view.isLoading
@@ -875,495 +834,5 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             onMetadata?(id, url, title)
         }
         scheduleRetention()
-    }
-
-    public func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-                        decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        let mainFrame = action.targetFrame?.isMainFrame ?? true
-        guard let url = action.request.url else { decisionHandler(.cancel); return }
-        if action.shouldPerformDownload, isDownloadable(url) {
-            if let id = identities[ObjectIdentifier(webView)] {
-                // WebKit ends the navigation once it becomes a download; that
-                // expected interruption is not a page failure.
-                cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
-                recordNavigation(.init(tabID: id, event: "download-action", url: url, isMainFrame: mainFrame))
-            }
-            decisionHandler(.download)
-            return
-        }
-        if url.isFileURL {
-            decideLocalNavigation(to: url, action: action, in: webView, mainFrame: mainFrame, decisionHandler: decisionHandler)
-            return
-        }
-        if (try? input.validate(url)) != nil {
-            // A website cannot obtain an extension's configuration by linking
-            // or redirecting to its origin. Trusted browser/extension commands
-            // already prepared the correct view before starting navigation.
-            // Subresources stay under WebKit's web_accessible_resources checks.
-            if mainFrame, let origin = Self.extensionOrigin(of: url),
-               let id = identities[ObjectIdentifier(webView)], let page = pages[id],
-               !page.hasExtensionConfiguration || page.extensionOrigin != origin {
-                decisionHandler(.cancel)
-                cancelForPolicy(id, url: url, mainFrame: true,
-                                notice: "This page can only be opened from its extension.")
-                keepCurrentDocument(id)
-                return
-            }
-            if openCommandClickedLink(action, in: webView) {
-                decisionHandler(.cancel)
-                return
-            }
-            // Leaving an extension drops its privileged configuration. The
-            // reverse must never promote a website into an extension page.
-            if mainFrame, action.targetFrame != nil, let id = identities[ObjectIdentifier(webView)],
-               let page = pages[id], page.hasExtensionConfiguration, page.extensionOrigin != nil,
-               Self.extensionOrigin(of: url) == nil {
-                decisionHandler(.cancel)
-                cancelForPolicy(id, url: url, mainFrame: true, notice: nil)
-                DispatchQueue.main.async { [weak self] in self?.onNeedsNewView?(id, url) }
-                return
-            }
-            if mainFrame, action.targetFrame != nil,
-               let id = identities[ObjectIdentifier(webView)] {
-                pages[id]?.requestedURL = url
-                if action.navigationType != .other {
-                    cancelRecovery(id)
-                    pages[id]?.automaticRecoveryAttempted = false
-                    pages[id]?.processTerminated = false
-                }
-            }
-            decisionHandler(.allow)
-        } else if !mainFrame, ["about", "blob", "data"].contains(url.scheme?.lowercased() ?? "") {
-            decisionHandler(.allow)
-        } else {
-            decisionHandler(.cancel)
-            if let id = identities[ObjectIdentifier(webView)] {
-                let offered = offerToOpenInApp(url, action: action, from: webView)
-                cancelForPolicy(id, url: url, mainFrame: mainFrame,
-                    notice: mainFrame && !offered ? "This link uses an unsupported address type (\(url.scheme ?? "unknown"))." : nil)
-            }
-        }
-    }
-
-    /// Web addresses are validated; data/blob documents are page-local files.
-    func isDownloadable(_ url: URL) -> Bool {
-        switch url.scheme?.lowercased() {
-        case "data", "blob": true
-        case "http", "https": (try? input.validate(url)) != nil
-        default: false
-        }
-    }
-
-    /// Local documents load only from Early's own requests (Open File, drops,
-    /// restoration, reload), from another local page, or through history. A
-    /// web page can never open a local file.
-    private func decideLocalNavigation(to url: URL, action: WKNavigationAction, in webView: WKWebView, mainFrame: Bool,
-                                       decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        guard (try? input.validate(url)) != nil, let id = identities[ObjectIdentifier(webView)], let page = pages[id] else {
-            decisionHandler(.cancel)
-            return
-        }
-        let fromLocalPage = webView.url?.isFileURL == true
-        if page.requestedURL == url || fromLocalPage || action.navigationType == .backForward || action.navigationType == .reload {
-            if mainFrame { page.requestedURL = url }
-            decisionHandler(.allow)
-            return
-        }
-        decisionHandler(.cancel)
-        cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
-        // A file dropped on a page that does not accept it opens as a new tab,
-        // leaving a pinned or saved page in place.
-        if mainFrame, action.navigationType == .other { onOpenFiles?([url]) }
-    }
-
-    public func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
-                        decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
-        decisionHandler(navigationResponsePolicy(for: webView, response: response.response,
-            canShowMIMEType: response.canShowMIMEType, isMainFrame: response.isForMainFrame))
-    }
-
-    /// Same path for the delegate and deterministic response fixtures. Embedded
-    /// responses cannot produce a top-level download warning or page failure.
-    func navigationResponsePolicy(for view: WKWebView, response: URLResponse,
-                                  canShowMIMEType: Bool, isMainFrame: Bool) -> WKNavigationResponsePolicy {
-        guard let id = identities[ObjectIdentifier(view)], pages[id] != nil else { return .cancel }
-        let disposition = NavigationResponseDisposition.classify(response, canShowMIMEType: canShowMIMEType, isMainFrame: isMainFrame)
-        recordNavigation(.init(tabID: id, event: "response-\(disposition.rawValue)", url: response.url,
-            status: (response as? HTTPURLResponse)?.statusCode, mimeType: response.mimeType, isMainFrame: isMainFrame))
-        guard disposition != .allow else {
-            if isMainFrame { pages[id]?.pendingDocumentMIMEType = response.mimeType?.lowercased() }
-            return .allow
-        }
-        // A download ends this navigation with WebKit's expected interruption;
-        // the current page stays as it was, without a notice or failure.
-        cancelForPolicy(id, url: response.url, mainFrame: isMainFrame, notice: nil)
-        if isMainFrame { keepCurrentDocument(id) }
-        return disposition == .download && response.url.map(isDownloadable) == true ? .download : .cancel
-    }
-
-    /// Reload must reload the page still on screen, not repeat a download.
-    private func keepCurrentDocument(_ id: UUID) {
-        guard let page = pages[id] else { return }
-        page.pendingDocumentMIMEType = nil
-        guard let current = page.view.url.flatMap({ try? input.validate($0) }) else { return }
-        page.requestedURL = current
-        page.awaitsNavigationCommit = false
-    }
-
-    public func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        adoptDownload(download, from: webView)
-        closeBlankPageAfterDownload(webView)
-    }
-
-    public func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        adoptDownload(download, from: webView)
-        closeBlankPageAfterDownload(webView)
-    }
-
-    /// A tab opened only for a download (a target-blank file link, or an address
-    /// that turned out to be a file) has nothing to show; close it as other
-    /// browsers do. The download continues.
-    private func closeBlankPageAfterDownload(_ view: WKWebView) {
-        guard let id = tabID(for: view), view.url == nil, !view.canGoBack else { return }
-        DispatchQueue.main.async { [weak self, weak view] in
-            guard let self, let view, self.pages[id]?.view === view, view.url == nil else { return }
-            self.onClose?(id)
-        }
-    }
-
-    /// Downloads outlive their page; while active they protect it from
-    /// background discard, because a blob/data source belongs to its document.
-    @discardableResult
-    func adoptDownload(_ download: WKDownload, from view: WKWebView?, destination: URL? = nil, listed: Bool = true,
-                       settled: ((DownloadItem) -> Void)? = nil) -> DownloadItem {
-        let id = view.flatMap { identities[ObjectIdentifier($0)] }
-        let origin = id.flatMap { pages[$0]?.view.url }
-        let item = downloads.adopt(download, source: download.originalRequest?.url, origin: origin,
-                                   destination: destination, listed: listed)
-        if let id, let token = protect(tabID: id, reason: .download) {
-            item.onSettled.append { [weak self] _ in self?.releaseProtection(tabID: id, token: token) }
-        }
-        if let settled { item.onSettled.append(settled) }
-        if listed { onDownloadStarted?(item) }
-        return item
-    }
-
-    /// Download Linked File, Save Image As and saving a viewed PDF.
-    @discardableResult
-    public func startDownload(_ url: URL, from tabID: UUID, to destination: URL? = nil, listed: Bool = true,
-                              settled: ((DownloadItem) -> Void)? = nil) -> Bool {
-        guard let page = pages[tabID], isDownloadable(url) else { return false }
-        // Adopt inside WebKit's callback. WebKit can ask for a destination right
-        // after it, and a delegate set from an awaited continuation may be too
-        // late: the download would then be dropped while it shows "Starting…".
-        page.view.startDownload(using: URLRequest(url: url)) { [weak self, weak view = page.view] download in
-            guard let self else { download.cancel { _ in }; return }
-            self.adoptDownload(download, from: view, destination: destination, listed: listed, settled: settled)
-        }
-        return true
-    }
-
-    func hasProtection(tabID: UUID, reason: Protection) -> Bool {
-        protections[tabID]?.values.contains(reason) == true
-    }
-
-    private func cancelForPolicy(_ id: UUID, url: URL?, mainFrame: Bool, notice: String?) {
-        guard let page = pages[id] else { return }
-        page.policyCancellations.append(.init(generation: page.navigationGeneration, url: url, isMainFrame: mainFrame))
-        if page.policyCancellations.count > 8 { page.policyCancellations.removeFirst() }
-        if mainFrame { page.navigationNotice = notice }
-    }
-
-    public func dismissNavigationNotice(for id: UUID) { pages[id]?.navigationNotice = nil }
-
-    private func recordNavigation(_ event: NavigationDiagnostic) {
-        navigationDiagnostics.append(event)
-        if navigationDiagnostics.count > 24 { navigationDiagnostics.removeFirst(navigationDiagnostics.count - 24) }
-    }
-
-    public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        guard let id = identities[ObjectIdentifier(webView)] else { return }
-        beginLoading(id)
-        pages[id]?.activeNavigation = navigation.map(ObjectIdentifier.init)
-        refresh(id)
-    }
-    public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        guard let id = identities[ObjectIdentifier(webView)] else { return }
-        pages[id]?.playingFrames.removeAll()
-        pages[id]?.mediaFrames.removeAll()
-        pages[id]?.isPlayingMedia = false
-        pages[id]?.editedFrames.removeAll()
-        pages[id]?.hasUnsavedInput = false
-        pages[id]?.awaitsNavigationCommit = false
-        pages[id]?.policyCancellations.removeAll()
-        pages[id]?.navigationNotice = nil
-        pages[id]?.documentMIMEType = pages[id]?.pendingDocumentMIMEType
-        pages[id]?.pendingDocumentMIMEType = nil
-        resetFindForNewDocument(id)
-        if focusedPasswordField?.tabID == id { hidePasswordSuggestions() }
-        pages[id]?.hoveredLink = nil
-        // Reader shows one document; a new one returns to the page.
-        hideReader(id)
-        pages[id]?.isReaderAvailable = false
-        resetTranslationForNewDocument(id)
-        if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
-    }
-    public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        guard let id = identities[ObjectIdentifier(webView)] else { return }
-        recordNavigation(.init(tabID: id, event: "redirect", url: webView.url, isMainFrame: true))
-    }
-    public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
-        page.navigationNotice = nil
-        page.policyCancellations.removeAll()
-        transition(id, .finishLoading)
-        refresh(id)
-        captureSnapshot(id)
-        scheduleRetention()
-        refreshFindAfterLoad(id)
-        checkReaderAvailability(id)
-        detectPageLanguage(id)
-        checkPendingLogin(id)
-        guard let url = webView.url else { return }
-        let generation = page.navigationGeneration
-        // Read only the loaded document, in an isolated JS world. No injected
-        // observers, external discovery service, or off-screen page loads.
-        webView.evaluateJavaScript("""
-            Array.from(document.querySelectorAll('link[rel]'))
-                .filter(link => link.rel.toLowerCase().split(/\\s+/).includes('icon'))
-                .slice(0, 8).map(link => link.href)
-            """, in: nil, in: .defaultClient) { [weak self, weak page] result in
-                guard let self, let page, self.pages[id] === page,
-                      page.navigationGeneration == generation, page.view.url == url else { return }
-                let links = (try? result.get()) as? [String] ?? []
-                self.favicons.request(url, discovered: links)
-            }
-    }
-    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        failed(webView, navigation: navigation, error)
-    }
-    public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        failed(webView, navigation: navigation, error)
-    }
-    private func failed(_ view: WKWebView, navigation: WKNavigation?, _ error: Error) {
-        guard let id = identities[ObjectIdentifier(view)], let page = pages[id] else { return }
-        let nsError = error as NSError
-        let failingURL = (nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
-            ?? (nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))
-        if let navigation, let active = page.activeNavigation, active != ObjectIdentifier(navigation) {
-            recordNavigation(.init(tabID: id, event: "stale-navigation-error", url: failingURL, isMainFrame: true, error: nsError))
-            return
-        }
-        // WebKit reports intentional policy cancellation with its legacy error
-        // domain/code (WebKitErrors.h). Suppress only our matching decision, not
-        // every policy error, and never match an unrelated NSError by code alone.
-        let interruption = nsError.domain == "WebKitErrorDomain" && nsError.code == 102
-        let match = interruption ? page.policyCancellations.firstIndex { cancellation in
-            cancellation.generation == page.navigationGeneration
-                && (failingURL == nil ? cancellation.isMainFrame : cancellation.url == failingURL)
-        } : nil
-        if let match {
-            let cancelled = page.policyCancellations.remove(at: match)
-            recordNavigation(.init(tabID: id, event: "expected-policy-cancellation", url: failingURL ?? cancelled.url,
-                isMainFrame: cancelled.isMainFrame, error: nsError))
-            if cancelled.isMainFrame { refresh(id) }
-            return
-        }
-        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-            recordNavigation(.init(tabID: id, event: "cancelled", url: failingURL, isMainFrame: true, error: nsError))
-            refresh(id)
-            return
-        }
-        recordNavigation(.init(tabID: id, event: "failure", url: failingURL ?? page.requestedURL, isMainFrame: true, error: nsError))
-        if Self.isCertificateError(nsError) {
-            page.certificateFailure = .init(url: failingURL ?? page.requestedURL, trust: Self.peerTrust(nsError))
-        }
-        page.failure = error.localizedDescription
-        transition(id, .fail)
-        refresh(id)
-    }
-    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
-        cancelRecovery(id)
-        snapshots.invalidate(tabID: id)
-        page.navigationGeneration = UUID()
-        page.failure = "The web content process stopped. Reload to reopen this page."
-        page.processTerminated = true
-        page.isLoading = false
-        page.isPlayingMedia = false
-        page.playingFrames.removeAll()
-        page.mediaFrames.removeAll()
-        cancelDialog(id)
-        transition(id, .fail)
-        // Background failures do not generate network requests. Selection can
-        // recover them later. Only one automatic retry is allowed until the
-        // user explicitly navigates/reloads, including repeated crash loops.
-        if visibleTabIDs.contains(id) { recoverIfNeeded(id) }
-        scheduleRetention()
-    }
-
-    private func cancelRecovery(_ id: UUID) {
-        recoveryTasks.removeValue(forKey: id)?.cancel()
-    }
-
-    private func recoverIfNeeded(_ id: UUID) {
-        guard let page = pages[id], page.processTerminated, !page.automaticRecoveryAttempted,
-              !page.hasUnsavedInput, recoveryTasks[id] == nil else { return }
-        page.automaticRecoveryAttempted = true
-        let generation = page.navigationGeneration
-        recoveryTasks[id] = Task { @MainActor [weak self, weak page] in
-            await Task.yield()
-            guard !Task.isCancelled, let self, let page, self.pages[id] === page,
-                  page.navigationGeneration == generation else { return }
-            self.recoveryTasks[id] = nil
-            guard self.visibleTabIDs.contains(id), page.processTerminated else {
-                page.automaticRecoveryAttempted = false
-                return
-            }
-            page.processTerminated = false
-            self.beginLoading(id)
-            // Reload the last validated address as a GET; never replay POST
-            // bodies, dialogs, or claim that dead form/JavaScript state survived.
-            page.activeNavigation = startNavigation(to: page.requestedURL, in: page.view).map(ObjectIdentifier.init)
-        }
-    }
-
-    public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
-                        completionHandler: @escaping @MainActor (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        // Never accepts invalid certificates or makes up credentials; a
-        // website's own sign-in asks the person.
-        handleAuthentication(challenge, in: webView, completionHandler: completionHandler)
-    }
-
-    public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
-                        for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if identities[ObjectIdentifier(webView)] != nil, let url = action.request.url,
-           offerToOpenInApp(url, action: action, from: webView) { return nil }
-        guard identities[ObjectIdentifier(webView)] != nil,
-              let url = action.request.url, (try? input.validate(url)) != nil,
-              !url.isFileURL || webView.url?.isFileURL == true else { return nil }
-        // Do not create a tab whose stored URL could later restore a protected
-        // extension page. Only that extension's own frame can open such a popup.
-        if let origin = Self.extensionOrigin(of: url) {
-            guard let id = identities[ObjectIdentifier(webView)], let page = pages[id],
-                  page.hasExtensionConfiguration, page.extensionOrigin == origin,
-                  action.sourceFrame.securityOrigin.protocol.lowercased() == url.scheme?.lowercased(),
-                  action.sourceFrame.securityOrigin.host.lowercased() == url.host?.lowercased()
-            else { return nil }
-        }
-        // Target-blank links may arrive through the new-window delegate first.
-        // Returning nil consumes the gesture without creating a second tab.
-        if openCommandClickedLink(action, in: webView) { return nil }
-        return onNewWindow?(url, configuration)
-    }
-
-    private func openCommandClickedLink(_ action: WKNavigationAction, in view: WKWebView) -> Bool {
-        guard Self.isCommandClick(navigationType: action.navigationType, buttonNumber: action.buttonNumber,
-                                  modifiers: action.modifierFlags),
-              let url = action.request.url else { return false }
-        return openContextLink(url, in: view, background: true)
-    }
-
-    static func isCommandClick(navigationType: WKNavigationType, buttonNumber: Int,
-                               modifiers: NSEvent.ModifierFlags) -> Bool {
-        // WKNavigationAction uses WebKit's button mask: left = 1, none = 0.
-        // It is not NSEvent's zero-based buttonNumber (or DOM MouseEvent.button).
-        navigationType == .linkActivated && buttonNumber == 1 && modifiers.contains(.command)
-    }
-
-    public func webViewDidClose(_ webView: WKWebView) {
-        if let id = identities[ObjectIdentifier(webView)] { onClose?(id) }
-    }
-
-    public func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
-                        initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor () -> Void) {
-        showDialog(webView, frame: frame, message: message, kind: .alert) { _, _ in completionHandler() }
-    }
-    public func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
-                        initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor (Bool) -> Void) {
-        showDialog(webView, frame: frame, message: message, kind: .confirm) { accepted, _ in completionHandler(accepted) }
-    }
-    public func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
-                        defaultText: String?, initiatedByFrame frame: WKFrameInfo,
-                        completionHandler: @escaping @MainActor (String?) -> Void) {
-        showDialog(webView, frame: frame, message: prompt, kind: .prompt(defaultText ?? "")) {
-            accepted, value in completionHandler(accepted ? value : nil)
-        }
-    }
-
-    private enum DialogKind { case alert, confirm, prompt(String) }
-    struct PendingDialog {
-        let alert: NSAlert
-        let parent: NSWindow
-        /// The button chosen, or nil when the dialog was dismissed without one.
-        let complete: (NSApplication.ModalResponse?, String?) -> Void
-        let field: NSTextField?
-    }
-    private func showDialog(_ view: WKWebView, frame: WKFrameInfo, message: String, kind: DialogKind,
-                            complete: @escaping (Bool, String?) -> Void) {
-        let alert = NSAlert()
-        alert.messageText = "\(frame.request.url?.host ?? "Website") says"
-        alert.informativeText = String(message.prefix(4000))
-        alert.addButton(withTitle: "OK")
-        var field: NSTextField?
-        switch kind {
-        case .alert: break
-        case .confirm: alert.addButton(withTitle: "Cancel")
-        case .prompt(let value):
-            alert.addButton(withTitle: "Cancel")
-            let inputField = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-            inputField.stringValue = String(value.prefix(4096))
-            inputField.setAccessibilityLabel("Website prompt response")
-            alert.accessoryView = inputField
-            alert.window.initialFirstResponder = inputField
-            field = inputField
-        }
-        presentAlert(alert, field: field, in: view) { response, value in complete(response == .alertFirstButtonReturn, value) }
-    }
-
-    /// One sheet per window: website dialogs and permission prompts alike.
-    func presentAlert(_ alert: NSAlert, field: NSTextField? = nil, in view: WKWebView,
-                      complete: @escaping (NSApplication.ModalResponse?, String?) -> Void) {
-        guard let id = identities[ObjectIdentifier(view)], let window = view.window,
-              window.attachedSheet == nil else { complete(nil, nil); return }
-        dialogs[id] = PendingDialog(alert: alert, parent: window, complete: complete, field: field)
-        // JavaScript is suspended until this sheet completes. Hide the blocked
-        // page's accessibility subtree while the native modal owns interaction;
-        // traversing it can otherwise wait on the suspended WebKit process.
-        view.setAccessibilityHidden(true)
-        pages[id]?.hasDialog = true
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let pending = self?.dialogs.removeValue(forKey: id) else { return }
-            self?.pages[id]?.view.setAccessibilityHidden(false)
-            self?.pages[id]?.hasDialog = false
-            pending.complete(response, pending.field?.stringValue)
-            self?.scheduleRetention()
-        }
-    }
-    private func cancelDialog(_ id: UUID) {
-        guard let pending = dialogs.removeValue(forKey: id) else { return }
-        pages[id]?.view.setAccessibilityHidden(false)
-        pages[id]?.hasDialog = false
-        pending.parent.endSheet(pending.alert.window)
-        pending.complete(nil, nil)
-    }
-}
-
-/// The lock protects only this one flag; no UI work runs under the lock.
-final class RefreshGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var queued = false
-
-    func schedule(_ work: @escaping @MainActor @Sendable () -> Void) {
-        lock.lock()
-        guard !queued else { lock.unlock(); return }
-        queued = true
-        lock.unlock()
-        DispatchQueue.main.async { [self] in
-            lock.lock()
-            queued = false
-            lock.unlock()
-            work()
-        }
     }
 }

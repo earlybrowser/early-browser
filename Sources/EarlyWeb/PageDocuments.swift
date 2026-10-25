@@ -167,9 +167,12 @@ extension WebViewManager {
         }
     }
 
-    /// A static copy of the current document: page scripts, refresh and
-    /// policy metadata are removed, links keep pointing at the website, and the
-    /// text is UTF-8. Typed form values are not part of the saved markup.
+    /// A static copy of the current document that can't run anything: scripts,
+    /// event handlers, `javascript:` links, frames, plugins, refresh and
+    /// policy metadata are removed, and a content policy forbids scripts,
+    /// frames, plugins and sending forms in case anything were missed. Links
+    /// and images keep pointing at the website, and the text is UTF-8. Typed
+    /// form values are not part of the saved markup.
     func saveHTMLSnapshot(of view: WKWebView, source: URL, to destination: URL) {
         view.evaluateJavaScript(Self.htmlSnapshotScript, in: nil, in: Self.documentWorld) { [weak self] result in
             guard let self else { return }
@@ -183,6 +186,7 @@ extension WebViewManager {
 
     /// Isolated from the page's own scripts, which cannot alter the snapshot.
     static let documentWorld = WKContentWorld.world(name: "Early.Documents")
+    static let savedPagePolicy = "script-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'"
     static let htmlSnapshotScript = """
     (() => {
         const root = document.documentElement.cloneNode(true);
@@ -191,10 +195,27 @@ extension WebViewManager {
             head = document.createElement('head');
             root.insertBefore(head, root.firstChild);
         }
-        root.querySelectorAll('script, noscript, base, meta[charset], meta[http-equiv]').forEach(node => node.remove());
+        root.querySelectorAll('script, noscript, base, meta[charset], meta[http-equiv], iframe, frame, frameset, '
+            + 'object, embed, applet, portal, template').forEach(node => node.remove());
+        const unsafe = /^(javascript|vbscript|data:text\\/html)/;
+        for (const element of root.querySelectorAll('*')) {
+            for (const attribute of Array.from(element.attributes)) {
+                const name = attribute.name.toLowerCase();
+                const value = attribute.value.replace(/\\s+/g, '').toLowerCase();
+                if (name.startsWith('on') || ['srcdoc', 'formaction', 'ping'].includes(name)) {
+                    element.removeAttribute(attribute.name);
+                } else if (['href', 'src', 'xlink:href', 'action', 'data', 'poster', 'srcset'].includes(name) && unsafe.test(value)) {
+                    element.removeAttribute(attribute.name);
+                }
+            }
+        }
+        const policy = document.createElement('meta');
+        policy.setAttribute('http-equiv', 'Content-Security-Policy');
+        policy.setAttribute('content', "\(savedPagePolicy)");
+        head.insertBefore(policy, head.firstChild);
         const base = document.createElement('base');
         base.href = document.baseURI;
-        head.insertBefore(base, head.firstChild);
+        head.insertBefore(base, policy.nextSibling);
         const charset = document.createElement('meta');
         charset.setAttribute('charset', 'utf-8');
         head.insertBefore(charset, head.firstChild);

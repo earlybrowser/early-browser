@@ -160,17 +160,86 @@ struct PasswordAutofillTests {
         #expect((try await focus("mail", in: labeled, fixture)).role == .username, "Its label says it's an email address")
     }
 
-    @Test func signInPagesWithASavedPasswordAreFilledAsTheyOpen() async throws {
+    /// A person's click, as real mouse events through a window: the only kind
+    /// page scripts can't imitate. `offset` reaches into a frame at the point.
+    private func personClicks(_ id: String, in view: WKWebView, window: NSWindow, offset: CGPoint? = nil) async throws {
+        window.contentView = view
+        view.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let center = try await view.evaluateJavaScript("""
+            (() => { const r = document.getElementById('\(id)').getBoundingClientRect();
+                     return [r.left + r.width / 2, r.top + r.height / 2]; })()
+            """) as? [Double] ?? []
+        guard center.count == 2 else { throw PageToolFixture.Failure.timeout("no \(id)") }
+        let point = offset.map { CGPoint(x: $0.x, y: $0.y) } ?? CGPoint(x: center[0], y: center[1])
+        // WebKit's view is flipped: y is measured from the top.
+        let location = view.convert(point, to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            type == .leftMouseDown ? view.mouseDown(with: event) : view.mouseUp(with: event)
+        }
+        // Out of the window again once WebKit has the click: the list opens
+        // only in a key window, and this one never shows.
+        try await Task.sleep(for: .milliseconds(150))
+        view.removeFromSuperview()
+    }
+
+    /// A person's Tab key, as a real key event through a window.
+    private func personTabs(in view: WKWebView, window: NSWindow) async throws {
+        window.contentView = view
+        view.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
+            type == .keyDown ? view.keyDown(with: event) : view.keyUp(with: event)
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        view.removeFromSuperview()
+    }
+
+    @Test func signInFieldsAreFilledWhenAPersonReachesThemNeverAsThePageOpens() async throws {
         let later = """
             <title>Later</title><div id="app"></div>
             <script>setTimeout(() => app.innerHTML = '<form><input id=user autocomplete=username><input id=pass type=password></form>', 300)</script>
             """
         let typed = Self.login.replacingOccurrences(of: "<input id=\"user\"", with: "<input id=\"user\" value=\"grace\"")
-        // The framed page, from another site, reports its own fields.
-        let framed = Self.login + "<script>setTimeout(() => parent.postMessage([user.value, pass.value].join(' '), '*'), 800)</script>"
-        let fixture = makeFixture(["login": Self.login, "later": later, "typed": typed, "framed": framed,
-            "outer": "<title>Outer</title><iframe src=\"early-tools://accounts/framed\"></iframe><script>addEventListener('message', e => window.framed = e.data)</script>"])
+        // The page focuses its own password field; it can't count as the person's.
+        let focusing = Self.login + "<script>setTimeout(() => document.getElementById('pass').focus(), 200)</script>"
+        // A password field in a see-through wrapper over a button, and a form under a cover.
+        let disguised = """
+            <title>Disguised</title><button id="decoy" style="position:absolute;left:20px;top:20px;width:200px;height:40px">Play</button>
+            <form><input id="user" autocomplete="username" style="position:absolute;left:20px;top:200px">
+            <div style="opacity:0.02"><input id="pass" type="password" style="position:absolute;left:20px;top:20px;width:200px;height:40px"></div></form>
+            """
+        let tabbing = """
+            <title>Tabbing</title><button id="start">Start</button>
+            <form><input id="user" autocomplete="username"><input id="pass" type="password"></form>
+            """
+        let tabbingCovered = """
+            <title>Tabbing covered</title><button id="start">Start</button>
+            <form><input id="user" autocomplete="username" style="position:absolute;left:20px;top:100px">
+            <input id="pass" type="password" style="position:absolute;left:20px;top:140px"></form>
+            <div style="position:absolute;left:0;top:80px;width:400px;height:200px;background:white"></div>
+            """
+        let covered = """
+            <title>Covered</title><form><input id="user" autocomplete="username" style="position:absolute;left:20px;top:20px">
+            <input id="pass" type="password" style="position:absolute;left:20px;top:60px"></form>
+            <div id="cover" style="position:absolute;left:0;top:0;width:400px;height:200px;background:white"></div>
+            """
+        // The framed page, from another site, reports its own fields when asked.
+        let framed = "<style>body { margin: 0 } input { display: block; width: 200px; height: 30px }</style>" + Self.login
+            + "<script>addEventListener('message', () => parent.postMessage([user.value, pass.value].join(' '), '*'))</script>"
+        let fixture = makeFixture(["login": Self.login, "later": later, "typed": typed, "framed": framed, "focusing": focusing,
+            "disguised": disguised, "covered": covered, "tabbing": tabbing, "tabbingCovered": tabbingCovered,
+            "outer": "<title>Outer</title><style>body { margin: 0 }</style>"
+                + "<iframe id=\"frame\" src=\"early-tools://accounts/framed\" style=\"border:0;position:absolute;left:0;top:0;width:400px;height:200px\"></iframe>"
+                + "<script>addEventListener('message', e => window.framed = e.data)</script>"])
         defer { fixture.cleanup() }
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
         let manager = fixture.manager, vault = try #require(manager.passwords)
         var enabled = true
         manager.fillsPasswordsAutomatically = { enabled }
@@ -178,23 +247,26 @@ struct PasswordAutofillTests {
         vault.save(origin: "early-tools://fixture", username: "grace", password: "second")
         vault.save(origin: "early-tools://accounts", username: "frame", password: "framed")
         vault.markUsed(try #require(vault.login(origin: "early-tools://fixture", username: "grace")).id)
-        func values(_ tab: BrowserTab) async throws -> [String] {
+        func values(_ tab: BrowserTab, waitingForFill: Bool = true) async throws -> [String] {
             var result: [String] = []
-            for _ in 0..<400 {
+            for _ in 0..<(waitingForFill ? 400 : 24) {
                 result = try await fixture.evaluate("['user', 'pass'].map(id => document.getElementById(id)?.value ?? '')", in: tab) as? [String] ?? []
-                if result.last?.isEmpty == false { break }
+                if waitingForFill, result.last?.isEmpty == false { break }
                 try await Task.sleep(for: .milliseconds(25))
             }
             return result
         }
+        func view(_ tab: BrowserTab) throws -> WKWebView { try fixture.page(tab).view }
 
         let login = try await fixture.open("login")
-        #expect(try await values(login) == ["grace", "second"], "The account used last")
+        #expect(try await values(login, waitingForFill: false) == ["", ""], "Nothing is filled as the page opens")
+        try await personClicks("user", in: try view(login), window: window)
+        #expect(try await values(login) == ["grace", "second"], "A click fills the account used last")
         #expect(try await fixture.evaluate("seen.join(',')", in: login) as? String == "user=grace,pass=second",
                 "Filled like typing")
         #expect(vault.logins.allSatisfy { $0.username != "ada" || $0.lastUsed == nil }, "Filling isn't using it yet")
-        // Clicking the field still lists every account, and choosing one replaces what was filled.
-        let field = try await focus("user", in: try fixture.page(login).view, fixture)
+        // The list still has every account, and choosing one replaces what was filled.
+        let field = try await focus("user", in: try view(login), fixture)
         #expect(manager.passwordSuggestions(for: field).count == 3, "Both accounts, not only the filled-in one")
         manager.choosePasswordSuggestion(.login(try #require(vault.login(origin: "early-tools://fixture", username: "ada")).id,
                                                 username: "ada"))
@@ -204,14 +276,45 @@ struct PasswordAutofillTests {
             chosen = try await fixture.evaluate("[user.value, pass.value]", in: login) as? [String] ?? []
         }
         #expect(chosen == ["ada", "first"])
-        #expect(try await values(try await fixture.open("typed")) == ["grace", "second"], "The user name already in the form")
-        #expect(try await values(try await fixture.open("later")) == ["ada", "first"],
-                "A form that appears later, with the account chosen last")
+        let withName = try await fixture.open("typed")
+        try await personClicks("pass", in: try view(withName), window: window)
+        #expect(try await values(withName) == ["grace", "second"], "The user name already in the form")
+        let appearing = try await fixture.open("later")
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(try await values(appearing, waitingForFill: false) == ["", ""], "A form that appears isn't filled by itself")
+        try await personClicks("user", in: try view(appearing), window: window)
+        #expect(try await values(appearing) == ["ada", "first"], "Clicking it fills the account chosen last")
 
-        // Never in another site's frame.
+        // Pages can't trigger it: by focusing a field, or with a see-through
+        // or covered form under the person's click.
+        let selfFocused = try await fixture.open("focusing")
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(try await values(selfFocused, waitingForFill: false) == ["", ""], "The page's own focus fills nothing")
+        let decoy = try await fixture.open("disguised")
+        try await personClicks("decoy", in: try view(decoy), window: window)
+        #expect(try await values(decoy, waitingForFill: false) == ["", ""], "A see-through field over a button gets nothing")
+        let cover = try await fixture.open("covered")
+        try await personClicks("cover", in: try view(cover), window: window, offset: CGPoint(x: 60, y: 30))
+        #expect(try await values(cover, waitingForFill: false) == ["", ""], "A covered form gets nothing")
+
+        // Tabbing into the form fills it, unless the form is under something.
+        let tabbed = try await fixture.open("tabbing")
+        try await personClicks("start", in: try view(tabbed), window: window)
+        try await personTabs(in: try view(tabbed), window: window)
+        #expect(try await values(tabbed) == ["ada", "first"], "Tab into the form fills it")
+        let tabbedCovered = try await fixture.open("tabbingCovered")
+        try await personClicks("start", in: try view(tabbedCovered), window: window)
+        try await personTabs(in: try view(tabbedCovered), window: window)
+        #expect(try await fixture.evaluate("document.activeElement.id", in: tabbedCovered) as? String == "user", "Tab reached it")
+        #expect(try await values(tabbedCovered, waitingForFill: false) == ["", ""], "A form under a cover gets nothing")
+
+        // Never in another site's frame, even when the person clicks into it.
         let outer = try await fixture.open("outer")
+        try await personClicks("frame", in: try view(outer), window: window, offset: CGPoint(x: 100, y: 15))
+        try await Task.sleep(for: .milliseconds(400))
         var framedValues: String?
         for _ in 0..<400 where framedValues == nil {
+            _ = try await fixture.evaluate("frame.contentWindow.postMessage('values', '*')", in: outer)
             try await Task.sleep(for: .milliseconds(25))
             framedValues = try await fixture.evaluate("window.framed ?? null", in: outer) as? String
         }
@@ -220,7 +323,8 @@ struct PasswordAutofillTests {
         // Turned off: the list under the field only.
         enabled = false
         let off = try await fixture.open("login")
-        try await Task.sleep(for: .milliseconds(600))
+        try await personClicks("user", in: try view(off), window: window)
+        try await Task.sleep(for: .milliseconds(400))
         #expect(try await fixture.evaluate("[user.value, pass.value]", in: off) as? [String] == ["", ""])
 
         #expect(WebViewManager.allowsAutomaticFill(origin: "https://example.com", testSchemes: []))
@@ -456,7 +560,7 @@ struct PasswordAutofillTests {
                 "The frame's own origin, from WebKit, not the page's")
     }
 
-    @Test func httpSignInPromptsAreFilledFromAndSavedToPasswords() async throws {
+    @Test func httpSignInPromptsAreFilledFromPasswordsButNeverSavedToThem() async throws {
         let server = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff")
         defer { server.stop() }
         let fixture = makeFixture([:])
@@ -474,11 +578,13 @@ struct PasswordAutofillTests {
         try await fixture.waitUntil("signed in") { page.view.title == "Welcome" }
         #expect(requests.count == 2)
         #expect(requests.first?.host == "127.0.0.1" && requests.first?.realm == "Early Staff" && requests.first?.failed == false)
-        #expect(requests.last?.failed == true && requests.last?.canSave == true && requests.last?.password == "")
-        let saved = try #require(vault.login(origin: "http://127.0.0.1:\(server.port)", username: "ada"))
-        #expect(saved.password == "open sesame" && saved.realm == "Early Staff")
+        #expect(requests.last?.failed == true && requests.last?.password == "")
+        #expect(requests.allSatisfy { !$0.canSave }, "Saving isn't offered")
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(vault.logins(for: "http://127.0.0.1:\(server.port)").isEmpty, "Signed in, and nothing saved")
 
-        // A new session asks again, already filled in; Cancel shows the site's page.
+        // Saved in Settings › Passwords, it fills the prompt; Cancel shows the site's page.
+        vault.save(origin: "http://127.0.0.1:\(server.port)", username: "ada", password: "open sesame", realm: "Early Staff")
         let other = makeFixture(["": ""])
         defer { other.cleanup() }
         other.manager.passwords = vault
@@ -491,6 +597,112 @@ struct PasswordAutofillTests {
         #expect(filled?.username == "ada" && filled?.password == "open sesame")
         let refused = try other.page(again)
         try await other.waitUntil("the site's page") { refused.view.title == "Sign in required" }
+    }
+
+    @Test func onlyThePagesOwnWebsiteCanShowASignInSheetOverIt() async throws {
+        let image = { (server: BasicAuthServer) in
+            "<title>Photo</title><img src=\"\(server.url.absoluteString)\" onerror=\"document.title = 'refused'\" onload=\"document.title = 'shown'\">"
+        }
+        // Another website's image or frame (another port is another origin)
+        // is refused quietly. WebKit already refuses images and scripts; a
+        // frame reaches Early, which refuses it.
+        let staff = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff")
+        let other = try BasicAuthServer(username: "x", password: "y", realm: "Other", pages: [
+            "/photo": image(staff),
+            "/framed": "<title>Framed</title><iframe src=\"\(staff.url.absoluteString)\"></iframe>"
+        ])
+        defer { staff.stop(); other.stop() }
+        let fixture = makeFixture([:])
+        defer { fixture.cleanup() }
+        var asked: [SignInRequest] = []
+        fixture.manager.askForSignIn = { request, _, answer in
+            asked.append(request)
+            answer(SignInResponse(username: "ada", password: "open sesame", save: false))
+        }
+        let tab = try await fixture.open("photo", url: URL(string: "http://127.0.0.1:\(other.port)/photo")!)
+        let page = try fixture.page(tab)
+        try await fixture.waitUntil("another website's image refused") { page.view.title == "refused" }
+        _ = try await fixture.open("framed", url: URL(string: "http://127.0.0.1:\(other.port)/framed")!)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(asked.isEmpty, "Another website can't ask: \(asked.map(\.host))")
+
+        // The page's own website still can, for its images as for the page.
+        let host = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff", pages: ["/photo": "<title>Photo</title>"
+            + "<img src=\"/staff\" onerror=\"document.title = 'refused'\" onload=\"document.title = 'shown'\">"])
+        defer { host.stop() }
+        let same = try await fixture.open("same", url: URL(string: "http://127.0.0.1:\(host.port)/photo")!)
+        let samePage = try fixture.page(same)
+        try await fixture.waitUntil("the page's own image asked") { !asked.isEmpty && samePage.view.title != "Photo" }
+        #expect(asked.count == 1 && asked.first?.host == "127.0.0.1")
+    }
+
+    @Test func aRefusedHTTPSignInNeverReplacesTheWorkingPassword() async throws {
+        let server = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff")
+        defer { server.stop() }
+        let fixture = makeFixture([:])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        let origin = "http://127.0.0.1:\(server.port)"
+        vault.save(origin: origin, username: "ada", password: "open sesame", realm: "Early Staff")
+        // A typo, saved by choice, then Cancel when the website asks again.
+        var answers: [SignInResponse?] = [SignInResponse(username: "ada", password: "typo", save: true), nil]
+        var asked = 0
+        manager.askForSignIn = { _, _, answer in
+            asked += 1
+            answer(answers.isEmpty ? nil : answers.removeFirst())
+        }
+        let tab = try await fixture.open("staff", url: server.url)
+        let page = try fixture.page(tab)
+        try await fixture.waitUntil("the site's refusal") { page.view.title == "Sign in required" }
+        #expect(asked == 2, "Cancel ends it: the refused password isn't sent again")
+        #expect(vault.login(origin: origin, username: "ada")?.password == "open sesame", "The working password stays")
+    }
+
+    /// A frame of the same site asks, its connection then fails, and the page
+    /// finishes all the same: nothing confirmed that password, so it's used
+    /// for the frame but never saved over the working one.
+    @Test func aFramesFailedHTTPSignInNeverReplacesTheWorkingPassword() async throws {
+        let server = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff",
+                                         pages: ["/page": "<title>Page</title><iframe src=\"/staff\"></iframe>"], wrongSignIn: .dropped)
+        defer { server.stop() }
+        let fixture = makeFixture([:])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        let origin = "http://127.0.0.1:\(server.port)"
+        vault.save(origin: origin, username: "ada", password: "open sesame", realm: "Early Staff")
+        var requests: [SignInRequest] = []
+        manager.askForSignIn = { request, _, answer in
+            requests.append(request)
+            answer(SignInResponse(username: "ada", password: "typo", save: true))
+        }
+        let tab = try await fixture.open("page", url: try #require(URL(string: "\(origin)/page")))
+        let page = try fixture.page(tab)
+        try await fixture.waitUntil("the frame's sign-in, then the page") { !requests.isEmpty && !page.view.isLoading }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(requests.first?.canSave == false, "A frame's sign-in can't be confirmed, so it isn't offered for saving")
+        #expect(vault.login(origin: origin, username: "ada")?.password == "open sesame", "The working password stays")
+    }
+
+    /// A server error after a wrong password, or a right password that isn't
+    /// the saved one: neither changes what's saved.
+    @Test func noHTTPSignInChangesASavedPassword() async throws {
+        for (wrongSignIn, typed, title) in [(BasicAuthServer.WrongSignIn.serverError, "typo", "Server error"),
+                                            (.unauthorized, "open sesame", "Welcome")] {
+            let server = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff", wrongSignIn: wrongSignIn)
+            defer { server.stop() }
+            let fixture = makeFixture([:])
+            defer { fixture.cleanup() }
+            let manager = fixture.manager, vault = try #require(manager.passwords)
+            let origin = "http://127.0.0.1:\(server.port)"
+            vault.save(origin: origin, username: "ada", password: "saved before", realm: "Early Staff")
+            var answers: [SignInResponse?] = [SignInResponse(username: "ada", password: typed, save: true)]
+            manager.askForSignIn = { _, _, answer in answer(answers.isEmpty ? nil : answers.removeFirst()) }
+            let tab = try await fixture.open("staff", url: server.url)
+            let page = try fixture.page(tab)
+            try await fixture.waitUntil(title) { page.view.title == title }
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(vault.login(origin: origin, username: "ada")?.password == "saved before", "\(title): what was saved stays")
+        }
     }
 
     @Test func theListMovesItsHighlightAndChoosesWithReturn() throws {
@@ -551,11 +763,18 @@ final class BasicAuthServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "local.early.tests.basic-auth")
     private let expected: String
     private let realm: String
+    /// Open pages, by path, served without signing in.
+    private let pages: [String: String]
+    /// How a wrong password is answered.
+    enum WrongSignIn { case unauthorized, dropped, serverError }
+    private let wrongSignIn: WrongSignIn
     private(set) var port: UInt16 = 0
 
-    init(username: String, password: String, realm: String) throws {
+    init(username: String, password: String, realm: String, pages: [String: String] = [:], wrongSignIn: WrongSignIn = .unauthorized) throws {
         expected = "Basic " + Data("\(username):\(password)".utf8).base64EncodedString()
         self.realm = realm
+        self.pages = pages
+        self.wrongSignIn = wrongSignIn
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)
@@ -573,9 +792,29 @@ final class BasicAuthServer: @unchecked Sendable {
 
     private func handle(_ connection: NWConnection) {
         connection.start(queue: queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [expected, realm] data, _, _, _ in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [expected, realm, pages, wrongSignIn] data, _, _, _ in
             let request = String(decoding: data ?? Data(), as: UTF8.self)
-            let authorized = request.components(separatedBy: "\r\n").contains { $0.lowercased() == "authorization: \(expected.lowercased())" }
+            let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+            if let page = pages[path] {
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(page.utf8.count)\r\nConnection: close\r\n\r\n\(page)"
+                connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                return
+            }
+            let lines = request.components(separatedBy: "\r\n").map { $0.lowercased() }
+            let authorized = lines.contains("authorization: \(expected.lowercased())")
+            if !authorized, lines.contains(where: { $0.hasPrefix("authorization:") }) {
+                switch wrongSignIn {
+                case .unauthorized: break
+                case .dropped:
+                    connection.cancel()
+                    return
+                case .serverError:
+                    let body = "<title>Server error</title>"
+                    let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+                    connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                    return
+                }
+            }
             let body = authorized ? "<title>Welcome</title><p>Staff only" : "<title>Sign in required</title><p>401"
             var response = authorized ? "HTTP/1.1 200 OK\r\n" : "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"\(realm)\"\r\n"
             response += "Content-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"

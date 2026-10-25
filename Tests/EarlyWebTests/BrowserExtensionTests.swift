@@ -42,6 +42,16 @@ struct BrowserExtensionTests {
         try await ExtensionScenarios.privateWindows()
     }
 
+    @Test func localFilesNeedTheExtensionsOwnSwitch() async throws {
+        guard #available(macOS 15.4, *) else { return }
+        try await ExtensionScenarios.localFiles()
+    }
+
+    @Test func anExtensionInstallsFromAZIP() async throws {
+        guard #available(macOS 15.4, *) else { return }
+        try await ExtensionScenarios.zipInstall()
+    }
+
     @Test func safariExtensionsAreFoundInsideMacApps() throws {
         let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyApps-\(UUID())")
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -225,6 +235,85 @@ enum ExtensionScenarios {
                 """,
             "popup.html": "<!doctype html><title>Popup</title><p>Popup"
         ])
+    }
+
+    /// An extension with every website still can't open a file on this Mac
+    /// in a tab, or read a local page, until its own switch allows it.
+    static func localFiles() async throws {
+        let server = try HTMLServer(pages: ["/page": "<title>Page</title><p>Hello"])
+        defer { server.stop() }
+        let catalog = ExtensionCatalog(fileURL: nil)
+        let setup = Setup(catalog: catalog)
+        defer { setup.cleanup() }
+        let folder = try extensionFolder([
+            "manifest.json": """
+                {"manifest_version": 3, "name": "Opener", "version": "1", "description": "Test",
+                 "background": {"scripts": ["background.js"], "persistent": false},
+                 "content_scripts": [{"matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_end"}],
+                 "permissions": ["tabs"], "host_permissions": ["<all_urls>"]}
+                """,
+            "background.js": """
+                browser.runtime.onMessage.addListener(async () => {
+                    try { await browser.tabs.create({ url: 'file:///private/tmp/early-local-file.html', active: false }); return 'created'; }
+                    catch (error) { return 'refused: ' + error.message; }
+                });
+                """,
+            "content.js": """
+                browser.runtime.sendMessage({}).then(answer => document.documentElement.setAttribute('data-opened', answer));
+                """
+        ])
+        let item = try await setup.host.add(files: folder)
+        let context = try #require(setup.host.context(item.id))
+        var opened: [URL] = []
+        setup.host.openTab = { url, _, _ in opened.append(url); return nil }
+        let local = URL(fileURLWithPath: "/private/tmp/early-local-file.html")
+        let granted: Set<WKWebExtensionContext.PermissionStatus> = [.grantedExplicitly, .grantedImplicitly]
+        // WebKit itself doesn't extend "all URLs" to local pages; the explicit
+        // denial keeps it so should that change.
+        #expect(!granted.contains(context.permissionStatus(for: local)), "Local pages are off")
+        #expect(context.deniedPermissionMatchPatterns.keys.contains { $0.string == "file:///*" })
+        #expect(granted.contains(context.permissionStatus(for: server.url("/page"))), "Websites aren't affected")
+
+        let tab = try await setup.open(server.url("/page"))
+        let view = setup.manager.pages[tab.id]?.view
+        try await waitUntil("answer") { await attribute("data-opened", in: view) != nil }
+        let refusal = await attribute("data-opened", in: view)
+        #expect(opened.isEmpty, "No file tab opens: \(opened)")
+        // macOS 26's WebKit leaves the extension's message unanswered instead
+        // (seen on CI: "undefined"); the tab is refused all the same.
+        if #available(macOS 27, *) {
+            #expect(refusal?.hasPrefix("refused") == true, "The extension hears a file tab was refused: \(refusal ?? "no answer")")
+        }
+
+        catalog.change(item.id) { $0.allowsLocalFiles = true }
+        setup.host.refreshAccess(item.id)
+        #expect(!context.deniedPermissionMatchPatterns.keys.contains { $0.string == "file:///*" }, "No longer denied")
+        setup.manager.reload(tab.id)
+        try await waitUntil("allowed answer") { await attribute("data-opened", in: view) == "created" }
+        // WebKit runs content scripts again as access changes, then on reload.
+        #expect(!opened.isEmpty && opened.allSatisfy { $0 == local }, "Allowed: Early is asked to open it")
+    }
+
+    /// A ZIP is copied as it is, and WebKit reads it directly.
+    static func zipInstall() async throws {
+        let setup = Setup()
+        defer { setup.cleanup() }
+        let folder = try messenger(name: "Zipped")
+        let zip = folder.deletingLastPathComponent().appending(path: "\(folder.lastPathComponent).zip")
+        defer { try? FileManager.default.removeItem(at: zip) }
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["-c", "-k", folder.path, zip.path]
+        try ditto.run()
+        ditto.waitUntilExit()
+        #expect(ditto.terminationStatus == 0)
+        let item = try await setup.host.add(files: zip)
+        #expect(item.name == "Zipped" && setup.host.context(item.id)?.isLoaded == true)
+        guard case .files(let name) = item.source else { Issue.record("Expected copied files"); return }
+        var isFolder: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: setup.files.appending(path: name).path, isDirectory: &isFolder) && !isFolder.boolValue,
+                "Kept as a ZIP")
+        await setup.host.remove(item.id)
     }
 
     static func runsOnPages() async throws {

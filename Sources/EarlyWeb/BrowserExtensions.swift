@@ -197,14 +197,30 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     }
 
     public enum ExtensionError: LocalizedError {
-        case missing, alreadyAdded, windowPrivacyMismatch
+        case missing, alreadyAdded, windowPrivacyMismatch, localFiles
         public var errorDescription: String? {
             switch self {
             case .missing: "Its files are missing. If it came with an app, the app may have moved or been deleted."
             case .alreadyAdded: "This extension is already added."
             case .windowPrivacyMismatch: "Extensions cannot create a window in a different privacy mode. Open the appropriate window in Early first."
+            case .localFiles: "This extension isn’t allowed to open files on this Mac. You can allow it in Settings › Extensions."
             }
         }
+    }
+
+    /// Files on this Mac, which an extension reaches only once allowed.
+    static let localFiles = try? WKWebExtension.MatchPattern(string: "file:///*")
+
+    /// Whether the extension may open local files in tabs and read local pages.
+    public func allowsLocalFiles(_ context: WKWebExtensionContext) -> Bool {
+        UUID(uuidString: context.uniqueIdentifier).flatMap { catalog.installed($0) }?.allowsLocalFiles == true
+    }
+
+    /// Without the switch, local pages are denied even to an extension with
+    /// every website: WebKit's "all URLs" covers files too.
+    func applyLocalFileAccess(_ item: InstalledExtension, to context: WKWebExtensionContext) {
+        guard let pattern = Self.localFiles else { return }
+        context.setPermissionStatus(item.allowsLocalFiles ? .unknown : .deniedExplicitly, for: pattern)
     }
 
     /// API permissions it asked for, and website access as chosen.
@@ -220,6 +236,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             guard let pattern = try? WKWebExtension.MatchPattern(string: "*://\(site)/*") else { continue }
             context.setPermissionStatus(.grantedExplicitly, for: pattern)
         }
+        applyLocalFileAccess(item, to: context)
     }
 
     /// Turns an extension off in this host; the others keep their rules.
@@ -252,6 +269,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             context.setPermissionStatus(.unknown, for: pattern)
         }
         for pattern in wanted where granted[pattern] == nil { context.setPermissionStatus(.grantedExplicitly, for: pattern) }
+        applyLocalFileAccess(item, to: context)
     }
 
     /// Turning it on or off, or allowing it in private windows, takes effect.
@@ -286,14 +304,8 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         let folderName = id.uuidString
         let destination = filesDirectory.appending(path: folderName, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
-        if url.hasDirectoryPath || (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-            try FileManager.default.copyItem(at: url, to: destination)
-        } else {
-            // A ZIP stays a ZIP; WebKit reads it directly.
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-            try FileManager.default.removeItem(at: destination)
-            try FileManager.default.copyItem(at: url, to: destination)
-        }
+        // A folder or a ZIP is copied as it is: WebKit reads a ZIP directly.
+        try FileManager.default.copyItem(at: url, to: destination)
         let item = InstalledExtension(id: id, source: .files(folderName: folderName),
                                       name: webExtension.displayName ?? url.deletingPathExtension().lastPathComponent,
                                       version: webExtension.displayVersion ?? webExtension.version ?? "")
@@ -406,6 +418,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     public func webExtensionController(_ controller: WKWebExtensionController, openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                        for extensionContext: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         let url = configuration.url ?? extensionContext.baseURL
+        guard !url.isFileURL || allowsLocalFiles(extensionContext) else { throw ExtensionError.localFiles }
         return openTab?(url, (configuration.window as? ExtensionWindow) ?? focusedWindow, configuration.shouldBeActive)
     }
 
@@ -414,6 +427,9 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         // Each host owns one regular or private session. Never silently replace
         // the requested mode with the host's mode, or cross their data stores.
         guard configuration.shouldBePrivate == isPrivate else { throw ExtensionError.windowPrivacyMismatch }
+        guard !configuration.tabURLs.contains(where: \.isFileURL) || allowsLocalFiles(extensionContext) else {
+            throw ExtensionError.localFiles
+        }
         return openWindow?(configuration.tabURLs.first)
     }
 
@@ -581,7 +597,10 @@ public final class ExtensionTab: NSObject, WKWebExtensionTab {
 
     public func activate(for context: WKWebExtensionContext) async throws { owner?.extensionActivate(id) }
     public func close(for context: WKWebExtensionContext) async throws { owner?.extensionClose(id) }
-    public func loadURL(_ url: URL, for context: WKWebExtensionContext) async throws { owner?.extensionLoad(url, in: id) }
+    public func loadURL(_ url: URL, for context: WKWebExtensionContext) async throws {
+        guard !url.isFileURL || window?.host?.allowsLocalFiles(context) == true else { throw ExtensionHost.ExtensionError.localFiles }
+        owner?.extensionLoad(url, in: id)
+    }
     public func reload(fromOrigin: Bool, for context: WKWebExtensionContext) async throws { owner?.extensionReload(id) }
     public func goBack(for context: WKWebExtensionContext) async throws { owner?.extensionGoBack(id) }
     public func goForward(for context: WKWebExtensionContext) async throws { owner?.extensionGoForward(id) }

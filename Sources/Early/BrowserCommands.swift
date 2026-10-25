@@ -20,10 +20,28 @@ struct BrowserCommands: Commands {
     let application: EarlyAppDelegate
     /// Settings › Shortcuts decides each command's key.
     let preferences: BrowserPreferences
-    @FocusedValue(\.browserWindow) private var model
+    @FocusedValue(\.browserWindow) private var focusedModel
+    /// The focused window's model, or the one a website dialog's sheet belongs
+    /// to while that sheet is the key window.
+    private var model: BrowserWindowModel? {
+        focusedModel ?? application.browserModel(for: NSApp.keyWindow?.sheetParent)
+    }
+
+    /// The window in front, for ⌘W: the key window, or the browser window
+    /// behind a website dialog's sheet.
+    private var frontWindow: NSWindow? { NSApp.keyWindow.map { $0.sheetParent ?? $0 } }
+    private var frontBrowser: BrowserWindowModel? { application.browserModel(for: frontWindow) }
+    /// The title's state, which Early keeps on the window in front.
+    @ObservedObject var front: FrontWindowState
     @Environment(\.openSettings) private var openSettings
 
     static let recentlyClosedTabLimit = 10
+
+    static let helpLinks: [(title: String, url: URL)] = [
+        ("Early Website", URL(string: "https://earlybrowser.github.io/web/")!),
+        ("Release Notes", URL(string: "https://github.com/earlybrowser/early-browser/releases")!),
+        ("Report an Issue", URL(string: "https://github.com/earlybrowser/early-browser/issues/new")!)
+    ]
 
     /// Page titles stay short enough for a menu.
     static func menuTitle(_ title: String) -> String {
@@ -114,12 +132,12 @@ struct BrowserCommands: Commands {
             // when it shows no page. Only ⌘Q quits. The window in front
             // decides: the menu's focused value can still name another
             // window after windows open, close and change focus.
-            Button(model.map { $0.showsNoPage } ?? true ? "Close Window" : "Close Tab") {
-                let window = NSApp.keyWindow
-                if let front = application.browserModel(for: window), !front.showsNoPage {
+            // The title follows the same window the command acts on.
+            Button(front.showsPage ? "Close Tab" : "Close Window") {
+                if let front = frontBrowser, !front.showsNoPage {
                     front.perform(.closeActiveTab)
                 } else {
-                    window?.performClose(nil)
+                    frontWindow?.performClose(nil)
                 }
             }
             .keyboardShortcut(key(.closeTab))
@@ -422,6 +440,13 @@ struct BrowserCommands: Commands {
             }
         }
         CommandMenu("Extensions") { ExtensionsMenuItems(application: application, model: model) }
+        // Early has no Help book: its website, release notes and where to
+        // report a problem, each in a new tab here.
+        CommandGroup(replacing: .help) {
+            ForEach(Self.helpLinks, id: \.title) { link in
+                Button(link.title) { application.openExternalLinks([link.url]) }
+            }
+        }
         #if DEBUG
         // Deterministic layout coverage without relying on synthesized drags
         // being accepted by the macOS window manager. No normal-user menu.

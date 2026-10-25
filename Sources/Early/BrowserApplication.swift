@@ -12,6 +12,8 @@ import WebKit
 @MainActor @Observable
 final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     private struct WindowEntry { let id: UUID; let model: BrowserWindowModel }
+    /// A browser window's native window, as it registered (nil: the primary one).
+    private struct NativeWindow { let id: UUID?; weak var window: NSWindow? }
     private struct Loaded {
         let workspace: BrowserWorkspace
         let repository: SessionRepository
@@ -30,6 +32,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored var presentWindow: ((UUID) -> Void)?
     @ObservationIgnored var presentSettingsWindow: (() -> Void)?
     @ObservationIgnored private var windows: [WindowEntry] = []
+    /// Native windows are matched as objects: SwiftUI can rename a window after
+    /// Early names it (macOS 26 renamed a second one "browser-AppWindow-2").
+    @ObservationIgnored private var nativeWindows: [NativeWindow] = []
     @ObservationIgnored private var loading: Task<Loaded, Never>?
     @ObservationIgnored private var repository: SessionRepository?
     @ObservationIgnored private var preferences: BrowserPreferences?
@@ -45,6 +50,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var sitePermissionStores: [UUID: SitePermissions] = [:]
     /// Each profile's saved passwords, opened when first needed.
     @ObservationIgnored private var passwordVaults: [UUID: PasswordVault] = [:]
+    /// Each profile's bookmarks for local files it opened; a private session's stay in memory.
+    @ObservationIgnored private var localFileStores: [UUID: LocalFileBookmarks] = [:]
     /// Settings › Passwords opens only with Touch ID or the Mac's password.
     let passwordsLock = PasswordsLock()
     /// The profile whose passwords Settings shows, and what it searches for.
@@ -102,6 +109,36 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var pendingRestoredWindows: Set<UUID> = []
     @ObservationIgnored private var cleaningWebsiteData = false
     private var primaryWindowIsOpen = false
+    /// Whether the window in front shows a page, for ⌘W's title. SwiftUI
+    /// doesn't observe the key window, and a menu that read it itself kept
+    /// "Close Window" after a new window loaded a page (macOS 26).
+    let frontWindowState = FrontWindowState()
+    @ObservationIgnored private var frontWindowGeneration = 0
+
+    override init() {
+        super.init()
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSMenu.didBeginTrackingNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(frontWindowMayHaveChanged(_:)), name: name, object: nil)
+        }
+    }
+
+    @objc private func frontWindowMayHaveChanged(_ notification: Notification) { updateFrontWindow() }
+
+    /// Looks at the window in front (the browser window behind a website
+    /// dialog), and again whenever its page comes or goes.
+    func updateFrontWindow(_ window: NSWindow? = NSApp.keyWindow) {
+        frontWindowGeneration &+= 1
+        let generation = frontWindowGeneration
+        let front = browserModel(for: window.map { $0.sheetParent ?? $0 })
+        let showsPage = withObservationTracking { front.map { !$0.showsNoPage } ?? false } onChange: { [weak self, weak window] in
+            Task { @MainActor in
+                // A newer look, at another window or this one, replaces this one.
+                guard let self, self.frontWindowGeneration == generation else { return }
+                self.updateFrontWindow(window)
+            }
+        }
+        if frontWindowState.showsPage != showsPage { frontWindowState.showsPage = showsPage }
+    }
 
     var profiles: [BrowserProfile] { workspace?.profiles ?? [] }
     var canOpenWindow: Bool { workspace != nil && presentWindow != nil && !isTerminating && !profileOperationInProgress }
@@ -289,6 +326,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if #available(macOS 15.4, *) { privateExtensionHosts.values.forEach { ($0 as? ExtensionHost)?.unloadAll() } }
         privateExtensionHosts.removeAll()
         sitePermissionStores.removeValue(forKey: profile)
+        localFileStores.removeValue(forKey: profile)
         downloadStores.removeValue(forKey: profile)?.cancelAll()
     }
 
@@ -331,6 +369,24 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let store = sitePermissionStores[id] { return store }
         let store = SitePermissions(fileURL: isPrivateProfile(id) ? nil : sitePermissionsFile(for: id))
         sitePermissionStores[id] = store
+        return store
+    }
+
+    private func localFilesFile(for id: UUID) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "LocalFiles/\(id.uuidString).plist", directoryHint: .notDirectory)
+    }
+
+    /// A profile's local-file bookmarks, keeping only those its tabs still need.
+    func localFiles(for id: UUID) -> LocalFileBookmarks? {
+        if let store = localFileStores[id] { return store }
+        let store = LocalFileBookmarks(fileURL: isPrivateProfile(id) ? nil : localFilesFile(for: id))
+        if let session = workspace?.session(for: id) {
+            let sessions = [session] + session.additionalWindows
+            store.keepOnly(sessions.flatMap { window in
+                (window.tabs + window.recentlyClosed.map(\.tab)).flatMap { [$0.currentURL] + ($0.pinnedURL.map { [$0] } ?? []) }
+            })
+        }
+        localFileStores[id] = store
         return store
     }
 
@@ -499,10 +555,16 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// A window model's native window.
     func nativeWindow(of owner: BrowserWindowModel) -> NSWindow? {
-        let identifier: String
-        if owner === model, primaryWindowIsOpen { identifier = "browser" }
-        else if let entry = windows.first(where: { $0.model === owner }) { identifier = "browser.\(entry.id)" }
-        else { return nil }
+        if owner === model, primaryWindowIsOpen { return nativeWindow(id: nil) }
+        guard let entry = windows.first(where: { $0.model === owner }) else { return nil }
+        return nativeWindow(id: entry.id)
+    }
+
+    /// The native window of the primary window (nil) or another one: as it
+    /// registered, or by the name Early gave it.
+    private func nativeWindow(id: UUID?) -> NSWindow? {
+        if let window = nativeWindows.first(where: { $0.id == id })?.window { return window }
+        let identifier = id.map { "browser.\($0)" } ?? "browser"
         return NSApp.windows.first { $0.identifier?.rawValue == identifier }
     }
 
@@ -614,6 +676,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return try EarlyStateArchive.decode(data, using: input)
     }
 
+    /// The password, privacy and update settings a file would change here.
+    func sensitiveImportChanges(from settings: PortableSettings) -> [(title: String, value: Bool)] {
+        preferences?.sensitiveChanges(from: settings) ?? []
+    }
+
     /// Copies of what was here before each import, newest kept.
     var backupsDirectory: URL? { storageURL?.deletingLastPathComponent().appending(path: "Backups", directoryHint: .isDirectory) }
     static let backupLimit = 5
@@ -627,7 +694,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// The whole result is checked, a backup of what's here is saved, then
     /// every window changes at once. Nothing changes if any step fails.
-    func importState(_ archive: EarlyStateArchive, mode: EarlyStateArchive.ImportMode, includeSettings: Bool) async -> ImportOutcome {
+    func importState(_ archive: EarlyStateArchive, mode: EarlyStateArchive.ImportMode, includeSettings: Bool,
+                     includeSensitiveSettings: Bool = false) async -> ImportOutcome {
         guard canEditProfiles, let preferences else {
             return ImportOutcome(message: "Early can’t import right now. Try again in a moment.", succeeded: false)
         }
@@ -680,7 +748,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         let opened = opening.map { addWindow(session: $0) }
         applyingWorkspace = false
-        if includeSettings, let settings = archive.settings { preferences.apply(settings) }
+        if includeSettings, let settings = archive.settings { preferences.apply(settings, includingSensitive: includeSensitiveSettings) }
         saveAll()
         opened.forEach { presentWindow?($0) }
         let names = result.profiles.compactMap { id in profiles.first { $0.id == id }?.name }
@@ -739,7 +807,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             preferences: preferences, isPrivate: isPrivate, history: history(for: session.profileID),
             sitePermissions: sitePermissions(for: session.profileID),
             passwords: passwordsProfile.flatMap { passwords(for: $0) }, passwordsProfileID: passwordsProfile,
-            extensionHost: extensionHost(for: session.profileID, from: passwordsProfile))
+            extensionHost: extensionHost(for: session.profileID, from: passwordsProfile),
+            localFiles: localFiles(for: session.profileID))
     }
 
     @discardableResult private func addWindow(session: BrowserSession, passwordsFrom: UUID? = nil) -> UUID {
@@ -830,7 +899,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         saveAll()
     }
 
-    func windowDidRegister(_ id: UUID?) {
+    func windowDidRegister(_ id: UUID?, window: NSWindow? = nil) {
+        if let window {
+            nativeWindows.removeAll { $0.window == nil || $0.window === window || $0.id == id }
+            nativeWindows.append(NativeWindow(id: id, window: window))
+        }
+        // A new window can become key before it has registered.
+        updateFrontWindow()
         if let id { pendingRestoredWindows.remove(id) }
         guard restoringFocus, pendingRestoredWindows.isEmpty else { return }
         restoringFocus = false
@@ -838,15 +913,15 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         // profile that was frontmost when Early quit.
         DispatchQueue.main.async { [weak self] in
             guard self?.primaryWindowIsOpen == true else { return }
-            NSApp.windows.first { $0.identifier?.rawValue == "browser" }?.makeKeyAndOrderFront(nil)
+            self?.nativeWindow(id: nil)?.makeKeyAndOrderFront(nil)
         }
     }
 
     func openProfile(_ id: UUID) {
         guard !isTerminating, !profileOperationInProgress, let session = workspace?.session(for: id) else { return }
-        let identifier: String
-        if let model, primaryWindowIsOpen, model.coordinator.profileID == id { identifier = "browser" }
-        else if let existing = windows.first(where: { $0.model.coordinator.profileID == id }) { identifier = "browser.\(existing.id)" }
+        let window: NSWindow?
+        if let model, primaryWindowIsOpen, model.coordinator.profileID == id { window = nativeWindow(id: nil) }
+        else if let existing = windows.first(where: { $0.model.coordinator.profileID == id }) { window = nativeWindow(id: existing.id) }
         else {
             // Its windows as they were saved, or as they were imported.
             let opened = ([session] + session.additionalWindows).map { addWindow(session: $0) }
@@ -855,7 +930,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             opened.forEach { presentWindow?($0) }
             return
         }
-        NSApp.windows.first { $0.identifier?.rawValue == identifier }?.makeKeyAndOrderFront(nil)
+        window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         workspace?.activeProfileID = id
         saveAll()
@@ -958,17 +1033,19 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let icons = visibleModels.filter { $0.coordinator.profileID == id }.map { $0.webViews.favicons }
         let closing = windows.filter { $0.model.coordinator.profileID == id }.map(\.id)
         for windowID in closing {
-            NSApp.windows.first { $0.identifier?.rawValue == "browser.\(windowID)" }?.close()
+            nativeWindow(id: windowID)?.close()
             closeWindow(windowID)
         }
         if model?.coordinator.profileID == id {
-            NSApp.windows.first { $0.identifier?.rawValue == "browser" }?.close()
+            nativeWindow(id: nil)?.close()
             closeWindow(nil)
         }
         dataStores.removeValue(forKey: id)
         downloadStores.removeValue(forKey: id)?.cancelAll()
         let history = historyStores.removeValue(forKey: id)
         sitePermissionStores.removeValue(forKey: id)?.removeFile()
+        localFileStores.removeValue(forKey: id)?.removeFile()
+        if let file = localFilesFile(for: id) { try? FileManager.default.removeItem(at: file) }
         if #available(macOS 15.4, *) {
             (privateExtensionHosts.removeValue(forKey: id) as? ExtensionHost)?.unloadAll()
             // Without a host this run, one is made just to erase what its extensions stored.
@@ -1016,6 +1093,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                     }
                     if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
                     if let file = sitePermissionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
+                    if let file = localFilesFile(for: id) { try? FileManager.default.removeItem(at: file) }
                     if let file = extensionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
                     if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
                     if let file = passwordsFile(for: id), FileManager.default.fileExists(atPath: file.path) {
@@ -1034,6 +1112,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     func closeWindow(_ id: UUID?) {
         guard !isTerminating, let closed = windowModel(id) else { return }
         let profileID = closed.coordinator.profileID
+        nativeWindows.removeAll { $0.id == id || $0.window == nil }
         if let id { windows.removeAll { $0.id == id }; windowDidRegister(id) }
         else { primaryWindowIsOpen = false; model = nil }
         closed.onSave = nil
@@ -1079,9 +1158,14 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.orderedWindows.compactMap { window in browserModel(for: window).map { (window, $0) } }
     }
 
-    /// The model of a native browser window, by the identifier it registered.
+    /// The model of a native browser window: as it registered, or by its name.
     func browserModel(for window: NSWindow?) -> BrowserWindowModel? {
-        guard let identifier = window?.identifier?.rawValue else { return nil }
+        guard let window else { return nil }
+        if let registered = nativeWindows.first(where: { $0.window === window }) {
+            guard let id = registered.id else { return primaryWindowIsOpen ? model : nil }
+            return windowModel(id)
+        }
+        guard let identifier = window.identifier?.rawValue else { return nil }
         if identifier == "browser" { return primaryWindowIsOpen ? model : nil }
         guard identifier.hasPrefix("browser."), let id = UUID(uuidString: String(identifier.dropFirst("browser.".count))) else { return nil }
         return windowModel(id)
@@ -1141,7 +1225,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// browser window, or opens one.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard !flag, workspace != nil else { return true }
-        if let minimized = NSApp.windows.first(where: { $0.isMiniaturized && $0.identifier?.rawValue.hasPrefix("browser") == true }) {
+        if let minimized = NSApp.windows.first(where: { $0.isMiniaturized && browserModel(for: $0) != nil }) {
             minimized.deminiaturize(nil)
         } else {
             _ = openNewWindow()
@@ -1173,6 +1257,38 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
+    /// Every profile's passwords reached the disk, or the person chose to quit
+    /// without them. Cancel keeps Early open with them still in memory.
+    func passwordsSavedBeforeQuitting() async -> Bool {
+        await Self.passwordsSaved(Array(passwordVaults.values), ask: askToQuitWithUnsavedPasswords)
+    }
+
+    static func passwordsSaved(_ vaults: [PasswordVault], ask: (String?) -> NSApplication.ModalResponse) async -> Bool {
+        while true {
+            var unsaved: [PasswordVault] = []
+            for vault in vaults {
+                if !(await vault.flush()) { unsaved.append(vault) }
+            }
+            guard let first = unsaved.first else { return true }
+            switch ask(first.saveError) {
+            case .alertFirstButtonReturn: unsaved.forEach { $0.retrySaving() }
+            case .alertSecondButtonReturn: return false
+            default: return true
+            }
+        }
+    }
+
+    /// Tests answer for the person.
+    @ObservationIgnored var askToQuitWithUnsavedPasswords: (String?) -> NSApplication.ModalResponse = { reason in
+        let alert = NSAlert()
+        alert.messageText = "Your passwords couldn’t be saved"
+        alert.informativeText = "\(reason ?? "They couldn’t be written to disk.") If you quit now, your latest password changes are lost."
+        alert.addButton(withTitle: "Try Again")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Quit Anyway").hasDestructiveAction = true
+        return alert.runModal()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let persistence else { return .terminateNow }
         guard !isTerminating else { return .terminateLater }
@@ -1189,8 +1305,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         isTerminating = true
         saveAll()
         Task { @MainActor in
-            for vault in self.passwordVaults.values { await vault.flush() }
-            var canQuit = await persistence.flush()
+            var canQuit = await self.passwordsSavedBeforeQuitting()
+            if canQuit { canQuit = await persistence.flush() }
+            else {
+                self.isTerminating = false
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
             if !canQuit {
                 let alert = NSAlert()
                 alert.messageText = "Your session could not be saved"
@@ -1209,4 +1330,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         return .terminateLater
     }
+}
+
+/// Published for the menu bar, which SwiftUI rebuilds as this changes. The
+/// title reads nothing else, so whenever SwiftUI builds it, it's current.
+@MainActor final class FrontWindowState: ObservableObject {
+    @Published var showsPage = false
 }

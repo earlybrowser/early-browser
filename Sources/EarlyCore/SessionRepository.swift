@@ -20,11 +20,21 @@ public actor SessionRepository {
     public nonisolated let fileURL: URL
     private let input: NavigationInput
     private var latestRevision: UInt64 = 0
+    /// One connection for every save, opened by the first: opening the file,
+    /// setting its journal mode and closing it again more than doubled each
+    /// save's time. A failed save closes it, so the next opens afresh. Used
+    /// only on this actor, and in `deinit` once nothing else can.
+    nonisolated(unsafe) private var writer: OpaquePointer?
+    /// The file the connection has open, by device and inode: one deleted or
+    /// replaced meanwhile must not keep taking saves no one would find.
+    private var writerFile: (device: dev_t, inode: ino_t)?
 
     public init(fileURL: URL, input: NavigationInput = NavigationInput()) {
         self.fileURL = fileURL
         self.input = input
     }
+
+    deinit { if let writer { sqlite3_close(writer) } }
 
     public func load() throws -> BrowserSession? {
         try Self.readSession(fileURL: fileURL, input: input)
@@ -70,29 +80,69 @@ public actor SessionRepository {
         try write(try JSONEncoder().encode(snapshot), revision: revision)
     }
 
-    private func write(_ payload: Data, revision: UInt64) throws {
+    private func fileIdentity() -> (device: dev_t, inode: ino_t)? {
+        var info = stat()
+        guard stat(fileURL.path, &info) == 0 else { return nil }
+        return (info.st_dev, info.st_ino)
+    }
+
+    private func closeWriter() {
+        if let writer { sqlite3_close(writer) }
+        writer = nil
+        writerFile = nil
+    }
+
+    private func writeConnection() throws -> OpaquePointer {
+        if let writer {
+            if let open = writerFile, let now = fileIdentity(), open.device == now.device, open.inode == now.inode { return writer }
+            closeWriter()
+        }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Self.withDatabase(fileURL: fileURL, readOnly: false) { db in
-            let version = try Self.schemaVersion(db)
-            guard version == 0 || version == 1 else { throw SessionError.invalidData }
-            try Self.execute(db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN IMMEDIATE;")
-            do {
-                try Self.execute(db, "CREATE TABLE IF NOT EXISTS session (id INTEGER PRIMARY KEY CHECK(id = 1), payload BLOB NOT NULL); PRAGMA user_version=1;")
-                var statement: OpaquePointer?
-                try Self.check(sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO session(id,payload) VALUES(1,?)", -1, &statement, nil), db)
-                defer { sqlite3_finalize(statement) }
-                let result = payload.withUnsafeBytes { bytes in
-                    sqlite3_bind_blob(statement, 1, bytes.baseAddress, Int32(bytes.count), unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                }
-                try Self.check(result, db)
-                guard sqlite3_step(statement) == SQLITE_DONE else { throw Self.failure(db) }
-                try Self.execute(db, "COMMIT;")
-            } catch {
-                try? Self.execute(db, "ROLLBACK;")
-                throw error
-            }
+        var handle: OpaquePointer?
+        let result = sqlite3_open_v2(fileURL.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+        guard let db = handle else { throw SessionError.database("Cannot open the session file.") }
+        do {
+            try Self.check(result, db)
+            sqlite3_busy_timeout(db, 2000)
+            try Self.execute(db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+        } catch {
+            sqlite3_close(db)
+            throw error
+        }
+        writer = db
+        writerFile = fileIdentity()
+        return db
+    }
+
+    private func write(_ payload: Data, revision: UInt64) throws {
+        do {
+            try Self.write(payload, to: try writeConnection())
+        } catch {
+            closeWriter()
+            throw error
         }
         latestRevision = revision
+    }
+
+    private static func write(_ payload: Data, to db: OpaquePointer) throws {
+        let version = try schemaVersion(db)
+        guard version == 0 || version == 1 else { throw SessionError.invalidData }
+        try execute(db, "BEGIN IMMEDIATE;")
+        do {
+            try execute(db, "CREATE TABLE IF NOT EXISTS session (id INTEGER PRIMARY KEY CHECK(id = 1), payload BLOB NOT NULL); PRAGMA user_version=1;")
+            var statement: OpaquePointer?
+            try check(sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO session(id,payload) VALUES(1,?)", -1, &statement, nil), db)
+            defer { sqlite3_finalize(statement) }
+            let result = payload.withUnsafeBytes { bytes in
+                sqlite3_bind_blob(statement, 1, bytes.baseAddress, Int32(bytes.count), unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            }
+            try check(result, db)
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw failure(db) }
+            try execute(db, "COMMIT;")
+        } catch {
+            try? execute(db, "ROLLBACK;")
+            throw error
+        }
     }
 
     private static func withDatabase<T>(fileURL: URL, readOnly: Bool, _ body: (OpaquePointer) throws -> T) throws -> T {

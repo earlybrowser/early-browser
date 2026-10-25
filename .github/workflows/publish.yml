@@ -25,7 +25,7 @@ jobs:
     # Its secrets are available only to runs from v* tags.
     environment: release
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Read the release
@@ -40,7 +40,7 @@ jobs:
           [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No checksum for Early-$version.zip"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: earlybrowser/homebrew-tap
           ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}

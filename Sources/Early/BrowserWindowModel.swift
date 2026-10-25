@@ -189,7 +189,7 @@ final class BrowserWindowModel {
          downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, isPrivate: Bool = false,
          history: HistoryStore? = nil, sitePermissions: SitePermissions? = nil,
          passwords: PasswordVault? = nil, passwordsProfileID: UUID? = nil, extensionHost: AnyObject? = nil,
-         searchProviders: [any CommandSearchProvider] = [],
+         localFiles: LocalFileBookmarks? = nil, searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
@@ -237,6 +237,7 @@ final class BrowserWindowModel {
             if isTesting { configuration.setURLSchemeHandler(TestPages(), forURLScheme: "early-test") }
             #endif
         }
+        webViews.localFiles = localFiles
         webViews.onMetadata = { [weak self] id, url, title in
             guard let self else { return }
             // A pin or Favorite reopened at its saved address changes none of
@@ -427,6 +428,8 @@ final class BrowserWindowModel {
     func openLocations(_ urls: [URL]) -> Bool {
         let valid = urls.compactMap { try? input.validate($0) }.prefix(10)
         guard !valid.isEmpty else { return false }
+        // While macOS lets Early read them: kept, so they open again after a restart.
+        for url in valid where url.isFileURL { webViews.localFiles?.remember(url) }
         if coordinator.commandBar != nil { dismissCommandBar(restoreFocus: false) }
         for url in valid {
             guard let id = coordinator.navigate(to: url, target: .newTab(spaceID: coordinator.activeSpaceID)),
@@ -719,8 +722,9 @@ final class BrowserWindowModel {
         selectTab(tabs[(current + direction + tabs.count) % tabs.count].id)
     }
 
+    /// Never over a website dialog, which Control-Tab leaves for the next tab instead.
     var canPresentTabSwitcher: Bool {
-        coordinator.commandBar == nil && !openTabs.isEmpty && canPerform(.cycleTab(1))
+        coordinator.commandBar == nil && !openTabs.isEmpty && !hasVisibleDialog && canPerform(.cycleTab(1))
     }
 
     /// Preview is metadata/cache-only. Freeze MRU order until commit or cancel;
@@ -836,16 +840,19 @@ final class BrowserWindowModel {
         save()
     }
 
+    /// With a website dialog showing, Control-Tab moves to the next tab, not
+    /// into the switcher.
     func canControlTab(_ delta: Int) -> Bool {
-        preferences.controlTabShowsSwitcher ? canPresentTabSwitcher : canPerform(.cycleTab(delta))
+        preferences.controlTabShowsSwitcher && !hasVisibleDialog ? canPresentTabSwitcher : canPerform(.cycleTab(delta))
     }
 
     /// Control-Tab: the tab switcher, or the next tab in sidebar order as set
     /// in Settings › Sidebar.
     @discardableResult
     func controlTab(_ delta: Int, commitsOnControlRelease: Bool = false) -> Bool {
-        guard preferences.controlTabShowsSwitcher else {
+        guard preferences.controlTabShowsSwitcher, !hasVisibleDialog else {
             guard canPerform(.cycleTab(delta)) else { return false }
+            if hasVisibleDialog { dismissVisibleDialogs() }
             cycleTab(delta)
             return true
         }
@@ -1464,55 +1471,5 @@ final class BrowserWindowModel {
         if let spaceDeletionID, !coordinator.spaces.contains(where: { $0.id == spaceDeletionID }) { self.spaceDeletionID = nil }
         reconcileRuntimePresentation()
         if previous != coordinator.activeTabID { activateSelection() }
-    }
-}
-
-/// One writer, with only the latest pending snapshot retained during a burst.
-/// Encoding and SQLite I/O take place on SessionRepository's actor.
-@MainActor @Observable
-final class SessionAutosaver {
-    private let repository: SessionRepository
-    private let disabledReason: String?
-    private var pending: BrowserWorkspace?
-    private var writer: Task<Void, Never>?
-    private var revision: UInt64 = 0
-    private(set) var isSaving = false
-    private(set) var error: String?
-    private(set) var lastSavedAt: Date?
-    var isAvailable: Bool { disabledReason == nil }
-
-    init(repository: SessionRepository, disabledReason: String?) {
-        self.repository = repository
-        self.disabledReason = disabledReason
-        error = disabledReason
-    }
-
-    func enqueue(_ snapshot: BrowserWorkspace) {
-        guard disabledReason == nil else { return }
-        pending = snapshot
-        guard writer == nil else { return }
-        isSaving = true
-        writer = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(150))
-            guard let self else { return }
-            while let snapshot = self.pending {
-                self.pending = nil
-                self.revision += 1
-                do {
-                    try await self.repository.saveWorkspace(snapshot, revision: self.revision)
-                    self.error = nil
-                    self.lastSavedAt = Date()
-                } catch { self.error = error.localizedDescription }
-            }
-            self.isSaving = false
-            self.writer = nil
-        }
-    }
-
-    func flush() async -> Bool {
-        // A callback can enqueue a new writer while this await resumes. Drain
-        // that writer too before quit/deletion treats the snapshot as durable.
-        while let writer { await writer.value }
-        return error == nil
     }
 }

@@ -587,15 +587,29 @@ public final class PasswordVault {
                 }
                 self.symmetricKey = SymmetricKey(data: made)
             }
-            guard let symmetric = self.symmetricKey, let data = try? Self.encrypt(contents, key: symmetric) else {
+            guard let symmetric = self.symmetricKey else {
                 self.saveError = "Your passwords couldn’t be encrypted."
                 return
             }
-            do {
-                try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try data.write(to: fileURL, options: .atomic)
-            } catch {
-                self.saveError = "Your passwords couldn’t be written to disk. \(error.localizedDescription)"
+            // Encrypting and writing the whole file happen off the main actor;
+            // writes still run one after another, in order.
+            let failure = await Task.detached(priority: .userInitiated) { () -> String? in
+                guard let data = try? Self.encrypt(contents, key: symmetric) else { return "Your passwords couldn’t be encrypted." }
+                do {
+                    try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: fileURL, options: .atomic)
+                    return nil
+                } catch {
+                    return "Your passwords couldn’t be written to disk. \(error.localizedDescription)"
+                }
+            }.value
+            guard self.generation == started else {
+                // Deleted while this was being written: what it wrote goes too.
+                if self.isRemoved { try? FileManager.default.removeItem(at: fileURL) }
+                return
+            }
+            if let failure {
+                self.saveError = failure
                 return
             }
             self.saveError = nil

@@ -46,11 +46,14 @@ public struct InstalledExtension: Codable, Equatable, Identifiable, Sendable {
     public var grantedPermissions: [String]
     /// Off by default, as in Safari and Chrome.
     public var allowsPrivateWindows: Bool
+    /// Opening files on this Mac in tabs, and reading local pages: off by
+    /// default, as in Chrome.
+    public var allowsLocalFiles: Bool
     public var added: Date
 
     public init(id: UUID = UUID(), source: ExtensionSource, name: String, version: String, isEnabled: Bool = true,
                 siteAccess: ExtensionSiteAccess = .allSites, allowedSites: [String] = [], grantedPermissions: [String] = [],
-                allowsPrivateWindows: Bool = false, added: Date = Date()) {
+                allowsPrivateWindows: Bool = false, allowsLocalFiles: Bool = false, added: Date = Date()) {
         self.id = id
         self.source = source
         self.name = name
@@ -60,7 +63,29 @@ public struct InstalledExtension: Codable, Equatable, Identifiable, Sendable {
         self.allowedSites = allowedSites
         self.grantedPermissions = grantedPermissions
         self.allowsPrivateWindows = allowsPrivateWindows
+        self.allowsLocalFiles = allowsLocalFiles
         self.added = added
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, source, name, version, isEnabled, siteAccess, allowedSites, grantedPermissions, allowsPrivateWindows,
+             allowsLocalFiles, added
+    }
+
+    /// Catalogs saved before local files had a switch read as not allowed.
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        source = try values.decode(ExtensionSource.self, forKey: .source)
+        name = try values.decode(String.self, forKey: .name)
+        version = try values.decode(String.self, forKey: .version)
+        isEnabled = try values.decode(Bool.self, forKey: .isEnabled)
+        siteAccess = try values.decode(ExtensionSiteAccess.self, forKey: .siteAccess)
+        allowedSites = try values.decode([String].self, forKey: .allowedSites)
+        grantedPermissions = try values.decode([String].self, forKey: .grantedPermissions)
+        allowsPrivateWindows = try values.decode(Bool.self, forKey: .allowsPrivateWindows)
+        allowsLocalFiles = try values.decodeIfPresent(Bool.self, forKey: .allowsLocalFiles) ?? false
+        added = try values.decode(Date.self, forKey: .added)
     }
 }
 
@@ -69,6 +94,9 @@ public struct InstalledExtension: Codable, Equatable, Identifiable, Sendable {
 @MainActor @Observable
 public final class ExtensionCatalog {
     public private(set) var extensions: [InstalledExtension] = []
+    /// Why the latest changes couldn't be saved; nil once a save succeeds.
+    /// They still apply until Early quits, and ``retrySaving()`` tries again.
+    public private(set) var saveError: String?
     @ObservationIgnored public let fileURL: URL?
 
     public init(fileURL: URL?) {
@@ -113,13 +141,20 @@ public final class ExtensionCatalog {
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
     }
 
+    public func retrySaving() { save() }
+
     private func save() {
         guard let fileURL else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(extensions) else { return }
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
+        do {
+            let data = try encoder.encode(extensions)
+            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: fileURL, options: .atomic)
+            if saveError != nil { saveError = nil }
+        } catch {
+            saveError = "Your extension changes couldn’t be saved, so they last only until you quit Early. \(error.localizedDescription)"
+        }
     }
 
     /// `example.com` from an address, for allowing one site.

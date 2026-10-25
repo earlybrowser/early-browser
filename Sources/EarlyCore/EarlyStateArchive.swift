@@ -53,9 +53,29 @@ public extension BrowserPreferences {
                          shortcuts: shortcuts)
     }
 
-    /// Uses what the file has that Early knows, leaving everything else as it is.
-    func apply(_ settings: PortableSettings) {
-        for (name, path) in Self.portableToggles {
+    /// Settings that affect passwords, privacy or updates: an import changes
+    /// them only when the person agrees to each, never along with the rest.
+    static let sensitiveToggles: [(name: String, title: String)] = [
+        ("fillsPasswordsAutomatically", "Fill passwords automatically"),
+        ("privateOnlineSuggestions", "Search suggestions in private windows"),
+        ("checksForUpdatesAutomatically", "Check for updates automatically"),
+        ("installsUpdatesAutomatically", "Install updates automatically")
+    ]
+
+    /// The sensitive settings a file would change here, with the value each would get.
+    func sensitiveChanges(from settings: PortableSettings) -> [(title: String, value: Bool)] {
+        Self.sensitiveToggles.compactMap { toggle in
+            guard let path = Self.portableToggles.first(where: { $0.name == toggle.name })?.path,
+                  let value = settings.toggles[toggle.name], value != self[keyPath: path] else { return nil }
+            return (toggle.title, value)
+        }
+    }
+
+    /// Uses what the file has that Early knows, leaving everything else as it
+    /// is: the sensitive settings too only when `includingSensitive`.
+    func apply(_ settings: PortableSettings, includingSensitive: Bool = false) {
+        let sensitive = Set(Self.sensitiveToggles.map(\.name))
+        for (name, path) in Self.portableToggles where includingSensitive || !sensitive.contains(name) {
             if let value = settings.toggles[name], self[keyPath: path] != value { self[keyPath: path] = value }
         }
         if let value = settings.appearance.flatMap(Appearance.init(rawValue:)), value != appearance { appearance = value }

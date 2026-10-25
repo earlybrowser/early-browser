@@ -128,14 +128,22 @@ public actor HistoryStore {
         }
     }
 
-    /// Visits newest first, optionally filtered by words and older than `before`.
-    public func visits(matching query: String = "", before: Date? = nil, limit: Int = 500) throws -> [HistoryVisit] {
+    /// Visits newest first, optionally filtered by words and older than
+    /// `before`. A page continues after `continuing`, the previous page's last
+    /// visit: by time, then by visit, so visits sharing a time aren't skipped.
+    public func visits(matching query: String = "", before: Date? = nil, continuing: HistoryVisit? = nil,
+                       limit: Int = 500) throws -> [HistoryVisit] {
         let words = Self.words(query)
         var conditions = words.indices.map { "(p.title LIKE ?\($0 + 1) ESCAPE '\\' OR p.url LIKE ?\($0 + 1) ESCAPE '\\')" }
         var values: [Value] = words.map { .text("%\(Self.escapeLike($0))%") }
         if let before {
             values.append(.real(before.timeIntervalSince1970))
             conditions.append("v.visited_at < ?\(values.count)")
+        }
+        if let continuing {
+            values.append(.real(continuing.visitedAt.timeIntervalSince1970))
+            values.append(.integer(continuing.id))
+            conditions.append("(v.visited_at < ?\(values.count - 1) OR (v.visited_at = ?\(values.count - 1) AND v.id < ?\(values.count)))")
         }
         let sql = "SELECT v.id, p.url, p.title, v.visited_at FROM visits v JOIN pages p ON p.id = v.page_id"
             + (conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND "))
@@ -153,9 +161,10 @@ public actor HistoryStore {
         try Self.transaction(db) {
             for chunk in stride(from: 0, to: ids.count, by: 500).map({ Array(ids[$0..<min($0 + 500, ids.count)]) }) {
                 let marks = chunk.indices.map { "?\($0 + 1)" }.joined(separator: ",")
+                try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE id IN (\(marks))", chunk.map { .integer($0) })
                 try Self.run(db, "DELETE FROM visits WHERE id IN (\(marks))", chunk.map { .integer($0) })
             }
-            try Self.recount(db)
+            try Self.recountTouched(db)
         }
     }
 
@@ -165,9 +174,10 @@ public actor HistoryStore {
         let db = try open()
         try Self.transaction(db) {
             for url in urls {
+                try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT id FROM pages WHERE url = ?1", [.text(url.absoluteString)])
                 try Self.run(db, "DELETE FROM visits WHERE page_id IN (SELECT id FROM pages WHERE url = ?1)", [.text(url.absoluteString)])
             }
-            try Self.recount(db)
+            try Self.recountTouched(db)
         }
     }
 
@@ -176,19 +186,23 @@ public actor HistoryStore {
         let db = try open()
         try Self.transaction(db) {
             if let since {
+                try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE visited_at >= ?1",
+                             [.real(since.timeIntervalSince1970)])
                 try Self.run(db, "DELETE FROM visits WHERE visited_at >= ?1", [.real(since.timeIntervalSince1970)])
+                try Self.recountTouched(db)
             } else {
-                try Self.execute(db, "DELETE FROM visits;")
+                try Self.execute(db, "DELETE FROM visits; DELETE FROM pages;")
             }
-            try Self.recount(db)
         }
     }
 
     public func deleteVisits(before date: Date) throws {
         let db = try open()
         try Self.transaction(db) {
+            try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE visited_at < ?1",
+                         [.real(date.timeIntervalSince1970)])
             try Self.run(db, "DELETE FROM visits WHERE visited_at < ?1", [.real(date.timeIntervalSince1970)])
-            try Self.recount(db)
+            try Self.recountTouched(db)
         }
     }
 
@@ -244,6 +258,7 @@ public actor HistoryStore {
                 CREATE INDEX IF NOT EXISTS visits_page ON visits(page_id);
                 CREATE INDEX IF NOT EXISTS pages_recent ON pages(last_visit);
                 PRAGMA user_version=1;
+                CREATE TEMP TABLE IF NOT EXISTS touched (id INTEGER PRIMARY KEY);
                 """)
         } catch {
             sqlite3_close(opened)
@@ -253,12 +268,17 @@ public actor HistoryStore {
         return opened
     }
 
-    /// Pages keep totals that match their remaining visits; unvisited pages go.
-    private static func recount(_ db: OpaquePointer) throws {
+    /// The pages whose visits were just deleted (collected in `touched`)
+    /// keep totals that match their remaining visits, and go without any.
+    /// Only those: recounting every page made each deletion, and the pruning
+    /// every 200 visits, slower the longer the history.
+    private static func recountTouched(_ db: OpaquePointer) throws {
         try execute(db, """
-            DELETE FROM pages WHERE id NOT IN (SELECT DISTINCT page_id FROM visits);
+            DELETE FROM pages WHERE id IN (SELECT id FROM touched) AND NOT EXISTS (SELECT 1 FROM visits WHERE page_id = pages.id);
             UPDATE pages SET visit_count = (SELECT COUNT(*) FROM visits WHERE page_id = pages.id),
-                last_visit = (SELECT MAX(visited_at) FROM visits WHERE page_id = pages.id);
+                last_visit = (SELECT MAX(visited_at) FROM visits WHERE page_id = pages.id)
+                WHERE id IN (SELECT id FROM touched);
+            DELETE FROM touched;
             """)
     }
 

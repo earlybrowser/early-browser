@@ -140,8 +140,8 @@ struct HistoryView: View {
         loading = true
         defer { loading = false }
         await model.flushHistory()
-        let before = appending ? visits.last?.visitedAt : nil
-        let page = (try? await history.visits(matching: query, before: before, limit: Self.pageSize)) ?? []
+        let last = appending ? visits.last : nil
+        let page = (try? await history.visits(matching: query, continuing: last, limit: Self.pageSize)) ?? []
         if appending {
             let known = Set(visits.map(\.id))
             visits += page.filter { !known.contains($0.id) }

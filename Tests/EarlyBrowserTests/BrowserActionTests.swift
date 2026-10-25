@@ -418,8 +418,8 @@ struct BrowserActionTests {
         #expect(model.coordinator.session == before)
         model.sidebarInteractionInProgress = false
         model.activePage?.hasDialog = true
-        #expect(!model.canPerform(.closeActiveTab))
-        #expect(!model.canPerform(.reload))
+        #expect(model.canPerform(.closeActiveTab), "A website dialog never keeps anyone in its tab")
+        #expect(!model.canPerform(.reload) && !model.canPerform(.newSpace))
         model.activePage?.hasDialog = false
         #expect(model.canPerform(.closeActiveTab))
     }

@@ -70,27 +70,13 @@ public struct OnlineSearchSuggestions: Sendable {
         return request
     }
 
+    /// At most 64 KB, and never through a redirect.
     public func fetch(_ query: String, engine: SearchEngine = .google) async throws -> [String] {
         guard let request = Self.request(for: query, engine: engine) else { return [] }
-        let (bytes, response) = try await session.bytes(for: request, delegate: NoSuggestionRedirects())
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              response.expectedContentLength <= 65_536 else { throw URLError(.badServerResponse) }
-        var data = Data()
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < 65_536 else { throw URLError(.dataLengthExceedsMaximum) }
-            data.append(byte)
-        }
+        let (data, response) = try await BoundedResponse.load(request, in: session, limit: 65_536, redirects: { _, _ in false })
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
         return try SearchSuggestionPolicy.parse(data, query: query, textEncodingName: response.textEncodingName)
-    }
-}
-
-private final class NoSuggestionRedirects: NSObject, URLSessionTaskDelegate, Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest,
-                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(nil)
     }
 }
 

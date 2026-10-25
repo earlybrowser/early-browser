@@ -31,14 +31,16 @@ public enum PageSecurity: Equatable, Sendable {
 }
 
 /// What a website can ask to use. Notifications have no public WebKit API.
+/// Downloads are those a page starts without the person's click.
 public enum SitePermission: String, Codable, CaseIterable, Sendable {
-    case camera, microphone, location
+    case camera, microphone, location, downloads
 
     public var title: String {
         switch self {
         case .camera: "Camera"
         case .microphone: "Microphone"
         case .location: "Location"
+        case .downloads: "Downloads"
         }
     }
 
@@ -47,6 +49,7 @@ public enum SitePermission: String, Codable, CaseIterable, Sendable {
         case .camera: "video.fill"
         case .microphone: "mic.fill"
         case .location: "location.fill"
+        case .downloads: "arrow.down.circle.fill"
         }
     }
 }
@@ -68,6 +71,9 @@ public enum SitePermissionDecision: String, Codable, CaseIterable, Sendable {
 @MainActor @Observable
 public final class SitePermissions {
     public private(set) var decisions: [String: [SitePermission: SitePermissionDecision]] = [:]
+    /// Why the latest choices couldn't be saved; nil once a save succeeds.
+    /// They still apply until Early quits, and ``retrySaving()`` tries again.
+    public private(set) var saveError: String?
     @ObservationIgnored public let fileURL: URL?
 
     public init(fileURL: URL?) {
@@ -132,13 +138,20 @@ public final class SitePermissions {
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
     }
 
+    public func retrySaving() { save() }
+
     private func save() {
         guard let fileURL else { return }
         let saved = decisions.mapValues { choices in
             Dictionary(uniqueKeysWithValues: choices.map { ($0.key.rawValue, $0.value.rawValue) })
         }
-        guard let data = try? JSONEncoder().encode(saved) else { return }
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: [.atomic])
+        do {
+            let data = try JSONEncoder().encode(saved)
+            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: fileURL, options: [.atomic])
+            if saveError != nil { saveError = nil }
+        } catch {
+            saveError = "Your website permission choices couldn’t be saved, so they last only until you quit Early. \(error.localizedDescription)"
+        }
     }
 }

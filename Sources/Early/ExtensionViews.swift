@@ -241,6 +241,9 @@ private struct ExtensionsSettingsContent: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if application.profiles.count > 1 { profilePicker }
+            if let host, let error = host.catalog.saveError {
+                SaveFailureNotice(message: error, identifier: "extensions.retrySave") { host.catalog.retrySaving() }
+            }
             if let host, let profileID {
                 installed(host, profile: profileID)
                 available(host)
@@ -430,6 +433,11 @@ private struct ExtensionsSettingsContent: View {
                 Task { await application.changeExtension(item.id, in: profile, restart: true) { $0.allowsPrivateWindows = allowed } }
             }))
             .accessibilityIdentifier("extensions.private.\(item.id)")
+            Toggle("Allow access to local files", isOn: Binding(get: { item.allowsLocalFiles }, set: { allowed in
+                Task { await application.changeExtension(item.id, in: profile, restart: false) { $0.allowsLocalFiles = allowed } }
+            }))
+            .help("Lets it open files on this Mac in tabs and read local pages")
+            .accessibilityIdentifier("extensions.localFiles.\(item.id)")
             if let context, ExtensionHost.needsItsApp(context) {
                 Label("Parts of this extension that talk to its Mac app work only in Safari.", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -554,6 +562,11 @@ struct SiteControlsExtensions: View {
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Extensions").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    if let error = host.catalog.saveError {
+                        SaveFailureNotice(message: error, compact: true, identifier: "siteControls.retrySaveExtensions") {
+                            host.catalog.retrySaving()
+                        }
+                    }
                     ForEach(items) { item in
                         let action = host.context(item.id)?.action(for: tab)
                         row(item, action: action, tab: tab, site: site)
