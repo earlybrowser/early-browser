@@ -76,6 +76,16 @@ public struct SignInResponse: Equatable, Sendable {
     }
 }
 
+/// An HTTP sign-in sent to a website and waiting for its answer.
+struct PendingHTTPSignIn: Equatable {
+    let origin: String
+    let realm: String?
+    let username: String
+    let password: String
+    /// The person asked to save it.
+    let save: Bool
+}
+
 /// Finds sign-in forms in an isolated world, which page scripts cannot see
 /// or call. It reports focused sign-in fields and submitted sign-ins, and
 /// fills only what Early asks it to, in the frame whose origin owns the login.
@@ -711,8 +721,13 @@ extension WebViewManager {
         let origin = SitePermissions.origin(scheme: scheme, host: space.host, port: space.port)
         let failed = challenge.previousFailureCount > 0
         let proposed = challenge.proposedCredential?.user
+        // Asking again means the website refused what it was sent: it's never saved.
+        if failed, let id = tabID(for: view), let pending = pendingHTTPSignIns[id], pending.origin == origin, pending.realm == space.realm {
+            pendingHTTPSignIns[id] = nil
+        }
         Task { @MainActor [weak self, weak view] in
             guard let self, let view else { completionHandler(.performDefaultHandling, nil); return }
+            let tabID = self.tabID(for: view)
             var saved: SavedLogin?
             if let vault = self.passwords, let origin, await vault.load() {
                 let logins = vault.logins(for: origin)
@@ -724,21 +739,44 @@ extension WebViewManager {
             let answer: @MainActor (SignInResponse?) -> Void = { [weak self] response in
                 guard let response, !(response.username.isEmpty && response.password.isEmpty) else {
                     // Cancel shows the website's own page for a refused sign-in.
-                    completionHandler(.performDefaultHandling, nil)
+                    // Default handling would send the refused password again
+                    // (it's kept for the session), so it would keep asking.
+                    completionHandler(failed ? .rejectProtectionSpace : .performDefaultHandling, nil)
                     return
                 }
-                if let self, let vault = self.passwords, let origin {
-                    if response.save, request.canSave {
-                        vault.save(origin: origin, username: response.username, password: response.password, realm: space.realm)
-                    }
-                    if self.savesPasswords, let login = vault.login(origin: origin, username: response.username),
-                       login.password == response.password { vault.markUsed(login.id) }
+                // Saved, or marked used, only once the website accepts it.
+                let save = response.save && request.canSave
+                if let self, let tabID, let origin, self.passwords != nil, save || self.savesPasswords {
+                    self.pendingHTTPSignIns[tabID] = PendingHTTPSignIn(origin: origin, realm: space.realm, username: response.username,
+                                                                       password: response.password, save: save)
                 }
                 completionHandler(.useCredential, URLCredential(user: response.username, password: response.password, persistence: .forSession))
             }
             if let askForSignIn = self.askForSignIn { askForSignIn(request, view, answer) }
             else { self.presentSignInSheet(request, in: view, complete: answer) }
         }
+    }
+
+    /// The website answered after an HTTP sign-in. A 401 from it refuses the
+    /// sign-in; a page from it, or the page finishing (nil), accepts it, and
+    /// only then is it saved and marked used.
+    func settleHTTPSignIn(_ id: UUID, response: URLResponse?) {
+        guard let pending = pendingHTTPSignIns[id] else { return }
+        if let response {
+            // Another website's page, such as a redirect's: the load decides.
+            guard let url = response.url, passwordOrigin(of: url) == pending.origin else { return }
+            if (response as? HTTPURLResponse)?.statusCode == 401 {
+                pendingHTTPSignIns[id] = nil
+                return
+            }
+        }
+        pendingHTTPSignIns[id] = nil
+        guard let vault = passwords, vault.isReady else { return }
+        if pending.save {
+            vault.save(origin: pending.origin, username: pending.username, password: pending.password, realm: pending.realm)
+        }
+        if savesPasswords, let login = vault.login(origin: pending.origin, username: pending.username),
+           login.password == pending.password { vault.markUsed(login.id) }
     }
 
     func presentSignInSheet(_ request: SignInRequest, in view: WKWebView, complete: @escaping @MainActor (SignInResponse?) -> Void) {

@@ -173,6 +173,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     @ObservationIgnored var passwordTestSchemes: Set<String> = []
     let passwordPanel = PasswordSuggestionPanel()
     @ObservationIgnored var focusedPasswordField: FocusedPasswordField?
+    /// HTTP sign-ins sent but not yet accepted, by tab. Saved only once the
+    /// website takes them; a refusal, failure or closed tab saves nothing.
+    @ObservationIgnored var pendingHTTPSignIns: [UUID: PendingHTTPSignIn] = [:]
     /// The app macOS would open a link with, and opening it; tests replace both.
     @ObservationIgnored var appForLink: (URL) -> URL? = { NSWorkspace.shared.urlForApplication(toOpen: $0) }
     @ObservationIgnored var openInApp: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -710,6 +713,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         if preservingSnapshot { snapshots.cancelCapture(tabID: tabID) }
         else { snapshots.invalidate(tabID: tabID) }
         protections[tabID] = nil
+        pendingHTTPSignIns[tabID] = nil
         if focusedPasswordField?.tabID == tabID { hidePasswordSuggestions() }
         if lifecycles[tabID] != nil { transition(tabID, .discard) }
         guard let page = pages[tabID] else { return }
@@ -987,6 +991,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     func navigationResponsePolicy(for view: WKWebView, response: URLResponse,
                                   canShowMIMEType: Bool, isMainFrame: Bool) -> WKNavigationResponsePolicy {
         guard let id = identities[ObjectIdentifier(view)], pages[id] != nil else { return .cancel }
+        if isMainFrame { settleHTTPSignIn(id, response: response) }
         let disposition = NavigationResponseDisposition.classify(response, canShowMIMEType: canShowMIMEType, isMainFrame: isMainFrame)
         recordNavigation(.init(tabID: id, event: "response-\(disposition.rawValue)", url: response.url,
             status: (response as? HTTPURLResponse)?.statusCode, mimeType: response.mimeType, isMainFrame: isMainFrame))
@@ -1124,6 +1129,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         checkReaderAvailability(id)
         detectPageLanguage(id)
         checkPendingLogin(id)
+        settleHTTPSignIn(id, response: nil)
         guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected
@@ -1154,6 +1160,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             recordNavigation(.init(tabID: id, event: "stale-navigation-error", url: failingURL, isMainFrame: true, error: nsError))
             return
         }
+        // A page that didn't load never confirmed an HTTP sign-in.
+        pendingHTTPSignIns[id] = nil
         // WebKit reports intentional policy cancellation with its legacy error
         // domain/code (WebKitErrors.h). Suppress only our matching decision, not
         // every policy error, and never match an unrelated NSError by code alone.

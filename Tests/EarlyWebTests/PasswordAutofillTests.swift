@@ -465,14 +465,17 @@ struct PasswordAutofillTests {
         var requests: [SignInRequest] = []
         var answers: [SignInResponse?] = [SignInResponse(username: "ada", password: "wrong", save: true),
                                           SignInResponse(username: "ada", password: "open sesame", save: true)]
+        var savedWhenAskedAgain: String??
         manager.askForSignIn = { request, _, answer in
             requests.append(request)
+            if request.failed { savedWhenAskedAgain = .some(vault.login(origin: "http://127.0.0.1:\(server.port)", username: "ada")?.password) }
             answer(answers.isEmpty ? nil : answers.removeFirst())
         }
         let tab = try await fixture.open("staff", url: server.url)
         let page = try fixture.page(tab)
         try await fixture.waitUntil("signed in") { page.view.title == "Welcome" }
         #expect(requests.count == 2)
+        #expect(savedWhenAskedAgain == .some(nil), "A refused password was never saved")
         #expect(requests.first?.host == "127.0.0.1" && requests.first?.realm == "Early Staff" && requests.first?.failed == false)
         #expect(requests.last?.failed == true && requests.last?.canSave == true && requests.last?.password == "")
         let saved = try #require(vault.login(origin: "http://127.0.0.1:\(server.port)", username: "ada"))
@@ -491,6 +494,29 @@ struct PasswordAutofillTests {
         #expect(filled?.username == "ada" && filled?.password == "open sesame")
         let refused = try other.page(again)
         try await other.waitUntil("the site's page") { refused.view.title == "Sign in required" }
+    }
+
+    @Test func aRefusedHTTPSignInNeverReplacesTheWorkingPassword() async throws {
+        let server = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff")
+        defer { server.stop() }
+        let fixture = makeFixture([:])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        let origin = "http://127.0.0.1:\(server.port)"
+        vault.save(origin: origin, username: "ada", password: "open sesame", realm: "Early Staff")
+        // A typo, saved by choice, then Cancel when the website asks again.
+        var answers: [SignInResponse?] = [SignInResponse(username: "ada", password: "typo", save: true), nil]
+        var asked = 0
+        manager.askForSignIn = { _, _, answer in
+            asked += 1
+            answer(answers.isEmpty ? nil : answers.removeFirst())
+        }
+        let tab = try await fixture.open("staff", url: server.url)
+        let page = try fixture.page(tab)
+        try await fixture.waitUntil("the site's refusal") { page.view.title == "Sign in required" }
+        #expect(asked == 2, "Cancel ends it: the refused password isn't sent again")
+        #expect(vault.login(origin: origin, username: "ada")?.password == "open sesame", "The working password stays")
+        #expect(manager.pendingHTTPSignIns.isEmpty)
     }
 
     @Test func theListMovesItsHighlightAndChoosesWithReturn() throws {
