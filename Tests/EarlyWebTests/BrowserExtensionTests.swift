@@ -255,7 +255,7 @@ enum ExtensionScenarios {
             "background.js": """
                 browser.runtime.onMessage.addListener(async () => {
                     try { await browser.tabs.create({ url: 'file:///private/tmp/early-local-file.html', active: false }); return 'created'; }
-                    catch (error) { return 'refused'; }
+                    catch (error) { return 'refused: ' + error.message; }
                 });
                 """,
             "content.js": """
@@ -277,7 +277,9 @@ enum ExtensionScenarios {
         let tab = try await setup.open(server.url("/page"))
         let view = setup.manager.pages[tab.id]?.view
         try await waitUntil("answer") { await attribute("data-opened", in: view) != nil }
-        #expect(await attribute("data-opened", in: view) == "refused" && opened.isEmpty, "A file tab is refused")
+        let refusal = await attribute("data-opened", in: view)
+        #expect(refusal?.hasPrefix("refused") == true, "The extension hears a file tab was refused: \(refusal ?? "no answer")")
+        #expect(opened.isEmpty, "No file tab opens: \(opened)")
 
         catalog.change(item.id) { $0.allowsLocalFiles = true }
         setup.host.refreshAccess(item.id)
