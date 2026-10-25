@@ -660,6 +660,32 @@ struct PasswordAutofillTests {
         #expect(manager.pendingHTTPSignIns.isEmpty)
     }
 
+    /// A frame of the same site asks, its connection then fails, and the page
+    /// finishes all the same: nothing confirmed that password, so it's used
+    /// for the frame but never saved over the working one.
+    @Test func aFramesFailedHTTPSignInNeverReplacesTheWorkingPassword() async throws {
+        let server = try BasicAuthServer(username: "ada", password: "open sesame", realm: "Early Staff",
+                                         pages: ["/page": "<title>Page</title><iframe src=\"/staff\"></iframe>"], dropsWrongSignIns: true)
+        defer { server.stop() }
+        let fixture = makeFixture([:])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        let origin = "http://127.0.0.1:\(server.port)"
+        vault.save(origin: origin, username: "ada", password: "open sesame", realm: "Early Staff")
+        var requests: [SignInRequest] = []
+        manager.askForSignIn = { request, _, answer in
+            requests.append(request)
+            answer(SignInResponse(username: "ada", password: "typo", save: true))
+        }
+        let tab = try await fixture.open("page", url: try #require(URL(string: "\(origin)/page")))
+        let page = try fixture.page(tab)
+        try await fixture.waitUntil("the frame's sign-in, then the page") { !requests.isEmpty && !page.view.isLoading }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(requests.first?.canSave == false, "A frame's sign-in can't be confirmed, so it isn't offered for saving")
+        #expect(vault.login(origin: origin, username: "ada")?.password == "open sesame", "The working password stays")
+        #expect(manager.pendingHTTPSignIns.isEmpty)
+    }
+
     @Test func theListMovesItsHighlightAndChoosesWithReturn() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
@@ -720,12 +746,15 @@ final class BasicAuthServer: @unchecked Sendable {
     private let realm: String
     /// Open pages, by path, served without signing in.
     private let pages: [String: String]
+    /// A wrong password gets its connection dropped instead of a 401.
+    private let dropsWrongSignIns: Bool
     private(set) var port: UInt16 = 0
 
-    init(username: String, password: String, realm: String, pages: [String: String] = [:]) throws {
+    init(username: String, password: String, realm: String, pages: [String: String] = [:], dropsWrongSignIns: Bool = false) throws {
         expected = "Basic " + Data("\(username):\(password)".utf8).base64EncodedString()
         self.realm = realm
         self.pages = pages
+        self.dropsWrongSignIns = dropsWrongSignIns
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)
@@ -743,7 +772,7 @@ final class BasicAuthServer: @unchecked Sendable {
 
     private func handle(_ connection: NWConnection) {
         connection.start(queue: queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [expected, realm, pages] data, _, _, _ in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [expected, realm, pages, dropsWrongSignIns] data, _, _, _ in
             let request = String(decoding: data ?? Data(), as: UTF8.self)
             let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? ""
             if let page = pages[path] {
@@ -751,7 +780,12 @@ final class BasicAuthServer: @unchecked Sendable {
                 connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
                 return
             }
-            let authorized = request.components(separatedBy: "\r\n").contains { $0.lowercased() == "authorization: \(expected.lowercased())" }
+            let lines = request.components(separatedBy: "\r\n").map { $0.lowercased() }
+            let authorized = lines.contains("authorization: \(expected.lowercased())")
+            if dropsWrongSignIns, !authorized, lines.contains(where: { $0.hasPrefix("authorization:") }) {
+                connection.cancel()
+                return
+            }
             let body = authorized ? "<title>Welcome</title><p>Staff only" : "<title>Sign in required</title><p>401"
             var response = authorized ? "HTTP/1.1 200 OK\r\n" : "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"\(realm)\"\r\n"
             response += "Content-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"

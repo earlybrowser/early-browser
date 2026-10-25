@@ -78,6 +78,8 @@ public struct SignInResponse: Equatable, Sendable {
 
 /// An HTTP sign-in sent to a website and waiting for its answer.
 struct PendingHTTPSignIn: Equatable {
+    /// The tab's own load that asked; only its answer settles the sign-in.
+    let navigation: ObjectIdentifier
     let origin: String
     let realm: String?
     let username: String
@@ -756,6 +758,11 @@ extension WebViewManager {
         }
         let failed = challenge.previousFailureCount > 0
         let proposed = challenge.proposedCredential?.user
+        // WebKit doesn't say which request asked. Asked while the tab's own
+        // page loads, it's that page, whose answer can confirm the sign-in.
+        // A frame's or an image's can't be confirmed: the page can finish
+        // although that request failed, so it's used but never saved.
+        let navigation = id.flatMap { pages[$0] }.flatMap { $0.awaitsNavigationCommit ? $0.activeNavigation : nil }
         // Asking again means the website refused what it was sent: it's never saved.
         if failed, let id, let pending = pendingHTTPSignIns[id], pending.origin == origin, pending.realm == space.realm {
             pendingHTTPSignIns[id] = nil
@@ -769,7 +776,7 @@ extension WebViewManager {
             }
             let request = SignInRequest(host: space.host, realm: space.realm, isSecure: space.receivesCredentialSecurely, failed: failed,
                                         username: proposed ?? saved?.username ?? "", password: failed ? "" : saved?.password ?? "",
-                                        canSave: self.savesPasswords && self.passwords != nil)
+                                        canSave: self.savesPasswords && self.passwords != nil && navigation != nil)
             let answer: @MainActor (SignInResponse?) -> Void = { [weak self] response in
                 guard let response, !(response.username.isEmpty && response.password.isEmpty) else {
                     // Cancel shows the website's own page for a refused sign-in.
@@ -780,9 +787,9 @@ extension WebViewManager {
                 }
                 // Saved, or marked used, only once the website accepts it.
                 let save = response.save && request.canSave
-                if let self, let id, self.passwords != nil, save || self.savesPasswords {
-                    self.pendingHTTPSignIns[id] = PendingHTTPSignIn(origin: origin, realm: space.realm, username: response.username,
-                                                                       password: response.password, save: save)
+                if let self, let id, let navigation, self.passwords != nil, save || self.savesPasswords {
+                    self.pendingHTTPSignIns[id] = PendingHTTPSignIn(navigation: navigation, origin: origin, realm: space.realm,
+                                                                       username: response.username, password: response.password, save: save)
                 }
                 completionHandler(.useCredential, URLCredential(user: response.username, password: response.password, persistence: .forSession))
             }
@@ -791,20 +798,17 @@ extension WebViewManager {
         }
     }
 
-    /// The website answered after an HTTP sign-in. A 401 from it refuses the
-    /// sign-in; a page from it, or the page finishing (nil), accepts it, and
-    /// only then is it saved and marked used.
-    func settleHTTPSignIn(_ id: UUID, response: URLResponse?) {
+    /// The tab's page answered the load that asked for an HTTP sign-in. A 401
+    /// from the website refuses it; anything else accepts it (a redirect away
+    /// means it was let through), and only then is it saved and marked used.
+    func settleHTTPSignIn(_ id: UUID, response: URLResponse) {
         guard let pending = pendingHTTPSignIns[id] else { return }
-        if let response {
-            // Another website's page, such as a redirect's: the load decides.
-            guard let url = response.url, passwordOrigin(of: url) == pending.origin else { return }
-            if (response as? HTTPURLResponse)?.statusCode == 401 {
-                pendingHTTPSignIns[id] = nil
-                return
-            }
-        }
         pendingHTTPSignIns[id] = nil
+        // A newer load than the one that asked says nothing about it.
+        guard pages[id]?.activeNavigation == pending.navigation else { return }
+        let refused = (response as? HTTPURLResponse)?.statusCode == 401
+            && response.url.flatMap(passwordOrigin(of:)) == pending.origin
+        if refused { return }
         guard let vault = passwords, vault.isReady else { return }
         if pending.save {
             vault.save(origin: pending.origin, username: pending.username, password: pending.password, realm: pending.realm)

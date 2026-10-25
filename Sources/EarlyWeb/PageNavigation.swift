@@ -280,7 +280,8 @@ extension WebViewManager {
         checkReaderAvailability(id)
         detectPageLanguage(id)
         checkPendingLogin(id)
-        settleHTTPSignIn(id, response: nil)
+        // Finishing isn't an answer: a frame can fail while the page loads.
+        pendingHTTPSignIns[id] = nil
         guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected
