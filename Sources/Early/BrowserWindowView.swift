@@ -648,7 +648,7 @@ struct BrowserWindowView: View {
         }
         .animation(folderDragAnimation, value: revealDropSections)
         .padding(.horizontal, sidebarAutoHides ? 5 : 2)
-        .padding(.top, sidebarAutoHides ? 7 : 4)
+        .padding(.top, sidebarAutoHides ? 3 : 0)
         .padding(.bottom, sidebarAutoHides ? 17 : 14)
         .frame(width: model.sidebarWidth + (sidebarAutoHides ? 3 : 0))
         .frame(maxHeight: .infinity)
@@ -2557,7 +2557,7 @@ struct BrowserWindowView: View {
     }
 
     private var navigationControls: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             WindowControls().frame(width: 60, height: 32)
             Button {
                 model.perform(.toggleSidebar)
@@ -2592,6 +2592,9 @@ struct BrowserWindowView: View {
         .foregroundStyle(.secondary)
         .buttonStyle(.plain)
         .background(WindowDragRegion())
+        // Match the traffic lights' top inset: 6 pt of window padding plus
+        // 9 pt from centering the native 14 pt buttons in this 32 pt row.
+        .padding(.leading, 7)
     }
 
     private func historyEntries(forward: Bool) -> [WebViewManager.HistoryListEntry] {
