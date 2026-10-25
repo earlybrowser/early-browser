@@ -2690,6 +2690,10 @@ private struct NavigationButton: View {
     let action: () -> Void
     @State private var activation = 0
     @State private var clickFeedback = false
+    /// Back and Forward's history overlay takes the pointer, so it reports
+    /// hover and press for the button underneath to show.
+    @State private var overlayHovered = false
+    @State private var overlayPressed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isEnabled) private var isEnabled
 
@@ -2697,11 +2701,16 @@ private struct NavigationButton: View {
         Button { activate() } label: {
             ReloadStopArtwork(isLoading: kind == .stop)
         }
-        .buttonStyle(NavigationControlStyle(kind: kind, clickFeedback: clickFeedback))
+        .buttonStyle(NavigationControlStyle(kind: kind, clickFeedback: clickFeedback,
+                                            hovered: overlayHovered, pressed: overlayPressed))
         .overlay {
             if let history, isEnabled {
-                HistoryMenuOverlay(onClick: activate, entries: history, onSelect: onHistory)
+                HistoryMenuOverlay(onClick: activate, entries: history, onSelect: onHistory,
+                                   onHover: { overlayHovered = $0 }, onPress: { overlayPressed = $0 })
             }
+        }
+        .onChange(of: isEnabled) { _, enabled in
+            if !enabled { overlayHovered = false; overlayPressed = false }
         }
         .browserKeyboardFocus(cornerRadius: 8)
         .task(id: activation) {
@@ -2727,30 +2736,56 @@ struct HistoryMenuOverlay: NSViewRepresentable {
     let onClick: () -> Void
     let entries: () -> [WebViewManager.HistoryListEntry]
     let onSelect: (Int) -> Void
+    var onHover: (Bool) -> Void = { _ in }
+    var onPress: (Bool) -> Void = { _ in }
 
     func makeNSView(context: Context) -> HistoryMenuView { HistoryMenuView() }
     func updateNSView(_ view: HistoryMenuView, context: Context) {
         view.onClick = onClick
         view.entries = entries
         view.onSelect = onSelect
+        view.onHover = onHover
+        view.onPress = onPress
     }
-    static func dismantleNSView(_ view: HistoryMenuView, coordinator: ()) { view.cancelHold() }
+    static func dismantleNSView(_ view: HistoryMenuView, coordinator: ()) {
+        view.cancelHold()
+        view.onHover(false)
+        view.onPress(false)
+    }
 
     final class HistoryMenuView: NSView {
         static let holdDelay: TimeInterval = 0.4
         var onClick: () -> Void = {}
         var entries: () -> [WebViewManager.HistoryListEntry] = { [] }
         var onSelect: (Int) -> Void = { _ in }
+        var onHover: (Bool) -> Void = { _ in }
+        var onPress: (Bool) -> Void = { _ in }
         private var hold: Timer?
         private var showedMenu = false
+        private var tracking: NSTrackingArea?
 
         override var mouseDownCanMoveWindow: Bool { false }
         override func isAccessibilityElement() -> Bool { false }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+        /// This view is on top of the button, so the button's own hover
+        /// never fires: the pointer is tracked here instead.
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let tracking { removeTrackingArea(tracking) }
+            let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                      owner: self, userInfo: nil)
+            addTrackingArea(area)
+            tracking = area
+        }
+
+        override func mouseEntered(with event: NSEvent) { onHover(true) }
+        override func mouseExited(with event: NSEvent) { onHover(false) }
+
         override func mouseDown(with event: NSEvent) {
             showedMenu = false
             cancelHold()
+            onPress(true)
             hold = Timer.scheduledTimer(withTimeInterval: Self.holdDelay, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { self?.showMenu() }
             }
@@ -2759,6 +2794,7 @@ struct HistoryMenuOverlay: NSViewRepresentable {
         override func mouseUp(with event: NSEvent) {
             let wasHolding = hold != nil
             cancelHold()
+            onPress(false)
             if wasHolding, !showedMenu, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick() }
         }
 
@@ -2789,6 +2825,7 @@ struct HistoryMenuOverlay: NSViewRepresentable {
 
         private func showMenu() {
             cancelHold()
+            onPress(false)
             guard let menu = makeMenu() else { return }
             showedMenu = true
             // Just below the button.
@@ -2872,21 +2909,27 @@ private struct NavigationControlStyle: ButtonStyle {
     enum Kind { case back, forward, reload, stop }
     let kind: Kind
     var clickFeedback = false
+    /// Hover and press reported by a view laid over the button.
+    var hovered = false
+    var pressed = false
 
     func makeBody(configuration: Configuration) -> some View {
-        Appearance(configuration: configuration, kind: kind, clickFeedback: clickFeedback)
+        Appearance(configuration: configuration, kind: kind, clickFeedback: clickFeedback,
+                   overlayHovered: hovered, overlayPressed: pressed)
     }
 
     private struct Appearance: View {
         let configuration: ButtonStyleConfiguration
         let kind: Kind
         let clickFeedback: Bool
+        let overlayHovered: Bool
+        let overlayPressed: Bool
         @State private var hovered = false
         @Environment(\.isEnabled) private var isEnabled
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-        private var highlighted: Bool { isEnabled && hovered }
-        private var pressed: Bool { isEnabled && configuration.isPressed }
+        private var highlighted: Bool { isEnabled && (hovered || overlayHovered) }
+        private var pressed: Bool { isEnabled && (configuration.isPressed || overlayPressed) }
 
         var body: some View {
             ZStack {

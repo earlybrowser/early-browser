@@ -240,13 +240,22 @@ struct PageToolsActionTests {
         view.entries = { [] }
         #expect(view.makeMenu() == nil, "No list, no menu")
 
-        // A short click is an ordinary Back, not a menu.
+        // A short click is an ordinary Back, not a menu. The overlay is on top
+        // of the button, so it reports hover and press for the button to show.
+        var hovered: [Bool] = [], pressed: [Bool] = []
+        view.onHover = { hovered.append($0) }
+        view.onPress = { pressed.append($0) }
+        let enter = try #require(NSEvent.enterExitEvent(with: .mouseEntered, location: CGPoint(x: 10, y: 10), modifierFlags: [],
+            timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+        view.mouseEntered(with: enter)
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             let event = try #require(NSEvent.mouseEvent(with: type, location: CGPoint(x: 10, y: 10), modifierFlags: [],
                 timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
             type == .leftMouseDown ? view.mouseDown(with: event) : view.mouseUp(with: event)
         }
+        view.mouseExited(with: enter)
         #expect(clicks == 1)
+        #expect(hovered == [true, false] && pressed == [true, false])
         #expect(!view.mouseDownCanMoveWindow, "Pressing Back never drags the window")
         view.cancelHold()
     }
