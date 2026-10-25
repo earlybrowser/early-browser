@@ -12,6 +12,8 @@ import WebKit
 @MainActor @Observable
 final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     private struct WindowEntry { let id: UUID; let model: BrowserWindowModel }
+    /// A browser window's native window, as it registered (nil: the primary one).
+    private struct NativeWindow { let id: UUID?; weak var window: NSWindow? }
     private struct Loaded {
         let workspace: BrowserWorkspace
         let repository: SessionRepository
@@ -30,6 +32,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored var presentWindow: ((UUID) -> Void)?
     @ObservationIgnored var presentSettingsWindow: (() -> Void)?
     @ObservationIgnored private var windows: [WindowEntry] = []
+    /// Native windows are matched as objects: SwiftUI can rename a window after
+    /// Early names it (macOS 26 renamed a second one "browser-AppWindow-2").
+    @ObservationIgnored private var nativeWindows: [NativeWindow] = []
     @ObservationIgnored private var loading: Task<Loaded, Never>?
     @ObservationIgnored private var repository: SessionRepository?
     @ObservationIgnored private var preferences: BrowserPreferences?
@@ -550,10 +555,16 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// A window model's native window.
     func nativeWindow(of owner: BrowserWindowModel) -> NSWindow? {
-        let identifier: String
-        if owner === model, primaryWindowIsOpen { identifier = "browser" }
-        else if let entry = windows.first(where: { $0.model === owner }) { identifier = "browser.\(entry.id)" }
-        else { return nil }
+        if owner === model, primaryWindowIsOpen { return nativeWindow(id: nil) }
+        guard let entry = windows.first(where: { $0.model === owner }) else { return nil }
+        return nativeWindow(id: entry.id)
+    }
+
+    /// The native window of the primary window (nil) or another one: as it
+    /// registered, or by the name Early gave it.
+    private func nativeWindow(id: UUID?) -> NSWindow? {
+        if let window = nativeWindows.first(where: { $0.id == id })?.window { return window }
+        let identifier = id.map { "browser.\($0)" } ?? "browser"
         return NSApp.windows.first { $0.identifier?.rawValue == identifier }
     }
 
@@ -888,8 +899,12 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         saveAll()
     }
 
-    func windowDidRegister(_ id: UUID?) {
-        // A new window can become key before it has its name.
+    func windowDidRegister(_ id: UUID?, window: NSWindow? = nil) {
+        if let window {
+            nativeWindows.removeAll { $0.window == nil || $0.window === window || $0.id == id }
+            nativeWindows.append(NativeWindow(id: id, window: window))
+        }
+        // A new window can become key before it has registered.
         updateFrontWindow()
         if let id { pendingRestoredWindows.remove(id) }
         guard restoringFocus, pendingRestoredWindows.isEmpty else { return }
@@ -898,15 +913,15 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         // profile that was frontmost when Early quit.
         DispatchQueue.main.async { [weak self] in
             guard self?.primaryWindowIsOpen == true else { return }
-            NSApp.windows.first { $0.identifier?.rawValue == "browser" }?.makeKeyAndOrderFront(nil)
+            self?.nativeWindow(id: nil)?.makeKeyAndOrderFront(nil)
         }
     }
 
     func openProfile(_ id: UUID) {
         guard !isTerminating, !profileOperationInProgress, let session = workspace?.session(for: id) else { return }
-        let identifier: String
-        if let model, primaryWindowIsOpen, model.coordinator.profileID == id { identifier = "browser" }
-        else if let existing = windows.first(where: { $0.model.coordinator.profileID == id }) { identifier = "browser.\(existing.id)" }
+        let window: NSWindow?
+        if let model, primaryWindowIsOpen, model.coordinator.profileID == id { window = nativeWindow(id: nil) }
+        else if let existing = windows.first(where: { $0.model.coordinator.profileID == id }) { window = nativeWindow(id: existing.id) }
         else {
             // Its windows as they were saved, or as they were imported.
             let opened = ([session] + session.additionalWindows).map { addWindow(session: $0) }
@@ -915,7 +930,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             opened.forEach { presentWindow?($0) }
             return
         }
-        NSApp.windows.first { $0.identifier?.rawValue == identifier }?.makeKeyAndOrderFront(nil)
+        window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         workspace?.activeProfileID = id
         saveAll()
@@ -1018,11 +1033,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let icons = visibleModels.filter { $0.coordinator.profileID == id }.map { $0.webViews.favicons }
         let closing = windows.filter { $0.model.coordinator.profileID == id }.map(\.id)
         for windowID in closing {
-            NSApp.windows.first { $0.identifier?.rawValue == "browser.\(windowID)" }?.close()
+            nativeWindow(id: windowID)?.close()
             closeWindow(windowID)
         }
         if model?.coordinator.profileID == id {
-            NSApp.windows.first { $0.identifier?.rawValue == "browser" }?.close()
+            nativeWindow(id: nil)?.close()
             closeWindow(nil)
         }
         dataStores.removeValue(forKey: id)
@@ -1097,6 +1112,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     func closeWindow(_ id: UUID?) {
         guard !isTerminating, let closed = windowModel(id) else { return }
         let profileID = closed.coordinator.profileID
+        nativeWindows.removeAll { $0.id == id || $0.window == nil }
         if let id { windows.removeAll { $0.id == id }; windowDidRegister(id) }
         else { primaryWindowIsOpen = false; model = nil }
         closed.onSave = nil
@@ -1142,9 +1158,14 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.orderedWindows.compactMap { window in browserModel(for: window).map { (window, $0) } }
     }
 
-    /// The model of a native browser window, by the identifier it registered.
+    /// The model of a native browser window: as it registered, or by its name.
     func browserModel(for window: NSWindow?) -> BrowserWindowModel? {
-        guard let identifier = window?.identifier?.rawValue else { return nil }
+        guard let window else { return nil }
+        if let registered = nativeWindows.first(where: { $0.window === window }) {
+            guard let id = registered.id else { return primaryWindowIsOpen ? model : nil }
+            return windowModel(id)
+        }
+        guard let identifier = window.identifier?.rawValue else { return nil }
         if identifier == "browser" { return primaryWindowIsOpen ? model : nil }
         guard identifier.hasPrefix("browser."), let id = UUID(uuidString: String(identifier.dropFirst("browser.".count))) else { return nil }
         return windowModel(id)
@@ -1204,7 +1225,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// browser window, or opens one.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard !flag, workspace != nil else { return true }
-        if let minimized = NSApp.windows.first(where: { $0.isMiniaturized && $0.identifier?.rawValue.hasPrefix("browser") == true }) {
+        if let minimized = NSApp.windows.first(where: { $0.isMiniaturized && browserModel(for: $0) != nil }) {
             minimized.deminiaturize(nil)
         } else {
             _ = openNewWindow()

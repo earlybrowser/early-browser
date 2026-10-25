@@ -240,6 +240,13 @@ struct PortabilityApplicationTests {
         #expect(app.browserModel(for: window("browser.\(id)")) === app.windowModel(id))
         #expect(app.browserModel(for: window("com_apple_SwiftUI_Settings_window")) == nil, "Settings isn't a browser window")
         #expect(app.browserModel(for: window(nil)) == nil && app.browserModel(for: nil) == nil)
+        // macOS 26 renamed a second window after it registered: it's still that window.
+        let renamed = window("browser.\(id)")
+        app.windowDidRegister(id, window: renamed)
+        renamed.identifier = NSUserInterfaceItemIdentifier("browser-AppWindow-2")
+        let second = try #require(app.windowModel(id))
+        #expect(app.browserModel(for: renamed) === second && app.nativeWindow(of: second) === renamed)
+        #expect(app.browserModel(for: window("browser-AppWindow-2")) == nil, "Only the window that registered")
         // ⌘W's title: whether the window in front shows a page, kept as its
         // page comes and goes.
         func eventually(_ condition: () -> Bool) async -> Bool {

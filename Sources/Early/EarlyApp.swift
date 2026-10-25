@@ -73,7 +73,7 @@ private struct BrowserWindowRoot: View {
         }
         .background(WindowRegistration(identifier: windowID.map { "browser.\($0)" } ?? "browser",
             onClose: { appDelegate.closeWindow(windowID) }, onFocus: { appDelegate.focusedWindow(windowID) },
-            onRegister: { appDelegate.windowDidRegister(windowID) }))
+            onRegister: { window in appDelegate.windowDidRegister(windowID, window: window) }))
         .task {
             appDelegate.presentWindow = { id in openWindow(id: "browser", value: id) }
             appDelegate.presentSettingsWindow = { openSettings() }
@@ -90,7 +90,7 @@ private struct WindowRegistration: NSViewRepresentable {
     let identifier: String
     let onClose: () -> Void
     let onFocus: () -> Void
-    let onRegister: () -> Void
+    let onRegister: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> RegistrationView {
         let view = RegistrationView()
@@ -113,7 +113,7 @@ private struct WindowRegistration: NSViewRepresentable {
         var identifierValue = "browser"
         var onClose: (() -> Void)?
         var onFocus: (() -> Void)?
-        var onRegister: (() -> Void)?
+        var onRegister: ((NSWindow) -> Void)?
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); register() }
         func register() {
             guard let window else { return }
@@ -126,7 +126,9 @@ private struct WindowRegistration: NSViewRepresentable {
             NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(windowClosing(_:)), name: NSWindow.willCloseNotification, object: window)
             NotificationCenter.default.addObserver(self, selector: #selector(windowFocused(_:)), name: NSWindow.didBecomeKeyNotification, object: window)
-            DispatchQueue.main.async { [weak self] in self?.onRegister?() }
+            DispatchQueue.main.async { [weak self, weak window] in
+                if let window { self?.onRegister?(window) }
+            }
         }
         @objc private func windowClosing(_ notification: Notification) { onClose?() }
         @objc private func windowFocused(_ notification: Notification) { onFocus?() }
