@@ -614,6 +614,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return try EarlyStateArchive.decode(data, using: input)
     }
 
+    /// The password, privacy and update settings a file would change here.
+    func sensitiveImportChanges(from settings: PortableSettings) -> [(title: String, value: Bool)] {
+        preferences?.sensitiveChanges(from: settings) ?? []
+    }
+
     /// Copies of what was here before each import, newest kept.
     var backupsDirectory: URL? { storageURL?.deletingLastPathComponent().appending(path: "Backups", directoryHint: .isDirectory) }
     static let backupLimit = 5
@@ -627,7 +632,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// The whole result is checked, a backup of what's here is saved, then
     /// every window changes at once. Nothing changes if any step fails.
-    func importState(_ archive: EarlyStateArchive, mode: EarlyStateArchive.ImportMode, includeSettings: Bool) async -> ImportOutcome {
+    func importState(_ archive: EarlyStateArchive, mode: EarlyStateArchive.ImportMode, includeSettings: Bool,
+                     includeSensitiveSettings: Bool = false) async -> ImportOutcome {
         guard canEditProfiles, let preferences else {
             return ImportOutcome(message: "Early can’t import right now. Try again in a moment.", succeeded: false)
         }
@@ -680,7 +686,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         let opened = opening.map { addWindow(session: $0) }
         applyingWorkspace = false
-        if includeSettings, let settings = archive.settings { preferences.apply(settings) }
+        if includeSettings, let settings = archive.settings { preferences.apply(settings, includingSensitive: includeSensitiveSettings) }
         saveAll()
         opened.forEach { presentWindow?($0) }
         let names = result.profiles.compactMap { id in profiles.first { $0.id == id }?.name }

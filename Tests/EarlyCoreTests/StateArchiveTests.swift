@@ -185,6 +185,34 @@ struct StateArchiveTests {
         #expect(added.workspace.session(for: exported.defaultProfileID) == current.session(for: exported.defaultProfileID))
     }
 
+    /// A file can't quietly turn off updates or turn on automatic fill: those
+    /// change only when the person agrees, and the sheet lists them first.
+    @Test func sensitiveSettingsChangeOnlyWhenTheImportSaysSo() throws {
+        let suite = "local.early.tests.archive.\(UUID())"
+        let store = try #require(UserDefaults(suiteName: suite))
+        defer { store.removePersistentDomain(forName: suite) }
+        let here = BrowserPreferences(defaults: store)
+        here.checksForUpdatesAutomatically = true
+        here.installsUpdatesAutomatically = false
+        here.fillsPasswordsAutomatically = false
+        here.privateOnlineSuggestions = false
+        var file = here.portableSettings
+        file.toggles["checksForUpdatesAutomatically"] = false
+        file.toggles["fillsPasswordsAutomatically"] = true
+        file.toggles["spaceSwipes"] = !here.spaceSwipes
+        let changes = here.sensitiveChanges(from: file)
+        #expect(changes.map(\.title) == ["Fill passwords automatically", "Check for updates automatically"])
+        #expect(changes.map(\.value) == [true, false])
+
+        let swipes = here.spaceSwipes
+        here.apply(file)
+        #expect(here.checksForUpdatesAutomatically && !here.fillsPasswordsAutomatically, "Not without saying so")
+        #expect(here.spaceSwipes != swipes, "Ordinary settings still move")
+        here.apply(file, includingSensitive: true)
+        #expect(!here.checksForUpdatesAutomatically && here.fillsPasswordsAutomatically)
+        #expect(here.sensitiveChanges(from: file).isEmpty)
+    }
+
     @Test func settingsMoveOnlyThroughTheAllowList() throws {
         let suite = "local.early.tests.archive.\(UUID())"
         let store = try #require(UserDefaults(suiteName: suite))

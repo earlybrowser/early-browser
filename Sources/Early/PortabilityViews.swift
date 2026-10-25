@@ -145,6 +145,8 @@ struct StateImportSheet: View {
     let onFinish: (EarlyAppDelegate.ImportOutcome?) -> Void
     @State private var mode: EarlyStateArchive.ImportMode = .addProfiles
     @State private var includeSettings = true
+    /// Off unless the person turns it on: passwords, privacy and updates.
+    @State private var includeSensitive = false
     @State private var importing = false
 
     var body: some View {
@@ -182,9 +184,21 @@ struct StateImportSheet: View {
                  ? "Each profile is added beside yours. Nothing you have now changes."
                  : "A profile that’s already here, or has the same name, gets the file’s Spaces, tabs and windows instead of its own, and keeps its passwords and website data. Other profiles are added.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if preview.archive.settings != nil {
+            if let settings = preview.archive.settings {
                 Toggle("Also use the file’s settings, such as the search engine, shortcuts and appearance", isOn: $includeSettings)
                     .accessibilityIdentifier("import.settings")
+                let changes = application.sensitiveImportChanges(from: settings)
+                if includeSettings, !changes.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("Also change these password, privacy and update settings", isOn: $includeSensitive)
+                            .accessibilityIdentifier("import.sensitiveSettings")
+                        ForEach(changes, id: \.title) { change in
+                            Text("\(change.title): \(change.value ? "On" : "Off")")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.leading, 20)
+                }
             }
             Text("Tabs don’t load until you choose them, and websites will ask you to sign in again, because cookies and passwords aren’t in the file. Early saves a backup of what you have now before importing.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -196,7 +210,8 @@ struct StateImportSheet: View {
                 Button("Import") {
                     importing = true
                     Task {
-                        let outcome = await application.importState(preview.archive, mode: mode, includeSettings: includeSettings)
+                        let outcome = await application.importState(preview.archive, mode: mode, includeSettings: includeSettings,
+                                                                    includeSensitiveSettings: includeSensitive)
                         importing = false
                         onFinish(outcome)
                     }
