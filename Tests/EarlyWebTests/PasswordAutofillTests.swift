@@ -199,38 +199,40 @@ struct PasswordAutofillTests {
         view.removeFromSuperview()
     }
 
-    @Test func signInPagesFillAsTheyOpenButOnlyFormsAPersonCanSee() async throws {
+    @Test func signInFieldsAreFilledWhenAPersonReachesThemNeverAsThePageOpens() async throws {
         let later = """
             <title>Later</title><div id="app"></div>
             <script>setTimeout(() => app.innerHTML = '<form><input id=user autocomplete=username><input id=pass type=password></form>', 300)</script>
             """
         let typed = Self.login.replacingOccurrences(of: "<input id=\"user\"", with: "<input id=\"user\" value=\"grace\"")
-        // A password field in a see-through wrapper over a button, a form under
-        // a cover, one far off the page, and one below the fold.
+        // The page focuses its own password field; it can't count as the person's.
+        let focusing = Self.login + "<script>setTimeout(() => document.getElementById('pass').focus(), 200)</script>"
+        // A password field in a see-through wrapper over a button, and a form under a cover.
         let disguised = """
             <title>Disguised</title><button id="decoy" style="position:absolute;left:20px;top:20px;width:200px;height:40px">Play</button>
             <form><input id="user" autocomplete="username" style="position:absolute;left:20px;top:200px">
             <div style="opacity:0.02"><input id="pass" type="password" style="position:absolute;left:20px;top:20px;width:200px;height:40px"></div></form>
             """
-        let covered = """
-            <title>Covered</title><button id="start">Start</button>
+        let tabbing = """
+            <title>Tabbing</title><button id="start">Start</button>
+            <form><input id="user" autocomplete="username"><input id="pass" type="password"></form>
+            """
+        let tabbingCovered = """
+            <title>Tabbing covered</title><button id="start">Start</button>
             <form><input id="user" autocomplete="username" style="position:absolute;left:20px;top:100px">
             <input id="pass" type="password" style="position:absolute;left:20px;top:140px"></form>
-            <div id="cover" style="position:absolute;left:0;top:80px;width:400px;height:200px;background:white"></div>
+            <div style="position:absolute;left:0;top:80px;width:400px;height:200px;background:white"></div>
             """
-        let offPage = """
-            <title>Off page</title><form style="position:absolute;left:-3000px;top:-3000px">
-            <input id="user" autocomplete="username"><input id="pass" type="password"></form>
-            """
-        let belowFold = """
-            <title>Below</title><div style="height:2000px"></div>
-            <form><input id="user" autocomplete="username"><input id="pass" type="password"></form>
+        let covered = """
+            <title>Covered</title><form><input id="user" autocomplete="username" style="position:absolute;left:20px;top:20px">
+            <input id="pass" type="password" style="position:absolute;left:20px;top:60px"></form>
+            <div id="cover" style="position:absolute;left:0;top:0;width:400px;height:200px;background:white"></div>
             """
         // The framed page, from another site, reports its own fields when asked.
         let framed = "<style>body { margin: 0 } input { display: block; width: 200px; height: 30px }</style>" + Self.login
             + "<script>addEventListener('message', () => parent.postMessage([user.value, pass.value].join(' '), '*'))</script>"
-        let fixture = makeFixture(["login": Self.login, "later": later, "typed": typed, "framed": framed,
-            "disguised": disguised, "covered": covered, "offPage": offPage, "below": belowFold,
+        let fixture = makeFixture(["login": Self.login, "later": later, "typed": typed, "framed": framed, "focusing": focusing,
+            "disguised": disguised, "covered": covered, "tabbing": tabbing, "tabbingCovered": tabbingCovered,
             "outer": "<title>Outer</title><style>body { margin: 0 }</style>"
                 + "<iframe id=\"frame\" src=\"early-tools://accounts/framed\" style=\"border:0;position:absolute;left:0;top:0;width:400px;height:200px\"></iframe>"
                 + "<script>addEventListener('message', e => window.framed = e.data)</script>"])
@@ -257,11 +259,13 @@ struct PasswordAutofillTests {
         func view(_ tab: BrowserTab) throws -> WKWebView { try fixture.page(tab).view }
 
         let login = try await fixture.open("login")
-        #expect(try await values(login) == ["grace", "second"], "Filled as the page opens, with the account used last")
+        #expect(try await values(login, waitingForFill: false) == ["", ""], "Nothing is filled as the page opens")
+        try await personClicks("user", in: try view(login), window: window)
+        #expect(try await values(login) == ["grace", "second"], "A click fills the account used last")
         #expect(try await fixture.evaluate("seen.join(',')", in: login) as? String == "user=grace,pass=second",
                 "Filled like typing")
         #expect(vault.logins.allSatisfy { $0.username != "ada" || $0.lastUsed == nil }, "Filling isn't using it yet")
-        // Clicking the field still lists every account, and choosing one replaces what was filled.
+        // The list still has every account, and choosing one replaces what was filled.
         let field = try await focus("user", in: try view(login), fixture)
         #expect(manager.passwordSuggestions(for: field).count == 3, "Both accounts, not only the filled-in one")
         manager.choosePasswordSuggestion(.login(try #require(vault.login(origin: "early-tools://fixture", username: "ada")).id,
@@ -272,27 +276,37 @@ struct PasswordAutofillTests {
             chosen = try await fixture.evaluate("[user.value, pass.value]", in: login) as? [String] ?? []
         }
         #expect(chosen == ["ada", "first"])
-        #expect(try await values(try await fixture.open("typed")) == ["grace", "second"], "The user name already in the form")
-        #expect(try await values(try await fixture.open("later")) == ["ada", "first"],
-                "A form that appears later, with the account chosen last")
-        let below = try await fixture.open("below")
-        #expect(try await values(below, waitingForFill: false) == ["", ""], "Not while it's out of view")
-        _ = try await fixture.evaluate("window.scrollTo(0, 1800)", in: below)
-        #expect(try await values(below) == ["ada", "first"], "Filled once it's scrolled into view")
+        let withName = try await fixture.open("typed")
+        try await personClicks("pass", in: try view(withName), window: window)
+        #expect(try await values(withName) == ["grace", "second"], "The user name already in the form")
+        let appearing = try await fixture.open("later")
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(try await values(appearing, waitingForFill: false) == ["", ""], "A form that appears isn't filled by itself")
+        try await personClicks("user", in: try view(appearing), window: window)
+        #expect(try await values(appearing) == ["ada", "first"], "Clicking it fills the account chosen last")
 
-        // Nothing a person can't see: see-through, covered or off the page,
-        // whether the page opens or the person clicks or tabs there.
+        // Pages can't trigger it: by focusing a field, or with a see-through
+        // or covered form under the person's click.
+        let selfFocused = try await fixture.open("focusing")
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(try await values(selfFocused, waitingForFill: false) == ["", ""], "The page's own focus fills nothing")
         let decoy = try await fixture.open("disguised")
-        #expect(try await values(decoy, waitingForFill: false) == ["", ""], "A see-through field gets nothing")
         try await personClicks("decoy", in: try view(decoy), window: window)
-        #expect(try await values(decoy, waitingForFill: false) == ["", ""], "Not even when the button over it is clicked")
+        #expect(try await values(decoy, waitingForFill: false) == ["", ""], "A see-through field over a button gets nothing")
         let cover = try await fixture.open("covered")
+        try await personClicks("cover", in: try view(cover), window: window, offset: CGPoint(x: 60, y: 30))
         #expect(try await values(cover, waitingForFill: false) == ["", ""], "A covered form gets nothing")
-        try await personClicks("start", in: try view(cover), window: window)
-        try await personTabs(in: try view(cover), window: window)
-        #expect(try await fixture.evaluate("document.activeElement.id", in: cover) as? String == "user", "Tab reached it")
-        #expect(try await values(cover, waitingForFill: false) == ["", ""], "Tabbing under the cover fills nothing")
-        #expect(try await values(try await fixture.open("offPage"), waitingForFill: false) == ["", ""], "Off the page gets nothing")
+
+        // Tabbing into the form fills it, unless the form is under something.
+        let tabbed = try await fixture.open("tabbing")
+        try await personClicks("start", in: try view(tabbed), window: window)
+        try await personTabs(in: try view(tabbed), window: window)
+        #expect(try await values(tabbed) == ["ada", "first"], "Tab into the form fills it")
+        let tabbedCovered = try await fixture.open("tabbingCovered")
+        try await personClicks("start", in: try view(tabbedCovered), window: window)
+        try await personTabs(in: try view(tabbedCovered), window: window)
+        #expect(try await fixture.evaluate("document.activeElement.id", in: tabbedCovered) as? String == "user", "Tab reached it")
+        #expect(try await values(tabbedCovered, waitingForFill: false) == ["", ""], "A form under a cover gets nothing")
 
         // Never in another site's frame, even when the person clicks into it.
         let outer = try await fixture.open("outer")
@@ -306,7 +320,7 @@ struct PasswordAutofillTests {
         }
         #expect(framedValues == " ", "Nothing filled in the framed page: \(framedValues ?? "nil")")
 
-        // Turned off: the list under the field only, even after a click.
+        // Turned off: the list under the field only.
         enabled = false
         let off = try await fixture.open("login")
         try await personClicks("user", in: try view(off), window: window)

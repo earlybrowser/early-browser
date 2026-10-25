@@ -108,7 +108,7 @@ struct PasswordsSettingsSection: View {
         VStack(alignment: .leading, spacing: 22) {
             SettingsCard {
                 SettingsToggle("Fill passwords automatically",
-                               detail: "When a sign-in page you’ve saved a password for opens, Early fills it in. Click a field to choose another account. Turn this off to choose from the list under the field instead.",
+                               detail: "When you click or tab into a sign-in form you’ve saved a password for, Early fills it in. It never fills as a page opens, so the page can’t read your password before you reach it. Turn this off to choose from the list under the field instead.",
                                isOn: $preferences.fillsPasswordsAutomatically, identifier: "settings.fillPasswords")
             }
             if application.profiles.count > 1 { profilePicker }
