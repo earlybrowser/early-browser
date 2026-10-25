@@ -297,28 +297,53 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             }
             if (event.key === 'Enter' && editable(node)) capture(scopeOf(node));
         }, true);
-        // A sign-in form as it appears, for filling it in automatically: each
-        // password field once, while it's empty.
-        const announced = new WeakSet();
-        const announce = () => {
-            for (const field of document.querySelectorAll('input[type=password]')) {
-                if (announced.has(field) || !shown(field)) continue;
-                const form = describe(scopeOf(field));
-                if (form.kind !== 'login' || form.current !== field) continue;
-                announced.add(field);
-                if (field.value) continue;
-                post({ type: 'form', token: tokenFor(field), username: form.username ? form.username.value.slice(0, 256) : '' });
+        // Filling as a person reaches a sign-in form, by clicking one of its
+        // fields or tabbing into it: never as a page appears or focuses a field
+        // by itself, so its scripts can't collect a password from a form no one
+        // chose. The field must be on screen, not see-through, and on top where
+        // it is, not under something else. Each password field once, while empty.
+        const reached = new WeakSet();
+        let tabbedAt = -Infinity;
+        // Opacity multiplies down through the field's parents, shadow roots too:
+        // an opaque field inside a see-through wrapper is see-through.
+        const opaque = node => {
+            let opacity = 1;
+            for (let element = node; element; element = element.parentElement || element.getRootNode().host || null) {
+                opacity *= Number(getComputedStyle(element).opacity);
+                if (opacity <= 0.05) return false;
             }
+            return true;
         };
-        let announcing = null;
-        const soon = () => {
-            if (announcing) return;
-            announcing = setTimeout(() => { announcing = null; announce(); }, 250);
+        const visible = node => shown(node) && opaque(node) && (typeof node.checkVisibility !== 'function'
+            || node.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true }));
+        const onTop = node => {
+            const rect = node.getBoundingClientRect();
+            const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+            if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+            const root = node.getRootNode();
+            return (typeof root.elementFromPoint === 'function' ? root : document).elementFromPoint(x, y) === node;
         };
-        document.addEventListener('DOMContentLoaded', soon);
-        window.addEventListener('load', soon);
-        new MutationObserver(soon).observe(document, { childList: true, subtree: true, attributes: true,
-            attributeFilter: ['class', 'style', 'hidden', 'type'] });
+        const reach = node => {
+            if (filling || !visible(node) || !onTop(node)) return;
+            const form = describe(scopeOf(node));
+            const role = roleOf(node, form);
+            if (form.kind !== 'login' || !form.current || (role !== 'username' && role !== 'current')) return;
+            const field = form.current;
+            if (reached.has(field) || field.value || !visible(field)) return;
+            reached.add(field);
+            post({ type: 'form', token: tokenFor(field), username: form.username ? form.username.value.slice(0, 256) : '' });
+        };
+        document.addEventListener('mousedown', event => {
+            const node = event.composedPath()[0];
+            if (event.isTrusted && event.button === 0 && editable(node)) reach(node);
+        }, true);
+        document.addEventListener('keydown', event => {
+            if (event.isTrusted && event.key === 'Tab') tabbedAt = performance.now();
+        }, true);
+        document.addEventListener('focusin', event => {
+            const node = event.composedPath()[0];
+            if (editable(node) && performance.now() - tabbedAt < 1000) reach(node);
+        }, true);
         const moved = () => { if (menuToken) post({ type: 'move' }); };
         window.addEventListener('scroll', moved, true);
         window.addEventListener('resize', moved);
@@ -565,11 +590,12 @@ extension WebViewManager {
         return (result as? [String: Any])?["username"] as? String
     }
 
-    // MARK: Filling as the page opens
+    // MARK: Filling as a person reaches a sign-in form
 
-    /// Like Chrome: only on a secure page, in the page itself or a frame of
-    /// the same site, never over typing. With several accounts, the one used
-    /// last, or the one whose user name is already in the form.
+    /// When the person clicks or tabs into a sign-in form's field (never as the
+    /// page opens), on a secure page, in the page itself or a frame of the same
+    /// site, never over typing. With several accounts, the one used last, or
+    /// the one whose user name is already in the form.
     func fillAutomatically(token: String, typed: String, origin: String, frame: WKFrameInfo, in view: WKWebView) {
         guard fillsPasswordsAutomatically(), let vault = passwords, let id = tabID(for: view), let page = pages[id],
               Self.allowsAutomaticFill(origin: origin, testSchemes: passwordTestSchemes),
