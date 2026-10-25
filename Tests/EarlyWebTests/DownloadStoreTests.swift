@@ -423,7 +423,12 @@ struct DownloadStoreTests {
         // delay keeps it from leaving the page (and reaching the network)
         // before the test reads it.
         let fixture = Fixture(page: "<meta charset='iso-8859-1'><meta http-equiv='refresh' content='3600;url=https://example.com/away'>"
-            + "<script>document.title = 'changed'</script><p><a href='next.html'>Next</a> Café</p>")
+            + "<script>document.title = 'changed'</script><p><a href='next.html'>Next</a> Café</p>"
+            // Active content that must not survive or run in the saved copy.
+            + "<img id='photo' src='data:,' onerror='window.ran = (window.ran || 0) + 1'>"
+            + "<a id='bad' href='javascript:window.ran = 99'>Bad</a><button formaction='javascript:1'>Go</button>"
+            + "<iframe srcdoc='<p>framed</p>'></iframe><object data='movie.swf'></object><embed src='movie.swf'>"
+            + "<svg><a xlink:href='javascript:1'><text>x</text></a></svg>")
         defer { fixture.cleanup() }
         let source = URL(string: "early-test://fixture/article/page")!
         fixture.manager.load(source, in: fixture.tab)
@@ -436,8 +441,20 @@ struct DownloadStoreTests {
         let html = try String(contentsOf: destination, encoding: .utf8)
         #expect(html.hasPrefix("<!DOCTYPE html>") || html.hasPrefix("<!doctype html>"))
         #expect(html.contains("<meta charset=\"utf-8\">") && html.contains("<base href=\"\(source.absoluteString)\">"))
-        #expect(!html.contains("<script") && !html.contains("http-equiv") && !html.contains("iso-8859-1"))
+        #expect(!html.contains("<script") && !html.contains("refresh") && !html.contains("iso-8859-1"))
         #expect(html.contains("href=\"next.html\"") && html.contains("Café"))
+        for active in ["onerror", "javascript:", "formaction", "<iframe", "<object", "<embed", "srcdoc"] {
+            #expect(!html.contains(active), "\(active) is gone")
+        }
+        #expect(html.contains("Content-Security-Policy") && html.contains("script-src 'none'"))
+        #expect(html.contains("id=\"photo\"") && html.contains("id=\"bad\""), "The elements stay, without what made them run")
+
+        // Opened later, nothing in the saved copy runs.
+        let viewer = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        viewer.loadFileURL(destination, allowingReadAccessTo: fixture.directory)
+        try await waitUntil("saved copy") { !viewer.isLoading && viewer.url != nil }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(try await viewer.evaluateJavaScript("window.ran ?? 0") as? Int == 0, "No handler ran in the saved copy")
         let item = try #require(fixture.store.items.first)
         #expect(item.state == .finished && item.filename == "Saved Page.html" && fixture.store.fileExists(item))
         #expect(fixture.store.startedRevision == before + 1 && fixture.store.finishedRevision == 1, "A save starts and finishes at once")
