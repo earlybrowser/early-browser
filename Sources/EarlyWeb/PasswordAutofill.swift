@@ -76,18 +76,6 @@ public struct SignInResponse: Equatable, Sendable {
     }
 }
 
-/// An HTTP sign-in sent to a website and waiting for its answer.
-struct PendingHTTPSignIn: Equatable {
-    /// The tab's own load that asked; only its answer settles the sign-in.
-    let navigation: ObjectIdentifier
-    let origin: String
-    let realm: String?
-    let username: String
-    let password: String
-    /// The person asked to save it.
-    let save: Bool
-}
-
 /// Finds sign-in forms in an isolated world, which page scripts cannot see
 /// or call. It reports focused sign-in fields and submitted sign-ins, and
 /// fills only what Early asks it to, in the frame whose origin owns the login.
@@ -758,15 +746,6 @@ extension WebViewManager {
         }
         let failed = challenge.previousFailureCount > 0
         let proposed = challenge.proposedCredential?.user
-        // WebKit doesn't say which request asked. Asked while the tab's own
-        // page loads, it's that page, whose answer can confirm the sign-in.
-        // A frame's or an image's can't be confirmed: the page can finish
-        // although that request failed, so it's used but never saved.
-        let navigation = id.flatMap { pages[$0] }.flatMap { $0.awaitsNavigationCommit ? $0.activeNavigation : nil }
-        // Asking again means the website refused what it was sent: it's never saved.
-        if failed, let id, let pending = pendingHTTPSignIns[id], pending.origin == origin, pending.realm == space.realm {
-            pendingHTTPSignIns[id] = nil
-        }
         Task { @MainActor [weak self, weak view] in
             guard let self, let view else { completionHandler(.performDefaultHandling, nil); return }
             var saved: SavedLogin?
@@ -776,8 +755,12 @@ extension WebViewManager {
             }
             let request = SignInRequest(host: space.host, realm: space.realm, isSecure: space.receivesCredentialSecurely, failed: failed,
                                         username: proposed ?? saved?.username ?? "", password: failed ? "" : saved?.password ?? "",
-                                        canSave: self.savesPasswords && self.passwords != nil && navigation != nil)
-            let answer: @MainActor (SignInResponse?) -> Void = { [weak self] response in
+                                        // Never saved from here for now: WebKit doesn't say which
+                                        // request asked or whether the website took the password, and
+                                        // a server error or an old page's request could replace a
+                                        // working one.
+                                        canSave: false)
+            let answer: @MainActor (SignInResponse?) -> Void = { response in
                 guard let response, !(response.username.isEmpty && response.password.isEmpty) else {
                     // Cancel shows the website's own page for a refused sign-in.
                     // Default handling would send the refused password again
@@ -785,36 +768,11 @@ extension WebViewManager {
                     completionHandler(failed ? .rejectProtectionSpace : .performDefaultHandling, nil)
                     return
                 }
-                // Saved, or marked used, only once the website accepts it.
-                let save = response.save && request.canSave
-                if let self, let id, let navigation, self.passwords != nil, save || self.savesPasswords {
-                    self.pendingHTTPSignIns[id] = PendingHTTPSignIn(navigation: navigation, origin: origin, realm: space.realm,
-                                                                       username: response.username, password: response.password, save: save)
-                }
                 completionHandler(.useCredential, URLCredential(user: response.username, password: response.password, persistence: .forSession))
             }
             if let askForSignIn = self.askForSignIn { askForSignIn(request, view, answer) }
             else { self.presentSignInSheet(request, in: view, complete: answer) }
         }
-    }
-
-    /// The tab's page answered the load that asked for an HTTP sign-in. A 401
-    /// from the website refuses it; anything else accepts it (a redirect away
-    /// means it was let through), and only then is it saved and marked used.
-    func settleHTTPSignIn(_ id: UUID, response: URLResponse) {
-        guard let pending = pendingHTTPSignIns[id] else { return }
-        pendingHTTPSignIns[id] = nil
-        // A newer load than the one that asked says nothing about it.
-        guard pages[id]?.activeNavigation == pending.navigation else { return }
-        let refused = (response as? HTTPURLResponse)?.statusCode == 401
-            && response.url.flatMap(passwordOrigin(of:)) == pending.origin
-        if refused { return }
-        guard let vault = passwords, vault.isReady else { return }
-        if pending.save {
-            vault.save(origin: pending.origin, username: pending.username, password: pending.password, realm: pending.realm)
-        }
-        if savesPasswords, let login = vault.login(origin: pending.origin, username: pending.username),
-           login.password == pending.password { vault.markUsed(login.id) }
     }
 
     func presentSignInSheet(_ request: SignInRequest, in view: WKWebView, complete: @escaping @MainActor (SignInResponse?) -> Void) {

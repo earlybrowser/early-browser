@@ -134,7 +134,6 @@ extension WebViewManager {
     func navigationResponsePolicy(for view: WKWebView, response: URLResponse,
                                   canShowMIMEType: Bool, isMainFrame: Bool) -> WKNavigationResponsePolicy {
         guard let id = identities[ObjectIdentifier(view)], pages[id] != nil else { return .cancel }
-        if isMainFrame { settleHTTPSignIn(id, response: response) }
         let disposition = NavigationResponseDisposition.classify(response, canShowMIMEType: canShowMIMEType, isMainFrame: isMainFrame)
         recordNavigation(.init(tabID: id, event: "response-\(disposition.rawValue)", url: response.url,
             status: (response as? HTTPURLResponse)?.statusCode, mimeType: response.mimeType, isMainFrame: isMainFrame))
@@ -280,8 +279,6 @@ extension WebViewManager {
         checkReaderAvailability(id)
         detectPageLanguage(id)
         checkPendingLogin(id)
-        // Finishing isn't an answer: a frame can fail while the page loads.
-        pendingHTTPSignIns[id] = nil
         guard let url = webView.url else { return }
         let generation = page.navigationGeneration
         // Read only the loaded document, in an isolated JS world. No injected
@@ -312,8 +309,6 @@ extension WebViewManager {
             recordNavigation(.init(tabID: id, event: "stale-navigation-error", url: failingURL, isMainFrame: true, error: nsError))
             return
         }
-        // A page that didn't load never confirmed an HTTP sign-in.
-        pendingHTTPSignIns[id] = nil
         // WebKit reports intentional policy cancellation with its legacy error
         // domain/code (WebKitErrors.h). Suppress only our matching decision, not
         // every policy error, and never match an unrelated NSError by code alone.

@@ -103,9 +103,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     @ObservationIgnored var focusedPasswordField: FocusedPasswordField?
     /// Lets local files the person opened open again after a restart; nil in tests.
     @ObservationIgnored public var localFiles: LocalFileBookmarks?
-    /// HTTP sign-ins sent but not yet accepted, by tab. Saved only once the
-    /// website takes them; a refusal, failure or closed tab saves nothing.
-    @ObservationIgnored var pendingHTTPSignIns: [UUID: PendingHTTPSignIn] = [:]
     /// The app macOS would open a link with, and opening it; tests replace both.
     @ObservationIgnored var appForLink: (URL) -> URL? = { NSWorkspace.shared.urlForApplication(toOpen: $0) }
     @ObservationIgnored var openInApp: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -671,7 +668,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         if preservingSnapshot { snapshots.cancelCapture(tabID: tabID) }
         else { snapshots.invalidate(tabID: tabID) }
         protections[tabID] = nil
-        pendingHTTPSignIns[tabID] = nil
         if let page = pages[tabID] { releaseLocalFile(of: page) }
         if focusedPasswordField?.tabID == tabID { hidePasswordSuggestions() }
         if lifecycles[tabID] != nil { transition(tabID, .discard) }
