@@ -87,12 +87,60 @@ extension WebViewManager {
         }
     }
 
+    /// Downloads a page starts without the person's click or key press: at
+    /// most this many transfers in all may be running for one to start.
+    static let automaticDownloadLimit = 6
+
+    /// The person's latest click or key press in the view, if recent; used up.
+    static func takeDownloadAllowance(of view: WKWebView) -> Bool {
+        (view as? BrowserWebView)?.takeDownloadAllowance() ?? false
+    }
+
+    /// A download the page started by itself asks first, once per website, as
+    /// in Safari, and none starts while many are already running. A refused
+    /// one leaves a notice on the page.
+    func decideAutomaticDownload(_ url: URL, in view: WKWebView, id: UUID, decide: @escaping @MainActor (Bool) -> Void) {
+        let site = view.url ?? url
+        let host = site.host ?? "This page"
+        let origin = SitePermissions.origin(of: site)
+        let refuse = { [weak self] (notice: String) in
+            self?.showNavigationNotice(notice, for: id)
+            decide(false)
+        }
+        guard downloads.activeCount < Self.automaticDownloadLimit else {
+            refuse("“\(host)” tried to start another download while many are running, so Early stopped it.")
+            return
+        }
+        let blocked = "Early blocked a download from “\(host)” that started without your click. You can allow its downloads in Site Controls."
+        switch origin.map({ sitePermissions?.decision(for: $0, .downloads) ?? .ask }) ?? .ask {
+        case .allow: decide(true)
+        case .block: refuse(blocked)
+        case .ask:
+            let answer: @MainActor (Bool?) -> Void = { [weak self] allowed in
+                guard let allowed else { decide(false); return }
+                if let origin { self?.sitePermissions?.set(allowed ? .allow : .block, for: [.downloads], origin: origin) }
+                allowed ? decide(true) : refuse(blocked)
+            }
+            if let askForDownloads {
+                askForDownloads(host, answer)
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "Allow “\(host)” to download files?"
+            alert.informativeText = "It started a download without your click. Early remembers your choice for this website. You can change it in Site Controls in the address bar."
+            alert.addButton(withTitle: "Allow")
+            alert.addButton(withTitle: "Don’t Allow")
+            presentAlert(alert, in: view) { response, _ in answer(response.map { $0 == .alertFirstButtonReturn }) }
+        }
+    }
+
     static func permissionPhrase(_ permissions: [SitePermission]) -> String {
         let names = permissions.map { permission -> String in
             switch permission {
             case .camera: "camera"
             case .microphone: "microphone"
             case .location: "location"
+            case .downloads: "downloads"
             }
         }
         return "your " + ListFormatter.localizedString(byJoining: names)
@@ -104,7 +152,7 @@ extension WebViewManager {
         switch permission {
         case .camera: view.setCameraCaptureState(.none, completionHandler: nil)
         case .microphone: view.setMicrophoneCaptureState(.none, completionHandler: nil)
-        case .location: break
+        case .location, .downloads: break
         }
     }
 

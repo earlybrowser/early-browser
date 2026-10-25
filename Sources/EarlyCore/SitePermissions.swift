@@ -31,14 +31,16 @@ public enum PageSecurity: Equatable, Sendable {
 }
 
 /// What a website can ask to use. Notifications have no public WebKit API.
+/// Downloads are those a page starts without the person's click.
 public enum SitePermission: String, Codable, CaseIterable, Sendable {
-    case camera, microphone, location
+    case camera, microphone, location, downloads
 
     public var title: String {
         switch self {
         case .camera: "Camera"
         case .microphone: "Microphone"
         case .location: "Location"
+        case .downloads: "Downloads"
         }
     }
 
@@ -47,6 +49,7 @@ public enum SitePermission: String, Codable, CaseIterable, Sendable {
         case .camera: "video.fill"
         case .microphone: "mic.fill"
         case .location: "location.fill"
+        case .downloads: "arrow.down.circle.fill"
         }
     }
 }

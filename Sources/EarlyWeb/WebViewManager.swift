@@ -34,6 +34,12 @@ public final class BrowserPage {
     public internal(set) var suppressesDialogs = false
     var dialogRequests = 0
     var unshownDialogs = 0
+    /// A navigation Early started for the person (the address bar, a restored
+    /// tab, a link they opened), and whether the current main-frame navigation
+    /// came from them, so a download it becomes doesn't ask.
+    var earlyRequested: URL?
+    var downloadsFromPerson = false
+    var inServerRedirect = false
     public fileprivate(set) var hasUnsavedInput = false
     public fileprivate(set) var processTerminated = false
     fileprivate var editedFrames: Set<String> = []
@@ -173,6 +179,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
     /// Manage Passwords… was chosen under a sign-in field, for this host.
     public var onManagePasswords: ((String?) -> Void)?
+    /// Answers "Allow downloads?" for a host instead of Early's sheet (nil: dismissed); tests use it.
+    @ObservationIgnored var askForDownloads: ((String, @escaping @MainActor (Bool?) -> Void) -> Void)?
     /// Answers HTTP sign-in requests instead of Early's sheet; tests use it.
     @ObservationIgnored var askForSignIn: ((SignInRequest, WKWebView, @escaping @MainActor (SignInResponse?) -> Void) -> Void)?
     /// Other schemes whose pages tests treat as websites for passwords.
@@ -598,6 +606,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.automaticRecoveryAttempted = false
         page.processTerminated = false
         page.requestedURL = url
+        page.earlyRequested = url
         beginLoading(tab.id)
         page.activeNavigation = startNavigation(to: url, in: page.view).map(ObjectIdentifier.init)
     }
@@ -892,13 +901,16 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let mainFrame = action.targetFrame?.isMainFrame ?? true
         guard let url = action.request.url else { decisionHandler(.cancel); return }
         if action.shouldPerformDownload, isDownloadable(url) {
-            if let id = identities[ObjectIdentifier(webView)] {
-                // WebKit ends the navigation once it becomes a download; that
-                // expected interruption is not a page failure.
-                cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
-                recordNavigation(.init(tabID: id, event: "download-action", url: url, isMainFrame: mainFrame))
+            guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { decisionHandler(.cancel); return }
+            // WebKit ends the navigation once it becomes a download; that
+            // expected interruption is not a page failure.
+            cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
+            recordNavigation(.init(tabID: id, event: "download-action", url: url, isMainFrame: mainFrame))
+            if page.earlyRequested == url || Self.takeDownloadAllowance(of: webView) {
+                decisionHandler(.download)
+            } else {
+                decideAutomaticDownload(url, in: webView, id: id) { decisionHandler($0 ? .download : .cancel) }
             }
-            decisionHandler(.download)
             return
         }
         if url.isFileURL {
@@ -932,6 +944,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
                 cancelForPolicy(id, url: url, mainFrame: true, notice: nil)
                 DispatchQueue.main.async { [weak self] in self?.onNeedsNewView?(id, url) }
                 return
+            }
+            if mainFrame, let id = identities[ObjectIdentifier(webView)], let page = pages[id] {
+                // Redirects keep what the navigation's start decided.
+                if !page.inServerRedirect {
+                    page.downloadsFromPerson = page.earlyRequested == url || Self.takeDownloadAllowance(of: webView)
+                }
+                page.inServerRedirect = false
+                page.earlyRequested = nil
             }
             if mainFrame, action.targetFrame != nil,
                let id = identities[ObjectIdentifier(webView)] {
@@ -988,8 +1008,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                         decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
-        decisionHandler(navigationResponsePolicy(for: webView, response: response.response,
-            canShowMIMEType: response.canShowMIMEType, isMainFrame: response.isForMainFrame))
+        let policy = navigationResponsePolicy(for: webView, response: response.response,
+            canShowMIMEType: response.canShowMIMEType, isMainFrame: response.isForMainFrame)
+        guard policy == .download, response.isForMainFrame, let id = identities[ObjectIdentifier(webView)],
+              let page = pages[id], let url = response.response.url else { decisionHandler(policy); return }
+        let fromPerson = page.downloadsFromPerson
+        page.downloadsFromPerson = false
+        if fromPerson { decisionHandler(.download) }
+        else { decideAutomaticDownload(url, in: webView, id: id) { decisionHandler($0 ? .download : .cancel) } }
     }
 
     /// Same path for the delegate and deterministic response fixtures. Embedded
@@ -1087,6 +1113,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func dismissNavigationNotice(for id: UUID) { pages[id]?.navigationNotice = nil }
 
+    func showNavigationNotice(_ notice: String, for id: UUID) { pages[id]?.navigationNotice = notice }
+
     private func recordNavigation(_ event: NavigationDiagnostic) {
         navigationDiagnostics.append(event)
         if navigationDiagnostics.count > 24 { navigationDiagnostics.removeFirst(navigationDiagnostics.count - 24) }
@@ -1124,6 +1152,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
+        pages[id]?.inServerRedirect = true
         recordNavigation(.init(tabID: id, event: "redirect", url: webView.url, isMainFrame: true))
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1271,7 +1300,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         // Target-blank links may arrive through the new-window delegate first.
         // Returning nil consumes the gesture without creating a second tab.
         if openCommandClickedLink(action, in: webView) { return nil }
-        return onNewWindow?(url, configuration)
+        let opened = onNewWindow?(url, configuration)
+        // WebKit opens windows only on the person's click, so what the new
+        // tab loads first is theirs, even if it turns out to be a download.
+        if let opened, let id = identities[ObjectIdentifier(opened)] { pages[id]?.earlyRequested = url }
+        return opened
     }
 
     private func openCommandClickedLink(_ action: WKNavigationAction, in view: WKWebView) -> Bool {

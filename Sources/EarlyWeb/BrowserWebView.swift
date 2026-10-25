@@ -49,9 +49,30 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         return super.performKeyEquivalent(with: event)
     }
 
+    /// When the person last clicked or pressed a key in the page: each lets
+    /// one download follow, shortly after, without asking. Page scripts can't
+    /// make these events.
+    private var personInput: TimeInterval?
+    static let downloadAllowance: TimeInterval = 5
+
+    func notePersonInput(at time: TimeInterval = ProcessInfo.processInfo.systemUptime) { personInput = time }
+
+    /// Uses up the latest click or key press, if it was recent.
+    func takeDownloadAllowance(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        guard let personInput, now - personInput < Self.downloadAllowance else { return false }
+        self.personInput = nil
+        return true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        notePersonInput()
+        super.mouseDown(with: event)
+    }
+
     override func keyDown(with event: NSEvent) {
         guard pageKeyEvents.contains(event) else {
             pageKeyEvents.add(event)
+            notePersonInput()
             super.keyDown(with: event)
             return
         }

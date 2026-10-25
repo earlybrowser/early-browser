@@ -224,6 +224,7 @@ extension WebViewManager {
             onOpenBackgroundLink?(valid)
         } else {
             hideReader(id)
+            page.earlyRequested = valid
             page.view.load(URLRequest(url: valid))
         }
     }

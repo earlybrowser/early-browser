@@ -179,6 +179,8 @@ struct DownloadStoreTests {
         fixture.manager.load(source, in: fixture.tab)
         try await waitUntil("page") { !fixture.page.isLoading && fixture.page.view.title == "Source" }
         for count in 1...2 {
+            // As after the person's click on the link.
+            (fixture.page.view as? BrowserWebView)?.notePersonInput()
             _ = try await fixture.page.view.evaluateJavaScript("document.getElementById('file').click()")
             try await waitUntil("download \(count)") { fixture.store.items.filter { $0.state == .finished }.count == count }
         }
@@ -204,6 +206,76 @@ struct DownloadStoreTests {
         #expect(try String(contentsOf: neighbor, encoding: .utf8) == "keep")
         #expect(fixture.store.items.isEmpty && fixture.started.isEmpty)
         #expect(fixture.store.startedRevision == 0 && fixture.store.finishedRevision == 0, "An internal save stays quiet")
+    }
+
+    /// A download a page starts by itself (no click or key press from the
+    /// person) asks once per website, and the answer is remembered. The
+    /// person's own click, or an address Early opened, never asks.
+    @Test func downloadsAPageStartsByItselfAskOncePerWebsite() async throws {
+        let link = "<title>Files</title><a id='file' download='note.txt' href='data:text/plain;base64,bm90ZQ=='>Note</a>"
+        let site = try BasicAuthServer(username: "x", password: "y", realm: "r", pages: ["/files": link])
+        let fixture = Fixture()
+        defer { site.stop(); fixture.cleanup() }
+        let permissions = SitePermissions(fileURL: nil)
+        fixture.manager.sitePermissions = permissions
+        var asked: [String] = []
+        var answer: Bool? = false
+        fixture.manager.askForDownloads = { host, reply in
+            asked.append(host)
+            reply(answer)
+        }
+        let page = URL(string: "http://127.0.0.1:\(site.port)/files")!
+        fixture.manager.load(page, in: fixture.tab)
+        try await waitUntil("page") { !fixture.page.isLoading && fixture.page.view.title == "Files" }
+        func clickByScript() async throws { _ = try await fixture.page.view.evaluateJavaScript("document.getElementById('file').click()") }
+        func finished() -> Int { fixture.store.items.filter { $0.state == .finished }.count }
+
+        try await clickByScript()
+        try await waitUntil("asked") { asked.count == 1 }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(asked == ["127.0.0.1"] && fixture.store.items.isEmpty, "Refused, nothing downloaded")
+        #expect(permissions.decision(for: "http://127.0.0.1:\(site.port)", .downloads) == .block, "The answer is kept for the website")
+        #expect(fixture.page.navigationNotice?.contains("blocked a download") == true)
+        try await clickByScript()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(asked.count == 1 && fixture.store.items.isEmpty, "Blocked: refused again without asking")
+
+        // The person's own click downloads, even on a blocked website.
+        (fixture.page.view as? BrowserWebView)?.notePersonInput()
+        try await clickByScript()
+        try await waitUntil("person's download") { finished() == 1 }
+        #expect(asked.count == 1)
+
+        permissions.set(.allow, for: [.downloads], origin: "http://127.0.0.1:\(site.port)")
+        try await clickByScript()
+        try await waitUntil("allowed download") { finished() == 2 }
+        #expect(asked.count == 1, "Allowed: no question")
+
+        // Dismissed (no answer) saves nothing and downloads nothing.
+        permissions.set(.ask, for: [.downloads], origin: "http://127.0.0.1:\(site.port)")
+        answer = nil
+        try await clickByScript()
+        try await waitUntil("asked again") { asked.count == 2 }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(finished() == 2 && permissions.decision(for: "http://127.0.0.1:\(site.port)", .downloads) == .ask)
+    }
+
+    @Test func aPageCantStartADownloadWhileManyAreRunning() async throws {
+        let server = try LocalHTTPServer(body: Data(repeating: 1, count: 400_000), initialChunk: 50_000)
+        let fixture = Fixture(page: "<a id='file' download='note.txt' href='data:text/plain;base64,bm90ZQ=='>Note</a>")
+        defer { server.stop(); fixture.cleanup() }
+        fixture.manager.sitePermissions = SitePermissions(fileURL: nil)
+        var asked = 0
+        fixture.manager.askForDownloads = { _, reply in asked += 1; reply(true) }
+        fixture.manager.load(URL(string: "early-test://fixture/source")!, in: fixture.tab)
+        try await waitUntil("page") { !fixture.page.isLoading && fixture.page.view.title == "Source" }
+        for _ in 0..<WebViewManager.automaticDownloadLimit { #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id)) }
+        try await waitUntil("all running") { fixture.store.activeCount == WebViewManager.automaticDownloadLimit }
+        _ = try await fixture.page.view.evaluateJavaScript("document.getElementById('file').click()")
+        try await waitUntil("refused") { fixture.page.navigationNotice != nil }
+        #expect(asked == 0 && fixture.store.items.count == WebViewManager.automaticDownloadLimit)
+        #expect(fixture.page.navigationNotice?.contains("many are running") == true)
+        fixture.store.cancelAll()
     }
 
     @Test func savingOverAFileKeepsItUntilTheNewOneIsCompleteThroughStopAndResume() async throws {

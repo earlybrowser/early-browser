@@ -83,6 +83,8 @@ struct LocalDocumentPolicyTests {
         let (manager, tab, page) = fixture()
         defer { manager.discardAll() }
         for source in ["data:text/plain;base64,aGk=", "blob:https://example.com/id", "https://example.com/report.pdf"] {
+            // The person's click lets the download follow without asking.
+            (page.view as? BrowserWebView)?.notePersonInput()
             #expect(decision(manager, page, Action(URL(string: source)!, type: .linkActivated, download: true)) == .download, "\(source)")
         }
         // No app opens ftp: links here, so the link is refused with a notice.

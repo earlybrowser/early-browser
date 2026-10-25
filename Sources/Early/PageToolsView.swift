@@ -440,7 +440,7 @@ struct SitePermissionRow: View {
         switch permission {
         case .camera: return (page?.cameraCapture ?? .none) != .none
         case .microphone: return (page?.microphoneCapture ?? .none) != .none
-        case .location: return false
+        case .location, .downloads: return false
         }
     }
 
