@@ -32,6 +32,23 @@ struct SessionRepositoryTests {
         #expect(try await SessionRepository(fileURL: url).load() == empty)
     }
 
+    /// Saves share one connection; a session file deleted while Early runs
+    /// is written afresh, not into the deleted file.
+    @Test @MainActor func savesKeepGoingAfterTheFileIsDeletedOrReplaced() async throws {
+        let url = location()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let repository = SessionRepository(fileURL: url)
+        let coordinator = BrowserCoordinator(startup: .firstLaunch)
+        try await repository.save(coordinator.session, revision: 1)
+        for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: url.path + suffix) }
+        coordinator.navigate(to: URL(string: "https://example.com")!, target: .newTab(spaceID: coordinator.activeSpaceID))
+        try await repository.save(coordinator.session, revision: 2)
+        #expect(try await SessionRepository(fileURL: url).load() == coordinator.session, "Saved into a new file")
+        coordinator.closeActiveTab()
+        try await repository.save(coordinator.session, revision: 3)
+        #expect(try await SessionRepository(fileURL: url).load() == coordinator.session, "And it keeps saving there")
+    }
+
     @Test func invalidSnapshotDoesNotReplaceGoodData() async throws {
         let url = location()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
