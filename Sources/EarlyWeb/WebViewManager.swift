@@ -40,6 +40,8 @@ public final class BrowserPage {
     var earlyRequested: URL?
     var downloadsFromPerson = false
     var inServerRedirect = false
+    /// The local file whose permission this page holds open.
+    var localFile: URL?
     public fileprivate(set) var hasUnsavedInput = false
     public fileprivate(set) var processTerminated = false
     fileprivate var editedFrames: Set<String> = []
@@ -189,6 +191,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     @ObservationIgnored var passwordTestSchemes: Set<String> = []
     let passwordPanel = PasswordSuggestionPanel()
     @ObservationIgnored var focusedPasswordField: FocusedPasswordField?
+    /// Lets local files the person opened open again after a restart; nil in tests.
+    @ObservationIgnored public var localFiles: LocalFileBookmarks?
     /// HTTP sign-ins sent but not yet accepted, by tab. Saved only once the
     /// website takes them; a refusal, failure or closed tab saves nothing.
     @ObservationIgnored var pendingHTTPSignIns: [UUID: PendingHTTPSignIn] = [:]
@@ -614,9 +618,36 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     /// Local documents receive read access to the chosen file only, which is
-    /// all the sandbox grants for a user-selected or dropped file.
+    /// all the sandbox grants for a user-selected or dropped file. One opened
+    /// before Early restarted reads through its bookmark, and one that can't be
+    /// read says why instead of showing a blank page.
     private func startNavigation(to url: URL, in view: WKWebView) -> WKNavigation? {
-        url.isFileURL ? view.loadFileURL(url, allowingReadAccessTo: url) : view.load(URLRequest(url: url))
+        guard url.isFileURL else { return view.load(URLRequest(url: url)) }
+        guard let localFiles, let id = identities[ObjectIdentifier(view)], let page = pages[id] else {
+            return view.loadFileURL(url, allowingReadAccessTo: url)
+        }
+        releaseLocalFile(of: page)
+        switch localFiles.access(url) {
+        case .readable(let file):
+            page.localFile = url
+            return view.loadFileURL(file, allowingReadAccessTo: file)
+        case .unavailable:
+            page.failure = Self.unavailableFileMessage(url)
+            transition(id, .fail)
+            refresh(id)
+            return nil
+        }
+    }
+
+    static func unavailableFileMessage(_ url: URL) -> String {
+        "“\(url.lastPathComponent)” can’t be opened. It may have been moved or deleted, or it was opened before Early "
+            + "kept local files across restarts. Open it again from Finder or with File › Open File…"
+    }
+
+    private func releaseLocalFile(of page: BrowserPage) {
+        guard let file = page.localFile else { return }
+        page.localFile = nil
+        localFiles?.release(file)
     }
 
     public func activate(_ tab: BrowserTab) {
@@ -731,6 +762,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         else { snapshots.invalidate(tabID: tabID) }
         protections[tabID] = nil
         pendingHTTPSignIns[tabID] = nil
+        if let page = pages[tabID] { releaseLocalFile(of: page) }
         if focusedPasswordField?.tabID == tabID { hidePasswordSuggestions() }
         if lifecycles[tabID] != nil { transition(tabID, .discard) }
         guard let page = pages[tabID] else { return }
@@ -1139,6 +1171,8 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.suppressesDialogs = false
         pages[id]?.dialogRequests = 0
         pages[id]?.unshownDialogs = 0
+        // Left the local file for a website: its permission closes.
+        if let page = pages[id], webView.url?.isFileURL != true { releaseLocalFile(of: page) }
         pages[id]?.policyCancellations.removeAll()
         pages[id]?.navigationNotice = nil
         pages[id]?.documentMIMEType = pages[id]?.pendingDocumentMIMEType

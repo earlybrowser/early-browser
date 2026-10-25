@@ -34,7 +34,6 @@ We're working on these and will fix them as soon as we can.
 - **No passkeys yet:** sign in with a password instead.
 - **Apple Silicon only:** no Intel build.
 - **Extensions:** Safari Web Extensions only (macOS 15.4 and later); no Chrome Web Store.
-- **Local files** you opened don't reopen after Early restarts.
 
 ## Features
 

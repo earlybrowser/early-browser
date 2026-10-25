@@ -189,7 +189,7 @@ final class BrowserWindowModel {
          downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, isPrivate: Bool = false,
          history: HistoryStore? = nil, sitePermissions: SitePermissions? = nil,
          passwords: PasswordVault? = nil, passwordsProfileID: UUID? = nil, extensionHost: AnyObject? = nil,
-         searchProviders: [any CommandSearchProvider] = [],
+         localFiles: LocalFileBookmarks? = nil, searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.input = input
@@ -237,6 +237,7 @@ final class BrowserWindowModel {
             if isTesting { configuration.setURLSchemeHandler(TestPages(), forURLScheme: "early-test") }
             #endif
         }
+        webViews.localFiles = localFiles
         webViews.onMetadata = { [weak self] id, url, title in
             guard let self else { return }
             // A pin or Favorite reopened at its saved address changes none of
@@ -427,6 +428,8 @@ final class BrowserWindowModel {
     func openLocations(_ urls: [URL]) -> Bool {
         let valid = urls.compactMap { try? input.validate($0) }.prefix(10)
         guard !valid.isEmpty else { return false }
+        // While macOS lets Early read them: kept, so they open again after a restart.
+        for url in valid where url.isFileURL { webViews.localFiles?.remember(url) }
         if coordinator.commandBar != nil { dismissCommandBar(restoreFocus: false) }
         for url in valid {
             guard let id = coordinator.navigate(to: url, target: .newTab(spaceID: coordinator.activeSpaceID)),

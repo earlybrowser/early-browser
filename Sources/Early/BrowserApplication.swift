@@ -45,6 +45,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var sitePermissionStores: [UUID: SitePermissions] = [:]
     /// Each profile's saved passwords, opened when first needed.
     @ObservationIgnored private var passwordVaults: [UUID: PasswordVault] = [:]
+    /// Each profile's bookmarks for local files it opened; a private session's stay in memory.
+    @ObservationIgnored private var localFileStores: [UUID: LocalFileBookmarks] = [:]
     /// Settings › Passwords opens only with Touch ID or the Mac's password.
     let passwordsLock = PasswordsLock()
     /// The profile whose passwords Settings shows, and what it searches for.
@@ -289,6 +291,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if #available(macOS 15.4, *) { privateExtensionHosts.values.forEach { ($0 as? ExtensionHost)?.unloadAll() } }
         privateExtensionHosts.removeAll()
         sitePermissionStores.removeValue(forKey: profile)
+        localFileStores.removeValue(forKey: profile)
         downloadStores.removeValue(forKey: profile)?.cancelAll()
     }
 
@@ -331,6 +334,24 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         if let store = sitePermissionStores[id] { return store }
         let store = SitePermissions(fileURL: isPrivateProfile(id) ? nil : sitePermissionsFile(for: id))
         sitePermissionStores[id] = store
+        return store
+    }
+
+    private func localFilesFile(for id: UUID) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "LocalFiles/\(id.uuidString).plist", directoryHint: .notDirectory)
+    }
+
+    /// A profile's local-file bookmarks, keeping only those its tabs still need.
+    func localFiles(for id: UUID) -> LocalFileBookmarks? {
+        if let store = localFileStores[id] { return store }
+        let store = LocalFileBookmarks(fileURL: isPrivateProfile(id) ? nil : localFilesFile(for: id))
+        if let session = workspace?.session(for: id) {
+            let sessions = [session] + session.additionalWindows
+            store.keepOnly(sessions.flatMap { window in
+                (window.tabs + window.recentlyClosed.map(\.tab)).flatMap { [$0.currentURL] + ($0.pinnedURL.map { [$0] } ?? []) }
+            })
+        }
+        localFileStores[id] = store
         return store
     }
 
@@ -745,7 +766,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             preferences: preferences, isPrivate: isPrivate, history: history(for: session.profileID),
             sitePermissions: sitePermissions(for: session.profileID),
             passwords: passwordsProfile.flatMap { passwords(for: $0) }, passwordsProfileID: passwordsProfile,
-            extensionHost: extensionHost(for: session.profileID, from: passwordsProfile))
+            extensionHost: extensionHost(for: session.profileID, from: passwordsProfile),
+            localFiles: localFiles(for: session.profileID))
     }
 
     @discardableResult private func addWindow(session: BrowserSession, passwordsFrom: UUID? = nil) -> UUID {
@@ -975,6 +997,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         downloadStores.removeValue(forKey: id)?.cancelAll()
         let history = historyStores.removeValue(forKey: id)
         sitePermissionStores.removeValue(forKey: id)?.removeFile()
+        localFileStores.removeValue(forKey: id)?.removeFile()
+        if let file = localFilesFile(for: id) { try? FileManager.default.removeItem(at: file) }
         if #available(macOS 15.4, *) {
             (privateExtensionHosts.removeValue(forKey: id) as? ExtensionHost)?.unloadAll()
             // Without a host this run, one is made just to erase what its extensions stored.
@@ -1022,6 +1046,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                     }
                     if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
                     if let file = sitePermissionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
+                    if let file = localFilesFile(for: id) { try? FileManager.default.removeItem(at: file) }
                     if let file = extensionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
                     if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
                     if let file = passwordsFile(for: id), FileManager.default.fileExists(atPath: file.path) {
