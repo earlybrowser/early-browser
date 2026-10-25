@@ -62,12 +62,22 @@ public final class LocalFileBookmarks {
             return .unavailable
         }
         if started { open[key] = (resolved, 1) }
+        var changed = false
         // macOS asks for a fresh bookmark now and then, as for a moved file.
         if stale, let fresh = try? resolved.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
                                                          includingResourceValuesForKeys: nil, relativeTo: nil) {
             bookmarks[key] = fresh
-            save()
+            changed = true
         }
+        // A moved file's tab takes its new address, so the bookmark is kept
+        // there too; the old address keeps it while anything still uses it,
+        // and pruning drops whichever no tab needs.
+        let moved = Self.key(resolved)
+        if moved != key, bookmarks[moved] != bookmarks[key] {
+            bookmarks[moved] = bookmarks[key]
+            changed = true
+        }
+        if changed { save() }
         return .readable(resolved)
     }
 

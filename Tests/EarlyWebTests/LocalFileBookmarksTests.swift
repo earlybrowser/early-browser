@@ -44,6 +44,40 @@ struct LocalFileBookmarksTests {
         #expect(found.standardizedFileURL.resolvingSymlinksInPath() == moved.standardizedFileURL.resolvingSymlinksInPath())
     }
 
+    /// The tab of a file that moved takes its new address; the restart after
+    /// that keeps the bookmark for it there, so it keeps opening.
+    @Test func aMovedFileKeepsItsBookmarkAtItsNewAddressAcrossRestarts() throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let page = folder.appending(path: "notes.html")
+        try Data("<p>notes".utf8).write(to: page)
+        let storeFile = folder.appending(path: "LocalFiles/profile.plist")
+        LocalFileBookmarks(fileURL: storeFile).remember(page)
+        let moved = folder.appending(path: "Moved/notes.html")
+        try FileManager.default.createDirectory(at: moved.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: page, to: moved)
+
+        // Reopened after the move: the tab now shows, and saves, where it is.
+        let reopened = LocalFileBookmarks(fileURL: storeFile)
+        guard case .readable(let found) = reopened.access(page) else {
+            Issue.record("A moved file is followed")
+            return
+        }
+        reopened.release(page)
+
+        // The next restart prunes to what the saved tabs use: the new address.
+        let restarted = LocalFileBookmarks(fileURL: storeFile)
+        restarted.keepOnly([found])
+        #expect(restarted.bookmarks[found.standardizedFileURL.path] != nil, "Kept at the address the tab uses")
+        let again = LocalFileBookmarks(fileURL: storeFile)
+        #expect(again.bookmarks.count == 1, "The old address went once no tab used it")
+        guard case .readable(let stillFound) = again.access(found) else {
+            Issue.record("It opens again from its new address")
+            return
+        }
+        #expect(stillFound.standardizedFileURL.resolvingSymlinksInPath() == moved.standardizedFileURL.resolvingSymlinksInPath())
+    }
+
     @Test func aDeletedOrNeverOpenedFileIsUnavailableAndPruningKeepsWhatTabsNeed() throws {
         let folder = try folder()
         defer { try? FileManager.default.removeItem(at: folder) }
