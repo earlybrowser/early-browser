@@ -1173,6 +1173,38 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
+    /// Every profile's passwords reached the disk, or the person chose to quit
+    /// without them. Cancel keeps Early open with them still in memory.
+    func passwordsSavedBeforeQuitting() async -> Bool {
+        await Self.passwordsSaved(Array(passwordVaults.values), ask: askToQuitWithUnsavedPasswords)
+    }
+
+    static func passwordsSaved(_ vaults: [PasswordVault], ask: (String?) -> NSApplication.ModalResponse) async -> Bool {
+        while true {
+            var unsaved: [PasswordVault] = []
+            for vault in vaults {
+                if !(await vault.flush()) { unsaved.append(vault) }
+            }
+            guard let first = unsaved.first else { return true }
+            switch ask(first.saveError) {
+            case .alertFirstButtonReturn: unsaved.forEach { $0.retrySaving() }
+            case .alertSecondButtonReturn: return false
+            default: return true
+            }
+        }
+    }
+
+    /// Tests answer for the person.
+    @ObservationIgnored var askToQuitWithUnsavedPasswords: (String?) -> NSApplication.ModalResponse = { reason in
+        let alert = NSAlert()
+        alert.messageText = "Your passwords couldn’t be saved"
+        alert.informativeText = "\(reason ?? "They couldn’t be written to disk.") If you quit now, your latest password changes are lost."
+        alert.addButton(withTitle: "Try Again")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Quit Anyway").hasDestructiveAction = true
+        return alert.runModal()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let persistence else { return .terminateNow }
         guard !isTerminating else { return .terminateLater }
@@ -1189,8 +1221,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         isTerminating = true
         saveAll()
         Task { @MainActor in
-            for vault in self.passwordVaults.values { await vault.flush() }
-            var canQuit = await persistence.flush()
+            var canQuit = await self.passwordsSavedBeforeQuitting()
+            if canQuit { canQuit = await persistence.flush() }
+            else {
+                self.isTerminating = false
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
             if !canQuit {
                 let alert = NSAlert()
                 alert.messageText = "Your session could not be saved"

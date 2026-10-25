@@ -198,6 +198,38 @@ struct PasswordApplicationTests {
         #expect(saved.title == "Passwords imported" && saved.importedFile == file && saved.unsavedFile == nil)
     }
 
+    /// Quitting checks every profile's passwords reached the disk: Try Again
+    /// writes them again, Cancel keeps Early open, Quit Anyway is a choice.
+    @Test func quittingAsksBeforeLosingPasswordsThatCouldntBeSaved() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswordQuit-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let blocker = directory.appending(path: "Passwords")
+        try Data().write(to: blocker)
+        let saved = PasswordVault(fileURL: directory.appending(path: "other.vault"), key: TestKey())
+        let unsaved = PasswordVault(fileURL: blocker.appending(path: "profile.vault"), key: TestKey())
+        let opened = await saved.load(), alsoOpened = await unsaved.load()
+        #expect(opened && alsoOpened)
+        saved.save(origin: "https://example.com", username: "grace", password: "kept")
+        unsaved.save(origin: "https://example.com", username: "ada", password: "draft")
+
+        var asked: [String?] = []
+        let cancelled = await EarlyAppDelegate.passwordsSaved([saved, unsaved]) { asked.append($0); return .alertSecondButtonReturn }
+        #expect(!cancelled, "Cancel keeps Early open")
+        #expect(asked.count == 1 && asked.first??.isEmpty == false, "It says why")
+        let quitAnyway = await EarlyAppDelegate.passwordsSaved([saved, unsaved]) { _ in .alertThirdButtonReturn }
+        #expect(quitAnyway, "Quit Anyway quits")
+        var answers: [NSApplication.ModalResponse] = [.alertFirstButtonReturn]
+        let quit = await EarlyAppDelegate.passwordsSaved([saved, unsaved]) { _ in
+            // The folder is writable by the time the person tries again.
+            try? FileManager.default.removeItem(at: blocker)
+            return answers.isEmpty ? .alertSecondButtonReturn : answers.removeFirst()
+        }
+        #expect(quit && unsaved.saveError == nil, "Try Again saved them, so Early quits without asking twice")
+        let quiet = await EarlyAppDelegate.passwordsSaved([saved]) { _ in Issue.record("Nothing to ask about"); return .alertSecondButtonReturn }
+        #expect(quiet)
+    }
+
     @Test func siteControlsDontOpenPasswordsJustToCountThem() {
         #expect(SiteControlsPanel.passwordsValue(nil) == "Saved passwords")
         #expect(SiteControlsPanel.passwordsValue(0) == "None saved for this site")
