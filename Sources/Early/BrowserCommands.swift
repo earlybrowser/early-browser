@@ -39,6 +39,12 @@ struct BrowserCommands: Commands {
 
     static let recentlyClosedTabLimit = 10
 
+    static let helpLinks: [(title: String, url: URL)] = [
+        ("Early Website", URL(string: "https://earlybrowser.github.io/web/")!),
+        ("Release Notes", URL(string: "https://github.com/earlybrowser/early-browser/releases")!),
+        ("Report an Issue", URL(string: "https://github.com/earlybrowser/early-browser/issues/new")!)
+    ]
+
     /// Page titles stay short enough for a menu.
     static func menuTitle(_ title: String) -> String {
         let line = title.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
@@ -436,6 +442,13 @@ struct BrowserCommands: Commands {
             }
         }
         CommandMenu("Extensions") { ExtensionsMenuItems(application: application, model: model) }
+        // Early has no Help book: its website, release notes and where to
+        // report a problem, each in a new tab here.
+        CommandGroup(replacing: .help) {
+            ForEach(Self.helpLinks, id: \.title) { link in
+                Button(link.title) { application.openExternalLinks([link.url]) }
+            }
+        }
         #if DEBUG
         // Deterministic layout coverage without relying on synthesized drags
         // being accepted by the macOS window manager. No normal-user menu.

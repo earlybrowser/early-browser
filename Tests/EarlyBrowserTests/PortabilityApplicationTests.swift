@@ -271,6 +271,20 @@ struct PortabilityApplicationTests {
         await fixture.cleanup()
     }
 
+    /// Help's links open as tabs in Early, in the window in front.
+    @Test func helpLinksOpenAsTabsInEarly() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application
+        let model = try #require(app.model)
+        #expect(BrowserCommands.helpLinks.map(\.title) == ["Early Website", "Release Notes", "Report an Issue"])
+        #expect(BrowserCommands.helpLinks.allSatisfy { $0.url.scheme == "https" && (try? model.input.validate($0.url)) != nil })
+        app.openExternalLinks(BrowserCommands.helpLinks.map(\.url))
+        #expect(model.coordinator.tabStore.tabs.filter(\.isOpen).map(\.currentURL) == BrowserCommands.helpLinks.map(\.url))
+        #expect(BrowserCommands.helpLinks.first?.url.absoluteString == "https://earlybrowser.github.io/web/")
+        await fixture.cleanup()
+    }
+
     @MainActor private final class FakeSystem {
         var isDefault = false
         var answer = true
