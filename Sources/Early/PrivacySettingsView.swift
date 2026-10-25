@@ -76,6 +76,9 @@ struct PrivacySettingsSection: View {
             }
             Text("Camera, microphone and location choices you made for websites. Sites ask again once a choice is removed. You can also change them from a site’s controls in the address bar.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let error = permissions.saveError {
+                SaveFailureNotice(message: error, compact: true, identifier: "privacy.retrySavePermissions") { permissions.retrySaving() }
+            }
             if rows.isEmpty {
                 Text("No website has a saved permission.").font(.callout).foregroundStyle(.secondary)
             } else {

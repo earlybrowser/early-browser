@@ -250,6 +250,11 @@ struct SiteControlsPanel: View {
             if model.currentSiteOrigin != nil {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Permissions").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    if let error = model.sitePermissions.saveError {
+                        SaveFailureNotice(message: error, compact: true, identifier: "siteControls.retrySavePermissions") {
+                            model.sitePermissions.retrySaving()
+                        }
+                    }
                     ForEach(Self.permissions, id: \.self) { permission in
                         SitePermissionRow(model: model, tabID: tabID, permission: permission, tint: tint)
                     }

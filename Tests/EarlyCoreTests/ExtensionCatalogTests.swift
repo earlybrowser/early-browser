@@ -36,6 +36,28 @@ struct ExtensionCatalogTests {
         #expect(!FileManager.default.fileExists(atPath: file.path))
     }
 
+    /// Turning an extension off when its catalog can't be written says so;
+    /// it stays off until Early quits, and is written once Try Again succeeds.
+    @Test func aChangeThatCantBeSavedIsReportedAndSavedOnRetry() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyExtensions-\(UUID())", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let file = folder.appending(path: "profile.json")
+        let catalog = ExtensionCatalog(fileURL: file)
+        let item = InstalledExtension(source: .files(folderName: "abc"), name: "Folder", version: "1")
+        catalog.add(item)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        catalog.change(item.id) { $0.isEnabled = false }
+        #expect(catalog.saveError != nil && catalog.installed(item.id)?.isEnabled == false)
+        #expect(ExtensionCatalog(fileURL: file).installed(item.id)?.isEnabled == true, "Not on disk yet")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        catalog.retrySaving()
+        #expect(catalog.saveError == nil && ExtensionCatalog(fileURL: file).installed(item.id)?.isEnabled == false)
+    }
+
     @Test func oneWebsiteIsItsHost() {
         #expect(ExtensionCatalog.site(of: URL(string: "https://Docs.Example.com/page?x=1")!) == "docs.example.com")
         #expect(ExtensionCatalog.site(of: URL(string: "http://127.0.0.1:8080/")!) == "127.0.0.1")

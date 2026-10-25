@@ -470,6 +470,32 @@ struct BrowserSettingsWindowAppearance: NSViewRepresentable {
     }
 }
 
+/// A change that couldn't be written to disk: why, that it lasts only until
+/// Early quits, and Try Again. Compact in a panel, a card in Settings.
+struct SaveFailureNotice: View {
+    let message: String
+    var compact = false
+    let identifier: String
+    let retry: () -> Void
+
+    var body: some View {
+        if compact {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Not saved", systemImage: "exclamationmark.triangle").font(.system(size: 12, weight: .semibold))
+                Text(message).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Try Again", action: retry).controlSize(.small).accessibilityIdentifier(identifier)
+            }
+            .padding(.vertical, 4)
+        } else {
+            SettingsCard {
+                Label("Your latest changes weren’t saved", systemImage: "exclamationmark.triangle").font(.headline)
+                Text(message).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Try Again", action: retry).accessibilityIdentifier(identifier)
+            }
+        }
+    }
+}
+
 struct SettingsCard<Content: View>: View {
     @ViewBuilder var content: Content
     @Environment(\.colorSchemeContrast) private var contrast

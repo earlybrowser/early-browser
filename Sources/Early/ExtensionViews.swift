@@ -241,6 +241,9 @@ private struct ExtensionsSettingsContent: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if application.profiles.count > 1 { profilePicker }
+            if let host, let error = host.catalog.saveError {
+                SaveFailureNotice(message: error, identifier: "extensions.retrySave") { host.catalog.retrySaving() }
+            }
             if let host, let profileID {
                 installed(host, profile: profileID)
                 available(host)
@@ -554,6 +557,11 @@ struct SiteControlsExtensions: View {
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Extensions").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    if let error = host.catalog.saveError {
+                        SaveFailureNotice(message: error, compact: true, identifier: "siteControls.retrySaveExtensions") {
+                            host.catalog.retrySaving()
+                        }
+                    }
                     ForEach(items) { item in
                         let action = host.context(item.id)?.action(for: tab)
                         row(item, action: action, tab: tab, site: site)

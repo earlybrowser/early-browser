@@ -56,6 +56,30 @@ struct SitePermissionsTests {
         #expect(SitePermissions(fileURL: file).decisions == ["https://a.example": [.camera: .allow]], "Unknown entries are skipped")
     }
 
+    /// A choice that can't reach the disk says so, still applies, and is
+    /// written once Try Again succeeds. It never looks saved when it isn't.
+    @Test func aChoiceThatCantBeSavedIsReportedAndSavedOnRetry() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyPermissions-\(UUID())", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let file = folder.appending(path: "profile.json")
+        let store = SitePermissions(fileURL: file)
+        store.set(.allow, for: [.camera], origin: "https://meet.example.com")
+        #expect(store.saveError == nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        store.set(.block, for: [.camera], origin: "https://meet.example.com")
+        #expect(store.saveError != nil, "The failed write is reported")
+        #expect(store.decision(for: "https://meet.example.com", .camera) == .block, "It applies until Early quits")
+        #expect(SitePermissions(fileURL: file).decision(for: "https://meet.example.com", .camera) == .allow, "Not on disk yet")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        store.retrySaving()
+        #expect(store.saveError == nil)
+        #expect(SitePermissions(fileURL: file).decision(for: "https://meet.example.com", .camera) == .block, "Saved on retry")
+    }
+
     @Test func securityFollowsTheSchemeSecureContentAndCertificateFailures() {
         let secure = URL(string: "https://example.com")!, plain = URL(string: "http://example.com")!
         #expect(PageSecurity.classify(url: secure, hasOnlySecureContent: true, certificateFailed: false) == .secure)

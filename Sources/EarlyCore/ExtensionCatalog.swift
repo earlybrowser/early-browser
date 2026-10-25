@@ -69,6 +69,9 @@ public struct InstalledExtension: Codable, Equatable, Identifiable, Sendable {
 @MainActor @Observable
 public final class ExtensionCatalog {
     public private(set) var extensions: [InstalledExtension] = []
+    /// Why the latest changes couldn't be saved; nil once a save succeeds.
+    /// They still apply until Early quits, and ``retrySaving()`` tries again.
+    public private(set) var saveError: String?
     @ObservationIgnored public let fileURL: URL?
 
     public init(fileURL: URL?) {
@@ -113,13 +116,20 @@ public final class ExtensionCatalog {
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
     }
 
+    public func retrySaving() { save() }
+
     private func save() {
         guard let fileURL else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(extensions) else { return }
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
+        do {
+            let data = try encoder.encode(extensions)
+            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: fileURL, options: .atomic)
+            if saveError != nil { saveError = nil }
+        } catch {
+            saveError = "Your extension changes couldn’t be saved, so they last only until you quit Early. \(error.localizedDescription)"
+        }
     }
 
     /// `example.com` from an address, for allowing one site.
