@@ -31,8 +31,8 @@ struct BrowserCommands: Commands {
     /// behind a website dialog's sheet.
     private var frontWindow: NSWindow? { NSApp.keyWindow.map { $0.sheetParent ?? $0 } }
     private var frontBrowser: BrowserWindowModel? {
-        // Read so the title follows the focused window as it changes.
-        _ = focusedModel?.showsNoPage
+        // Read so the title follows the window in front as it changes.
+        _ = application.keyWindowChanges
         return application.browserModel(for: frontWindow)
     }
     @Environment(\.openSettings) private var openSettings

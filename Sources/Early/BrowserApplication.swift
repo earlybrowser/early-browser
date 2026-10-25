@@ -104,6 +104,19 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var pendingRestoredWindows: Set<UUID> = []
     @ObservationIgnored private var cleaningWebsiteData = false
     private var primaryWindowIsOpen = false
+    /// Changes as windows become and stop being key, and once a browser window
+    /// has its name. SwiftUI doesn't observe `NSApp.keyWindow`, so ⌘W's title
+    /// reads this to follow the window in front.
+    private(set) var keyWindowChanges = 0
+
+    override init() {
+        super.init()
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(keyWindowChanged(_:)), name: name, object: nil)
+        }
+    }
+
+    @objc private func keyWindowChanged(_ notification: Notification) { keyWindowChanges &+= 1 }
 
     var profiles: [BrowserProfile] { workspace?.profiles ?? [] }
     var canOpenWindow: Bool { workspace != nil && presentWindow != nil && !isTerminating && !profileOperationInProgress }
@@ -859,6 +872,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func windowDidRegister(_ id: UUID?) {
+        // A new window can become key before it has its name.
+        keyWindowChanges &+= 1
         if let id { pendingRestoredWindows.remove(id) }
         guard restoringFocus, pendingRestoredWindows.isEmpty else { return }
         restoringFocus = false

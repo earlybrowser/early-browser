@@ -240,6 +240,12 @@ struct PortabilityApplicationTests {
         #expect(app.browserModel(for: window("browser.\(id)")) === app.windowModel(id))
         #expect(app.browserModel(for: window("com_apple_SwiftUI_Settings_window")) == nil, "Settings isn't a browser window")
         #expect(app.browserModel(for: window(nil)) == nil && app.browserModel(for: nil) == nil)
+        // SwiftUI doesn't observe the key window; ⌘W's title follows this.
+        let changes = app.keyWindowChanges
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window("browser"))
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window("browser"))
+        app.windowDidRegister(id)
+        #expect(app.keyWindowChanges == changes + 3, "Each key change, and a window named after it became key")
         app.closeWindow(nil)
         #expect(app.browserModel(for: window("browser")) == nil, "A closed window is never the one in front")
         await fixture.cleanup()
