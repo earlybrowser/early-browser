@@ -69,9 +69,13 @@ extension WebViewManager {
     public func translatePage(_ id: UUID, using translate: PageTextTranslator) async -> Bool {
         guard canTranslate(id), let page = pages[id], !page.translation.isActive else { return false }
         let generation = page.navigationGeneration
+        // Translate, Show Original, Translate again: the first run's batches
+        // and errors must never reach the second's text.
+        let run = UUID()
+        page.translationRun = run
         page.translation = .translating(completed: 0, total: 0)
         func current() -> Bool {
-            pages[id] === page && page.navigationGeneration == generation && page.translation.isActive
+            pages[id] === page && page.navigationGeneration == generation && page.translationRun == run && page.translation.isActive
         }
         let collected = try? await page.view.callAsyncJavaScript(Self.translationCollect,
             arguments: ["maxNodes": Self.translationLimits.nodes, "maxCharacters": Self.translationLimits.characters],
@@ -101,6 +105,7 @@ extension WebViewManager {
             page.translation = .failed(error is TranslationMismatch ? "The translation was incomplete." : error.localizedDescription)
             return false
         }
+        page.translationRun = nil
         page.translation = .translated
         return true
     }
@@ -109,6 +114,7 @@ extension WebViewManager {
     public func showOriginal(_ id: UUID) {
         guard let page = pages[id], page.translation != .original else { return }
         if page.translation.isActive { restoreOriginalText(page) }
+        page.translationRun = nil
         page.translation = .original
     }
 
@@ -119,6 +125,7 @@ extension WebViewManager {
     /// A new document starts untranslated, with its language detected again.
     func resetTranslationForNewDocument(_ id: UUID) {
         guard let page = pages[id] else { return }
+        page.translationRun = nil
         page.translation = .original
         if page.language != nil {
             page.language = nil

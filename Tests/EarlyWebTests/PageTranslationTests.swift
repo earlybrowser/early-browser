@@ -101,6 +101,49 @@ struct PageTranslationTests {
         try await fixture.waitUntil("english") { manager.pages[tab.id]?.language == nil || manager.pages[tab.id]?.language == "en" }
     }
 
+    /// Translate, Show Original, Translate again: the first run's late batch,
+    /// or its error, never reaches the page or replaces the second's result.
+    @Test func anEarlierTranslationNeverOverwritesALaterOne() async throws {
+        let fixture = PageToolFixture(pages: ["french": Self.french])
+        defer { fixture.cleanup() }
+        let tab = try await stand(in: fixture)
+        let manager = fixture.manager
+        var releaseFirst: CheckedContinuation<Void, Never>?
+        let first = Task { @MainActor in
+            await manager.translatePage(tab.id) { texts in
+                await withCheckedContinuation { releaseFirst = $0 }
+                return texts.map { "[old] " + $0 }
+            }
+        }
+        try await fixture.waitUntil("first run waiting") { releaseFirst != nil }
+        manager.showOriginal(tab.id)
+        let second = await manager.translatePage(tab.id) { texts in texts.map { "[new] " + $0 } }
+        #expect(second && manager.pages[tab.id]?.translation == .translated)
+        releaseFirst?.resume()
+        #expect(await first.value == false, "The earlier run stops")
+        let text = try await fixture.evaluate("document.getElementById('one').textContent", in: tab) as? String ?? ""
+        #expect(text.contains("[new]") && !text.contains("[old]"), "\(text)")
+        #expect(manager.pages[tab.id]?.translation == .translated)
+
+        // An earlier run's error doesn't undo the later translation either.
+        manager.showOriginal(tab.id)
+        var failFirst: CheckedContinuation<Void, Never>?
+        let failing = Task { @MainActor in
+            await manager.translatePage(tab.id) { _ in
+                await withCheckedContinuation { failFirst = $0 }
+                throw Failure()
+            }
+        }
+        try await fixture.waitUntil("failing run waiting") { failFirst != nil }
+        manager.showOriginal(tab.id)
+        #expect(await manager.translatePage(tab.id) { texts in texts.map { "[new] " + $0 } })
+        failFirst?.resume()
+        #expect(await failing.value == false)
+        #expect(manager.pages[tab.id]?.translation == .translated, "Still translated")
+        let after = try await fixture.evaluate("document.getElementById('one').textContent", in: tab) as? String ?? ""
+        #expect(after.contains("[new]"), "\(after)")
+    }
+
     @Test func thePageMenuOffersTranslateOnlyWithATitleFromTheWindow() async throws {
         let fixture = PageToolFixture(pages: ["french": Self.french])
         defer { fixture.cleanup() }

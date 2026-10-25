@@ -62,6 +62,8 @@ public final class BrowserPage {
     /// The page's language (BCP 47), detected from its text after loading.
     public internal(set) var language: String?
     public internal(set) var translation = PageTranslationPhase.original
+    /// The running translation; an older one, or its error, changes nothing.
+    var translationRun: UUID?
     /// The connection's trust, from WebKit's public secure-content state.
     public internal(set) var security = PageSecurity.none
     /// The certificate behind `security`, for the certificate panel.
