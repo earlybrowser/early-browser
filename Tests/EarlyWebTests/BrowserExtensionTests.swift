@@ -47,6 +47,11 @@ struct BrowserExtensionTests {
         try await ExtensionScenarios.localFiles()
     }
 
+    @Test func anExtensionInstallsFromAZIP() async throws {
+        guard #available(macOS 15.4, *) else { return }
+        try await ExtensionScenarios.zipInstall()
+    }
+
     @Test func safariExtensionsAreFoundInsideMacApps() throws {
         let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyApps-\(UUID())")
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -281,6 +286,28 @@ enum ExtensionScenarios {
         try await waitUntil("allowed answer") { await attribute("data-opened", in: view) == "created" }
         // WebKit runs content scripts again as access changes, then on reload.
         #expect(!opened.isEmpty && opened.allSatisfy { $0 == local }, "Allowed: Early is asked to open it")
+    }
+
+    /// A ZIP is copied as it is, and WebKit reads it directly.
+    static func zipInstall() async throws {
+        let setup = Setup()
+        defer { setup.cleanup() }
+        let folder = try messenger(name: "Zipped")
+        let zip = folder.deletingLastPathComponent().appending(path: "\(folder.lastPathComponent).zip")
+        defer { try? FileManager.default.removeItem(at: zip) }
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["-c", "-k", folder.path, zip.path]
+        try ditto.run()
+        ditto.waitUntilExit()
+        #expect(ditto.terminationStatus == 0)
+        let item = try await setup.host.add(files: zip)
+        #expect(item.name == "Zipped" && setup.host.context(item.id)?.isLoaded == true)
+        guard case .files(let name) = item.source else { Issue.record("Expected copied files"); return }
+        var isFolder: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: setup.files.appending(path: name).path, isDirectory: &isFolder) && !isFolder.boolValue,
+                "Kept as a ZIP")
+        await setup.host.remove(item.id)
     }
 
     static func runsOnPages() async throws {

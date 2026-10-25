@@ -304,14 +304,8 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         let folderName = id.uuidString
         let destination = filesDirectory.appending(path: folderName, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
-        if url.hasDirectoryPath || (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-            try FileManager.default.copyItem(at: url, to: destination)
-        } else {
-            // A ZIP stays a ZIP; WebKit reads it directly.
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-            try FileManager.default.removeItem(at: destination)
-            try FileManager.default.copyItem(at: url, to: destination)
-        }
+        // A folder or a ZIP is copied as it is: WebKit reads a ZIP directly.
+        try FileManager.default.copyItem(at: url, to: destination)
         let item = InstalledExtension(id: id, source: .files(folderName: folderName),
                                       name: webExtension.displayName ?? url.deletingPathExtension().lastPathComponent,
                                       version: webExtension.displayVersion ?? webExtension.version ?? "")
