@@ -26,6 +26,15 @@ struct BrowserCommands: Commands {
     private var model: BrowserWindowModel? {
         focusedModel ?? application.browserModel(for: NSApp.keyWindow?.sheetParent)
     }
+
+    /// The window in front, for ⌘W: the key window, or the browser window
+    /// behind a website dialog's sheet.
+    private var frontWindow: NSWindow? { NSApp.keyWindow.map { $0.sheetParent ?? $0 } }
+    private var frontBrowser: BrowserWindowModel? {
+        // Read so the title follows the focused window as it changes.
+        _ = focusedModel?.showsNoPage
+        return application.browserModel(for: frontWindow)
+    }
     @Environment(\.openSettings) private var openSettings
 
     static let recentlyClosedTabLimit = 10
@@ -119,13 +128,12 @@ struct BrowserCommands: Commands {
             // when it shows no page. Only ⌘Q quits. The window in front
             // decides: the menu's focused value can still name another
             // window after windows open, close and change focus.
-            Button(model.map { $0.showsNoPage } ?? true ? "Close Window" : "Close Tab") {
-                // A website dialog's sheet is key over its browser window.
-                let window = NSApp.keyWindow.map { $0.sheetParent ?? $0 }
-                if let front = application.browserModel(for: window), !front.showsNoPage {
+            // The title follows the same window the command acts on.
+            Button(frontBrowser?.showsNoPage == false ? "Close Tab" : "Close Window") {
+                if let front = frontBrowser, !front.showsNoPage {
                     front.perform(.closeActiveTab)
                 } else {
-                    window?.performClose(nil)
+                    frontWindow?.performClose(nil)
                 }
             }
             .keyboardShortcut(key(.closeTab))

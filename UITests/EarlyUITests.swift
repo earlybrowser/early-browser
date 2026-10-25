@@ -15,6 +15,13 @@ final class EarlyUITests: XCTestCase {
         app.launchEnvironment["EARLY_TEST_DEFAULTS_SUITE"] = "local.early.tests.\(UUID().uuidString)"
         app.launchEnvironment["EARLY_TEST_APPEARANCE"] = appearance
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
+        // Typed text stays as typed whatever the Mac's keyboard settings: CI's
+        // automatic capitalization once turned "keep" into "Keep" mid-test.
+        for setting in ["NSAutomaticCapitalizationEnabled", "NSAutomaticSpellingCorrectionEnabled", "NSAutomaticTextReplacementEnabled",
+                        "NSAutomaticPeriodSubstitutionEnabled", "NSAutomaticQuoteSubstitutionEnabled", "NSAutomaticDashSubstitutionEnabled",
+                        "WebAutomaticSpellingCorrectionEnabled", "WebAutomaticTextReplacementEnabled"] {
+            app.launchArguments += ["-\(setting)", "NO"]
+        }
         app.launch()
         // Session loading is asynchronous. Native controls in the loading shell
         // are not evidence that the browser model and keyboard commands are ready.
@@ -2213,8 +2220,7 @@ final class EarlyUITests: XCTestCase {
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
         let saved = app.webViews.textFields["Saved text"]
-        saved.click()
-        saved.typeText("keep this text")
+        pasteText("keep this text", into: saved, in: app)
         app.typeKey("t", modifierFlags: .command)
         app.typeText("cancel this")
         app.typeKey(.escape, modifierFlags: [])
@@ -2712,6 +2718,95 @@ final class EarlyUITests: XCTestCase {
         app.webViews.links["Open new tab"].click()
         expectPage(app, "Two")
         expectRuntime(app, tabs: 2, views: 2, created: 2)
+    }
+
+    /// A page that keeps asking: the second dialog offers to stop them, and
+    /// ⌘W closes the tab even while a dialog shows.
+    func testWebsiteDialogsCanBeStoppedAndNeverKeepAnyoneInTheirTab() {
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/dialogs")
+        XCTAssertTrue(app.webViews.buttons["Keep asking"].waitForExistence(timeout: 10))
+        app.webViews.buttons["Keep asking"].click()
+        let ok = app.sheets.buttons["OK"]
+        XCTAssertTrue(ok.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.sheets.checkBoxes["dialog.suppress"].exists, "The first dialog asks plainly")
+        ok.click()
+        let stop = app.sheets.checkBoxes["dialog.suppress"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5), "The second offers to stop them")
+        stop.click()
+        app.sheets.buttons["OK"].click()
+        XCTAssertTrue(app.webViews.staticTexts["Asked 50 times"].waitForExistence(timeout: 5), "The rest were answered at once")
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+
+        // A new document asks again; ⌘W closes its tab while it does.
+        navigate(app, to: "early-test://fixture/dialogs")
+        XCTAssertTrue(app.webViews.buttons["Keep asking"].waitForExistence(timeout: 10))
+        app.webViews.buttons["Keep asking"].click()
+        XCTAssertTrue(app.sheets.buttons["OK"].waitForExistence(timeout: 5))
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+    }
+
+    /// The File menu's ⌘W item: "Close Tab", or a second "Close Window" beside ⌘⇧W's.
+    private func closeCommandTitle(_ app: XCUIApplication) -> String? {
+        app.menuBars.menuBarItems["File"].click()
+        defer { app.typeKey(.escape, modifierFlags: []) }
+        let items = app.menuBars.menuItems
+        if items["Close Tab"].waitForExistence(timeout: 2) { return "Close Tab" }
+        return items.matching(NSPredicate(format: "title == %@", "Close Window")).count == 2 ? "Close Window" : nil
+    }
+
+    /// ⌘W acts on the window in front, and its menu title says what it will do.
+    func testCommandWActsOnTheWindowInFrontAndItsTitleSaysSo() {
+        let app = launchFreshApp()
+        let browsers = app.windows.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@", "browser", "browser."))
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        XCTAssertEqual(closeCommandTitle(app), "Close Tab")
+
+        // With the command bar focused over the page, ⌘W closes the page's tab.
+        app.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 5))
+        app.typeKey("w", modifierFlags: .command)
+        expectRuntime(app, tabs: 0, views: 0, created: 1)
+        XCTAssertEqual(browsers.count, 1, "The window stays")
+        XCTAssertEqual(closeCommandTitle(app), "Close Window")
+
+        // Two windows: the one in front.
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        app.typeKey("n", modifierFlags: .command)
+        let second = app.windows.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser.")).firstMatch
+        XCTAssertTrue(second.waitForExistence(timeout: 5))
+        XCTAssertTrue(second.textFields["commandBar.query"].waitForExistence(timeout: 5))
+        second.textFields["commandBar.query"].typeText("early-test://fixture/two\n")
+        XCTAssertTrue(second.webViews.staticTexts["Page Two"].waitForExistence(timeout: 10))
+        XCTAssertEqual(closeCommandTitle(app), "Close Tab")
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(second.webViews.staticTexts["Page Two"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.windows["browser"].webViews.staticTexts["Page One"].exists, "The other window keeps its page")
+        XCTAssertEqual(closeCommandTitle(app), "Close Window")
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(second.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(browsers.count, 1)
+
+        // Settings in front: Settings closes, the browser window keeps its page.
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.buttons["settings.section.appearance"].waitForExistence(timeout: 5))
+        XCTAssertEqual(closeCommandTitle(app), "Close Window")
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(app.buttons["settings.section.appearance"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.windows["browser"].webViews.staticTexts["Page One"].exists)
+
+        // An empty Space beside one with a tab: the window closes, Early keeps running.
+        app.windows["browser"].click()
+        createSpace(app, named: "Work")
+        XCTAssertEqual(closeCommandTitle(app), "Close Window")
+        app.typeKey("w", modifierFlags: .command)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: browsers)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertEqual(app.state, .runningForeground)
     }
 
     func testFailedNavigationCanRetryAndSlowNavigationCanStop() {

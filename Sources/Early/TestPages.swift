@@ -87,6 +87,16 @@ final class TestPages: NSObject, WKURLSchemeHandler {
             """)
             return
         }
+        if url.path == "/dialogs" {
+            // A page that keeps asking, up to 50 times so a stopped one ends.
+            respond(to: task, url: url, html: """
+            <!doctype html><html><head><title>Page Dialogs</title></head>
+            <body style="font:18px -apple-system;padding:32px"><h1>Page Dialogs</h1>
+            <button id="start" onclick="for (let i = 1; i <= 50; i++) alert('Again ' + i); document.getElementById('result').textContent = 'Asked 50 times'">Keep asking</button>
+            <p id="result" aria-live="polite"></p></body></html>
+            """)
+            return
+        }
         if url.path == "/article" {
             // Long enough for Readability's article check; French for translation.
             let paragraph = url.query == "lang=fr"
