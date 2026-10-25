@@ -46,11 +46,14 @@ public struct InstalledExtension: Codable, Equatable, Identifiable, Sendable {
     public var grantedPermissions: [String]
     /// Off by default, as in Safari and Chrome.
     public var allowsPrivateWindows: Bool
+    /// Opening files on this Mac in tabs, and reading local pages: off by
+    /// default, as in Chrome.
+    public var allowsLocalFiles: Bool
     public var added: Date
 
     public init(id: UUID = UUID(), source: ExtensionSource, name: String, version: String, isEnabled: Bool = true,
                 siteAccess: ExtensionSiteAccess = .allSites, allowedSites: [String] = [], grantedPermissions: [String] = [],
-                allowsPrivateWindows: Bool = false, added: Date = Date()) {
+                allowsPrivateWindows: Bool = false, allowsLocalFiles: Bool = false, added: Date = Date()) {
         self.id = id
         self.source = source
         self.name = name
@@ -60,7 +63,29 @@ public struct InstalledExtension: Codable, Equatable, Identifiable, Sendable {
         self.allowedSites = allowedSites
         self.grantedPermissions = grantedPermissions
         self.allowsPrivateWindows = allowsPrivateWindows
+        self.allowsLocalFiles = allowsLocalFiles
         self.added = added
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, source, name, version, isEnabled, siteAccess, allowedSites, grantedPermissions, allowsPrivateWindows,
+             allowsLocalFiles, added
+    }
+
+    /// Catalogs saved before local files had a switch read as not allowed.
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        source = try values.decode(ExtensionSource.self, forKey: .source)
+        name = try values.decode(String.self, forKey: .name)
+        version = try values.decode(String.self, forKey: .version)
+        isEnabled = try values.decode(Bool.self, forKey: .isEnabled)
+        siteAccess = try values.decode(ExtensionSiteAccess.self, forKey: .siteAccess)
+        allowedSites = try values.decode([String].self, forKey: .allowedSites)
+        grantedPermissions = try values.decode([String].self, forKey: .grantedPermissions)
+        allowsPrivateWindows = try values.decode(Bool.self, forKey: .allowsPrivateWindows)
+        allowsLocalFiles = try values.decodeIfPresent(Bool.self, forKey: .allowsLocalFiles) ?? false
+        added = try values.decode(Date.self, forKey: .added)
     }
 }
 

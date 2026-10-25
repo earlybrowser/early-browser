@@ -433,6 +433,11 @@ private struct ExtensionsSettingsContent: View {
                 Task { await application.changeExtension(item.id, in: profile, restart: true) { $0.allowsPrivateWindows = allowed } }
             }))
             .accessibilityIdentifier("extensions.private.\(item.id)")
+            Toggle("Allow access to local files", isOn: Binding(get: { item.allowsLocalFiles }, set: { allowed in
+                Task { await application.changeExtension(item.id, in: profile, restart: false) { $0.allowsLocalFiles = allowed } }
+            }))
+            .help("Lets it open files on this Mac in tabs and read local pages")
+            .accessibilityIdentifier("extensions.localFiles.\(item.id)")
             if let context, ExtensionHost.needsItsApp(context) {
                 Label("Parts of this extension that talk to its Mac app work only in Safari.", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
