@@ -20,7 +20,12 @@ struct BrowserCommands: Commands {
     let application: EarlyAppDelegate
     /// Settings › Shortcuts decides each command's key.
     let preferences: BrowserPreferences
-    @FocusedValue(\.browserWindow) private var model
+    @FocusedValue(\.browserWindow) private var focusedModel
+    /// The focused window's model, or the one a website dialog's sheet belongs
+    /// to while that sheet is the key window.
+    private var model: BrowserWindowModel? {
+        focusedModel ?? application.browserModel(for: NSApp.keyWindow?.sheetParent)
+    }
     @Environment(\.openSettings) private var openSettings
 
     static let recentlyClosedTabLimit = 10
@@ -115,7 +120,8 @@ struct BrowserCommands: Commands {
             // decides: the menu's focused value can still name another
             // window after windows open, close and change focus.
             Button(model.map { $0.showsNoPage } ?? true ? "Close Window" : "Close Tab") {
-                let window = NSApp.keyWindow
+                // A website dialog's sheet is key over its browser window.
+                let window = NSApp.keyWindow.map { $0.sheetParent ?? $0 }
                 if let front = application.browserModel(for: window), !front.showsNoPage {
                     front.perform(.closeActiveTab)
                 } else {

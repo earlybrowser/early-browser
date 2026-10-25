@@ -719,8 +719,9 @@ final class BrowserWindowModel {
         selectTab(tabs[(current + direction + tabs.count) % tabs.count].id)
     }
 
+    /// Never over a website dialog, which Control-Tab leaves for the next tab instead.
     var canPresentTabSwitcher: Bool {
-        coordinator.commandBar == nil && !openTabs.isEmpty && canPerform(.cycleTab(1))
+        coordinator.commandBar == nil && !openTabs.isEmpty && !hasVisibleDialog && canPerform(.cycleTab(1))
     }
 
     /// Preview is metadata/cache-only. Freeze MRU order until commit or cancel;
@@ -836,16 +837,19 @@ final class BrowserWindowModel {
         save()
     }
 
+    /// With a website dialog showing, Control-Tab moves to the next tab, not
+    /// into the switcher.
     func canControlTab(_ delta: Int) -> Bool {
-        preferences.controlTabShowsSwitcher ? canPresentTabSwitcher : canPerform(.cycleTab(delta))
+        preferences.controlTabShowsSwitcher && !hasVisibleDialog ? canPresentTabSwitcher : canPerform(.cycleTab(delta))
     }
 
     /// Control-Tab: the tab switcher, or the next tab in sidebar order as set
     /// in Settings › Sidebar.
     @discardableResult
     func controlTab(_ delta: Int, commitsOnControlRelease: Bool = false) -> Bool {
-        guard preferences.controlTabShowsSwitcher else {
+        guard preferences.controlTabShowsSwitcher, !hasVisibleDialog else {
             guard canPerform(.cycleTab(delta)) else { return false }
+            if hasVisibleDialog { dismissVisibleDialogs() }
             cycleTab(delta)
             return true
         }

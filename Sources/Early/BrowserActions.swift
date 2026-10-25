@@ -11,6 +11,20 @@ enum BrowserActionSource: Equatable {
 
 @MainActor
 extension BrowserWindowModel {
+    /// A website dialog never keeps anyone in its tab: closing the tab, or
+    /// switching to another, stays possible and answers the dialog as Cancel.
+    func leavesDialogTab(_ action: BrowserAction) -> Bool {
+        switch action {
+        case .closeActiveTab, .selectTab, .selectTabNumber, .cycleTab: true
+        case .closeTab(let id): webViews.pages[id]?.hasDialog == true
+        default: false
+        }
+    }
+
+    func dismissVisibleDialogs() {
+        for id in coordinator.visibleTabIDs where webViews.pages[id]?.hasDialog == true { webViews.dismissDialog(id) }
+    }
+
     /// UI controls and future command results use exactly the same availability
     /// rules. A stale/foreign result must not dismiss an editor or change focus.
     func canPerform(_ action: BrowserAction) -> Bool {
@@ -18,7 +32,8 @@ extension BrowserWindowModel {
         guard application?.profileOperationInProgress != true,
               !sidebarInteractionInProgress, splitResize == nil, !spaceSwipeIsSettling,
               !folderEditorIsPresented, renamingTabID == nil, spaceEditor == nil,
-              spaceDeletionID == nil, !hasVisibleDialog, !documentPanelIsPresented, !historyPresented else { return false }
+              spaceDeletionID == nil, !hasVisibleDialog || leavesDialogTab(action), !documentPanelIsPresented,
+              !historyPresented else { return false }
         switch action {
         case .presentCommandBar, .toggleSidebar:
             return true
@@ -178,6 +193,7 @@ extension BrowserWindowModel {
     @discardableResult
     func perform(_ action: BrowserAction, source: BrowserActionSource = .interface) -> Bool {
         guard canPerform(action) else { return false }
+        if hasVisibleDialog, leavesDialogTab(action) { dismissVisibleDialogs() }
         cancelTabSwitcher(restoreFocus: false)
         let previousFocusRequest = contentFocusRequest
         var restoreContentFocus = true

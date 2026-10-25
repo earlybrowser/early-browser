@@ -28,6 +28,12 @@ public final class BrowserPage {
     public var failure: String?
     public fileprivate(set) var navigationNotice: String?
     public var hasDialog = false
+    /// This document's website dialogs: whether the person chose not to see
+    /// more, and how many in a row went unanswered (asked from a background
+    /// tab, or while another sheet showed). A new document starts over.
+    public internal(set) var suppressesDialogs = false
+    var dialogRequests = 0
+    var unshownDialogs = 0
     public fileprivate(set) var hasUnsavedInput = false
     public fileprivate(set) var processTerminated = false
     fileprivate var editedFrames: Set<String> = []
@@ -1100,6 +1106,9 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         pages[id]?.editedFrames.removeAll()
         pages[id]?.hasUnsavedInput = false
         pages[id]?.awaitsNavigationCommit = false
+        pages[id]?.suppressesDialogs = false
+        pages[id]?.dialogRequests = 0
+        pages[id]?.unshownDialogs = 0
         pages[id]?.policyCancellations.removeAll()
         pages[id]?.navigationNotice = nil
         pages[id]?.documentMIMEType = pages[id]?.pendingDocumentMIMEType
@@ -1307,12 +1316,46 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let complete: (NSApplication.ModalResponse?, String?) -> Void
         let field: NSTextField?
     }
+    /// Unanswered dialogs in a row before the rest are answered at once: a
+    /// page asking faster than anyone could answer, usually from the background.
+    static let unshownDialogLimit = 30
+
+    enum DialogPresentation: Equatable { case answerNow, present(offersSuppression: Bool) }
+
+    /// Whether a page's next dialog shows, and whether it offers to stop the
+    /// rest. Answered at once, as Cancel: when the person chose not to see
+    /// more from this document, or where no one can answer it (a background
+    /// tab, another sheet), and for good once that keeps happening.
+    static func nextDialog(of page: BrowserPage, canShow: Bool) -> DialogPresentation {
+        page.dialogRequests += 1
+        guard !page.suppressesDialogs else { return .answerNow }
+        guard canShow else {
+            page.unshownDialogs += 1
+            if page.unshownDialogs >= unshownDialogLimit { page.suppressesDialogs = true }
+            return .answerNow
+        }
+        page.unshownDialogs = 0
+        // From its second dialog on, as in Chrome.
+        return .present(offersSuppression: page.dialogRequests > 1)
+    }
+
     private func showDialog(_ view: WKWebView, frame: WKFrameInfo, message: String, kind: DialogKind,
                             complete: @escaping (Bool, String?) -> Void) {
+        let canShow = view.window.map { $0.attachedSheet == nil } ?? false
+        guard let id = identities[ObjectIdentifier(view)], let page = pages[id],
+              case .present(let offersSuppression) = Self.nextDialog(of: page, canShow: canShow) else {
+            complete(false, nil)
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "\(frame.request.url?.host ?? "Website") says"
         alert.informativeText = String(message.prefix(4000))
         alert.addButton(withTitle: "OK")
+        if offersSuppression {
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = "Don’t show more dialogs from this page"
+            alert.suppressionButton?.setAccessibilityIdentifier("dialog.suppress")
+        }
         var field: NSTextField?
         switch kind {
         case .alert: break
@@ -1326,8 +1369,15 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             alert.window.initialFirstResponder = inputField
             field = inputField
         }
-        presentAlert(alert, field: field, in: view) { response, value in complete(response == .alertFirstButtonReturn, value) }
+        presentAlert(alert, field: field, in: view) { [weak page] response, value in
+            if alert.suppressionButton?.state == .on { page?.suppressesDialogs = true }
+            complete(response == .alertFirstButtonReturn, value)
+        }
     }
+
+    /// Leaving a tab answers its website dialog as Cancel, so a dialog never
+    /// keeps anyone in its tab.
+    public func dismissDialog(_ id: UUID) { cancelDialog(id) }
 
     /// One sheet per window: website dialogs and permission prompts alike.
     func presentAlert(_ alert: NSAlert, field: NSTextField? = nil, in view: WKWebView,
