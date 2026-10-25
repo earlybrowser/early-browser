@@ -192,7 +192,7 @@ actor FaviconLoader {
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 8
         configuration.timeoutIntervalForResource = 12
-        session = URLSession(configuration: configuration, delegate: FaviconRedirectPolicy(), delegateQueue: nil)
+        session = URLSession(configuration: configuration)
     }
 
     deinit { session.invalidateAndCancel() }
@@ -206,17 +206,10 @@ actor FaviconLoader {
                 var request = URLRequest(url: url)
                 request.httpShouldHandleCookies = false
                 request.setValue("image/*", forHTTPHeaderField: "Accept")
-                let (bytes, response) = try await session.bytes(for: request)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                      response.expectedContentLength <= Self.byteLimit else {
-                    bytes.task.cancel(); continue
-                }
-                var data = Data()
-                for try await byte in bytes {
-                    if data.count >= Self.byteLimit || Task.isCancelled { bytes.task.cancel(); break }
-                    data.append(byte)
-                }
-                guard !Task.isCancelled, data.count < Self.byteLimit, let png = Self.thumbnail(data) else { continue }
+                let (data, response) = try await BoundedResponse.load(request, in: session, limit: Self.byteLimit - 1,
+                                                                       redirects: Self.allowsRedirect)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { continue }
+                guard !Task.isCancelled, let png = Self.thumbnail(data) else { continue }
                 write(png, origin: origin)
                 return png
             } catch { continue }
@@ -275,12 +268,11 @@ actor FaviconLoader {
     }
 }
 
-private final class FaviconRedirectPolicy: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+extension FaviconLoader {
+    /// Only to web addresses without credentials, and never from HTTPS down to HTTP.
+    static let allowsRedirect: BoundedResponse.Redirects = { response, request in
         guard let url = request.url, ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-              url.user == nil, url.password == nil,
-              !(response.url?.scheme == "https" && url.scheme != "https") else { completionHandler(nil); return }
-        completionHandler(request)
+              url.user == nil, url.password == nil else { return false }
+        return !(response.url?.scheme == "https" && url.scheme != "https")
     }
 }
