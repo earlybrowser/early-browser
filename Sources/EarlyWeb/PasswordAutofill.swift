@@ -297,11 +297,11 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             }
             if (event.key === 'Enter' && editable(node)) capture(scopeOf(node));
         }, true);
-        // Filling as a person reaches a sign-in form, by clicking one of its
-        // fields or tabbing into it: never as a page appears or focuses a field
-        // by itself, so its scripts can't collect a password from a form no one
-        // chose. The field must be on screen, not see-through, and on top where
-        // it is, not under something else. Each password field once, while empty.
+        // Filling automatically: as a sign-in form appears, and when the person
+        // clicks or tabs into one that wasn't filled yet. Only a form a person
+        // can see where it is: on screen, not see-through, and on top, not under
+        // something else, so a script can't collect a password from a hidden or
+        // disguised form. Each password field once, while empty.
         const reached = new WeakSet();
         let tabbedAt = -Infinity;
         // Opacity multiplies down through the field's parents, shadow roots too:
@@ -344,6 +344,23 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             const node = event.composedPath()[0];
             if (editable(node) && performance.now() - tabbedAt < 1000) reach(node);
         }, true);
+        // As the page opens and changes, or scrolls a form into view.
+        const announce = () => {
+            for (const field of document.querySelectorAll('input[type=password]')) {
+                if (reached.has(field) || field.value) continue;
+                reach(field);
+            }
+        };
+        let announcing = null;
+        const soon = () => {
+            if (announcing) return;
+            announcing = setTimeout(() => { announcing = null; announce(); }, 250);
+        };
+        document.addEventListener('DOMContentLoaded', soon);
+        window.addEventListener('load', soon);
+        window.addEventListener('scroll', soon, true);
+        new MutationObserver(soon).observe(document, { childList: true, subtree: true, attributes: true,
+            attributeFilter: ['class', 'style', 'hidden', 'type'] });
         const moved = () => { if (menuToken) post({ type: 'move' }); };
         window.addEventListener('scroll', moved, true);
         window.addEventListener('resize', moved);
@@ -590,10 +607,10 @@ extension WebViewManager {
         return (result as? [String: Any])?["username"] as? String
     }
 
-    // MARK: Filling as a person reaches a sign-in form
+    // MARK: Filling automatically
 
-    /// When the person clicks or tabs into a sign-in form's field (never as the
-    /// page opens), on a secure page, in the page itself or a frame of the same
+    /// As a sign-in form a person can see appears (or when they reach one not
+    /// filled yet), on a secure page, in the page itself or a frame of the same
     /// site, never over typing. With several accounts, the one used last, or
     /// the one whose user name is already in the form.
     func fillAutomatically(token: String, typed: String, origin: String, frame: WKFrameInfo, in view: WKWebView) {
