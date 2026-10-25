@@ -2749,10 +2749,18 @@ final class EarlyUITests: XCTestCase {
     }
 
     /// The File menu's ⌘W item: "Close Tab", or a second "Close Window" beside ⌘⇧W's.
-    private func closeCommandTitle(_ app: XCUIApplication) -> String? {
-        app.menuBars.menuBarItems["File"].click()
+    /// Read from the open menu: menu bar menus expose their items while closed
+    /// too, and SwiftUI brings their titles up to date only as a menu opens.
+    private func closeCommandTitle(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) -> String? {
+        app.activate()
+        let menu = app.menuBars.menuBarItems["File"]
+        menu.click()
         defer { app.typeKey(.escape, modifierFlags: []) }
-        let items = app.menuBars.menuItems
+        let items = menu.menuItems
+        guard waitUntilHittable(items["New Window"]) else {
+            XCTFail("The File menu didn't open", file: file, line: line)
+            return nil
+        }
         if items["Close Tab"].waitForExistence(timeout: 2) { return "Close Tab" }
         return items.matching(NSPredicate(format: "title == %@", "Close Window")).count == 2 ? "Close Window" : nil
     }
