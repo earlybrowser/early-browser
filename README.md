@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Branding/Previews/Early-Default-1024.png" width="128" alt="Early icon" />
+  <img src="Branding/Previews/Early-Horizon-1024.png" width="128" alt="Early icon" />
 </p>
 
 <h1 align="center">Early</h1>
