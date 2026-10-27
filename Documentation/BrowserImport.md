@@ -2,8 +2,7 @@
 
 Available from **File → Import from Another Browser…**, **Settings → Sessions**,
 and the welcome screen. Imports stay on this Mac and never change the source.
-This implementation is on `feat/browser-import`; the current 0.1.3 release does
-not yet include it.
+Available in Early 0.1.4 and later.
 
 ## Choose, preview, then import
 

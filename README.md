@@ -35,8 +35,6 @@ We're working on these and will fix them as soon as we can.
 
 ## Features
 
-Browser import, eight-level folders, and choosing an account before filling a password are implemented for the next release; they are not in 0.1.3.
-
 | Feature | Description | Status |
 | --- | --- | --- |
 | Native macOS interface | Light/dark translucent chrome, native window controls, and opaque website content. Solid surfaces respect Reduce Transparency and increased contrast. | Implemented. |
