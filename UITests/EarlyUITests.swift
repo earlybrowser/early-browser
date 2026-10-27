@@ -39,6 +39,24 @@ final class EarlyUITests: XCTestCase {
         return source
     }
 
+    private func previewImportFile(_ file: URL, selectingAllFiles: Bool = false, in app: XCUIApplication) {
+        let panel = app.windows["open-panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        // A complete file path selects it regardless of the panel's view mode
+        // or whether Finder hides filename extensions.
+        app.typeText(file.path)
+        app.typeKey(.return, modifierFlags: [])
+        let accept = panel.buttons["OKButton"]
+        XCTAssertTrue(accept.waitForExistence(timeout: 5), app.debugDescription)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == YES"), object: accept)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed, app.debugDescription)
+        if selectingAllFiles { panel.typeKey("a", modifierFlags: .command) }
+        // The app-level query also finds the system's Touch Bar copy.
+        accept.click()
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5), app.debugDescription)
+    }
+
     func testKeyboardCommandsLeaveEmptyWindowUsable() {
         let app = launchFreshApp()
         let query = app.textFields["commandBar.query"]
@@ -87,12 +105,7 @@ final class EarlyUITests: XCTestCase {
         let choose = app.buttons["browserImport.chooseFile"]
         XCTAssertTrue(choose.waitForExistence(timeout: 5))
         choose.click()
-        app.typeKey("g", modifierFlags: [.command, .shift])
-        app.typeText(file.path)
-        app.typeKey(.return, modifierFlags: [])
-        let accept = app.buttons["Preview"]
-        XCTAssertTrue(accept.waitForExistence(timeout: 5))
-        accept.click()
+        previewImportFile(file, in: app)
         let search = app.textFields["browserImport.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         app.buttons["Select None"].click()
@@ -135,10 +148,7 @@ final class EarlyUITests: XCTestCase {
         let source = openBrowserImport(in: app)
         source.click(); app.menuItems["Safari"].click()
         app.buttons["browserImport.chooseFile"].click()
-        app.typeKey("g", modifierFlags: [.command, .shift]); app.typeText(directory.path + "/"); app.typeKey(.return, modifierFlags: [])
-        let bookmarks = app.staticTexts["Bookmarks.html"]
-        XCTAssertTrue(bookmarks.waitForExistence(timeout: 5)); bookmarks.click()
-        app.typeKey("a", modifierFlags: .command); app.buttons["Preview"].click()
+        previewImportFile(directory.appendingPathComponent("Bookmarks.html"), selectingAllFiles: true, in: app)
         XCTAssertTrue(app.buttons["Select All"].waitForExistence(timeout: 5)); app.buttons["Select All"].click()
         app.buttons["browserImport.continue"].click(); app.buttons["browserImport.continue"].click()
         let message = app.staticTexts["browserImport.message"]
