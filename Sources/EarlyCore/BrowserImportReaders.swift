@@ -64,12 +64,12 @@ public enum BrowserImportReaders {
                 if tag == "h3" { pending = node.stringValue ?? "Folder" }
                 else if tag == "a" { try builder.link(node.attribute(forName: "href")?.stringValue, title: node.stringValue, parent: parent) }
                 else if tag == "dl" {
-                    let id = pending.map { builder.folder($0, parent: parent) } ?? parent
+                    let id = try pending.map { try builder.folder($0, parent: parent) } ?? parent
                     try walk(node, parent: id, depth: depth + 1); pending = nil
                 } else if tag == "dt" || tag == "p" || tag == "dd" {
                     // Tidy may place DL inside DT, or beside it.
                     if let heading = node.elements(forName: "h3").first {
-                        let id = builder.folder(heading.stringValue ?? "Folder", parent: parent)
+                        let id = try builder.folder(heading.stringValue ?? "Folder", parent: parent)
                         if let list = node.elements(forName: "dl").first { try walk(list, parent: id, depth: depth + 1) }
                         else { pending = heading.stringValue; builder.document.nodes.removeLast() }
                     } else { try walk(node, parent: parent, depth: depth + 1) }
@@ -139,7 +139,8 @@ extension BrowserImportReaders {
             document = .init(source: name, nodes: [.init(id: "profile", kind: .profile, title: name)])
         }
         mutating func next() -> String { serial += 1; return "item.\(serial)" }
-        mutating func folder(_ title: String, parent: String) -> String {
+        mutating func folder(_ title: String, parent: String) throws -> String {
+            guard document.nodes.count < BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
             let id = next(); document.nodes.append(.init(id: id, parentID: parent, kind: .folder, title: title)); return id
         }
         mutating func link(_ text: String?, title: String?, parent: String, kind: BrowserImportNode.Kind = .bookmark) throws {
@@ -177,7 +178,7 @@ extension BrowserImportReaders {
             try Task.checkCancellation()
             let isFolder = firefox ? (value["typeCode"] as? Int == 2 || value["type"] as? String == "text/x-moz-place-container") : value["type"] as? String == "folder"
             if isFolder || value["children"] is [[String: Any]] {
-                let id = folder(value[firefox ? "title" : "name"] as? String ?? "Folder", parent: parent)
+                let id = try folder(value[firefox ? "title" : "name"] as? String ?? "Folder", parent: parent)
                 for child in value["children"] as? [[String: Any]] ?? [] { try bookmark(child, parent: id, firefox: firefox, depth: depth + 1) }
             } else { try link(value[firefox ? "uri" : "url"] as? String, title: value[firefox ? "title" : "name"] as? String, parent: parent) }
         }

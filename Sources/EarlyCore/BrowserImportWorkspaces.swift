@@ -30,14 +30,21 @@ extension BrowserImportReaders {
         var builder = Builder(name: name)
         builder.document.nodes = []
         builder.document.notices.append("Experimental Arc sidebar import: verified against synthetic schema fixtures, not a current Arc installation. Check every Space, profile and folder in this preview. Bookmarks HTML is the verified alternative.")
-        var profiles = Set<String>(), visited = Set<String>()
-        func profile(_ key: String) -> String {
+        var profiles = Set<String>(), visited = Set<String>(), traversed = 0
+        func profile(_ key: String) throws -> String {
             let id = "profile." + key
-            if profiles.insert(id).inserted { builder.document.nodes.append(.init(id: id, kind: .profile, title: profiles.count == 1 ? name : "\(name) Profile \(profiles.count)")) }
+            if profiles.insert(id).inserted {
+                guard builder.document.nodes.count < BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
+                builder.document.nodes.append(.init(id: id, kind: .profile, title: profiles.count == 1 ? name : "\(name) Profile \(profiles.count)"))
+            }
             return id
         }
         func unwrap(_ value: [String: Any]) -> [String: Any] { value["_0"] as? [String: Any] ?? value }
         func walk(_ id: String, parent: String, kind: BrowserImportNode.Kind, depth: Int) throws {
+            // References can expand a tiny source graph exponentially. Bound
+            // work even for container nodes that do not create output records.
+            guard traversed < BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
+            traversed += 1
             guard depth <= 64, visited.insert(id + "|" + parent).inserted, let item = items[id] else { throw BrowserImportProblem.invalid }
             try Task.checkCancellation()
             let data = item["data"] as? [String: Any] ?? [:]
@@ -50,7 +57,7 @@ extension BrowserImportReaders {
                 var target = parent
                 if data["list"] != nil {
                     let list = unwrap(data["list"] as? [String: Any] ?? [:])
-                    target = builder.folder(item["title"] as? String ?? list["title"] as? String ?? "Folder", parent: parent)
+                    target = try builder.folder(item["title"] as? String ?? list["title"] as? String ?? "Folder", parent: parent)
                 } else if data["itemContainer"] == nil && data["splitView"] == nil {
                     throw BrowserImportProblem.unsupported("This Arc sidebar contains an unverified organization type. Export it as bookmarks HTML instead.")
                 }
@@ -58,8 +65,9 @@ extension BrowserImportReaders {
             }
         }
         for (id, space) in spaces {
-            let owner = profile(space["profileID"] as? String ?? "isolated." + id)
+            let owner = try profile(space["profileID"] as? String ?? "isolated." + id)
             let spaceID = "space." + id
+            guard builder.document.nodes.count < BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
             builder.document.nodes.append(.init(id: spaceID, parentID: owner, kind: .space,
                                                  title: space["title"] as? String ?? "Space \(builder.document.nodes.count)",
                                                  color: (space["color"] as? String).flatMap(BrowserSpace.Color.init(rawValue:)),
@@ -79,7 +87,7 @@ extension BrowserImportReaders {
             for index in stride(from: 0, to: roots.count, by: 2) {
                 guard let id = roots[index + 1] as? String else { throw BrowserImportProblem.invalid }
                 let marker = roots[index] as? [String: Any]
-                let owner = profile(marker?["profileID"] as? String ?? "favorites")
+                let owner = try profile(marker?["profileID"] as? String ?? "favorites")
                 guard let root = items[id] else { throw BrowserImportProblem.invalid }
                 for child in root["childrenIds"] as? [String] ?? [] { try walk(child, parent: owner, kind: .favorite, depth: 0) }
             }

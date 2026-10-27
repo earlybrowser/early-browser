@@ -264,6 +264,8 @@ public extension BrowserImportBatch {
         var draft = current, preserved = 0
         let originalTabs = Dictionary(uniqueKeysWithValues: tabs.map { ($0.id, $0) })
         let originalFolders = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
+        let originalSpaceProfiles = Dictionary(spaces.map { ($0.id, $0.profileID) } + tabs.map { ($0.spaceID, $0.profileID) },
+                                               uniquingKeysWith: { first, _ in first })
         for index in draft.sessions.indices {
             var root = draft.sessions[index]
             var windows = [root] + root.additionalWindows
@@ -280,7 +282,13 @@ public extension BrowserImportBatch {
             let occupied = Set(survivingTabs.compactMap(\.folderID))
             let allFolders = windows.flatMap(\.folders)
             let localFolders = Dictionary(allFolders.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            let editedFolders = Set(allFolders.filter { originalFolders[$0.id] != nil && originalFolders[$0.id] != $0 }.map(\.id))
+            let editedFolders = Set(allFolders.compactMap { folder -> UUID? in
+                guard let original = originalFolders[folder.id] else { return nil }
+                // Moving a whole Space changes its profile, not its folder
+                // values. Infer legacy owners where possible; keep unknowns.
+                let owner = folderProfiles?[folder.id] ?? originalSpaceProfiles[original.spaceID]
+                return original != folder || owner != root.profileID ? folder.id : nil
+            })
             var childCounts = Dictionary(grouping: localFolders.values, by: \.parentID).mapValues(\.count)
             var pending = localFolders.values.filter { childCounts[$0.id, default: 0] == 0 }.map(\.id)
             var removed = Set<UUID>()

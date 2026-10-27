@@ -51,6 +51,54 @@ struct BrowserImportCleanupTests {
         #expect(undo.workspace.sessions[0].tabs[0].profileID == workspace.defaultProfileID)
         #expect(undo.workspace.sessions[0].folders.map(\.name) == ["Work folder"])
     }
+    @Test(arguments: [false, true], [false, true])
+    func movedEmptyFoldersSurviveUndo(deleteOriginalProfile: Bool, legacyJournal: Bool) throws {
+        let original = BrowserWorkspace()
+        let document = BrowserImportDocument(source: "Empty folders", nodes: [
+            .init(id: "p", kind: .profile, title: "Imported"),
+            .init(id: "parent", parentID: "p", kind: .folder, title: "Parent"),
+            .init(id: "child", parentID: "parent", kind: .folder, title: "Empty child")])
+        let result = try document.candidate(into: original, selecting: document.initiallySelected,
+            destinations: ["p": .init(profileName: "Imported", spaceName: "Imported")])
+        // Unchanged empty folders still disappear when Undo is used before a move.
+        #expect(try result.batch.undo(in: result.workspace).workspace.sessions.flatMap(\.folders).isEmpty)
+        let source = try #require(result.batch.profiles.first?.id)
+        let space = try #require(result.batch.spaces.first?.id)
+        var workspace = result.workspace
+        let moved = workspace.moveSpace(space, from: source, to: original.defaultProfileID)
+        #expect(moved)
+        if deleteOriginalProfile {
+            let deleted = workspace.deleteProfile(source)
+            #expect(deleted)
+        }
+        var batch = result.batch
+        if legacyJournal { batch.folderProfiles = nil }
+        batch = try JSONDecoder().decode(BrowserImportBatch.self, from: JSONEncoder().encode(batch))
+        let retained = try #require(batch.retaining(in: workspace))
+        #expect(try retained.undoConflicts(in: workspace) == ["Folder: Parent", "Folder: Empty child"])
+        let undone = try retained.undo(in: workspace).workspace
+        let destination = try #require(undone.session(for: original.defaultProfileID))
+        #expect(destination.folders.map(\.id) == result.batch.folders.map(\.id))
+        #expect(destination.spaces.first { $0.id == space }?.profileID == original.defaultProfileID)
+        #expect(undone.browserImportBatchIDs?.contains(batch.id) == false)
+    }
+
+    @Test func legacyEmptyFoldersWithUnknownOwnershipArePreservedConservatively() throws {
+        let workspace = BrowserWorkspace()
+        let document = BrowserImportDocument(source: "Legacy folders", nodes: [
+            .init(id: "p", kind: .profile, title: "Imported"),
+            .init(id: "f", parentID: "p", kind: .folder, title: "Empty folder")])
+        let result = try document.candidate(into: workspace, selecting: document.initiallySelected,
+            destinations: ["p": .init(profileID: workspace.defaultProfileID, profileName: "Default",
+                spaceID: workspace.sessions[0].activeSpaceID, spaceName: "Personal")])
+        #expect(try result.batch.undo(in: result.workspace).workspace.sessions[0].folders.isEmpty)
+        var legacy = result.batch
+        legacy.folderProfiles = nil
+        #expect(legacy.spaces.isEmpty && legacy.tabs.isEmpty)
+        #expect(try legacy.undoConflicts(in: result.workspace) == ["Folder: Empty folder"])
+        #expect(try legacy.undo(in: result.workspace).workspace.sessions[0].folders == result.batch.folders)
+    }
+
     @Test func recoveryPrunesCommittedRecordsWithoutOpeningMissingHistoryFiles() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyImportPruning-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

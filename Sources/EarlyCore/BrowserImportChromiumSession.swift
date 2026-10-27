@@ -106,7 +106,7 @@ extension BrowserImportReaders {
             var parent = "profile"
             if let group = tab.group {
                 if let existing = groups[group] { parent = existing }
-                else { parent = builder.folder(groupNames[group] ?? "Tab group", parent: "profile"); groups[group] = parent }
+                else { parent = try builder.folder(groupNames[group] ?? "Tab group", parent: "profile"); groups[group] = parent }
             }
             try builder.link(entry.url, title: entry.title, parent: parent, kind: tab.group != nil || tab.pinned ? .pin : .openTab)
             _ = id

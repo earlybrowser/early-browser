@@ -274,6 +274,48 @@ struct BrowserImportTests {
         #expect(zen.nodes.first { $0.id == pin.parentID }?.title == "Synthetic Folder")
     }
 
+    @Test func folderCreationStopsAtTheNodeLimitWithoutAppending() throws {
+        var builder = BrowserImportReaders.Builder(name: "Bounded folders")
+        builder.document.nodes += (0..<(BrowserImportDocument.maximumNodes - 2)).map {
+            .init(id: "folder.\($0)", parentID: "profile", kind: .folder, title: "Folder")
+        }
+        _ = try builder.folder("Last allowed folder", parent: "profile")
+        #expect(builder.document.nodes.count == BrowserImportDocument.maximumNodes)
+        #expect(throws: BrowserImportProblem.capacity) { try builder.folder("One too many", parent: "profile") }
+        #expect(builder.document.nodes.count == BrowserImportDocument.maximumNodes)
+    }
+
+    @Test func arcRepeatedFolderBranchesAreBounded() throws {
+        let layers = 16
+        var items: [Any] = ["root", ["data": ["itemContainer": [:]], "childrenIds": ["0a", "0b"]]]
+        for layer in 0..<layers {
+            for side in ["a", "b"] {
+                items.append("\(layer)\(side)")
+                items.append(["data": ["list": [:]], "title": "Folder",
+                    "childrenIds": layer + 1 < layers ? ["\(layer + 1)a", "\(layer + 1)b"] : []])
+            }
+        }
+        let json: [String: Any] = ["sidebar": ["containers": [[
+            "spaces": ["s", ["title": "Space", "profileID": "p", "newContainerIDs": ["pinned", "root"]]],
+            "items": items]]]]
+        let data = try JSONSerialization.data(withJSONObject: json)
+        #expect(data.count < 4096)
+        #expect(throws: BrowserImportProblem.capacity) { try BrowserImportReaders.read(data, name: "Arc") }
+    }
+
+    @Test func arcTraversalIsBoundedEvenWhenContainersDoNotCreateNodes() throws {
+        let children = (0..<2000).map { "container.\($0)" }
+        var items: [Any] = ["root", ["data": ["itemContainer": [:]], "childrenIds": children]]
+        for id in children { items += [id, ["data": ["itemContainer": [:]], "childrenIds": [String]()]] }
+        var spaces: [Any] = []
+        for index in 0..<41 {
+            spaces += ["space.\(index)", ["title": "Space", "profileID": "p", "newContainerIDs": ["pinned", "root"]]]
+        }
+        let json: [String: Any] = ["sidebar": ["containers": [["spaces": spaces, "items": items]]]]
+        let data = try JSONSerialization.data(withJSONObject: json)
+        #expect(throws: BrowserImportProblem.capacity) { try BrowserImportReaders.read(data, name: "Arc") }
+    }
+
     @Test func arcAlternatingDictionariesKeepProfileFavoritesPinsFoldersAndTodayDistinct() throws {
         let doc = try BrowserImportReaders.read(fixture("Arc-sidebar-alternating.json"), name: "Arc")
         #expect(doc.nodes.filter { $0.kind == .profile }.count == 1)
