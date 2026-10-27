@@ -8,6 +8,9 @@ import SwiftUI
 /// Activation feedback never delays the action or the actual Reload/Stop state.
 struct NavigationButton: View {
     let kind: NavigationControlStyle.Kind
+    /// Preserve the underlying navigation availability during a temporary lock.
+    /// This affects drawing only; the inherited disabled state still blocks input.
+    var appearanceEnabled: Bool? = nil
     /// Back and Forward list the tab's history on right-click or press-and-hold.
     var history: (() -> [WebViewManager.HistoryListEntry])? = nil
     var onHistory: (Int) -> Void = { _ in }
@@ -25,7 +28,7 @@ struct NavigationButton: View {
         Button { activate() } label: {
             ReloadStopArtwork(isLoading: kind == .stop)
         }
-        .buttonStyle(NavigationControlStyle(kind: kind, clickFeedback: clickFeedback,
+        .buttonStyle(NavigationControlStyle(kind: kind, appearanceEnabled: appearanceEnabled, clickFeedback: clickFeedback,
                                             hovered: overlayHovered, pressed: overlayPressed))
         .overlay {
             if let history, isEnabled {
@@ -232,13 +235,14 @@ struct NavigationSymbolMotion: ViewModifier, Animatable {
 struct NavigationControlStyle: ButtonStyle {
     enum Kind { case back, forward, reload, stop }
     let kind: Kind
+    var appearanceEnabled: Bool? = nil
     var clickFeedback = false
     /// Hover and press reported by a view laid over the button.
     var hovered = false
     var pressed = false
 
     func makeBody(configuration: Configuration) -> some View {
-        Appearance(configuration: configuration, kind: kind, clickFeedback: clickFeedback,
+        Appearance(configuration: configuration, kind: kind, appearanceEnabled: appearanceEnabled, clickFeedback: clickFeedback,
                    overlayHovered: hovered, overlayPressed: pressed)
     }
 
@@ -252,6 +256,7 @@ struct NavigationControlStyle: ButtonStyle {
     private struct Appearance: View {
         let configuration: ButtonStyleConfiguration
         let kind: Kind
+        let appearanceEnabled: Bool?
         let clickFeedback: Bool
         let overlayHovered: Bool
         let overlayPressed: Bool
@@ -281,7 +286,7 @@ struct NavigationControlStyle: ButtonStyle {
             .frame(width: 32, height: 32)
             .background(Color.primary.opacity(pressed ? 0.13 : (highlighted ? 0.075 : 0)),
                         in: RoundedRectangle(cornerRadius: 8))
-            .opacity(isEnabled ? 1 : 0.35)
+            .opacity((appearanceEnabled ?? isEnabled) ? 1 : 0.35)
             .contentShape(RoundedRectangle(cornerRadius: 8))
             .onHover { hovered = $0 }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: highlighted)

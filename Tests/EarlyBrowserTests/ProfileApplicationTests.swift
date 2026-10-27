@@ -359,6 +359,12 @@ struct ProfileApplicationTests {
         let fixture = Fixture()
         _ = await fixture.start()
         let app = fixture.application
+        let personal = try #require(app.model)
+        #expect(personal.openLocations([url]))
+        let personalTab = try #require(personal.coordinator.activeTabID)
+        let personalView = try #require(personal.webViews.existingView(for: personalTab))
+        let personalCreationCount = personal.webViews.creationCount
+        #expect(personal.canPerform(.closeTab(personalTab)))
         let workID = try #require(app.createProfile(name: "Work", color: .green))
         app.openProfile(workID)
         let windowID = try #require(fixture.opened.last)
@@ -383,17 +389,25 @@ struct ProfileApplicationTests {
                 await Task.yield()
             }
             #expect(!work.canPerform(.closeTab(tab)), "Editing waits for the profile transaction")
+            #expect(!personal.perform(.closeTab(personalTab)), "Other sidebars remain protected during deletion")
+            #expect(!personal.canPerform(.presentCommandBar(.newTab)))
+            #expect(personal.activePage != nil, "Navigation still has its underlying page availability")
+            #expect(personal.webViews.existingView(for: personalTab) === personalView)
             await operation.value
             #expect(app.profileError != nil)
             #expect(app.profiles.contains { $0.id == workID })
             #expect(app.windowModel(windowID) === work && work.webViews.existingView(for: tab) === view)
             #expect(vault.logins.first?.password == "keep-this-password")
+            #expect(personal.canPerform(.closeTab(personalTab)), "Input returns after the profile lock ends")
             let saved = try await repository.loadWorkspace()
             #expect(saved == durable)
         }
         await app.deleteProfile(workID)
         #expect(!app.profiles.contains { $0.id == workID } && vault.logins.isEmpty)
         #expect(try await repository.loadWorkspace()?.profiles.contains { $0.id == workID } == false)
+        #expect(personal.coordinator.activeTabID == personalTab)
+        #expect(personal.webViews.existingView(for: personalTab) === personalView)
+        #expect(personal.webViews.creationCount == personalCreationCount, "Deleting another profile never reconstructs the live page")
         await fixture.cleanup()
     }
 

@@ -373,7 +373,7 @@ extension BrowserWindowView {
             }
             .contentShape(RoundedRectangle(cornerRadius: 9))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SidebarButtonStyle())
         .focused($focusedSidebarControl, equals: .favorite(tab.id))
         .focusEffectDisabled()
         .overlay {
@@ -449,8 +449,8 @@ extension BrowserWindowView {
         }
     }
 
-    /// Disabled neighbor pages and unavailable pin-reset actions stay visually
-    /// unchanged. PlainButtonStyle would dim them, then flash on selection.
+    /// Disabled neighbor pages, pin-reset actions and temporary profile locks
+    /// keep their colors. PlainButtonStyle would dim them, then flash on return.
     struct SidebarButtonStyle: ButtonStyle {
         func makeBody(configuration: Configuration) -> some View {
             configuration.label.opacity(configuration.isPressed ? 0.8 : 1)

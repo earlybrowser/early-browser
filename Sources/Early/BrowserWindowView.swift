@@ -850,7 +850,7 @@ struct BrowserWindowView: View {
                                                 .padding(.horizontal, 6).frame(height: 17)
                                                 .contentShape(Rectangle())
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(SidebarButtonStyle())
                                         .foregroundStyle(.secondary)
                                         .browserKeyboardFocus(cornerRadius: 5)
                                         .disabled(!model.canPerform(.clearTodayTabs))
