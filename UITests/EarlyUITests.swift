@@ -29,6 +29,34 @@ final class EarlyUITests: XCTestCase {
         return app
     }
 
+    private func openBrowserImport(in app: XCUIApplication) -> XCUIElement {
+        app.menuBars.menuBarItems["File"].click()
+        app.menuItems["Import from Another Browser…"].click()
+        let wizard = app.groups["browserImport.wizard"]
+        XCTAssertTrue(wizard.waitForExistence(timeout: 5), app.debugDescription)
+        let source = wizard.popUpButtons["browserImport.source"]
+        XCTAssertTrue(source.waitForExistence(timeout: 5), app.debugDescription)
+        return source
+    }
+
+    private func previewImportFile(_ file: URL, selectingAllFiles: Bool = false, in app: XCUIApplication) {
+        let panel = app.windows["open-panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        // A complete file path selects it regardless of the panel's view mode
+        // or whether Finder hides filename extensions.
+        app.typeText(file.path)
+        app.typeKey(.return, modifierFlags: [])
+        let accept = panel.buttons["OKButton"]
+        XCTAssertTrue(accept.waitForExistence(timeout: 5), app.debugDescription)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == YES"), object: accept)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed, app.debugDescription)
+        if selectingAllFiles { panel.typeKey("a", modifierFlags: .command) }
+        // The app-level query also finds the system's Touch Bar copy.
+        accept.click()
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5), app.debugDescription)
+    }
+
     func testKeyboardCommandsLeaveEmptyWindowUsable() {
         let app = launchFreshApp()
         let query = app.textFields["commandBar.query"]
@@ -54,6 +82,134 @@ final class EarlyUITests: XCTestCase {
         address.click()
         XCTAssertTrue(query.waitForExistence(timeout: 3))
         XCTAssertEqual(query.value as? String, "")
+    }
+
+    /// CI only: uses the real open panel so sandbox access follows the same
+    /// approval path as a person importing a file. Never visits imported URLs.
+    func testBrowserImportSelectsOnlyChosenItemsAndKeepsThemUnloaded() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyImportUITest-\(UUID()).html")
+        let html = """
+        <!DOCTYPE NETSCAPE-Bookmark-file-1><META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+        <DL><DT><H3>Research</H3><DL>
+        <DT><A HREF="https://example.invalid/one">One</A>
+        <DT><A HREF="https://example.invalid/two">Two</A>
+        </DL></DL>
+        """
+        try Data(html.utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let app = launchFreshApp()
+        let source = openBrowserImport(in: app)
+        XCTAssertFalse(app.buttons["browserImport.chooseFile"].exists)
+        source.click()
+        app.menuItems["Other browser"].click()
+        let choose = app.buttons["browserImport.chooseFile"]
+        XCTAssertTrue(choose.waitForExistence(timeout: 5))
+        choose.click()
+        previewImportFile(file, in: app)
+        let search = app.textFields["browserImport.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        app.buttons["Select None"].click()
+        XCTAssertFalse(app.buttons["browserImport.continue"].isEnabled)
+        search.click(); search.typeText("One")
+        let one = app.checkBoxes["One"]
+        XCTAssertTrue(one.waitForExistence(timeout: 5))
+        one.click()
+        let value = app.checkBoxes["Research"].value
+        let mixedState = (value as? NSNumber)?.intValue ?? (value as? String).flatMap(Int.init)
+        XCTAssertEqual(mixedState, 2, "An ancestor reports partial selection")
+        app.buttons["browserImport.continue"].click()
+        XCTAssertTrue(app.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browserImport.profileName.")).firstMatch.waitForExistence(timeout: 5))
+        app.buttons["browserImport.continue"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["browserImport.review"].waitForExistence(timeout: 5))
+        app.buttons["browserImport.continue"].click()
+        let message = app.staticTexts["browserImport.message"]
+        let completed = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Imported 1 page", "Imported 1 page")
+        expectation(for: completed, evaluatedWith: message)
+        waitForExpectations(timeout: 10)
+        app.buttons["Done"].click()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browserImport.undo.")).firstMatch.waitForExistence(timeout: 5))
+        // The selected source profile is new: importing never changes the
+        // original empty browser window or allocates a page there.
+        app.windows["browser"].click()
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
+    /// CI only. Exercise Safari's multi-file panel and the explicit shared-data
+    /// choice through native controls; no imported website is loaded.
+    func testSafariImportGroupsHistoriesAndRequiresASharedBookmarksDestination() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("EarlySafariImportUI-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"<DL><DT><A HREF="https://example.invalid/imported">Imported bookmark</A></DL>"#.utf8).write(to: directory.appendingPathComponent("Bookmarks.html"))
+        for name in ["History.json", "History - Work.json"] {
+            let json: [String: Any] = ["metadata": ["data_type": "history", "schema_version": 1],
+                "history": [["url": "https://example.invalid/known", "title": "Known visit", "time_usec": Int64(Date().addingTimeInterval(-60).timeIntervalSince1970 * 1_000_000)]]]
+            try JSONSerialization.data(withJSONObject: json).write(to: directory.appendingPathComponent(name))
+        }
+        let app = launchFreshApp()
+        let source = openBrowserImport(in: app)
+        source.click(); app.menuItems["Safari"].click()
+        app.buttons["browserImport.chooseFile"].click()
+        previewImportFile(directory.appendingPathComponent("Bookmarks.html"), selectingAllFiles: true, in: app)
+        XCTAssertTrue(app.buttons["Select All"].waitForExistence(timeout: 5)); app.buttons["Select All"].click()
+        app.buttons["browserImport.continue"].click(); app.buttons["browserImport.continue"].click()
+        let message = app.staticTexts["browserImport.message"]
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertTrue(message.label.contains("Choose a destination") || (message.value as? String)?.contains("Choose a destination") == true)
+        let work = app.checkBoxes.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "browserImport.collection.", "Work")).firstMatch
+        XCTAssertTrue(work.waitForExistence(timeout: 5)); work.click()
+        app.buttons["browserImport.continue"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["browserImport.review"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browserImport.reviewProfile.")).count, 2)
+        app.buttons["browserImport.continue"].click()
+        let summary = "Imported 1 page, 0 folders and 2 visits"
+        expectation(for: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", summary, summary), evaluatedWith: message)
+        waitForExpectations(timeout: 10)
+        app.buttons["Done"].click(); app.windows["browser"].click()
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
+    func testBrowserImportCanBeCancelledFromKeyboardWithoutChangingBrowsing() {
+        let app = launchFreshApp()
+        let source = openBrowserImport(in: app)
+        source.click()
+        app.menuItems["Other browser"].click()
+        XCTAssertTrue(app.buttons["browserImport.chooseFile"].waitForExistence(timeout: 5))
+        app.typeKey(.tab, modifierFlags: [])
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(app.buttons["browserImport.chooseFile"].waitForNonExistence(timeout: 5))
+        app.windows["browser"].click()
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
+    func testEightNestedFolderLevelsRemainVisibleAndRejectANinthChild() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let field = app.textFields["folder.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        pasteText("Level 0", into: field, in: app)
+        app.buttons["Save"].click()
+        var parent = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Level 0'")).firstMatch
+        XCTAssertTrue(parent.waitForExistence(timeout: 3))
+        let root = parent
+        for depth in 1...8 {
+            pinAction("New Subfolder…", on: parent)
+            XCTAssertTrue(field.waitForExistence(timeout: 3))
+            pasteText("Level \(depth)", into: field, in: app)
+            app.buttons["Save"].click()
+            parent = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == %@", "Level \(depth)")).firstMatch
+            XCTAssertTrue(parent.waitForExistence(timeout: 3))
+            XCTAssertTrue(parent.isHittable)
+        }
+        parent.rightClick()
+        let child = app.menuItems["New Subfolder…"]
+        XCTAssertFalse(child.exists && child.isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+        root.click()
+        XCTAssertFalse(parent.exists)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
     }
 
     /// Like Arc and Chrome: ⌘W in a window with no tabs closes it, and Early

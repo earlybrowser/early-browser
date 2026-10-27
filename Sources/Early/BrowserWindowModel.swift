@@ -283,7 +283,6 @@ final class BrowserWindowModel {
         webViews.sitePermissions = self.sitePermissions
         webViews.passwords = passwords
         webViews.savesPasswords = !isPrivate
-        webViews.fillsPasswordsAutomatically = { [weak self] in self?.preferences.fillsPasswordsAutomatically == true }
         webViews.passwordListStyle = { [weak self] in
             PasswordListStyle(theme: self?.chromeTheme ?? .space(.gray), allowsTransparency: self?.preferences.translucentChrome ?? true)
         }

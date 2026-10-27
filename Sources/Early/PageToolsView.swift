@@ -153,7 +153,7 @@ struct SiteControlsButton: View {
                     .frame(width: 26, height: 26)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SpaceControlStyle())
             .foregroundStyle(Self.isActive(model.activePage) ? AnyShapeStyle(tint) : AnyShapeStyle(.secondary))
             .browserKeyboardFocus(cornerRadius: 6)
             .help("Site Controls")

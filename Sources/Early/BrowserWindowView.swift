@@ -95,6 +95,7 @@ struct BrowserWindowView: View {
     @State var hoveredMedia: UUID?
     @State var hoveredFolder: UUID?
     @State var hoveredFolderGroups: Set<UUID> = []
+    @State var lastOpenedFolder: UUID?
     @State var folderBounceEvent: FolderBounceEvent?
     @State var sidebarPointer = SidebarPointer()
     @State var windowPointer = SidebarPointer()
@@ -327,6 +328,7 @@ struct BrowserWindowView: View {
             .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
 
             sidebar
+                .disabled(model.application?.profileOperationInProgress == true)
                 .dropDestination(for: URL.self) { urls, _ in model.openLocations(urls) }
                 .background(surfaceFrame("sidebar"))
                 .background {
@@ -558,7 +560,7 @@ struct BrowserWindowView: View {
                 let success: Bool
                 if let editingFolder { success = model.coordinator.renameFolder(editingFolder, to: folderName) }
                 else { success = model.coordinator.createFolder(name: folderName, parentID: folderParent, icon: folderIcon) != nil }
-                if success { model.save() } else { model.notice = "Could not save folder. Use a name and a parent with room for a subfolder (two nesting levels maximum)." }
+                if success { model.save() } else { model.notice = "Could not save folder. Use a name and a parent with room for a subfolder (eight nesting levels maximum)." }
                 folderEditor = false
             }
             .keyboardShortcut(.defaultAction)
@@ -758,8 +760,10 @@ struct BrowserWindowView: View {
             hoveredTab = nil
             hoveredFolder = nil
             hoveredFolderGroups = []
+            lastOpenedFolder = nil
             focusedSidebarControl = nil
         }
+        .onChange(of: model.coordinator.activeTabID) { _, _ in lastOpenedFolder = nil }
         .onChange(of: reduceMotion) { _, enabled in
             if enabled { folderBounceEvent = nil }
         }
@@ -846,7 +850,7 @@ struct BrowserWindowView: View {
                                                 .padding(.horizontal, 6).frame(height: 17)
                                                 .contentShape(Rectangle())
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(SidebarButtonStyle())
                                         .foregroundStyle(.secondary)
                                         .browserKeyboardFocus(cornerRadius: 5)
                                         .disabled(!model.canPerform(.clearTodayTabs))

@@ -5,6 +5,30 @@ import Testing
 @testable import EarlyCore
 
 struct SidebarFolderPreviewTests {
+    @Test func deepFoldersPaintOnlyOuterAndCurrentBackgrounds() {
+        let space = UUID()
+        var folders: [BrowserFolder] = [], parent: UUID?
+        for level in 0...8 {
+            let folder = BrowserFolder(spaceID: space, parentID: parent, name: "Level \(level)", isExpanded: true)
+            folders.append(folder); parent = folder.id
+        }
+        let all = Set(folders.map(\.id)), root = folders[0].id, leaf = folders[8].id
+        let current = SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, current: leaf, hovered: all)
+        #expect(current == [root, leaf])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, current: root) == [root])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, current: leaf) == [root, leaf])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: [root, folders[1].id], current: leaf) == [root, folders[1].id])
+    }
+    @Test func folderBackgroundsFollowTheCurrentBranchAndIgnoreStaleIDs() {
+        let first = BrowserFolder(spaceID: UUID(), name: "First", isExpanded: true)
+        let child = BrowserFolder(spaceID: first.spaceID, parentID: first.id, name: "Child")
+        let other = BrowserFolder(spaceID: UUID(), name: "Other", isExpanded: true)
+        let folders = [child, other, first], visible = Set(folders.map(\.id))
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, current: other.id) == [other.id])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, current: other.id, hovered: [first.id, child.id]) == [first.id, child.id])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, current: UUID()).isEmpty)
+    }
+
     @Test func nestingUsesTheSameLayoutSnapshotAsInsertionInsteadOfChasingItsPreview() {
         // Exact geometry of the failing CI drag: Work's center is y=248,
         // Mails is y=286, and a foreign pin previews insertion before Mails.

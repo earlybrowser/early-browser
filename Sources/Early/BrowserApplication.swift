@@ -29,6 +29,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     private(set) var profileOperationInProgress = false
     var profileError: String?
     var settingsSection: BrowserSettingsSection = .appearance
+    var browserImportPresented = false
+    private(set) var browserImportBatches: [BrowserImportBatch] = []
+    private(set) var browserImportError: String?
     @ObservationIgnored var presentWindow: ((UUID) -> Void)?
     @ObservationIgnored var presentSettingsWindow: (() -> Void)?
     @ObservationIgnored private var windows: [WindowEntry] = []
@@ -169,7 +172,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 if storageDirectory == nil, let suite { directory.append(path: "UITests/\(suite)", directoryHint: .isDirectory) }
                 let repository = SessionRepository(fileURL: directory.appending(path: "session.sqlite"), input: input)
                 do {
-                    let saved = try await repository.loadWorkspace() ?? BrowserWorkspace()
+                    var saved = try await repository.loadWorkspace() ?? BrowserWorkspace()
+                    let imports = BrowserImportJournal(directory: directory.appendingPathComponent("BrowserImports"))
+                    let recovered = try await imports.recover(workspace: saved, historyDirectory: directory.appendingPathComponent("History"))
+                    let retained = Set(recovered.map(\.id))
+                    saved.browserImportBatchIDs = saved.browserImportBatchIDs?.filter { retained.contains($0) }
                     return Loaded(workspace: saved, repository: repository, input: input, testing: testing, error: nil)
                 } catch {
                     return Loaded(workspace: BrowserWorkspace(), repository: repository, input: input, testing: testing,
@@ -204,6 +211,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         #endif
         let startup = loaded.error == nil ? launchStore.claimStartupContext() : .returningSession
         workspace = snapshot
+        if let journal = browserImportJournal {
+            browserImportBatches = (try? await journal.entries().filter { $0.state == .complete }.map(\.batch)) ?? []
+        }
         let primary = makeModel(session: snapshot.session(for: active)!, startup: startup)
         model = primary
         primaryWindowIsOpen = true
@@ -685,6 +695,169 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     var backupsDirectory: URL? { storageURL?.deletingLastPathComponent().appending(path: "Backups", directoryHint: .isDirectory) }
     static let backupLimit = 5
 
+    private var browserImportJournal: BrowserImportJournal? {
+        storageURL.map { BrowserImportJournal(directory: $0.deletingLastPathComponent().appendingPathComponent("BrowserImports")) }
+    }
+
+    /// All entry points share the Settings-hosted flow, including File and Welcome.
+    func showBrowserImport() {
+        guard canEditProfiles else { return }
+        settingsSection = .sessions
+        browserImportPresented = true
+        presentSettingsWindow?()
+    }
+
+    func browserImportValidation() -> NavigationInput { input }
+
+    func browserImportSnapshot() -> BrowserWorkspace? { captureWorkspace(); return workspace }
+
+    func importBrowser(_ document: BrowserImportDocument, selected: Set<String>,
+                       destinations: [String: BrowserImportDestination], flatten: Bool,
+                       collectionTargets: [String: Set<String>] = [:]) async -> ImportOutcome {
+        guard canEditProfiles, let journal = browserImportJournal else {
+            return .init(message: "Early can’t import right now. Try again in a moment.", succeeded: false)
+        }
+        profileOperationInProgress = true
+        applyingWorkspace = true
+        defer { applyingWorkspace = false; profileOperationInProgress = false; saveAll(); deliverExternalLinks() }
+        var batch: BrowserImportBatch?
+        do {
+            guard await persistence?.flush() == true else { throw SessionError.database(persistence?.error ?? "Couldn’t save the current session.") }
+            captureWorkspace()
+            guard let current = workspace else { throw BrowserImportProblem.invalid }
+            guard try await journal.entries().count < 128 else { throw BrowserImportProblem.capacity }
+            let validationInput = input
+            var candidate = try await Task.detached {
+                try document.candidate(into: current, selecting: selected, destinations: destinations, flattenDeepFolders: flatten,
+                    collectionTargets: collectionTargets, using: validationInput)
+            }.value
+            try Task.checkCancellation()
+            // A recoverable backup must be durable before the first history insertion.
+            let backupDirectory = backupsDirectory!
+            let backupBatchID = candidate.batch.id
+            let backup = try await Task.detached {
+                try FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+                let url = backupDirectory.appendingPathComponent("Before Import \(formatter.string(from: Date())) \(backupBatchID).json")
+                try EarlyStateArchive(workspace: current, settings: nil).encoded().write(to: url, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                let file = try FileHandle(forWritingTo: url)
+                defer { try? file.close() }
+                try file.synchronize()
+                let backups = try FileManager.default.contentsOfDirectory(at: backupDirectory, includingPropertiesForKeys: nil)
+                    .filter { $0.lastPathComponent.hasPrefix("Before Import ") && $0.pathExtension == "json" }
+                    .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                for old in backups.dropLast(5) where old != url { try FileManager.default.removeItem(at: old) }
+                return url
+            }.value
+            try await journal.write(.init(batch: candidate.batch, state: .importing))
+            batch = candidate.batch
+            var importedVisits = 0
+            for (profile, visits) in candidate.history {
+                guard let file = historyFile(for: profile) else { throw BrowserImportProblem.invalid }
+                let store = historyStores[profile] ?? HistoryStore(fileURL: file)
+                importedVisits += try await store.importVisits(visits, batchID: candidate.batch.id)
+            }
+            try Task.checkCancellation()
+            // Incorporate any page metadata/selection changes that arrived while reading.
+            captureWorkspace()
+            guard let latest = workspace else { throw BrowserImportProblem.invalid }
+            let rebased = try candidate.adding(to: latest, using: input)
+            candidate.batch = candidate.batch.adjustedPositions(in: rebased)
+            try await journal.write(.init(batch: candidate.batch, state: .importing))
+            batch = candidate.batch
+            persistence?.enqueue(rebased)
+            guard await persistence?.flush() == true else { throw SessionError.database(persistence?.error ?? "Couldn’t save the import.") }
+            // The marker and organization are now durable. Never roll history back after this point.
+            batch = nil
+            captureWorkspace()
+            let live = (try? candidate.adding(to: workspace ?? latest, using: input)) ?? rebased
+            workspace = live
+            for session in live.sessions {
+                let owners = visibleModels.filter { $0.coordinator.profileID == session.profileID }
+                for (owner, snapshot) in zip(owners, [session] + session.additionalWindows) {
+                    owner.applyProfileSnapshot(snapshot)
+                    owner.historyRevision += 1
+                    owner.refreshRecentPages()
+                }
+            }
+            // If this small final journal write fails, startup uses the durable marker to finish it.
+            try? await journal.write(.init(batch: candidate.batch, state: .complete))
+            browserImportBatches.insert(candidate.batch, at: 0)
+            let pages = candidate.batch.tabs.count, folders = candidate.batch.folders.count
+            return .init(message: "Imported \(pages) \(pages == 1 ? "page" : "pages"), \(folders) \(folders == 1 ? "folder" : "folders") and \(importedVisits) \(importedVisits == 1 ? "visit" : "visits"). Pages load only when chosen. Undo Import is available here, including after restarting Early.", succeeded: true, backup: backup)
+        } catch {
+            if let batch {
+                do {
+                    for profile in batch.historyProfiles {
+                        if let file = historyFile(for: profile) {
+                            try await (historyStores[profile] ?? HistoryStore(fileURL: file)).undoBrowserImport(batch.id)
+                        }
+                    }
+                    try await journal.remove(batch.id)
+                } catch {
+                    browserImportError = "Import recovery is pending. Early will retry safely at its next launch. \(error.localizedDescription)"
+                }
+            }
+            return .init(message: "Import could not finish. \(error.localizedDescription)", succeeded: false)
+        }
+    }
+
+    func undoBrowserImport(_ requested: BrowserImportBatch) async -> ImportOutcome {
+        guard canEditProfiles, let journal = browserImportJournal else {
+            return .init(message: "Early can’t undo an import right now.", succeeded: false)
+        }
+        profileOperationInProgress = true; applyingWorkspace = true
+        defer { applyingWorkspace = false; profileOperationInProgress = false; saveAll(); deliverExternalLinks() }
+        do {
+            guard await persistence?.flush() == true else { throw SessionError.database("The current session couldn’t be saved.") }
+            captureWorkspace()
+            guard let current = workspace else { throw BrowserImportProblem.invalid }
+            guard let entry = try await journal.entries().first(where: { $0.batch.id == requested.id }) else {
+                browserImportBatches.removeAll { $0.id == requested.id }
+                return .init(message: "This import has already been removed.", succeeded: true)
+            }
+            guard let batch = entry.batch.retaining(in: current) else {
+                var cleaned = current
+                cleaned.browserImportBatchIDs?.removeAll { $0 == requested.id }
+                persistence?.enqueue(cleaned)
+                guard await persistence?.flush() == true else { throw SessionError.database("Import-record cleanup could not be saved.") }
+                try await journal.remove(requested.id)
+                workspace?.browserImportBatchIDs?.removeAll { $0 == requested.id }
+                browserImportBatches.removeAll { $0.id == requested.id }
+                return .init(message: "This import no longer belongs to a remaining profile.", succeeded: true)
+            }
+            let committed = current.browserImportBatchIDs?.contains(batch.id) == true
+            if !committed {
+                // A prior undo may have committed its workspace before a disk
+                // error interrupted history cleanup. Retry only that cleanup.
+                guard try await journal.entries().contains(where: { $0.batch.id == batch.id && $0.state == .undoing }) else { throw BrowserImportProblem.invalid }
+            }
+            let result = try batch.undo(in: current, using: input)
+            try await journal.write(.init(batch: batch, state: .undoing))
+            persistence?.enqueue(result.workspace)
+            guard await persistence?.flush() == true else { throw SessionError.database(persistence?.error ?? "Undo couldn’t be saved.") }
+            captureWorkspace()
+            let live = (try? batch.undo(in: workspace ?? current, using: input).workspace) ?? result.workspace
+            workspace = live
+            for session in live.sessions {
+                for (owner, snapshot) in zip(visibleModels.filter { $0.coordinator.profileID == session.profileID }, [session] + session.additionalWindows) {
+                    owner.applyProfileSnapshot(snapshot); owner.historyRevision += 1; owner.refreshRecentPages()
+                }
+            }
+            for profile in batch.historyProfiles {
+                if let file = historyFile(for: profile), FileManager.default.fileExists(atPath: file.path) {
+                    try await (historyStores[profile] ?? HistoryStore(fileURL: file)).undoBrowserImport(batch.id)
+                }
+            }
+            try await journal.remove(batch.id)
+            browserImportBatches.removeAll { $0.id == batch.id }
+            return .init(message: "Import undone. \(result.preserved) edited or used pages were kept. Profiles and website data were preserved.", succeeded: true)
+        } catch { return .init(message: "Undo could not finish. It is safe to retry or restart Early. \(error.localizedDescription)", succeeded: false) }
+    }
+
     struct ImportOutcome: Equatable {
         let message: String
         let succeeded: Bool
@@ -1069,8 +1242,26 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         for store in icons { await store.shutdown() }
         try? await history?.removeFile()
+        await reconcileBrowserImports()
         await Task.yield()
         await retryWebsiteDataCleanup()
+    }
+
+    private func reconcileBrowserImports() async {
+        guard let journal = browserImportJournal, let current = workspace, let storage = storageURL?.deletingLastPathComponent() else { return }
+        // Hide removed owners immediately, while keeping a visible retry error
+        // if a disk failure prevents the journal cleanup from finishing.
+        browserImportBatches = browserImportBatches.compactMap { $0.retaining(in: current) }
+        do {
+            let retained = try await journal.recover(workspace: current, historyDirectory: storage.appendingPathComponent("History"))
+            browserImportBatches = retained
+            let ids = Set(retained.map(\.id))
+            let markers = workspace?.browserImportBatchIDs?.filter { ids.contains($0) }
+            workspace?.browserImportBatchIDs = markers
+            saveAll()
+            guard await persistence?.flush() == true else { throw SessionError.database("Import-record cleanup could not be saved.") }
+            browserImportError = nil
+        } catch { browserImportError = "Import-record cleanup is pending. Early will retry at its next launch. \(error.localizedDescription)" }
     }
 
     func retryWebsiteDataCleanup() async {

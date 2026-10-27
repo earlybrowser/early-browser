@@ -29,7 +29,8 @@ extension BrowserWindowView {
     }
 
     var navigationControls: some View {
-        HStack(spacing: 4) {
+        let preservingAppearance = model.application?.profileOperationInProgress == true
+        return HStack(spacing: 4) {
             WindowControls().frame(width: 60, height: 32)
             Button {
                 model.perform(.toggleSidebar)
@@ -44,15 +45,18 @@ extension BrowserWindowView {
             .accessibilityIdentifier("sidebar.toggle")
             .help("Toggle sidebar auto-hide\(model.preferences.shortcutHint(.toggleSidebar)). Reveal at the left edge.")
             Spacer(minLength: 0)
-            NavigationButton(kind: .back, history: { historyEntries(forward: false) },
+            NavigationButton(kind: .back, appearanceEnabled: preservingAppearance ? (model.activePage?.canGoBack == true) : nil,
+                             history: { historyEntries(forward: false) },
                              onHistory: { model.perform(.goToHistory(offset: $0)) }) { model.perform(.back) }
                 .disabled(model.activePage?.canGoBack != true)
                 .accessibilityLabel("Back").accessibilityIdentifier("navigation.back")
-            NavigationButton(kind: .forward, history: { historyEntries(forward: true) },
+            NavigationButton(kind: .forward, appearanceEnabled: preservingAppearance ? (model.activePage?.canGoForward == true) : nil,
+                             history: { historyEntries(forward: true) },
                              onHistory: { model.perform(.goToHistory(offset: $0)) }) { model.perform(.forward) }
                 .disabled(model.activePage?.canGoForward != true)
                 .accessibilityLabel("Forward").accessibilityIdentifier("navigation.forward")
-            NavigationButton(kind: model.activePage?.isLoading == true ? .stop : .reload) {
+            NavigationButton(kind: model.activePage?.isLoading == true ? .stop : .reload,
+                             appearanceEnabled: preservingAppearance ? (model.activePage != nil) : nil) {
                 if model.activePage?.isLoading == true { model.perform(.stop) }
                 else { model.perform(.reload) }
             }
@@ -62,7 +66,7 @@ extension BrowserWindowView {
         }
         .font(.system(size: 16, weight: .regular))
         .foregroundStyle(.secondary)
-        .buttonStyle(.plain)
+        .buttonStyle(SidebarButtonStyle())
         .background(WindowDragRegion())
         // Match the traffic lights' top inset: 6 pt of window padding plus
         // 9 pt from centering the native 14 pt buttons in this 32 pt row.
@@ -116,7 +120,7 @@ extension BrowserWindowView {
             }
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SidebarButtonStyle())
         .focused($focusedSidebarControl, equals: .address)
         .focusEffectDisabled()
         .onHover { hovering in

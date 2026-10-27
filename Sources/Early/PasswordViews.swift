@@ -85,7 +85,6 @@ final class PasswordsLock {
 /// Settings › Passwords: the profile's saved passwords, behind the lock.
 struct PasswordsSettingsSection: View {
     @Bindable var application: EarlyAppDelegate
-    @Bindable var preferences: BrowserPreferences
     @Bindable var lock: PasswordsLock
     @State private var expanded: UUID?
     @State private var revealed: Set<UUID> = []
@@ -106,11 +105,6 @@ struct PasswordsSettingsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            SettingsCard {
-                SettingsToggle("Fill passwords automatically",
-                               detail: "When you click or tab into a sign-in form you’ve saved a password for, Early fills it in. It never fills as a page opens, so the page can’t read your password before you reach it. Turn this off to choose from the list under the field instead.",
-                               isOn: $preferences.fillsPasswordsAutomatically, identifier: "settings.fillPasswords")
-            }
             if application.profiles.count > 1 { profilePicker }
             if !lock.isUnlocked { lockedCard }
             else if let vault { content(vault) }

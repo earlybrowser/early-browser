@@ -67,8 +67,8 @@ public struct LiveFolderItem: Equatable, Sendable {
 }
 
 public struct BrowserFolder: Identifiable, Codable, Equatable, Sendable {
-    /// Root = 0, child = 1, grandchild = 2. Sibling count is unrestricted.
-    public static let maximumNestingDepth = 2
+    /// Root = 0, with eight nested levels beneath it. Sibling count is unrestricted.
+    public static let maximumNestingDepth = 8
 
     public let id: UUID
     public let spaceID: UUID

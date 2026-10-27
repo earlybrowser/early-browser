@@ -185,7 +185,7 @@ struct StateArchiveTests {
         #expect(added.workspace.session(for: exported.defaultProfileID) == current.session(for: exported.defaultProfileID))
     }
 
-    /// A file can't quietly turn off updates or turn on automatic fill: those
+    /// A file can't quietly change updates or private-window suggestions: those
     /// change only when the person agrees, and the sheet lists them first.
     @Test func sensitiveSettingsChangeOnlyWhenTheImportSaysSo() throws {
         let suite = "local.early.tests.archive.\(UUID())"
@@ -194,23 +194,25 @@ struct StateArchiveTests {
         let here = BrowserPreferences(defaults: store)
         here.checksForUpdatesAutomatically = true
         here.installsUpdatesAutomatically = false
-        here.fillsPasswordsAutomatically = false
         here.privateOnlineSuggestions = false
         var file = here.portableSettings
         file.toggles["checksForUpdatesAutomatically"] = false
         file.toggles["fillsPasswordsAutomatically"] = true
+        file.toggles["privateOnlineSuggestions"] = true
         file.toggles["spaceSwipes"] = !here.spaceSwipes
         let changes = here.sensitiveChanges(from: file)
-        #expect(changes.map(\.title) == ["Fill passwords automatically", "Check for updates automatically"])
+        #expect(changes.map(\.title) == ["Search suggestions in private windows", "Check for updates automatically"])
         #expect(changes.map(\.value) == [true, false])
 
         let swipes = here.spaceSwipes
         here.apply(file)
-        #expect(here.checksForUpdatesAutomatically && !here.fillsPasswordsAutomatically, "Not without saying so")
+        #expect(here.checksForUpdatesAutomatically && !here.privateOnlineSuggestions, "Not without saying so")
         #expect(here.spaceSwipes != swipes, "Ordinary settings still move")
         here.apply(file, includingSensitive: true)
-        #expect(!here.checksForUpdatesAutomatically && here.fillsPasswordsAutomatically)
+        #expect(!here.checksForUpdatesAutomatically && here.privateOnlineSuggestions)
         #expect(here.sensitiveChanges(from: file).isEmpty)
+        #expect(here.portableSettings.toggles["fillsPasswordsAutomatically"] == nil, "Legacy exports cannot restore automatic filling")
+        #expect(store.object(forKey: "fillsPasswordsAutomatically") == nil)
     }
 
     @Test func settingsMoveOnlyThroughTheAllowList() throws {

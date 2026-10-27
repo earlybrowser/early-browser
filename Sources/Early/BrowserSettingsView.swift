@@ -103,6 +103,7 @@ struct BrowserSettingsView: View {
         .accessibilityIdentifier("settings.window")
         .browserReducedMotion()
         .onAppear { application.presentWindow = { id in openWindow(id: "browser", value: id) } }
+        .sheet(isPresented: $application.browserImportPresented) { BrowserImportSheet(application: application) }
         .sheet(item: $profileEditor) { request in
             ProfileEditorSheet(application: application, request: request) { id in
                 selectedProfileID = id
@@ -169,7 +170,7 @@ struct BrowserSettingsView: View {
     @ViewBuilder private var sectionContent: some View {
         switch application.settingsSection {
         case .profiles: profilesSection
-        case .passwords: PasswordsSettingsSection(application: application, preferences: preferences, lock: application.passwordsLock)
+        case .passwords: PasswordsSettingsSection(application: application, lock: application.passwordsLock)
         case .extensions: ExtensionsSettingsSection(application: application)
         case .privacy: PrivacySettingsSection(application: application)
         case .shortcuts: ShortcutsSettingsSection(preferences: preferences)
@@ -434,6 +435,7 @@ struct BrowserSettingsView: View {
                 }
                 if let sessionMessage { Text(sessionMessage).font(.caption).foregroundStyle(.secondary) }
             }
+            BrowserImportCard(application: application)
             StatePortabilityCard(application: application)
         }
     }

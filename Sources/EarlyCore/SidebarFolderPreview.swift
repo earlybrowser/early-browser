@@ -17,6 +17,24 @@ public struct SidebarFolderPreview: Equatable, Sendable {
         showsDropSlot = receivesSlot && !isDragSource
     }
 
+    /// One outer group and one current folder, regardless of nesting depth.
+    /// Geometry and hit testing still include the transparent intermediate rows.
+    public static func backgroundFolderIDs(in folders: [BrowserFolder], visible: Set<UUID>,
+                                           current: UUID?, hovered: Set<UUID> = []) -> Set<UUID> {
+        let byID = Dictionary(folders.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func path(from id: UUID) -> [UUID] {
+            var result: [UUID] = [], next: UUID? = id, seen = Set<UUID>()
+            while let id = next, let folder = byID[id], seen.insert(id).inserted {
+                result.append(id); next = folder.parentID
+            }
+            return result
+        }
+        let pointer = hovered.intersection(visible).max { path(from: $0).count < path(from: $1).count }
+        guard let current = pointer ?? current else { return [] }
+        let branch = path(from: current).filter { visible.contains($0) }
+        return Set([branch.first, branch.last].compactMap { $0 })
+    }
+
     public static func showsDragTargets(isDragging: Bool, at point: CGPoint,
                                        viewport: CGRect, divider: CGRect) -> Bool {
         isDragging && viewport.contains(point) && point.y < divider.midY

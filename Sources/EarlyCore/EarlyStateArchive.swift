@@ -42,7 +42,6 @@ public extension BrowserPreferences {
         ("translucentChrome", \.translucentChrome), ("restoreSession", \.restoreSession),
         ("showsCommandBarInEmptyWindows", \.showsCommandBarInEmptyWindows), ("pinsResetWhenClosed", \.pinsResetWhenClosed),
         ("controlTabShowsSwitcher", \.controlTabShowsSwitcher), ("automaticPictureInPicture", \.automaticPictureInPicture),
-        ("fillsPasswordsAutomatically", \.fillsPasswordsAutomatically),
         ("checksForUpdatesAutomatically", \.checksForUpdatesAutomatically),
         ("installsUpdatesAutomatically", \.installsUpdatesAutomatically),
     ]
@@ -53,10 +52,9 @@ public extension BrowserPreferences {
                          shortcuts: shortcuts)
     }
 
-    /// Settings that affect passwords, privacy or updates: an import changes
+    /// Settings that affect privacy or updates: an import changes
     /// them only when the person agrees to each, never along with the rest.
     static let sensitiveToggles: [(name: String, title: String)] = [
-        ("fillsPasswordsAutomatically", "Fill passwords automatically"),
         ("privateOnlineSuggestions", "Search suggestions in private windows"),
         ("checksForUpdatesAutomatically", "Check for updates automatically"),
         ("installsUpdatesAutomatically", "Install updates automatically")
@@ -123,6 +121,7 @@ public struct EarlyStateArchive: Codable, Equatable, Sendable {
         self.exportedAt = Date(timeIntervalSince1970: exportedAt.timeIntervalSince1970.rounded(.down))
         self.settings = settings
         var copy = workspace
+        copy.browserImportBatchIDs = nil
         for index in copy.sessions.indices {
             copy.sessions[index].removeLocalUsage()
             for window in copy.sessions[index].additionalWindows.indices { copy.sessions[index].additionalWindows[window].removeLocalUsage() }

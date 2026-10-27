@@ -200,10 +200,30 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             return { x, y, width: rect.width, height: rect.height, viewport: exact ? viewport : 0 };
         };
 
+        // Opacity multiplies down through the field's parents, shadow roots too:
+        // an opaque field inside a see-through wrapper is see-through.
+        const opaque = node => {
+            let opacity = 1;
+            for (let element = node; element; element = element.parentElement || element.getRootNode().host || null) {
+                opacity *= Number(getComputedStyle(element).opacity);
+                if (opacity <= 0.05) return false;
+            }
+            return true;
+        };
+        const visible = node => shown(node) && opaque(node) && (typeof node.checkVisibility !== 'function'
+            || node.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true }));
+        const onTop = node => {
+            const rect = node.getBoundingClientRect();
+            const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+            if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+            const root = node.getRootNode();
+            return (typeof root.elementFromPoint === 'function' ? root : document).elementFromPoint(x, y) === node;
+        };
+
         let menuToken = null, menuSelected = false, filling = false, watching = null;
         const report = node => {
             // Never under a field the person can't see.
-            if (!shown(node)) return;
+            if (!visible(node) || !onTop(node)) return;
             const form = describe(scopeOf(node));
             const role = roleOf(node, form);
             // A sign-up form's user name is new: no saved accounts for it.
@@ -287,53 +307,6 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             }
             if (event.key === 'Enter' && editable(node)) capture(scopeOf(node));
         }, true);
-        // Filling as a person reaches a sign-in form, by clicking one of its
-        // fields or tabbing into it: never as a page appears or focuses a field
-        // by itself, so its scripts can't collect a password from a form no one
-        // chose. The field must be on screen, not see-through, and on top where
-        // it is, not under something else. Each password field once, while empty.
-        const reached = new WeakSet();
-        let tabbedAt = -Infinity;
-        // Opacity multiplies down through the field's parents, shadow roots too:
-        // an opaque field inside a see-through wrapper is see-through.
-        const opaque = node => {
-            let opacity = 1;
-            for (let element = node; element; element = element.parentElement || element.getRootNode().host || null) {
-                opacity *= Number(getComputedStyle(element).opacity);
-                if (opacity <= 0.05) return false;
-            }
-            return true;
-        };
-        const visible = node => shown(node) && opaque(node) && (typeof node.checkVisibility !== 'function'
-            || node.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true }));
-        const onTop = node => {
-            const rect = node.getBoundingClientRect();
-            const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-            if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
-            const root = node.getRootNode();
-            return (typeof root.elementFromPoint === 'function' ? root : document).elementFromPoint(x, y) === node;
-        };
-        const reach = node => {
-            if (filling || !visible(node) || !onTop(node)) return;
-            const form = describe(scopeOf(node));
-            const role = roleOf(node, form);
-            if (form.kind !== 'login' || !form.current || (role !== 'username' && role !== 'current')) return;
-            const field = form.current;
-            if (reached.has(field) || field.value || !visible(field)) return;
-            reached.add(field);
-            post({ type: 'form', token: tokenFor(field), username: form.username ? form.username.value.slice(0, 256) : '' });
-        };
-        document.addEventListener('mousedown', event => {
-            const node = event.composedPath()[0];
-            if (event.isTrusted && event.button === 0 && editable(node)) reach(node);
-        }, true);
-        document.addEventListener('keydown', event => {
-            if (event.isTrusted && event.key === 'Tab') tabbedAt = performance.now();
-        }, true);
-        document.addEventListener('focusin', event => {
-            const node = event.composedPath()[0];
-            if (editable(node) && performance.now() - tabbedAt < 1000) reach(node);
-        }, true);
         const moved = () => { if (menuToken) post({ type: 'move' }); };
         window.addEventListener('scroll', moved, true);
         window.addEventListener('resize', moved);
@@ -356,12 +329,6 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
                 try {
                     if (mode === 'new') {
                         (form.created.length ? form.created : [node]).forEach(input => set(input, password));
-                    } else if (mode === 'auto') {
-                        // Never over something typed in the meantime.
-                        const target = form.current;
-                        if (!target || target.value || (form.username && form.username.value && form.username.value !== username)) return null;
-                        if (username && form.username && !form.username.value) set(form.username, username);
-                        set(target, password);
                     } else {
                         if (username !== null && form.username) set(form.username, username);
                         set(form.current || (isPassword(node) ? node : form.passwords[0]), password);
@@ -431,9 +398,6 @@ extension WebViewManager {
         case "blur", "move":
             guard focusedPasswordField?.view === view else { return }
             hidePasswordSuggestions()
-        case "form":
-            guard let token = body["token"] as? String, !token.isEmpty, token.utf8.count <= 128 else { return }
-            fillAutomatically(token: token, typed: text("username", 256), origin: origin, frame: frame, in: view)
         case "username":
             let value = text("value", 256)
             guard !value.isEmpty else { return }
@@ -578,57 +542,6 @@ extension WebViewManager {
             arguments: ["token": token, "username": username ?? NSNull(), "password": password, "mode": mode],
             in: frame, contentWorld: PasswordFormObserver.world)
         return (result as? [String: Any])?["username"] as? String
-    }
-
-    // MARK: Filling as a person reaches a sign-in form
-
-    /// When the person clicks or tabs into a sign-in form's field (never as the
-    /// page opens), on a secure page, in the page itself or a frame of the same
-    /// site, never over typing. With several accounts, the one used last, or
-    /// the one whose user name is already in the form.
-    func fillAutomatically(token: String, typed: String, origin: String, frame: WKFrameInfo, in view: WKWebView) {
-        guard fillsPasswordsAutomatically(), let vault = passwords, let id = tabID(for: view), let page = pages[id],
-              Self.allowsAutomaticFill(origin: origin, testSchemes: passwordTestSchemes),
-              frame.isMainFrame || view.url.flatMap(passwordOrigin(of:)) == origin else { return }
-        guard vault.isReady else {
-            Task { @MainActor [weak self, weak view] in
-                guard await vault.load(), let self, let view else { return }
-                self.fillAutomatically(token: token, typed: typed, origin: origin, frame: frame, in: view)
-            }
-            return
-        }
-        let logins = vault.logins(for: origin)
-        var chosen: SavedLogin?
-        if !typed.isEmpty {
-            chosen = logins.first { $0.username == typed }
-        } else if let recent = page.recentUsername, recent.origin == origin,
-                  Date().timeIntervalSince(recent.date) < Self.recentUsernameLifetime,
-                  let match = logins.first(where: { $0.username == recent.value }) {
-            // The user name step of a two-step sign-in.
-            chosen = match
-        } else {
-            chosen = logins.max { ($0.lastUsed ?? .distantPast, $0.modified) < ($1.lastUsed ?? .distantPast, $1.modified) }
-        }
-        guard let chosen else { return }
-        Task { @MainActor [weak self, weak view] in
-            guard let self, let view, self.tabID(for: view) == id else { return }
-            _ = await self.fillPasswordField(token: token, frame: frame, in: view, username: chosen.username,
-                                             password: chosen.password, mode: "auto")
-        }
-    }
-
-    /// Secure pages only: https, or this Mac itself.
-    nonisolated static func allowsAutomaticFill(origin: String, testSchemes: Set<String>) -> Bool {
-        guard let url = URL(string: origin), let scheme = url.scheme?.lowercased() else { return false }
-        if scheme == "https" || testSchemes.contains(scheme) { return true }
-        return scheme == "http" && ["localhost", "127.0.0.1", "::1"].contains(url.host?.lowercased() ?? "")
-    }
-
-    /// A page address's password origin, matching `passwordOrigin(_:)` for frames.
-    func passwordOrigin(of url: URL) -> String? {
-        let scheme = url.scheme?.lowercased() ?? ""
-        if passwordTestSchemes.contains(scheme), let host = url.host?.lowercased(), !host.isEmpty { return "\(scheme)://\(host)" }
-        return SitePermissions.origin(of: url)
     }
 
     // MARK: Saving

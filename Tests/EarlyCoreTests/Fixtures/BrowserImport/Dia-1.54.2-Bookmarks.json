@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "roots": {
+    "bookmark_bar": {
+      "type": "folder",
+      "name": "Bookmarks Bar",
+      "children": [
+        {
+          "type": "folder",
+          "name": "Synthetic Research",
+          "children": [
+            {
+              "type": "url",
+              "name": "Synthetic Reference",
+              "url": "https://example.invalid/reference"
+            }
+          ]
+        },
+        {
+          "type": "url",
+          "name": "Synthetic Loose",
+          "url": "https://example.invalid/loose"
+        }
+      ]
+    },
+    "other": {
+      "type": "folder",
+      "name": "Other Bookmarks",
+      "children": []
+    },
+    "synced": {
+      "type": "folder",
+      "name": "Mobile Bookmarks",
+      "children": []
+    }
+  }
+}

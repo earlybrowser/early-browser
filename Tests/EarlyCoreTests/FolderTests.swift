@@ -225,7 +225,27 @@ struct FolderTests {
         }
     }
 
-    @Test func subtreeMovesRespectTwoNestedLevelsAndRejectionsAreAtomic() throws {
+    @Test func legacyDeeperTreesReopenWithoutFlatteningAndCanBeLifted() throws {
+        var session = BrowserSession(), parent: UUID?
+        for level in 0...11 {
+            let folder = BrowserFolder(spaceID: session.activeSpaceID, parentID: parent, name: "Legacy \(level)")
+            session.folders.append(folder); parent = folder.id
+        }
+        try session.validate()
+        let restored = try JSONDecoder().decode(BrowserSession.self, from: JSONEncoder().encode(session))
+        #expect(restored.folders == session.folders)
+        var store = TabStore(tabs: [], folders: restored.folders)
+        let deepest = try #require(parent)
+        #expect(!store.canCreateFolder(in: deepest, spaceID: session.activeSpaceID))
+        let lifted = store.moveFolder(deepest, to: nil)
+        #expect(lifted)
+        #expect(store.folders.last?.parentID == nil)
+        #expect(store.canCreateFolder(in: deepest, spaceID: session.activeSpaceID))
+        session.folders = store.folders
+        try session.validate()
+    }
+
+    @Test func subtreeMovesRespectEightNestedLevelsAndRejectionsAreAtomic() throws {
         let space = UUID()
         var store = TabStore()
         let rootResult = store.createFolder(name: "Root", parentID: nil, spaceID: space)
@@ -236,11 +256,16 @@ struct FolderTests {
         let leaf = try #require(leafResult)
         let otherResult = store.createFolder(name: "Other", parentID: nil, spaceID: space)
         let other = try #require(otherResult)
+        var deepest = leaf
+        for level in 3...BrowserFolder.maximumNestingDepth {
+            let created = store.createFolder(name: "Level \(level)", parentID: deepest, spaceID: space)
+            deepest = try #require(created)
+        }
         let before = store
-        #expect(!store.canMoveFolder(other, to: leaf))
-        let invalidPlacement = store.placeFolder(other, in: leaf, before: nil)
+        #expect(!store.canMoveFolder(other, to: deepest))
+        let invalidPlacement = store.placeFolder(other, in: deepest, before: nil)
         #expect(!invalidPlacement)
-        #expect(!store.canMoveFolder(root, to: other)) // Its grandchild would be depth 3.
+        #expect(!store.canMoveFolder(root, to: other)) // Its deepest descendant would exceed eight.
         let invalidMove = store.moveFolder(root, to: other)
         #expect(!invalidMove)
         #expect(store == before)
@@ -261,8 +286,8 @@ struct FolderTests {
         var store = TabStore(folders: [root, child, grandchild, oldDeep])
         try BrowserFolder.validate(store.folders)
         let rejected = store.createFolder(name: "Deeper", parentID: oldDeep.id, spaceID: space)
-        #expect(rejected == nil)
-        #expect(store.folders.last?.parentID == grandchild.id)
+        #expect(rejected != nil)
+        #expect(store.folders.first { $0.id == oldDeep.id }?.parentID == grandchild.id)
         let moved = store.moveFolder(oldDeep.id, to: root.id)
         #expect(moved)
         #expect(BrowserFolder.nestingDepth(of: oldDeep.id, in: store.folders) == 1)
