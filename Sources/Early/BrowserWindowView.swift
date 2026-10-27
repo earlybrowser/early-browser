@@ -95,6 +95,7 @@ struct BrowserWindowView: View {
     @State var hoveredMedia: UUID?
     @State var hoveredFolder: UUID?
     @State var hoveredFolderGroups: Set<UUID> = []
+    @State var lastOpenedFolder: UUID?
     @State var folderBounceEvent: FolderBounceEvent?
     @State var sidebarPointer = SidebarPointer()
     @State var windowPointer = SidebarPointer()
@@ -759,8 +760,10 @@ struct BrowserWindowView: View {
             hoveredTab = nil
             hoveredFolder = nil
             hoveredFolderGroups = []
+            lastOpenedFolder = nil
             focusedSidebarControl = nil
         }
+        .onChange(of: model.coordinator.activeTabID) { _, _ in lastOpenedFolder = nil }
         .onChange(of: reduceMotion) { _, enabled in
             if enabled { folderBounceEvent = nil }
         }

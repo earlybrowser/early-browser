@@ -450,6 +450,7 @@ extension BrowserWindowView {
             ? nil : FolderBounceEvent(folders: affected)
         withAnimation(folderExpansionAnimation) {
             model.coordinator.toggleFolder(folder.id)
+            lastOpenedFolder = folder.isExpanded ? folder.parentID : folder.id
         }
         // Opening a live folder reads it again if it's been a while.
         if folder.live != nil, !folder.isExpanded { model.pullRequests?.refreshIfStale() }
@@ -785,9 +786,12 @@ extension BrowserWindowView {
             }
             let affected: Set<UUID> = reduceMotion || draggingTab != nil ? [] : folderBounceEvent?.folders ?? []
             let heights = panels.filter { affected.contains($0.id) }.map(\.frame.height)
+            let backgroundIDs = SidebarFolderPreview.backgroundFolderIDs(in: model.coordinator.folders,
+                visible: Set(panels.map(\.id)), current: currentFolderBackground,
+                hovered: showsFolderDragTargets ? [] : hoveredFolderGroups.union(hoveredFolder.map { [$0] } ?? []))
             // One clock and one pixel displacement preserve the padding between
             // nested islands. Independent percentage springs can cross edges.
-            folderPanelBackgrounds(panels, affected: affected, size: geometry.size)
+            folderPanelBackgrounds(panels, backgroundIDs: backgroundIDs, affected: affected, size: geometry.size)
             .keyframeAnimator(initialValue: CGFloat.zero, trigger: folderBounceEvent) { layer, requested in
                 let displacement = SidebarFolderBounce.displacement(requested, panelHeights: heights,
                     minimumHeight: PinnedIsland.height)
@@ -801,12 +805,22 @@ extension BrowserWindowView {
         }.allowsHitTesting(false).accessibilityHidden(true)
     }
 
-    func folderPanelBackgrounds(_ panels: [FolderPanel], affected: Set<UUID>,
+    var currentFolderBackground: UUID? {
+        if showsFolderDragTargets, let target = dropFolder ?? pendingFolder { return target }
+        switch focusedSidebarControl {
+        case .folder(let id), .folderToggle(let id): return id
+        case .tab(let id), .close(let id), .media(let id):
+            return model.coordinator.tabStore.tab(id: id)?.folderID
+        default:
+            return lastOpenedFolder ?? model.coordinator.activeTabID.flatMap { model.coordinator.tabStore.tab(id: $0)?.folderID }
+        }
+    }
+
+    func folderPanelBackgrounds(_ panels: [FolderPanel], backgroundIDs: Set<UUID>, affected: Set<UUID>,
                                         size: CGSize) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(panels) { panel in
-                let highlighted = showsFolderDragTargets || hoveredFolderGroups.contains(panel.id)
-                    || hoveredFolder == panel.id
+                let highlighted = backgroundIDs.contains(panel.id)
                 // Draw only: keep row positions and drag/hit geometry unchanged.
                 // The shared envelope cannot consume the next row's spacing or
                 // shrink any member of the branch below its header height.
