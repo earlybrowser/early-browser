@@ -56,6 +56,99 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(query.value as? String, "")
     }
 
+    /// CI only: uses the real open panel so sandbox access follows the same
+    /// approval path as a person importing a file. Never visits imported URLs.
+    func testBrowserImportSelectsOnlyChosenItemsAndKeepsThemUnloaded() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyImportUITest-\(UUID()).html")
+        let html = """
+        <!DOCTYPE NETSCAPE-Bookmark-file-1><META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+        <DL><DT><H3>Research</H3><DL>
+        <DT><A HREF="https://example.invalid/one">One</A>
+        <DT><A HREF="https://example.invalid/two">Two</A>
+        </DL></DL>
+        """
+        try Data(html.utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let app = launchFreshApp()
+        app.menuBars.menuBarItems["File"].click()
+        app.menuItems["Import from Another Browser…"].click()
+        let choose = app.buttons["browserImport.chooseFile"]
+        XCTAssertTrue(choose.waitForExistence(timeout: 5))
+        choose.click()
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        app.typeText(file.path)
+        app.typeKey(.return, modifierFlags: [])
+        let accept = app.buttons["Preview"]
+        XCTAssertTrue(accept.waitForExistence(timeout: 5))
+        accept.click()
+        let search = app.textFields["browserImport.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        app.buttons["Select None"].click()
+        XCTAssertFalse(app.buttons["browserImport.continue"].isEnabled)
+        search.click(); search.typeText("One")
+        let one = app.checkBoxes["One"]
+        XCTAssertTrue(one.waitForExistence(timeout: 5))
+        one.click()
+        XCTAssertEqual(app.checkBoxes["Research"].value as? String, "2", "An ancestor reports partial selection")
+        app.buttons["browserImport.continue"].click()
+        XCTAssertTrue(app.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browserImport.profileName.")).firstMatch.waitForExistence(timeout: 5))
+        app.buttons["browserImport.continue"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["browserImport.review"].waitForExistence(timeout: 5))
+        app.buttons["browserImport.continue"].click()
+        let message = app.staticTexts["browserImport.message"]
+        let completed = NSPredicate(format: "label CONTAINS %@", "Imported 1 page")
+        expectation(for: completed, evaluatedWith: message)
+        waitForExpectations(timeout: 10)
+        app.buttons["Done"].click()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browserImport.undo.")).firstMatch.waitForExistence(timeout: 5))
+        // The selected source profile is new: importing never changes the
+        // original empty browser window or allocates a page there.
+        app.windows["browser"].click()
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
+    func testBrowserImportCanBeCancelledFromKeyboardWithoutChangingBrowsing() {
+        let app = launchFreshApp()
+        app.menuBars.menuBarItems["File"].click()
+        app.menuItems["Import from Another Browser…"].click()
+        XCTAssertTrue(app.buttons["browserImport.chooseFile"].waitForExistence(timeout: 5))
+        app.typeKey(.tab, modifierFlags: [])
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(app.buttons["browserImport.chooseFile"].waitForNonExistence(timeout: 5))
+        app.windows["browser"].click()
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
+    func testEightNestedFolderLevelsRemainVisibleAndRejectANinthChild() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        app.scrollViews["sidebar.tabs"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).rightClick()
+        visibleMenuAction("New Folder")
+        let field = app.textFields["folder.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        pasteText("Level 0", into: field, in: app)
+        app.buttons["Save"].click()
+        var parent = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == 'Level 0'")).firstMatch
+        XCTAssertTrue(parent.waitForExistence(timeout: 3))
+        let root = parent
+        for depth in 1...8 {
+            pinAction("New Subfolder…", on: parent)
+            XCTAssertTrue(field.waitForExistence(timeout: 3))
+            pasteText("Level \(depth)", into: field, in: app)
+            app.buttons["Save"].click()
+            parent = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder.' AND label == %@", "Level \(depth)")).firstMatch
+            XCTAssertTrue(parent.waitForExistence(timeout: 3))
+            XCTAssertTrue(parent.isHittable)
+        }
+        parent.rightClick()
+        let child = app.menuItems["New Subfolder…"]
+        XCTAssertFalse(child.exists && child.isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+        root.click()
+        XCTAssertFalse(parent.exists)
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
     /// Like Arc and Chrome: ⌘W in a window with no tabs closes it, and Early
     /// keeps running until ⌘Q.
     func testCommandWClosesAnEmptyWindowButNeverQuits() {

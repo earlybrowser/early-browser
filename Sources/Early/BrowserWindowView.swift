@@ -327,6 +327,7 @@ struct BrowserWindowView: View {
             .padding(.leading, sidebarAutoHides ? 0 : model.sidebarWidth + 6)
 
             sidebar
+                .disabled(model.application?.profileOperationInProgress == true)
                 .dropDestination(for: URL.self) { urls, _ in model.openLocations(urls) }
                 .background(surfaceFrame("sidebar"))
                 .background {
@@ -558,7 +559,7 @@ struct BrowserWindowView: View {
                 let success: Bool
                 if let editingFolder { success = model.coordinator.renameFolder(editingFolder, to: folderName) }
                 else { success = model.coordinator.createFolder(name: folderName, parentID: folderParent, icon: folderIcon) != nil }
-                if success { model.save() } else { model.notice = "Could not save folder. Use a name and a parent with room for a subfolder (two nesting levels maximum)." }
+                if success { model.save() } else { model.notice = "Could not save folder. Use a name and a parent with room for a subfolder (eight nesting levels maximum)." }
                 folderEditor = false
             }
             .keyboardShortcut(.defaultAction)

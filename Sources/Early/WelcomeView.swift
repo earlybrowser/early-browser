@@ -65,6 +65,11 @@ struct WelcomeCard: View {
                     }
                 }
             }
+            if let application = model.application, !model.isPrivate {
+                Button("Import from Another Browser…") { application.showBrowserImport() }
+                    .disabled(!application.canEditProfiles)
+                    .accessibilityIdentifier("welcome.browserImport")
+            }
             HStack(spacing: 12) {
                 if let application = model.application, !application.isDefaultBrowser {
                     Button("Make Early Your Default Browser…") {

@@ -126,6 +126,9 @@ struct BrowserCommands: Commands {
             Button("Open File…") { model?.perform(.openFile) }
                 .keyboardShortcut(key(.openFile))
                 .disabled(model?.canPerform(.openFile) != true)
+            Divider()
+            Button("Import from Another Browser…") { application.showBrowserImport() }
+                .disabled(!application.canEditProfiles || model?.isPrivate == true)
         }
         CommandGroup(replacing: .saveItem) {
             // Like Arc and Chrome: ⌘W closes the tab, and the window itself

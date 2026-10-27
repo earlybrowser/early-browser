@@ -103,6 +103,7 @@ struct BrowserSettingsView: View {
         .accessibilityIdentifier("settings.window")
         .browserReducedMotion()
         .onAppear { application.presentWindow = { id in openWindow(id: "browser", value: id) } }
+        .sheet(isPresented: $application.browserImportPresented) { BrowserImportSheet(application: application) }
         .sheet(item: $profileEditor) { request in
             ProfileEditorSheet(application: application, request: request) { id in
                 selectedProfileID = id
@@ -434,6 +435,7 @@ struct BrowserSettingsView: View {
                 }
                 if let sessionMessage { Text(sessionMessage).font(.caption).foregroundStyle(.secondary) }
             }
+            BrowserImportCard(application: application)
             StatePortabilityCard(application: application)
         }
     }
