@@ -22,8 +22,6 @@ public final class BrowserPreferences {
     public var restoreSession: Bool { didSet { store(restoreSession, for: "restoreSession") } }
     /// A video playing in a tab you switch away from continues in Picture in Picture.
     public var automaticPictureInPicture: Bool { didSet { store(automaticPictureInPicture, for: "automaticPictureInPicture") } }
-    /// A sign-in page with a saved password is filled in as it opens, as in Chrome.
-    public var fillsPasswordsAutomatically: Bool { didSet { store(fillsPasswordsAutomatically, for: "fillsPasswordsAutomatically") } }
     /// Where command-bar searches and their suggestions go.
     public var searchEngine: SearchEngine { didSet { store(searchEngine.rawValue, for: "searchEngine") } }
     /// A window that opens without a tab shows the command bar, ready to type.
@@ -59,10 +57,12 @@ public final class BrowserPreferences {
     }
 
     public init(defaults: UserDefaults = .standard) {
+        // Saved accounts now require an explicit choice in the field's picker.
+        defaults.removeObject(forKey: "fillsPasswordsAutomatically")
         self.defaults = defaults
         defaults.register(defaults: ["onlineSearchSuggestions": true, "commandBarActions": true, "spaceSwipes": true,
             "haptics": true, "spaceThemes": true, "translucentChrome": true, "restoreSession": true,
-            "automaticPictureInPicture": true, "fillsPasswordsAutomatically": true, "showsCommandBarInEmptyWindows": true,
+            "automaticPictureInPicture": true, "showsCommandBarInEmptyWindows": true,
             "pinsResetWhenClosed": true, "controlTabShowsSwitcher": true,
             "checksForUpdatesAutomatically": true])
         appearance = Appearance(rawValue: defaults.string(forKey: "browserAppearance") ?? "") ?? .system
@@ -76,7 +76,6 @@ public final class BrowserPreferences {
         translucentChrome = defaults.bool(forKey: "translucentChrome")
         restoreSession = defaults.bool(forKey: "restoreSession")
         automaticPictureInPicture = defaults.bool(forKey: "automaticPictureInPicture")
-        fillsPasswordsAutomatically = defaults.bool(forKey: "fillsPasswordsAutomatically")
         searchEngine = SearchEngine(rawValue: defaults.string(forKey: "searchEngine") ?? "") ?? .google
         showsCommandBarInEmptyWindows = defaults.bool(forKey: "showsCommandBarInEmptyWindows")
         pinsResetWhenClosed = defaults.bool(forKey: "pinsResetWhenClosed")

@@ -48,8 +48,6 @@ struct PasswordAutofillTests {
         let fixture = PageToolFixture(pages: pages)
         fixture.manager.passwords = PasswordVault(fileURL: nil, key: nil)
         fixture.manager.passwordTestSchemes = ["early-tools"]
-        // Filling as pages open has its own test; the others choose from the list.
-        fixture.manager.fillsPasswordsAutomatically = { false }
         return fixture
     }
 
@@ -199,7 +197,7 @@ struct PasswordAutofillTests {
         view.removeFromSuperview()
     }
 
-    @Test func signInFieldsAreFilledWhenAPersonReachesThemNeverAsThePageOpens() async throws {
+    @Test func signInFieldsWaitForAnAccountChoiceAfterClicksOrTabbing() async throws {
         let later = """
             <title>Later</title><div id="app"></div>
             <script>setTimeout(() => app.innerHTML = '<form><input id=user autocomplete=username><input id=pass type=password></form>', 300)</script>
@@ -241,13 +239,11 @@ struct PasswordAutofillTests {
         window.isReleasedWhenClosed = false
         defer { window.close() }
         let manager = fixture.manager, vault = try #require(manager.passwords)
-        var enabled = true
-        manager.fillsPasswordsAutomatically = { enabled }
         vault.save(origin: "early-tools://fixture", username: "ada", password: "first")
         vault.save(origin: "early-tools://fixture", username: "grace", password: "second")
         vault.save(origin: "early-tools://accounts", username: "frame", password: "framed")
         vault.markUsed(try #require(vault.login(origin: "early-tools://fixture", username: "grace")).id)
-        func values(_ tab: BrowserTab, waitingForFill: Bool = true) async throws -> [String] {
+        func values(_ tab: BrowserTab, waitingForFill: Bool = false) async throws -> [String] {
             var result: [String] = []
             for _ in 0..<(waitingForFill ? 400 : 24) {
                 result = try await fixture.evaluate("['user', 'pass'].map(id => document.getElementById(id)?.value ?? '')", in: tab) as? [String] ?? []
@@ -261,13 +257,13 @@ struct PasswordAutofillTests {
         let login = try await fixture.open("login")
         #expect(try await values(login, waitingForFill: false) == ["", ""], "Nothing is filled as the page opens")
         try await personClicks("user", in: try view(login), window: window)
-        #expect(try await values(login) == ["grace", "second"], "A click fills the account used last")
-        #expect(try await fixture.evaluate("seen.join(',')", in: login) as? String == "user=grace,pass=second",
-                "Filled like typing")
-        #expect(vault.logins.allSatisfy { $0.username != "ada" || $0.lastUsed == nil }, "Filling isn't using it yet")
-        // The list still has every account, and choosing one replaces what was filled.
+        #expect(try await values(login) == ["", ""], "A click never chooses the account used last")
+        #expect(try await fixture.evaluate("seen.join(',')", in: login) as? String == "",
+                "No credentials or input events until an account is chosen")
+        #expect(vault.logins.allSatisfy { $0.username != "ada" || $0.lastUsed == nil }, "Opening the picker does not mark an account as used")
+        // The picker lists every account; explicitly choosing one fills the form.
         let field = try await focus("user", in: try view(login), fixture)
-        #expect(manager.passwordSuggestions(for: field).count == 3, "Both accounts, not only the filled-in one")
+        #expect(manager.passwordSuggestions(for: field).count == 3, "Both accounts are offered without choosing either")
         manager.choosePasswordSuggestion(.login(try #require(vault.login(origin: "early-tools://fixture", username: "ada")).id,
                                                 username: "ada"))
         var chosen: [String] = []
@@ -276,14 +272,15 @@ struct PasswordAutofillTests {
             chosen = try await fixture.evaluate("[user.value, pass.value]", in: login) as? [String] ?? []
         }
         #expect(chosen == ["ada", "first"])
+        #expect(try await fixture.evaluate("seen.join(',')", in: login) as? String == "user=ada,pass=first", "Explicit selection fills like typing")
         let withName = try await fixture.open("typed")
         try await personClicks("pass", in: try view(withName), window: window)
-        #expect(try await values(withName) == ["grace", "second"], "The user name already in the form")
+        #expect(try await values(withName) == ["grace", ""], "An existing user name does not authorize filling a password")
         let appearing = try await fixture.open("later")
         try await Task.sleep(for: .milliseconds(500))
         #expect(try await values(appearing, waitingForFill: false) == ["", ""], "A form that appears isn't filled by itself")
         try await personClicks("user", in: try view(appearing), window: window)
-        #expect(try await values(appearing) == ["ada", "first"], "Clicking it fills the account chosen last")
+        #expect(try await values(appearing) == ["", ""], "A dynamically added form also waits for an account choice")
 
         // Pages can't trigger it: by focusing a field, or with a see-through
         // or covered form under the person's click.
@@ -297,11 +294,11 @@ struct PasswordAutofillTests {
         try await personClicks("cover", in: try view(cover), window: window, offset: CGPoint(x: 60, y: 30))
         #expect(try await values(cover, waitingForFill: false) == ["", ""], "A covered form gets nothing")
 
-        // Tabbing into the form fills it, unless the form is under something.
+        // Keyboard focus also leaves credentials untouched until selection.
         let tabbed = try await fixture.open("tabbing")
         try await personClicks("start", in: try view(tabbed), window: window)
         try await personTabs(in: try view(tabbed), window: window)
-        #expect(try await values(tabbed) == ["ada", "first"], "Tab into the form fills it")
+        #expect(try await values(tabbed) == ["", ""], "Tabbing never chooses an account")
         let tabbedCovered = try await fixture.open("tabbingCovered")
         try await personClicks("start", in: try view(tabbedCovered), window: window)
         try await personTabs(in: try view(tabbedCovered), window: window)
@@ -320,16 +317,15 @@ struct PasswordAutofillTests {
         }
         #expect(framedValues == " ", "Nothing filled in the framed page: \(framedValues ?? "nil")")
 
-        // Turned off: the list under the field only.
-        enabled = false
-        let off = try await fixture.open("login")
-        try await personClicks("user", in: try view(off), window: window)
-        try await Task.sleep(for: .milliseconds(400))
-        #expect(try await fixture.evaluate("[user.value, pass.value]", in: off) as? [String] == ["", ""])
+        // Choosing an account still works after keyboard focus, and can switch
+        // between saved identities without any automatic account selection.
+        let tabField = try await focus("user", in: try view(tabbed), fixture)
+        let offered = manager.passwordSuggestions(for: tabField)
+        let grace = try #require(vault.login(origin: "early-tools://fixture", username: "grace"))
+        #expect(offered.contains(.login(grace.id, username: "grace")))
+        manager.choosePasswordSuggestion(.login(grace.id, username: "grace"))
+        #expect(try await values(tabbed, waitingForFill: true) == ["grace", "second"])
 
-        #expect(WebViewManager.allowsAutomaticFill(origin: "https://example.com", testSchemes: []))
-        #expect(!WebViewManager.allowsAutomaticFill(origin: "http://example.com", testSchemes: []), "Not on insecure pages")
-        #expect(WebViewManager.allowsAutomaticFill(origin: "http://localhost:8080", testSchemes: []))
     }
 
     @Test func aSentSignInIsOfferedOnceItWorksAndUpdatedWhenItChanges() async throws {

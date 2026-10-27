@@ -170,7 +170,7 @@ struct BrowserSettingsView: View {
     @ViewBuilder private var sectionContent: some View {
         switch application.settingsSection {
         case .profiles: profilesSection
-        case .passwords: PasswordsSettingsSection(application: application, preferences: preferences, lock: application.passwordsLock)
+        case .passwords: PasswordsSettingsSection(application: application, lock: application.passwordsLock)
         case .extensions: ExtensionsSettingsSection(application: application)
         case .privacy: PrivacySettingsSection(application: application)
         case .shortcuts: ShortcutsSettingsSection(preferences: preferences)

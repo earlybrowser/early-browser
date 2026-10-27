@@ -67,8 +67,6 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var savesPasswords = true
     /// The window's look for the list under sign-in fields.
     public var passwordListStyle: () -> PasswordListStyle = { PasswordListStyle(theme: .space(.gray), allowsTransparency: true) }
-    /// Whether sign-in pages with a saved password are filled in as they open.
-    public var fillsPasswordsAutomatically: () -> Bool = { true }
     /// The profile's extensions (a `WKWebExtensionController` on macOS 15.4
     /// and later); pages get it when they're created.
     public var extensionController: AnyObject?
