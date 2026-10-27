@@ -97,11 +97,12 @@ public struct BrowserSession: Codable, Equatable, Sendable {
         guard Set(tabs.map(\.id) + folders.map(\.id)).count == tabs.count + folders.count else { throw SessionError.invalidData }
         guard version == 2, Set(tabs.map(\.id)).count == tabs.count,
               recentlyClosed.count <= 20 else { throw SessionError.invalidData }
+        let folderSpaces = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0.spaceID) })
         for tab in tabs + recentlyClosed.map(\.tab) {
             guard spaceIDs.contains(tab.spaceID) else { throw SessionError.invalidData }
             if let id = tab.folderID {
                 guard tab.pinnedURL != nil, !tab.isFavorite,
-                      folders.contains(where: { $0.id == id && $0.spaceID == tab.spaceID }) else { throw SessionError.invalidData }
+                      folderSpaces[id] == tab.spaceID else { throw SessionError.invalidData }
             }
             guard !tab.isFavorite || tab.pinnedURL != nil else { throw SessionError.invalidData }
             _ = try input.validate(tab.currentURL)

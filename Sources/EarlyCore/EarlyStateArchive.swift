@@ -123,6 +123,7 @@ public struct EarlyStateArchive: Codable, Equatable, Sendable {
         self.exportedAt = Date(timeIntervalSince1970: exportedAt.timeIntervalSince1970.rounded(.down))
         self.settings = settings
         var copy = workspace
+        copy.browserImportBatchIDs = nil
         for index in copy.sessions.indices {
             copy.sessions[index].removeLocalUsage()
             for window in copy.sessions[index].additionalWindows.indices { copy.sessions[index].additionalWindows[window].removeLocalUsage() }

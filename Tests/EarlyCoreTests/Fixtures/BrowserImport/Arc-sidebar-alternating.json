@@ -1,0 +1,114 @@
+{
+  "sidebar": {
+    "containers": [
+      {
+        "global": {}
+      },
+      {
+        "spaces": [
+          "space-a",
+          {
+            "title": "Research Space",
+            "profileID": "synthetic-work",
+            "newContainerIDs": [
+              {
+                "pinned": {}
+              },
+              "pins",
+              {
+                "unpinned": {
+                  "_0": {
+                    "shared": {}
+                  }
+                }
+              },
+              "today"
+            ]
+          }
+        ],
+        "items": [
+          "pins",
+          {
+            "data": {
+              "itemContainer": {}
+            },
+            "childrenIds": [
+              "pinned",
+              "folder"
+            ]
+          },
+          "today",
+          {
+            "data": {
+              "itemContainer": {}
+            },
+            "childrenIds": [
+              "open"
+            ]
+          },
+          "apps",
+          {
+            "data": {
+              "itemContainer": {}
+            },
+            "childrenIds": [
+              "fav"
+            ]
+          },
+          "pinned",
+          {
+            "data": {
+              "tab": {
+                "savedURL": "https://example.invalid/pinned",
+                "savedTitle": "Pinned"
+              }
+            }
+          },
+          "folder",
+          {
+            "title": "Research",
+            "data": {
+              "list": {}
+            },
+            "childrenIds": [
+              "nested"
+            ]
+          },
+          "nested",
+          {
+            "data": {
+              "tab": {
+                "savedURL": "https://example.invalid/nested",
+                "savedTitle": "Nested"
+              }
+            }
+          },
+          "open",
+          {
+            "data": {
+              "tab": {
+                "savedURL": "https://example.invalid/open",
+                "savedTitle": "Open"
+              }
+            }
+          },
+          "fav",
+          {
+            "data": {
+              "tab": {
+                "savedURL": "https://example.invalid/favorite",
+                "savedTitle": "Favorite"
+              }
+            }
+          }
+        ],
+        "topAppsContainerIDs": [
+          {
+            "profileID": "synthetic-work"
+          },
+          "apps"
+        ]
+      }
+    ]
+  }
+}

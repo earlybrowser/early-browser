@@ -1,0 +1,132 @@
+{
+  "spaces": [
+    {
+      "uuid": "space-1",
+      "name": "Space",
+      "containerTabId": 0,
+      "theme": {
+        "type": "gradient",
+        "gradientColors": [],
+        "opacity": 0.5,
+        "texture": 0
+      }
+    },
+    {
+      "uuid": "space-2",
+      "name": "Synthetic Research",
+      "icon": "star",
+      "containerTabId": 0,
+      "theme": {
+        "type": "gradient",
+        "gradientColors": [],
+        "opacity": 0.5,
+        "texture": 0
+      }
+    }
+  ],
+  "folders": [
+    {
+      "id": "folder-3",
+      "name": "Synthetic Folder",
+      "parentId": null,
+      "workspaceId": "space-2",
+      "prevSiblingInfo": {
+        "type": "start",
+        "id": null
+      },
+      "pinned": true
+    }
+  ],
+  "groups": [
+    {
+      "pinned": true,
+      "splitView": false,
+      "id": "folder-3",
+      "name": "Synthetic Folder",
+      "color": "zen-workspace-color",
+      "collapsed": true,
+      "saveOnWindowClose": true
+    }
+  ],
+  "tabs": [
+    {
+      "entries": [
+        {
+          "url": "about:blank"
+        }
+      ],
+      "index": 1,
+      "pinned": true,
+      "zenWorkspace": "space-2",
+      "zenEssential": false,
+      "zenSyncId": "tab-4",
+      "zenIsEmpty": true,
+      "zenIsGlance": false,
+      "userContextId": 0,
+      "groupId": "folder-3"
+    },
+    {
+      "entries": [
+        {
+          "url": "https://example.invalid/reference"
+        }
+      ],
+      "index": 1,
+      "pinned": true,
+      "zenWorkspace": "space-2",
+      "zenEssential": false,
+      "zenSyncId": "tab-5",
+      "zenIsEmpty": false,
+      "zenIsGlance": false,
+      "userContextId": 0,
+      "groupId": "folder-3"
+    },
+    {
+      "entries": [
+        {
+          "url": "about:blank",
+          "title": "about:blank"
+        }
+      ],
+      "index": 1,
+      "pinned": false,
+      "zenWorkspace": "space-2",
+      "zenEssential": false,
+      "zenSyncId": "tab-6",
+      "zenIsEmpty": true,
+      "zenIsGlance": false,
+      "userContextId": 0
+    },
+    {
+      "entries": [
+        {
+          "url": "https://example.invalid/today"
+        }
+      ],
+      "index": 1,
+      "pinned": false,
+      "zenWorkspace": "space-2",
+      "zenEssential": false,
+      "zenSyncId": "tab-7",
+      "zenIsEmpty": false,
+      "zenIsGlance": false,
+      "userContextId": 0
+    },
+    {
+      "entries": [
+        {
+          "url": "about:blank",
+          "title": "about:blank"
+        }
+      ],
+      "index": 1,
+      "pinned": false,
+      "zenWorkspace": "space-1",
+      "zenEssential": false,
+      "zenSyncId": "tab-8",
+      "zenIsEmpty": false,
+      "zenIsGlance": false,
+      "userContextId": 0
+    }
+  ]
+}

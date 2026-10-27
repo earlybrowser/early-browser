@@ -206,6 +206,55 @@ public actor HistoryStore {
         }
     }
 
+    /// A bulk transaction adds only real known visits. Imported source identities
+    /// are unique across batches; repeating an export does not inflate history.
+    public func importVisits(_ records: [BrowserImportNode], batchID: UUID, now: Date = Date()) throws -> Int {
+        guard records.count <= BrowserImportDocument.maximumVisits else { throw BrowserImportProblem.capacity }
+        let db = try open()
+        // Reuse an indexed lookup; never load an unbounded prior import history
+        // into memory just to check this bounded batch.
+        var lookup: OpaquePointer?
+        try Self.check(sqlite3_prepare_v2(db, "SELECT 1 FROM browser_import_visits WHERE source_key=?1", -1, &lookup, nil), db)
+        defer { sqlite3_finalize(lookup) }
+        var seen = Set<String>(), count = 0
+        try Self.transaction(db) {
+            for item in records {
+                try Task.checkCancellation()
+                guard let url = item.url, BrowserImportDocument.webURL(url.absoluteString) != nil,
+                      let date = item.visitedAt, date.timeIntervalSince1970.isFinite,
+                      date >= now.addingTimeInterval(-retention), date <= now.addingTimeInterval(300) else { continue }
+                let key = BrowserImportDocument.identity(url.absoluteString + "|" + String(date.timeIntervalSince1970))
+                guard seen.insert(key).inserted else { continue }
+                try Self.bind(lookup!, [.text(key)], db)
+                let found = sqlite3_step(lookup)
+                try Self.check(sqlite3_reset(lookup), db)
+                if found == SQLITE_ROW { continue }
+                guard found == SQLITE_DONE else { throw Self.failure(db) }
+                try Self.run(db, "INSERT OR IGNORE INTO pages(url,title,last_visit) VALUES(?1,?2,?3)",
+                             [.text(url.absoluteString), .text(Self.clean(item.title)), .real(date.timeIntervalSince1970)])
+                try Self.run(db, "INSERT INTO visits(page_id,visited_at) SELECT id,?2 FROM pages WHERE url=?1",
+                             [.text(url.absoluteString), .real(date.timeIntervalSince1970)])
+                let id = sqlite3_last_insert_rowid(db)
+                try Self.run(db, "INSERT INTO browser_import_visits(visit_id,batch_id,source_key) VALUES(?1,?2,?3)",
+                             [.integer(id), .text(batchID.uuidString), .text(key)])
+                try Self.run(db, "INSERT OR IGNORE INTO touched SELECT id FROM pages WHERE url=?1", [.text(url.absoluteString)])
+                count += 1
+            }
+            try Self.recountTouched(db)
+        }
+        return count
+    }
+
+    /// Deletes only visits this batch actually inserted, keeping later native visits.
+    public func undoBrowserImport(_ batchID: UUID) throws {
+        let db = try open()
+        try Self.transaction(db) {
+            try Self.run(db, "INSERT OR IGNORE INTO touched SELECT page_id FROM visits WHERE id IN (SELECT visit_id FROM browser_import_visits WHERE batch_id=?1)", [.text(batchID.uuidString)])
+            try Self.run(db, "DELETE FROM visits WHERE id IN (SELECT visit_id FROM browser_import_visits WHERE batch_id=?1)", [.text(batchID.uuidString)])
+            try Self.recountTouched(db)
+        }
+    }
+
     public func close() {
         if let db { sqlite3_close(db) }
         db = nil
@@ -257,6 +306,10 @@ public actor HistoryStore {
                 CREATE INDEX IF NOT EXISTS visits_time ON visits(visited_at);
                 CREATE INDEX IF NOT EXISTS visits_page ON visits(page_id);
                 CREATE INDEX IF NOT EXISTS pages_recent ON pages(last_visit);
+                CREATE TABLE IF NOT EXISTS browser_import_visits (
+                    visit_id INTEGER PRIMARY KEY REFERENCES visits(id) ON DELETE CASCADE,
+                    batch_id TEXT NOT NULL, source_key TEXT NOT NULL UNIQUE);
+                CREATE INDEX IF NOT EXISTS browser_import_batch ON browser_import_visits(batch_id);
                 PRAGMA user_version=1;
                 CREATE TEMP TABLE IF NOT EXISTS touched (id INTEGER PRIMARY KEY);
                 """)

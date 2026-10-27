@@ -1,0 +1,1 @@
+{"metadata":{"browser_name":"Safari","browser_version":"18.2","data_type":"history","schema_version":1,"export_time_usec":1793059200000000},"history":[{"url":"https://example.invalid/reference","title":"Reference","time_usec":1793059200000000,"visits_count":7},{"url":"https://example.invalid/failed","time_usec":1793059200000000,"latest_visit_was_load_failure":true}]}

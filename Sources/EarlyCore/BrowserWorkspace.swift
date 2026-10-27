@@ -24,6 +24,8 @@ public struct BrowserWorkspace: Codable, Equatable, Sendable {
     public var defaultProfileID: UUID
     public var activeProfileID: UUID
     public var openProfileIDs: [UUID]
+    /// Commit markers for the local browser-import recovery journal; older sessions omit them.
+    public var browserImportBatchIDs: [UUID]?
 
     public init(session: BrowserSession = BrowserSession()) {
         profiles = [BrowserProfile(id: session.profileID, name: "Default", color: .gray)]
@@ -36,6 +38,9 @@ public struct BrowserWorkspace: Codable, Equatable, Sendable {
     public func session(for profileID: UUID) -> BrowserSession? { sessions.first { $0.profileID == profileID } }
 
     public func validate(using input: NavigationInput = NavigationInput()) throws {
+        if let ids = browserImportBatchIDs {
+            guard ids.count <= 128, Set(ids).count == ids.count else { throw SessionError.invalidData }
+        }
         let profileIDs = Set(profiles.map(\.id))
         guard workspaceVersion == 1, !profiles.isEmpty, profileIDs.count == profiles.count,
               !profileIDs.contains(UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))),
