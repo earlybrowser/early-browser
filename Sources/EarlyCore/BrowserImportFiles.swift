@@ -5,6 +5,48 @@ import SQLite3
 
 /// Call on a worker task while the app holds user-selected folder access.
 public enum BrowserImportFiles {
+    /// Safari's unpacked export is selected as one batch. Other JSON exports,
+    /// password CSVs and extension lists never enter this import route.
+    public static func readSafariExports(_ urls: [URL]) throws -> BrowserImportDocument {
+        guard !urls.isEmpty, urls.count <= 64,
+              Set(urls.map(\.standardizedFileURL)).count == urls.count else { throw BrowserImportProblem.capacity }
+        var documents: [BrowserImportDocument] = [], totalBytes = 0, totalNodes = 0
+        for url in urls {
+            try Task.checkCancellation()
+            let type = url.pathExtension.lowercased()
+            guard ["html", "htm", "json"].contains(type) else {
+                throw BrowserImportProblem.unsupported("Choose Safari’s exported bookmarks HTML and history JSON files only. Passwords, extensions and credit cards aren’t imported here.")
+            }
+            let data = try bounded(url)
+            totalBytes += data.count
+            guard totalBytes <= BrowserImportDocument.maximumBytes else { throw BrowserImportProblem.capacity }
+            let document: BrowserImportDocument
+            if type == "json" {
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      (json["metadata"] as? [String: Any])?["data_type"] as? String == "history" else {
+                    throw BrowserImportProblem.unsupported("Choose Safari’s history JSON, not its extensions or credit-card export. Passwords use the separate import in Settings → Passwords.")
+                }
+                document = try BrowserImportReaders.read(data, name: String(url.deletingPathExtension().lastPathComponent.prefix(64)))
+            } else { document = try BrowserImportReaders.bookmarksHTML(data, name: "Safari Bookmarks") }
+            totalNodes += document.nodes.count
+            guard totalNodes <= BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
+            documents.append(document)
+        }
+        var result = try combine(documents, source: "Safari")
+        if documents.count > 1 {
+            result.notices.append("Safari exports one bookmarks collection and separate history files for profiles. Map them to the same Early profile in Destinations when appropriate.")
+        }
+        return result
+    }
+
+    /// The Chromium folder route is deliberately history-only. Bookmark files
+    /// and session storage are not even read by this route.
+    public static func readChromiumHistory(_ url: URL, source: String) throws -> BrowserImportDocument {
+        let info = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard info.isDirectory == true, info.isSymbolicLink != true else { throw BrowserImportProblem.invalid }
+        return try profileFolder(url, source: source, historyOnly: true)
+    }
+
     public static func read(_ url: URL, source: String) throws -> BrowserImportDocument {
         try Task.checkCancellation()
         let info = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey])
@@ -43,7 +85,7 @@ public enum BrowserImportFiles {
         return data
     }
 
-    private static func profileFolder(_ url: URL, source: String, depth: Int = 0) throws -> BrowserImportDocument {
+    private static func profileFolder(_ url: URL, source: String, depth: Int = 0, historyOnly: Bool = false) throws -> BrowserImportDocument {
         guard depth < 4 else { throw BrowserImportProblem.capacity }
         var documents: [BrowserImportDocument] = []
         var count = 0
@@ -53,7 +95,8 @@ public enum BrowserImportFiles {
             documents.append(document)
         }
         // Only approved organization files are examined, never Login Data, Cookies, or Preferences.
-        for name in ["StorableSidebar.json", "Bookmarks", "places.sqlite", "History", "zen-sessions.jsonlz4", "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4"] {
+        let files = historyOnly ? ["History"] : ["StorableSidebar.json", "Bookmarks", "places.sqlite", "History", "zen-sessions.jsonlz4", "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4"]
+        for name in files {
             let file = url.appendingPathComponent(name)
             guard FileManager.default.fileExists(atPath: file.path) else { continue }
             guard file.resolvingSymlinksInPath().path.hasPrefix(url.resolvingSymlinksInPath().path + "/") else { throw BrowserImportProblem.invalid }
@@ -64,9 +107,9 @@ public enum BrowserImportFiles {
         }
         let encrypted = url.appendingPathComponent("Sessions_Encrypted")
         let clear = url.appendingPathComponent("Sessions")
-        if FileManager.default.fileExists(atPath: encrypted.path) {
+        if !historyOnly, FileManager.default.fileExists(atPath: encrypted.path) {
             try append(.init(source: source, notices: ["Current Chromium session storage is encrypted. Open tabs and groups are unavailable here; save them as bookmarks and export HTML instead. Older cleartext files alongside encrypted sessions are not imported as current tabs."]))
-        } else if FileManager.default.fileExists(atPath: clear.path) {
+        } else if !historyOnly, FileManager.default.fileExists(atPath: clear.path) {
             let info = try clear.resourceValues(forKeys: [.isSymbolicLinkKey])
             guard info.isSymbolicLink != true else { throw BrowserImportProblem.invalid }
             let files = try FileManager.default.contentsOfDirectory(at: clear, includingPropertiesForKeys: nil)
@@ -79,7 +122,7 @@ public enum BrowserImportFiles {
             for name in ["Profiles", "User Data"] {
                 let nested = url.appendingPathComponent(name)
                 if let info = try? nested.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]), info.isDirectory == true, info.isSymbolicLink != true {
-                    return try profileFolder(nested, source: source, depth: depth + 1)
+                    return try profileFolder(nested, source: source, depth: depth + 1, historyOnly: historyOnly)
                 }
             }
             let children = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])
@@ -87,7 +130,7 @@ public enum BrowserImportFiles {
             let candidates = children.filter { child in
                 guard let info = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
                       info.isDirectory == true, info.isSymbolicLink != true else { return false }
-                return ["Bookmarks", "places.sqlite", "zen-sessions.jsonlz4", "History"].contains { FileManager.default.fileExists(atPath: child.appendingPathComponent($0).path) }
+                return (historyOnly ? ["History"] : ["Bookmarks", "places.sqlite", "zen-sessions.jsonlz4", "History"]).contains { FileManager.default.fileExists(atPath: child.appendingPathComponent($0).path) }
             }.sorted { $0.lastPathComponent < $1.lastPathComponent }
             guard candidates.count <= 32 else { throw BrowserImportProblem.capacity }
             var profileNames: [String: String] = [:]
@@ -97,8 +140,10 @@ public enum BrowserImportFiles {
                let profile = json["profile"] as? [String: Any], let cache = profile["info_cache"] as? [String: [String: Any]] {
                 profileNames = cache.compactMapValues { $0["name"] as? String }
             }
-            for child in candidates { try append(profileFolder(child, source: profileNames[child.lastPathComponent] ?? child.lastPathComponent, depth: depth + 1)) }
-            guard !documents.isEmpty else { throw BrowserImportProblem.unsupported("Select the browser’s profile folder or a bookmarks HTML export.") }
+            for child in candidates { try append(profileFolder(child, source: profileNames[child.lastPathComponent] ?? child.lastPathComponent, depth: depth + 1, historyOnly: historyOnly)) }
+            guard !documents.isEmpty else { throw BrowserImportProblem.unsupported(historyOnly
+                ? "No browser history was found. Select the browser’s saved-data folder or a profile folder containing History."
+                : "Select the browser’s profile folder or a bookmarks HTML export.") }
             return try combine(documents, source: source)
 
         }
@@ -106,6 +151,7 @@ public enum BrowserImportFiles {
             throw BrowserImportProblem.unsupported("No verified browser organization was found in this folder. Select a profile folder or export bookmarks as HTML. Dia’s proprietary workspace formats are not assumed to match Chromium bookmarks.")
         }
         var result = try combine(documents, source: source, mergeProfile: true)
+        if historyOnly { return result }
         if url.pathComponents.contains("Dia") || source.localizedCaseInsensitiveContains("Dia") {
             result.notices.append("Dia’s Chromium bookmarks and history are verified. Proprietary workspace organization has no verified format here; export those links as bookmarks HTML. Names inferred from profile folders can be changed in Destinations.")
         }

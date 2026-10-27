@@ -141,6 +141,69 @@ struct BrowserImportStorageTests {
         #expect(try Data(contentsOf: profile.appendingPathComponent("Bookmarks")) == data)
     }
 
+    @Test func safariSelectsBookmarksAndMultipleHistoriesAsOneBatch() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let helper = BrowserImportTests()
+        let bookmarks = root.appendingPathComponent("Bookmarks.html"), history = root.appendingPathComponent("History.json")
+        try helper.fixture("Bookmarks.html").write(to: bookmarks)
+        try helper.fixture("SafariHistory.json").write(to: history)
+        let doc = try BrowserImportFiles.readSafariExports([bookmarks, history])
+        #expect(doc.source == "Safari")
+        #expect(doc.nodes.filter { $0.kind == .bookmark }.count == 3)
+        #expect(doc.nodes.filter { $0.kind == .history }.count == 1)
+        #expect(doc.nodes.filter { $0.kind == .profile }.count == 2)
+        #expect(doc.initiallySelected.isDisjoint(with: doc.nodes.filter { $0.kind == .history }.map(\.id)))
+        let current = BrowserWorkspace()
+        let mapping = Dictionary(uniqueKeysWithValues: doc.destinationGroups.map { ($0.id, BrowserImportDestination(profileID: current.defaultProfileID, profileName: "Default", spaceID: current.sessions[0].activeSpaceID, spaceName: "Personal")) })
+        let result = try doc.candidate(into: current, selecting: BrowserImportTree(doc).selectableIDs, destinations: mapping)
+        #expect(result.batch.tabs.count == 3 && result.workspace.profiles == current.profiles)
+        #expect(try Data(contentsOf: bookmarks) == helper.fixture("Bookmarks.html"))
+        #expect(try Data(contentsOf: history) == helper.fixture("SafariHistory.json"))
+        let other = root.appendingPathComponent("History — Work.json")
+        try helper.fixture("SafariHistory.json").write(to: other)
+        let multiple = try BrowserImportFiles.readSafariExports([bookmarks, history, other])
+        #expect(multiple.nodes.filter { $0.kind == .profile }.count == 3)
+        #expect(Set(multiple.nodes.map(\.id)).count == multiple.nodes.count)
+    }
+    @Test func safariBatchRejectsNonHistoryJSONCredentialsAndUnsupportedFiles() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let bookmarks = root.appendingPathComponent("Bookmarks.html")
+        try BrowserImportTests().fixture("Bookmarks.html").write(to: bookmarks)
+        for type in ["extensions", "payment_cards"] {
+            let file = root.appendingPathComponent(type + ".json")
+            try JSONSerialization.data(withJSONObject: ["metadata": ["data_type": type, "schema_version": 1], "items": ["DO-NOT-IMPORT"]]).write(to: file)
+            #expect(throws: BrowserImportProblem.self) { try BrowserImportFiles.readSafariExports([bookmarks, file]) }
+        }
+        let password = root.appendingPathComponent("Passwords.csv")
+        try Data("DO-NOT-IMPORT,password,secret".utf8).write(to: password)
+        #expect(throws: BrowserImportProblem.self) { try BrowserImportFiles.readSafariExports([bookmarks, password]) }
+        #expect(throws: BrowserImportProblem.self) { try BrowserImportFiles.readSafariExports([]) }
+        #expect(throws: BrowserImportProblem.self) { try BrowserImportFiles.readSafariExports([bookmarks, bookmarks]) }
+    }
+    @Test func chromiumHistoryRouteIgnoresBookmarkAndSessionFilesAndKeepsProfileNames() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["Default", "Profile 1"] {
+            let profile = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+            // These must never be opened by the history-only route.
+            try Data("not JSON".utf8).write(to: profile.appendingPathComponent("Bookmarks"))
+            try Data("not JSON".utf8).write(to: profile.appendingPathComponent("StorableSidebar.json"))
+            var db: OpaquePointer?
+            #expect(sqlite3_open(profile.appendingPathComponent("History").path, &db) == SQLITE_OK)
+            let timestamp = Int64((Date().timeIntervalSince1970 + 11_644_473_600) * 1_000_000)
+            let sql = "CREATE TABLE urls(id INTEGER PRIMARY KEY,url TEXT,title TEXT); CREATE TABLE visits(id INTEGER PRIMARY KEY,url INTEGER,visit_time INTEGER); INSERT INTO urls VALUES(1,'https://example.invalid/history','History'); INSERT INTO visits VALUES(1,1,\(timestamp));"
+            #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+            sqlite3_close(db)
+        }
+        let state: [String: Any] = ["profile": ["info_cache": ["Default": ["name": "Personal"], "Profile 1": ["name": "Work"]]]]
+        try JSONSerialization.data(withJSONObject: state).write(to: root.appendingPathComponent("Local State"))
+        let doc = try BrowserImportFiles.readChromiumHistory(root, source: "Chrome")
+        #expect(doc.nodes.filter { $0.kind == .profile }.map(\.title) == ["Personal", "Work"])
+        #expect(doc.nodes.filter { $0.kind == .history }.count == 2)
+        #expect(!doc.nodes.contains { [.bookmark, .pin, .openTab, .folder].contains($0.kind) })
+        #expect(!doc.notices.contains { $0.localizedCaseInsensitiveContains("session") })
+    }
+
     @Test func safariZipUsesMetadataWithLocalizedNamesAndIgnoresPasswords() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let helper = BrowserImportTests()

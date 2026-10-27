@@ -3,6 +3,7 @@
 import AppKit
 import EarlyCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct BrowserImportCard: View {
     @Bindable var application: EarlyAppDelegate
@@ -63,7 +64,7 @@ struct BrowserImportCard: View {
 struct BrowserImportSheet: View {
     @Bindable var application: EarlyAppDelegate
     @Environment(\.dismiss) private var dismiss
-    @State private var source = "Any browser · exported file"
+    @State private var source = ""
     @State private var document: BrowserImportDocument?
     @State private var tree: BrowserImportTree?
     @State private var selected = Set<String>()
@@ -84,7 +85,7 @@ struct BrowserImportSheet: View {
     static let knownBrowsers: [(String, String)] = [
         ("Safari", "com.apple.Safari"), ("Chrome", "com.google.Chrome"),
         ("Firefox", "org.mozilla.firefox"), ("Arc", "company.thebrowser.Browser"),
-        ("Zen", "app.zen-browser.zen"), ("Dia", "company.thebrowser.dia"),
+        ("Zen", "app.zen-browser.zen"),
         ("Brave", "com.brave.Browser"), ("Edge", "com.microsoft.edgemac"),
         ("Vivaldi", "com.vivaldi.Vivaldi"), ("Opera", "com.operasoftware.Opera")
     ]
@@ -141,26 +142,82 @@ struct BrowserImportSheet: View {
     private var sourceView: some View {
         VStack(alignment: .leading, spacing: 14) {
             Picker("Source", selection: $source) {
-                Text("Any browser · exported file").tag("Any browser · exported file")
+                Text("Choose a browser…").tag("").disabled(true)
                 ForEach(Self.knownBrowsers.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.1) != nil }, id: \.0) { browser in
                     Text(browser.0).tag(browser.0)
                 }
                 Text("Other Chromium browser").tag("Other Chromium browser")
                 Text("Other Firefox browser").tag("Other Firefox browser")
+                Text("Other browser").tag("Other browser")
             }.accessibilityIdentifier("browserImport.source")
-            HStack {
-                Button("Choose Exported File…") { choose(folder: false) }.disabled(reading != nil)
+            if source.isEmpty {
+                Text("Choose the browser you’re importing from.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                Text(exportInstructions)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("browserImport.exportHelp")
+                Button(source == "Arc" ? "Choose Sidebar File…" : source == "Safari" ? "Choose Bookmarks and History…" : chromiumHistoryOnly ? "Choose Bookmarks File…" : "Choose Exported File…") {
+                    choose(folder: false)
+                }.disabled(reading != nil)
                     .accessibilityIdentifier("browserImport.chooseFile")
-                Button("Choose Browser Data Folder…") { choose(folder: true) }.disabled(reading != nil || source == "Safari")
-                    .accessibilityIdentifier("browserImport.chooseFolder")
+                if source != "Safari", source != "Other browser" {
+                    Divider()
+                    Text(chromiumHistoryOnly ? "Import history from this Mac" : "Or use the browser’s data folder").font(.callout.weight(.medium))
+                    Text(folderExplanation)
+                        .font(.callout).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("browserImport.folderHelp")
+                    Button(chromiumHistoryOnly ? "Choose History Folder…" : "Choose Browser Data Folder…") { choose(folder: true) }
+                        .disabled(reading != nil)
+                        .accessibilityIdentifier("browserImport.chooseFolder")
+                }
+                Text(source == "Safari" ? "Only bookmarks and history are imported here. For passwords, use Settings → Passwords." : "You’ll choose what to bring on the next screen.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Files: bookmarks HTML from any compatible browser, Chromium bookmarks JSON, Firefox bookmarks/session JSON or JSONLZ4, and Safari browsing-data ZIP or history JSON. Folders: Chromium or Firefox-compatible profiles.")
-                .font(.callout).foregroundStyle(.secondary)
-            Text("Open tabs and history are optional and start unchecked. Exported bookmarks do not contain open tabs or website sign-ins.")
-                .font(.callout).foregroundStyle(.secondary)
-            Text("Arc sidebar import is experimental; review its organization carefully or use bookmarks HTML. Dia supports verified Chromium bookmarks and history; proprietary organization needs an HTML export. Encrypted Chromium sessions are not decrypted. Nothing is imported until you review and confirm.")
-                .font(.caption).foregroundStyle(.secondary)
         }.padding(16).background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var exportInstructions: String {
+        switch source {
+        case "Safari":
+            "In Safari, choose File → Export Browsing Data to File. Export Bookmarks and History, then unzip the file. Select the bookmarks HTML and history JSON together here."
+        case "Chrome":
+            "Open Chrome’s Bookmark Manager, then choose ⋮ → Export bookmarks. Choose the saved HTML file here."
+        case "Arc":
+            "For Arc’s sidebar, choose StorableSidebar.json from Library → Application Support → Arc, or use the folder option below."
+        case "Firefox", "Zen":
+            "In \(source), open Bookmarks → Manage Bookmarks, then click the ↑↓ toolbar button → Export Bookmarks to HTML. Choose the saved file here."
+        case "Brave":
+            "In Brave, open Bookmarks → Bookmarks Manager, then choose ⋮ → Export. Choose the saved HTML file here."
+        case "Edge":
+            "In Edge, open Favorites, then choose ⋯ → Export favorites. Choose the saved HTML file here."
+        case "Vivaldi":
+            "In Vivaldi, choose File → Export Bookmarks. Choose the saved HTML file here."
+        case "Opera":
+            "Open Opera’s bookmark manager and export your bookmarks as HTML. Choose the saved file here."
+        case "Other Firefox browser":
+            "Open your browser’s bookmark library, then click the ↑↓ toolbar button → Export Bookmarks to HTML. Choose the saved file here."
+        case "Other Chromium browser":
+            "Open your browser’s bookmark manager, then choose its menu → Export bookmarks. Choose the saved HTML file here."
+        default:
+            "Export bookmarks as an HTML file from your browser, then choose the saved file here."
+        }
+    }
+
+    private var chromiumHistoryOnly: Bool {
+        ["Chrome", "Brave", "Edge", "Vivaldi", "Opera", "Other Chromium browser"].contains(source)
+    }
+
+    private var folderExplanation: String {
+        switch source {
+        case "Arc":
+            "This folder holds Arc’s Spaces, Favorites, pins and folders. Early reads it without changing anything."
+        case "Zen":
+            "This folder holds Zen’s workspaces, Essentials, pins and folders. Early reads it without changing anything."
+        case "Firefox", "Other Firefox browser":
+            "Choose the browser’s saved-data folder to bring bookmarks, history and available tabs. Early reads it without changing anything."
+        default:
+            "Choose the browser’s saved-data folder to bring history only. Import bookmarks using the exported file above."
+        }
     }
 
     private var selectedContentCount: Int {
@@ -272,22 +329,33 @@ struct BrowserImportSheet: View {
         }
     }
     private func choose(folder: Bool) {
+        guard !source.isEmpty else { return }
+        let selectedSource = source
+        let historyOnly = folder && chromiumHistoryOnly
+        let safariFiles = !folder && selectedSource == "Safari"
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = folder; panel.canChooseFiles = !folder; panel.allowsMultipleSelection = false
-        panel.prompt = "Preview"; panel.message = "Choose an export or browser profile. Early reads organization only and never changes the source."
-        if folder {
-            let paths = ["Chrome": "Google/Chrome", "Firefox": "Firefox/Profiles", "Zen": "zen/Profiles", "Arc": "Arc", "Dia": "Dia", "Brave": "BraveSoftware/Brave-Browser", "Edge": "Microsoft Edge", "Vivaldi": "Vivaldi", "Opera": "com.operasoftware.Opera"]
-            if let path = paths[source] {
-                panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/" + path)
-            }
+        panel.canChooseDirectories = folder; panel.canChooseFiles = !folder
+        panel.allowsMultipleSelection = safariFiles
+        if safariFiles { panel.allowedContentTypes = [.html, .json] }
+        panel.prompt = "Preview"
+        panel.message = safariFiles ? "Select Safari’s bookmarks HTML and history JSON files together."
+            : folder ? "Choose the folder where your browser saves its data."
+            : selectedSource == "Arc" ? "Choose Arc’s saved sidebar file." : "Choose the file you exported from your browser."
+        if folder || selectedSource == "Arc" {
+            let paths = ["Chrome": "Google/Chrome", "Firefox": "Firefox/Profiles", "Zen": "zen/Profiles", "Arc": "Arc", "Brave": "BraveSoftware/Brave-Browser", "Edge": "Microsoft Edge", "Vivaldi": "Vivaldi", "Opera": "com.operasoftware.Opera"]
+            let support = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+            panel.directoryURL = paths[selectedSource].map { support.appendingPathComponent($0) } ?? support
         }
         panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
+            let urls = panel.urls
+            guard response == .OK, let url = urls.first else { return }
             message = nil
-            let name = source == "Any browser · exported file" ? url.deletingPathExtension().lastPathComponent : source
+            let name = selectedSource == "Other browser" ? url.deletingPathExtension().lastPathComponent : selectedSource
             let task = Task.detached {
-                let access = url.startAccessingSecurityScopedResource()
-                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
+                defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
+                if safariFiles { return try BrowserImportFiles.readSafariExports(urls) }
+                if historyOnly { return try BrowserImportFiles.readChromiumHistory(url, source: name) }
                 return try BrowserImportFiles.read(url, source: name)
             }
             reading = task

@@ -72,6 +72,11 @@ final class EarlyUITests: XCTestCase {
         let app = launchFreshApp()
         app.menuBars.menuBarItems["File"].click()
         app.menuItems["Import from Another Browser…"].click()
+        let source = app.popUpButtons["browserImport.source"]
+        XCTAssertTrue(source.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["browserImport.chooseFile"].exists)
+        source.click()
+        app.menuItems["Other browser"].click()
         let choose = app.buttons["browserImport.chooseFile"]
         XCTAssertTrue(choose.waitForExistence(timeout: 5))
         choose.click()
@@ -111,6 +116,9 @@ final class EarlyUITests: XCTestCase {
         let app = launchFreshApp()
         app.menuBars.menuBarItems["File"].click()
         app.menuItems["Import from Another Browser…"].click()
+        XCTAssertTrue(app.popUpButtons["browserImport.source"].waitForExistence(timeout: 5))
+        app.popUpButtons["browserImport.source"].click()
+        app.menuItems["Other browser"].click()
         XCTAssertTrue(app.buttons["browserImport.chooseFile"].waitForExistence(timeout: 5))
         app.typeKey(.tab, modifierFlags: [])
         app.typeKey(.escape, modifierFlags: [])

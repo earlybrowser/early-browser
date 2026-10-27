@@ -7,9 +7,22 @@ not yet include it.
 
 ## Choose, preview, then import
 
-1. Choose an installed browser or **Any browser · exported file**. Use a bookmarks
-   export, or explicitly select a browser-data/profile folder in the macOS picker.
-   Selecting a browser name alone never grants access or imports anything.
+1. Choose a browser; there is no automatic default. Use **Other Chromium browser**,
+   **Other Firefox browser**, or **Other browser** for an unlisted source. The sheet
+   gives short instructions for the selected browser. Firefox/Zen point to the
+   ↑↓ toolbar button in Manage Bookmarks for HTML export.
+   - Safari: export Bookmarks and History, unzip the export, then select the
+     bookmarks HTML and history JSON together in one file picker. One preview
+     covers all selected files. Only bookmarks and history enter this route;
+     password CSVs, extension lists and credit cards are rejected.
+   - Chromium: import an exported bookmarks file, or choose the browser's saved-data
+     folder to import **history only**. This folder route does not read bookmarks
+     or sessions. Dia uses **Other Chromium browser**.
+   - Firefox/Zen: keep both exported-file and full browser-data-folder routes.
+     Zen's folder route preserves its supported workspace organization.
+   - Arc: select its saved sidebar file or data folder.
+   Selecting a browser alone grants no access and imports nothing. A data folder
+   is the browser's existing saved data on this Mac, read without changing it.
 2. Expand the preview, search by name/address, and check individual items or
    branches. Mixed checkboxes show partial selection; searching and collapsing
    retain it. History and open tabs start unchecked.
@@ -32,10 +45,10 @@ not running pages, and previewing/importing does not fetch favicons or websites.
 | Source | What transfers | Verification and limits |
 | --- | --- | --- |
 | Any browser with a Netscape bookmarks HTML export | Titles, HTTP/HTTPS addresses, nested/empty folders and order | Synthetic malformed/unclosed-tag, Unicode and unsafe-link fixtures. Browser brand does not matter; arbitrary proprietary formats are not implied. |
-| Chromium-family profiles, including compatible Chrome, Edge, Brave, Vivaldi, Opera and Dia | `Bookmarks` JSON; real visits from `History` SQLite; separate profiles and names from `Local State` where present | Chromium's public schema, synthetic database/WAL fixtures, and a synthetic Dia 1.54.2 profile created by that browser. No credential database or Keychain decryption. |
+| Chromium-family profiles, including compatible Chrome, Edge, Brave, Vivaldi, Opera and Dia | Bookmark export files; the Chromium folder route reads real visits from `History` SQLite only, with separate profiles and names from `Local State` where present | Chromium's public schema, synthetic database/WAL fixtures, and a synthetic Dia 1.54.2 profile created by that browser. No credential database or Keychain decryption. |
 | Unencrypted Chromium SNSS v3 sessions | Current URLs/titles, pin state, tab groups as ordinary folders, ungrouped Today tabs | Command framing/navigation-prefix fixtures checked against Chromium source. SNSS v5 is encrypted and refused. If `Sessions_Encrypted` exists, adjacent older cleartext sessions are not mistaken for current tabs. Save groups/tabs as bookmarks and export HTML instead. |
 | Firefox-family profiles/exports | `places.sqlite` bookmarks/history, Firefox bookmarks JSON, session JSON or Mozilla JSONLZ4; current tabs, groups, pins and separate container destinations | Public Mozilla format and synthetic schema/session fixtures. Read `sessionstore.jsonlz4` or the current recovery file. Closed/private windows and back/forward/form state do not transfer. |
-| Safari browsing-data ZIP or separate HTML/history JSON | Bookmarks, Reading List as an ordinary folder, latest known visit per history item | Apple's documented schema v1 and synthetic localized stored/deflated ZIP fixtures. Archive file names need not be English. Only known timestamps transfer; aggregate visit counts never become invented visits. |
+| Safari exported bookmarks HTML and history JSON selected together | Bookmarks, Reading List as an ordinary folder, latest known visit per history item | Apple's documented schema v1 and synthetic localized stored/deflated ZIP fixtures. File names need not be English. The existing ZIP parser and its tests are retained; this change does not investigate ZIP selection. Only known timestamps transfer; aggregate visit counts never become invented visits. |
 | Zen workspace JSON/JSONLZ4 or profile folder | Workspaces, Essentials, pins, nested folders, mixed folder/tab order, available Today tabs and containers | Synthetic profile created and captured from Zen 1.23.4b, plus container/predecessor-field fixtures and public source checks. Containers become separate Early profiles by default; Essentials stay profile-wide. |
 | Arc `StorableSidebar.json` | Known alternating-dictionary sidebar schema: Spaces, available profile IDs, Favorites, pins, folders and Today tabs | **Experimental**, as agreed: synthetic schema fixtures, no current Arc installation verified. Unknown schemas fail with an HTML-export alternative. Review mappings carefully. Missing profile IDs stay isolated rather than guessing shared accounts. |
 | Dia proprietary workspace organization | No unverified native workspace reader | Its Chromium bookmarks/history are verified; use HTML for other organization. The preview states this limit. |
@@ -75,6 +88,8 @@ held; no permanent source permission/bookmark is kept.
 - Root folder depth is 0, with eight nested levels beneath it. Deeper imports name
   the branch and require explicit flattening or deselection. Legacy deeper Early
   sessions remain readable and can be moved upward without silent flattening.
+  Folder backgrounds are limited to the outer group and current folder;
+  intermediate levels retain their indentation and drag/hit geometry.
 - Parsing and database work run off the main thread. Imports bulk-create metadata
   and do not create WebViews. Temporary source snapshots/access are released on
   success, failure and cancellation.
@@ -106,8 +121,8 @@ failed backup/session writes, recovery, restart-safe selective Undo, and bulk
 and selections unchanged through import/undo. Native UI coverage compiles locally;
 execution of the wizard/keyboard/deep-folder tests belongs to CI only.
 
-Local verification on 2026-10-27: all **763 package tests** passed with
-`swift test --no-parallel` (199 WebKit, 332 Core, 232 application tests).
+Local verification on 2026-10-27: all **768 package tests** passed with
+`swift test --no-parallel` (199 WebKit, 337 Core, 232 application tests).
 Debug `build-for-testing` and Release `build` both succeeded. UI tests were
 compiled only; running them on CI remains required before merging.
 
