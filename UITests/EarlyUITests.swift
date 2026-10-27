@@ -114,14 +114,16 @@ final class EarlyUITests: XCTestCase {
         let one = app.checkBoxes["One"]
         XCTAssertTrue(one.waitForExistence(timeout: 5))
         one.click()
-        XCTAssertEqual(app.checkBoxes["Research"].value as? String, "2", "An ancestor reports partial selection")
+        let value = app.checkBoxes["Research"].value
+        let mixedState = (value as? NSNumber)?.intValue ?? (value as? String).flatMap(Int.init)
+        XCTAssertEqual(mixedState, 2, "An ancestor reports partial selection")
         app.buttons["browserImport.continue"].click()
         XCTAssertTrue(app.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browserImport.profileName.")).firstMatch.waitForExistence(timeout: 5))
         app.buttons["browserImport.continue"].click()
         XCTAssertTrue(app.descendants(matching: .any)["browserImport.review"].waitForExistence(timeout: 5))
         app.buttons["browserImport.continue"].click()
         let message = app.staticTexts["browserImport.message"]
-        let completed = NSPredicate(format: "label CONTAINS %@", "Imported 1 page")
+        let completed = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Imported 1 page", "Imported 1 page")
         expectation(for: completed, evaluatedWith: message)
         waitForExpectations(timeout: 10)
         app.buttons["Done"].click()
@@ -153,14 +155,15 @@ final class EarlyUITests: XCTestCase {
         app.buttons["browserImport.continue"].click(); app.buttons["browserImport.continue"].click()
         let message = app.staticTexts["browserImport.message"]
         XCTAssertTrue(message.waitForExistence(timeout: 5))
-        XCTAssertTrue(message.label.contains("Choose a destination"))
+        XCTAssertTrue(message.label.contains("Choose a destination") || (message.value as? String)?.contains("Choose a destination") == true)
         let work = app.checkBoxes.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "browserImport.collection.", "Work")).firstMatch
         XCTAssertTrue(work.waitForExistence(timeout: 5)); work.click()
         app.buttons["browserImport.continue"].click()
         XCTAssertTrue(app.descendants(matching: .any)["browserImport.review"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browserImport.reviewProfile.")).count, 2)
         app.buttons["browserImport.continue"].click()
-        expectation(for: NSPredicate(format: "label CONTAINS %@", "Imported 1 page, 0 folders and 2 visits"), evaluatedWith: message)
+        let summary = "Imported 1 page, 0 folders and 2 visits"
+        expectation(for: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", summary, summary), evaluatedWith: message)
         waitForExpectations(timeout: 10)
         app.buttons["Done"].click(); app.windows["browser"].click()
         expectRuntime(app, tabs: 0, views: 0, created: 0)
