@@ -29,6 +29,16 @@ final class EarlyUITests: XCTestCase {
         return app
     }
 
+    private func openBrowserImport(in app: XCUIApplication) -> XCUIElement {
+        app.menuBars.menuBarItems["File"].click()
+        app.menuItems["Import from Another Browser…"].click()
+        let wizard = app.groups["browserImport.wizard"]
+        XCTAssertTrue(wizard.waitForExistence(timeout: 5), app.debugDescription)
+        let source = wizard.popUpButtons["browserImport.source"]
+        XCTAssertTrue(source.waitForExistence(timeout: 5), app.debugDescription)
+        return source
+    }
+
     func testKeyboardCommandsLeaveEmptyWindowUsable() {
         let app = launchFreshApp()
         let query = app.textFields["commandBar.query"]
@@ -70,10 +80,7 @@ final class EarlyUITests: XCTestCase {
         try Data(html.utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         let app = launchFreshApp()
-        app.menuBars.menuBarItems["File"].click()
-        app.menuItems["Import from Another Browser…"].click()
-        let source = app.popUpButtons["browserImport.source"]
-        XCTAssertTrue(source.waitForExistence(timeout: 5))
+        let source = openBrowserImport(in: app)
         XCTAssertFalse(app.buttons["browserImport.chooseFile"].exists)
         source.click()
         app.menuItems["Other browser"].click()
@@ -125,9 +132,8 @@ final class EarlyUITests: XCTestCase {
             try JSONSerialization.data(withJSONObject: json).write(to: directory.appendingPathComponent(name))
         }
         let app = launchFreshApp()
-        app.menuBars.menuBarItems["File"].click(); app.menuItems["Import from Another Browser…"].click()
-        let source = app.popUpButtons["browserImport.source"]
-        XCTAssertTrue(source.waitForExistence(timeout: 5)); source.click(); app.menuItems["Safari"].click()
+        let source = openBrowserImport(in: app)
+        source.click(); app.menuItems["Safari"].click()
         app.buttons["browserImport.chooseFile"].click()
         app.typeKey("g", modifierFlags: [.command, .shift]); app.typeText(directory.path + "/"); app.typeKey(.return, modifierFlags: [])
         let bookmarks = app.staticTexts["Bookmarks.html"]
@@ -152,10 +158,8 @@ final class EarlyUITests: XCTestCase {
 
     func testBrowserImportCanBeCancelledFromKeyboardWithoutChangingBrowsing() {
         let app = launchFreshApp()
-        app.menuBars.menuBarItems["File"].click()
-        app.menuItems["Import from Another Browser…"].click()
-        XCTAssertTrue(app.popUpButtons["browserImport.source"].waitForExistence(timeout: 5))
-        app.popUpButtons["browserImport.source"].click()
+        let source = openBrowserImport(in: app)
+        source.click()
         app.menuItems["Other browser"].click()
         XCTAssertTrue(app.buttons["browserImport.chooseFile"].waitForExistence(timeout: 5))
         app.typeKey(.tab, modifierFlags: [])

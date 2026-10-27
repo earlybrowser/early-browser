@@ -135,6 +135,10 @@ struct BrowserImportSheet: View {
         }
         .padding(24).frame(width: 740, height: 650)
         .interactiveDismissDisabled(importing)
+        // A bare container ID replaces its children's IDs on macOS 26.
+        // Keep the wizard identifiable without hiding its native controls.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Import from Another Browser")
         .accessibilityIdentifier("browserImport.wizard")
         .onDisappear { reading?.cancel(); reviewTask?.cancel() }
         .onChange(of: search) { _, _ in updateRows() }
