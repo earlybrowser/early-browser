@@ -22,5 +22,5 @@ GENERATE_INFOPLIST_FILE = YES
 INFOPLIST_FILE = Config/Info.plist
 INFOPLIST_KEY_CFBundleDisplayName = Early
 INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.productivity
-MARKETING_VERSION = 0.1.3
+MARKETING_VERSION = 0.1.4
 CURRENT_PROJECT_VERSION = 1
