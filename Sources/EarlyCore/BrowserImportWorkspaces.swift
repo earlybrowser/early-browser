@@ -90,25 +90,26 @@ extension BrowserImportReaders {
 
     /// Zen 1.18+ stores its sidebar as top-level spaces/folders/groups/tabs.
     static func zenSidebar(_ json: [String: Any], name: String) throws -> BrowserImportDocument {
-        guard let spaces = json["spaces"] as? [[String: Any]], let tabs = json["tabs"] as? [[String: Any]] else { throw BrowserImportProblem.invalid }
+        guard let spaces = json["spaces"] as? [[String: Any]], let sourceTabs = json["tabs"] as? [[String: Any]] else { throw BrowserImportProblem.invalid }
+        let tabs = sourceTabs.filter { $0["isPrivate"] as? Bool != true && ($0["privateBrowsingId"] as? Int ?? 0) == 0 }
         var builder = Builder(name: name)
-        var profiles = Set<String>(["profile"]), groups = Set<String>(), folderCopies = Set<String>()
+        var groups = Set<String>(), folderCopies = Set<String>()
         let folders = json["folders"] as? [[String: Any]] ?? []
         let allGroups = json["groups"] as? [[String: Any]] ?? []
         guard spaces.count + tabs.count + folders.count + allGroups.count <= BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
         let knownFolders = Set(folders.compactMap { $0["id"] as? String })
+        let spaceIDs = spaces.compactMap { $0["uuid"] as? String }
+        guard spaceIDs.count == spaces.count, Set(spaceIDs).count == spaceIDs.count else { throw BrowserImportProblem.invalid }
+        let spacesByID = Dictionary(uniqueKeysWithValues: zip(spaceIDs, spaces))
+        let tabsBySpace = Dictionary(grouping: tabs, by: { $0["zenWorkspace"] as? String ?? "" })
+        let foldersBySpace = Dictionary(grouping: folders, by: { $0["workspaceId"] as? String ?? "" })
         var sourceKeys: [String: String] = [:], predecessors: [String: String] = [:]
-        func owner(_ container: Int) -> String {
-            guard container > 0 else { return "profile" }
-            let id = "container.\(container)"
-            if profiles.insert(id).inserted { builder.document.nodes.append(.init(id: id, kind: .profile, title: "\(name) · Container \(container)")) }
-            return id
-        }
+        func owner(_ container: Int) throws -> String { try builder.context(container) }
         func space(_ id: String?, owner: String) -> String {
             guard let id, !id.isEmpty else { return owner }
             let key = owner + ".space." + id
             if groups.insert(key).inserted {
-                let original = spaces.first { $0["uuid"] as? String == id }
+                let original = spacesByID[id]
                 builder.document.nodes.append(.init(id: key, parentID: owner, kind: .space, title: original?["name"] as? String ?? "Workspace",
                                                      color: (original?["color"] as? String).flatMap(BrowserSpace.Color.init(rawValue:)),
                                                      icon: supportedIcon(original?["icon"] as? String)))
@@ -116,7 +117,7 @@ extension BrowserImportReaders {
             return key
         }
         func ensureFolders(_ parent: String, workspace: String?) throws {
-            for folder in folders where folder["workspaceId"] as? String == workspace {
+            for folder in foldersBySpace[workspace ?? ""] ?? [] {
                 guard let id = folder["id"] as? String else { throw BrowserImportProblem.invalid }
                 let key = parent + ".folder." + id
                 guard folderCopies.insert(key).inserted else { continue }
@@ -133,17 +134,33 @@ extension BrowserImportReaders {
         // Empty workspaces/folders survive even with no tabs.
         for original in spaces {
             guard let id = original["uuid"] as? String else { throw BrowserImportProblem.invalid }
-            let contexts = Set(tabs.filter { $0["zenWorkspace"] as? String == id }.map { $0["userContextId"] as? Int ?? 0 })
-            for context in contexts.isEmpty ? [0] : contexts.sorted() {
-                let parent = space(id, owner: owner(context)); try ensureFolders(parent, workspace: id)
+            let contexts = Set((tabsBySpace[id] ?? []).filter { $0["zenEssential"] as? Bool != true && $0["zenIsGlance"] as? Bool != true }.map { $0["userContextId"] as? Int ?? 0 })
+            let fallback = original["containerTabId"] as? Int ?? 0
+            if contexts.count > 1 {
+                let title = String((original["name"] as? String ?? "Workspace").prefix(64))
+                builder.document.notices.append("“\(title)” contains multiple website contexts. Its tabs and folders are split into matching Spaces in separate Early profiles; review before combining them.")
+            }
+            for context in contexts.isEmpty ? [fallback] : contexts.sorted() {
+                let parent = space(id, owner: try owner(context)); try ensureFolders(parent, workspace: id)
             }
         }
+        var mirrored: [String: [String]] = [:]
         for tab in tabs {
             guard tab["zenIsEmpty"] as? Bool != true, tab["zenIsGlance"] as? Bool != true,
                   let entries = tab["entries"] as? [[String: Any]], !entries.isEmpty else { continue }
             let context = tab["userContextId"] as? Int ?? 0, favorite = tab["zenEssential"] as? Bool == true
             let originalSpace = tab["zenWorkspace"] as? String
-            let root = owner(context)
+            let root = try owner(context)
+            let index = min(max((tab["index"] as? Int ?? entries.count) - 1, 0), entries.count - 1), entry = entries[index]
+            if let identity = tab["zenSyncId"] as? String, !identity.isEmpty {
+                let signature = [String(context), originalSpace ?? "", tab["groupId"] as? String ?? "", String(favorite),
+                    String(tab["pinned"] as? Bool ?? false), entry["url"] as? String ?? "", tab["zenStaticLabel"] as? String ?? entry["title"] as? String ?? ""]
+                if let previous = mirrored[identity] {
+                    guard previous == signature else { throw BrowserImportProblem.unsupported("Zen’s saved copies of a tab disagree. Quit Zen, then choose its data folder again.") }
+                    continue
+                }
+                mirrored[identity] = signature
+            }
             let parent = favorite ? root : space(originalSpace, owner: root)
             if !favorite { try ensureFolders(parent, workspace: originalSpace) }
             var target = parent
@@ -155,7 +172,6 @@ extension BrowserImportReaders {
                     target = key
                 }
             }
-            let index = min(max((tab["index"] as? Int ?? entries.count) - 1, 0), entries.count - 1), entry = entries[index]
             let kind: BrowserImportNode.Kind = favorite && target == root ? .favorite : (favorite || tab["pinned"] as? Bool == true ? .pin : .openTab)
             let count = builder.document.nodes.count
             try builder.link(entry["url"] as? String, title: tab["zenStaticLabel"] as? String ?? entry["title"] as? String, parent: target, kind: kind)

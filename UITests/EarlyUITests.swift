@@ -112,6 +112,44 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 0, views: 0, created: 0)
     }
 
+    /// CI only. Exercise Safari's multi-file panel and the explicit shared-data
+    /// choice through native controls; no imported website is loaded.
+    func testSafariImportGroupsHistoriesAndRequiresASharedBookmarksDestination() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("EarlySafariImportUI-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"<DL><DT><A HREF="https://example.invalid/imported">Imported bookmark</A></DL>"#.utf8).write(to: directory.appendingPathComponent("Bookmarks.html"))
+        for name in ["History.json", "History - Work.json"] {
+            let json: [String: Any] = ["metadata": ["data_type": "history", "schema_version": 1],
+                "history": [["url": "https://example.invalid/known", "title": "Known visit", "time_usec": Int64(Date().addingTimeInterval(-60).timeIntervalSince1970 * 1_000_000)]]]
+            try JSONSerialization.data(withJSONObject: json).write(to: directory.appendingPathComponent(name))
+        }
+        let app = launchFreshApp()
+        app.menuBars.menuBarItems["File"].click(); app.menuItems["Import from Another Browser…"].click()
+        let source = app.popUpButtons["browserImport.source"]
+        XCTAssertTrue(source.waitForExistence(timeout: 5)); source.click(); app.menuItems["Safari"].click()
+        app.buttons["browserImport.chooseFile"].click()
+        app.typeKey("g", modifierFlags: [.command, .shift]); app.typeText(directory.path + "/"); app.typeKey(.return, modifierFlags: [])
+        let bookmarks = app.staticTexts["Bookmarks.html"]
+        XCTAssertTrue(bookmarks.waitForExistence(timeout: 5)); bookmarks.click()
+        app.typeKey("a", modifierFlags: .command); app.buttons["Preview"].click()
+        XCTAssertTrue(app.buttons["Select All"].waitForExistence(timeout: 5)); app.buttons["Select All"].click()
+        app.buttons["browserImport.continue"].click(); app.buttons["browserImport.continue"].click()
+        let message = app.staticTexts["browserImport.message"]
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertTrue(message.label.contains("Choose a destination"))
+        let work = app.checkBoxes.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "browserImport.collection.", "Work")).firstMatch
+        XCTAssertTrue(work.waitForExistence(timeout: 5)); work.click()
+        app.buttons["browserImport.continue"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["browserImport.review"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browserImport.reviewProfile.")).count, 2)
+        app.buttons["browserImport.continue"].click()
+        expectation(for: NSPredicate(format: "label CONTAINS %@", "Imported 1 page, 0 folders and 2 visits"), evaluatedWith: message)
+        waitForExpectations(timeout: 10)
+        app.buttons["Done"].click(); app.windows["browser"].click()
+        expectRuntime(app, tabs: 0, views: 0, created: 0)
+    }
+
     func testBrowserImportCanBeCancelledFromKeyboardWithoutChangingBrowsing() {
         let app = launchFreshApp()
         app.menuBars.menuBarItems["File"].click()

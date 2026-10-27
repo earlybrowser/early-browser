@@ -7,8 +7,12 @@ public struct BrowserImportDestination: Equatable, Sendable {
     public var profileName: String
     public var spaceID: UUID?
     public var spaceName: String
-    public init(profileID: UUID? = nil, profileName: String, spaceID: UUID? = nil, spaceName: String) {
+    /// Explicitly combine source groups into one newly created profile.
+    /// A display name alone never establishes shared identity.
+    public var newProfileGroup: String?
+    public init(profileID: UUID? = nil, profileName: String, spaceID: UUID? = nil, spaceName: String, newProfileGroup: String? = nil) {
         self.profileID = profileID; self.profileName = profileName; self.spaceID = spaceID; self.spaceName = spaceName
+        self.newProfileGroup = newProfileGroup
     }
 }
 
@@ -22,6 +26,7 @@ public struct BrowserImportBatch: Identifiable, Codable, Equatable, Sendable {
     public var folders: [BrowserFolder] = []
     public var tabs: [BrowserTab] = []
     public var historyProfiles: [UUID] = []
+    public var folderProfiles: [UUID: UUID]?
     public init(id: UUID = UUID(), source: String, createdAt: Date = Date()) {
         self.id = id; self.source = source; self.createdAt = createdAt
     }
@@ -92,13 +97,20 @@ public extension BrowserImportDocument {
 
     func candidate(into current: BrowserWorkspace, selecting selected: Set<String>,
                    destinations: [String: BrowserImportDestination], flattenDeepFolders: Bool = false,
+                   collectionTargets: [String: Set<String>] = [:],
                    using input: NavigationInput = NavigationInput()) throws -> BrowserImportCandidate {
         try validate()
+        if !collections.isEmpty {
+            let resolved = try resolvingCollections(selecting: selected, targets: collectionTargets, destinations: destinations)
+            return try resolved.document.candidate(into: current, selecting: resolved.selected, destinations: destinations,
+                flattenDeepFolders: flattenDeepFolders, using: input)
+        }
         let included = included(selected)
         guard !selected.isEmpty else { throw BrowserImportProblem.invalid }
         let byID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
         var result = BrowserImportCandidate(workspace: current, batch: .init(source: source), history: [:], flattened: [])
-        var profileMap: [String: UUID] = [:], spaceMap: [String: UUID] = [:], folderMap: [String: UUID] = [:]
+        var profileMap: [[String]: UUID] = [:]
+        var spaceMap: [String: UUID] = [:], folderMap: [String: UUID] = [:]
         var initialSpaceUsed = Set<UUID>(), initialSpaceRecord: [UUID: Int] = [:]
         var positions: [String: Int] = [:]
         func positionKey(_ space: UUID, _ folder: UUID?) -> String { space.uuidString + (folder?.uuidString ?? "root") }
@@ -134,16 +146,25 @@ public extension BrowserImportDocument {
             let path = ancestors(node)
             guard let sourceProfile = path.first(where: { $0.kind == .profile }) else { throw BrowserImportProblem.invalid }
             let group = path.first(where: { $0.kind == .space }) ?? sourceProfile
-            guard let destination = destinations[group.id] ?? destinations[sourceProfile.id] else { throw BrowserImportProblem.missingDestination }
+            guard var destination = destinations[group.id] ?? destinations[sourceProfile.id] else { throw BrowserImportProblem.missingDestination }
+            if let shared = destination.newProfileGroup {
+                guard byID[shared]?.kind == .profile, let canonical = destinations[shared], canonical.newProfileGroup == nil,
+                      canonical.profileID == nil else { throw BrowserImportProblem.missingDestination }
+                destination.profileName = canonical.profileName
+                if group.kind == .profile { destination.spaceID = canonical.spaceID; destination.spaceName = canonical.spaceName }
+            }
+            let spaceGroup = group.kind == .profile ? (destination.newProfileGroup ?? group.id) : group.id
+            let profileKey = [destination.newProfileGroup ?? sourceProfile.id, destination.profileName]
             let profile: UUID
             if let id = destination.profileID {
                 guard result.workspace.profiles.contains(where: { $0.id == id }) else { throw BrowserImportProblem.missingDestination }
                 profile = id
-            } else if let id = profileMap[sourceProfile.id + "|" + destination.profileName] { profile = id }
+            } else if let id = profileMap[profileKey] { profile = id }
             else {
+                guard result.workspace.profiles.count < EarlyStateArchive.maximumProfiles else { throw BrowserImportProblem.capacity }
                 let name = EarlyStateArchive.uniqueName(destination.profileName, in: result.workspace.profiles)
                 guard let id = result.workspace.createProfile(name: name, color: sourceProfile.color ?? .blue) else { throw BrowserImportProblem.invalid }
-                profileMap[sourceProfile.id + "|" + destination.profileName] = id; profile = id
+                profileMap[profileKey] = id; profile = id
                 result.batch.profiles.append(result.workspace.profiles.last!)
                 initialSpaceRecord[profile] = result.batch.spaces.count
                 result.batch.spaces.append(result.workspace.sessions.last!.spaces[0])
@@ -155,7 +176,7 @@ public extension BrowserImportDocument {
             } else if let id = destination.spaceID {
                 guard result.workspace.sessions[sessionIndex].spaces.contains(where: { $0.id == id }) else { throw BrowserImportProblem.missingDestination }
                 space = id
-            } else if let id = spaceMap[group.id + profile.uuidString] { space = id }
+            } else if let id = spaceMap[spaceGroup + profile.uuidString] { space = id }
             else {
                 let name = BrowserSpace.normalizedName(String(destination.spaceName.prefix(64))) ?? "Imported"
                 // A new profile already has a first Space; reuse it for its first source group.
@@ -173,7 +194,7 @@ public extension BrowserImportDocument {
                     result.workspace.sessions[sessionIndex].spaces.append(created)
                     result.batch.spaces.append(created)
                 }
-                spaceMap[group.id + profile.uuidString] = space
+                spaceMap[spaceGroup + profile.uuidString] = space
             }
             let sourceFolders = path.filter { $0.kind == .folder }.reversed()
             var parent: UUID?
@@ -187,6 +208,8 @@ public extension BrowserImportDocument {
                 var created = BrowserFolder(spaceID: space, parentID: parent, name: String(folder.title.prefix(128)), icon: folder.icon)
                 created.sidebarPosition = try allocate(space, parent)
                 result.workspace.sessions[sessionIndex].folders.append(created); result.batch.folders.append(created)
+                if result.batch.folderProfiles == nil { result.batch.folderProfiles = [:] }
+                result.batch.folderProfiles?[created.id] = profile
                 folderMap[folder.id + profile.uuidString + space.uuidString] = created.id
                 parent = created.id; depth += 1
             }

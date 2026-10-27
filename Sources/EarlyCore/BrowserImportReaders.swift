@@ -133,7 +133,8 @@ extension BrowserImportReaders {
         var serial = 0
         var skipped = 0
         var visitIDs = Set<String>()
-        var hasHistory = false
+        var historyGroups = Set<String>()
+        var contextIDs = Set<String>()
         init(name: String) {
             document = .init(source: name, nodes: [.init(id: "profile", kind: .profile, title: name)])
         }
@@ -151,16 +152,25 @@ extension BrowserImportReaders {
             let id = next()
             document.nodes.append(.init(id: id, parentID: parent, kind: kind, title: title ?? url.host ?? "Page", url: url))
         }
-        mutating func visit(_ text: String?, title: String?, time: Date?) throws {
+        mutating func context(_ value: Int) throws -> String {
+            guard value >= 0 else { throw BrowserImportProblem.invalid }
+            guard value > 0 else { return "profile" }
+            let id = "container.\(value)"
+            if contextIDs.insert(id).inserted {
+                document.nodes.append(.init(id: id, kind: .profile, title: "\(document.source) · Container \(value)"))
+            }
+            return id
+        }
+        mutating func visit(_ text: String?, title: String?, time: Date?, profile: String = "profile") throws {
             guard let text, let url = BrowserImportDocument.webURL(text), let time,
                   time.timeIntervalSince1970.isFinite, time.timeIntervalSince1970 > 0 else { return }
-            let id = "visit." + BrowserImportDocument.identity(url.absoluteString + "|" + String(time.timeIntervalSince1970))
+            let id = "visit." + BrowserImportDocument.identity(profile + "|" + url.absoluteString + "|" + String(time.timeIntervalSince1970))
             guard visitIDs.insert(id).inserted else { return }
-            if !hasHistory {
-                hasHistory = true
-                document.nodes.append(.init(id: "history", parentID: "profile", kind: .category, title: "Browsing history"))
+            let group = profile == "profile" ? "history" : profile + ".history"
+            if historyGroups.insert(group).inserted {
+                document.nodes.append(.init(id: group, parentID: profile, kind: .category, title: "Browsing history"))
             }
-            document.nodes.append(.init(id: id, parentID: "history", kind: .history, title: title ?? url.host ?? "Page", url: url, visitedAt: time))
+            document.nodes.append(.init(id: id, parentID: group, kind: .history, title: title ?? url.host ?? "Page", url: url, visitedAt: time))
         }
         mutating func bookmark(_ value: [String: Any], parent: String, firefox: Bool, depth: Int = 0) throws {
             guard depth <= 64, document.nodes.count < BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }

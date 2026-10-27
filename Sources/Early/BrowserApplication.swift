@@ -172,9 +172,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 if storageDirectory == nil, let suite { directory.append(path: "UITests/\(suite)", directoryHint: .isDirectory) }
                 let repository = SessionRepository(fileURL: directory.appending(path: "session.sqlite"), input: input)
                 do {
-                    let saved = try await repository.loadWorkspace() ?? BrowserWorkspace()
+                    var saved = try await repository.loadWorkspace() ?? BrowserWorkspace()
                     let imports = BrowserImportJournal(directory: directory.appendingPathComponent("BrowserImports"))
-                    _ = try await imports.recover(workspace: saved, historyDirectory: directory.appendingPathComponent("History"))
+                    let recovered = try await imports.recover(workspace: saved, historyDirectory: directory.appendingPathComponent("History"))
+                    let retained = Set(recovered.map(\.id))
+                    saved.browserImportBatchIDs = saved.browserImportBatchIDs?.filter { retained.contains($0) }
                     return Loaded(workspace: saved, repository: repository, input: input, testing: testing, error: nil)
                 } catch {
                     return Loaded(workspace: BrowserWorkspace(), repository: repository, input: input, testing: testing,
@@ -710,7 +712,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     func browserImportSnapshot() -> BrowserWorkspace? { captureWorkspace(); return workspace }
 
     func importBrowser(_ document: BrowserImportDocument, selected: Set<String>,
-                       destinations: [String: BrowserImportDestination], flatten: Bool) async -> ImportOutcome {
+                       destinations: [String: BrowserImportDestination], flatten: Bool,
+                       collectionTargets: [String: Set<String>] = [:]) async -> ImportOutcome {
         guard canEditProfiles, let journal = browserImportJournal else {
             return .init(message: "Early can’t import right now. Try again in a moment.", succeeded: false)
         }
@@ -725,7 +728,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             guard try await journal.entries().count < 128 else { throw BrowserImportProblem.capacity }
             let validationInput = input
             var candidate = try await Task.detached {
-                try document.candidate(into: current, selecting: selected, destinations: destinations, flattenDeepFolders: flatten, using: validationInput)
+                try document.candidate(into: current, selecting: selected, destinations: destinations, flattenDeepFolders: flatten,
+                    collectionTargets: collectionTargets, using: validationInput)
             }.value
             try Task.checkCancellation()
             // A recoverable backup must be durable before the first history insertion.
@@ -801,7 +805,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func undoBrowserImport(_ batch: BrowserImportBatch) async -> ImportOutcome {
+    func undoBrowserImport(_ requested: BrowserImportBatch) async -> ImportOutcome {
         guard canEditProfiles, let journal = browserImportJournal else {
             return .init(message: "Early can’t undo an import right now.", succeeded: false)
         }
@@ -811,6 +815,20 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             guard await persistence?.flush() == true else { throw SessionError.database("The current session couldn’t be saved.") }
             captureWorkspace()
             guard let current = workspace else { throw BrowserImportProblem.invalid }
+            guard let entry = try await journal.entries().first(where: { $0.batch.id == requested.id }) else {
+                browserImportBatches.removeAll { $0.id == requested.id }
+                return .init(message: "This import has already been removed.", succeeded: true)
+            }
+            guard let batch = entry.batch.retaining(in: current) else {
+                var cleaned = current
+                cleaned.browserImportBatchIDs?.removeAll { $0 == requested.id }
+                persistence?.enqueue(cleaned)
+                guard await persistence?.flush() == true else { throw SessionError.database("Import-record cleanup could not be saved.") }
+                try await journal.remove(requested.id)
+                workspace?.browserImportBatchIDs?.removeAll { $0 == requested.id }
+                browserImportBatches.removeAll { $0.id == requested.id }
+                return .init(message: "This import no longer belongs to a remaining profile.", succeeded: true)
+            }
             let committed = current.browserImportBatchIDs?.contains(batch.id) == true
             if !committed {
                 // A prior undo may have committed its workspace before a disk
@@ -830,7 +848,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             for profile in batch.historyProfiles {
-                if let file = historyFile(for: profile) { try await (historyStores[profile] ?? HistoryStore(fileURL: file)).undoBrowserImport(batch.id) }
+                if let file = historyFile(for: profile), FileManager.default.fileExists(atPath: file.path) {
+                    try await (historyStores[profile] ?? HistoryStore(fileURL: file)).undoBrowserImport(batch.id)
+                }
             }
             try await journal.remove(batch.id)
             browserImportBatches.removeAll { $0.id == batch.id }
@@ -1222,8 +1242,26 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         for store in icons { await store.shutdown() }
         try? await history?.removeFile()
+        await reconcileBrowserImports()
         await Task.yield()
         await retryWebsiteDataCleanup()
+    }
+
+    private func reconcileBrowserImports() async {
+        guard let journal = browserImportJournal, let current = workspace, let storage = storageURL?.deletingLastPathComponent() else { return }
+        // Hide removed owners immediately, while keeping a visible retry error
+        // if a disk failure prevents the journal cleanup from finishing.
+        browserImportBatches = browserImportBatches.compactMap { $0.retaining(in: current) }
+        do {
+            let retained = try await journal.recover(workspace: current, historyDirectory: storage.appendingPathComponent("History"))
+            browserImportBatches = retained
+            let ids = Set(retained.map(\.id))
+            let markers = workspace?.browserImportBatchIDs?.filter { ids.contains($0) }
+            workspace?.browserImportBatchIDs = markers
+            saveAll()
+            guard await persistence?.flush() == true else { throw SessionError.database("Import-record cleanup could not be saved.") }
+            browserImportError = nil
+        } catch { browserImportError = "Import-record cleanup is pending. Early will retry at its next launch. \(error.localizedDescription)" }
     }
 
     func retryWebsiteDataCleanup() async {

@@ -10,8 +10,9 @@ public enum BrowserImportFiles {
     public static func readSafariExports(_ urls: [URL]) throws -> BrowserImportDocument {
         guard !urls.isEmpty, urls.count <= 64,
               Set(urls.map(\.standardizedFileURL)).count == urls.count else { throw BrowserImportProblem.capacity }
-        var documents: [BrowserImportDocument] = [], totalBytes = 0, totalNodes = 0
-        for url in urls {
+        var result = BrowserImportDocument(source: "Safari"), totalBytes = 0
+        var shared: [String] = []
+        for (index, url) in urls.sorted(by: { $0.path < $1.path }).enumerated() {
             try Task.checkCancellation()
             let type = url.pathExtension.lowercased()
             guard ["html", "htm", "json"].contains(type) else {
@@ -20,22 +21,56 @@ public enum BrowserImportFiles {
             let data = try bounded(url)
             totalBytes += data.count
             guard totalBytes <= BrowserImportDocument.maximumBytes else { throw BrowserImportProblem.capacity }
-            let document: BrowserImportDocument
+            var document: BrowserImportDocument
+            let prefix = "safari.file.\(index)."
             if type == "json" {
                 guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       (json["metadata"] as? [String: Any])?["data_type"] as? String == "history" else {
                     throw BrowserImportProblem.unsupported("Choose Safari’s history JSON, not its extensions or credit-card export. Passwords use the separate import in Settings → Passwords.")
                 }
-                document = try BrowserImportReaders.read(data, name: String(url.deletingPathExtension().lastPathComponent.prefix(64)))
-            } else { document = try BrowserImportReaders.bookmarksHTML(data, name: "Safari Bookmarks") }
-            totalNodes += document.nodes.count
-            guard totalNodes <= BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
-            documents.append(document)
+                let stem = url.deletingPathExtension().lastPathComponent
+                let suffix = [" — ", " – ", " - "].compactMap { separator in
+                    stem.range(of: separator).map { String(stem[$0.upperBound...]) }
+                }.first
+                let name = suffix?.isEmpty == false ? suffix! : "Safari profile"
+                document = try BrowserImportReaders.read(data, name: String(name.prefix(64)))
+                document.nodes[0].detail = url.lastPathComponent
+            } else {
+                document = try BrowserImportReaders.bookmarksHTML(data, name: "Safari")
+                let root = prefix + "shared"
+                let stem = url.deletingPathExtension().lastPathComponent
+                let readingList = stem.replacingOccurrences(of: " ", with: "").lowercased() == "readinglist"
+                result.nodes.append(.init(id: root, kind: .category, title: readingList ? "Reading List" : "Bookmarks", detail: url.lastPathComponent))
+                shared.append(root)
+                let wrapper = root + ".readingList"
+                let hasWrapper = document.nodes.contains { $0.parentID == "profile" && $0.kind == .folder && $0.title.replacingOccurrences(of: " ", with: "").lowercased() == "readinglist" }
+                if readingList && !hasWrapper { result.nodes.append(.init(id: wrapper, parentID: root, kind: .folder, title: "Reading List")) }
+                for var node in document.nodes where node.kind != .profile {
+                    node.id = prefix + node.id
+                    node.parentID = node.parentID == "profile" ? (readingList && !hasWrapper ? wrapper : root) : node.parentID.map { prefix + $0 }
+                    result.nodes.append(node)
+                }
+                result.notices += document.notices
+                guard result.nodes.count <= BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
+                continue
+            }
+            for var node in document.nodes {
+                node.id = prefix + node.id; node.parentID = node.parentID.map { prefix + $0 }
+                result.nodes.append(node)
+            }
+            result.notices += document.notices
+            guard result.nodes.count <= BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
         }
-        var result = try combine(documents, source: "Safari")
-        if documents.count > 1 {
-            result.notices.append("Safari exports one bookmarks collection and separate history files for profiles. Map them to the same Early profile in Destinations when appropriate.")
+        if !result.nodes.contains(where: { $0.kind == .profile }) {
+            result.nodes.insert(.init(id: "safari.profile", kind: .profile, title: "Safari"), at: 0)
         }
+        let profiles = result.nodes.filter { $0.kind == .profile }.map(\.id)
+        for id in shared {
+            result.collections.append(.init(id: id, profileIDs: profiles, defaultProfileIDs: profiles.count == 1 ? Set(profiles) : [],
+                explanation: "Safari shares this collection across profiles. Choose which Early profiles receive independent copies. Favorites folders keep their organization; choose their intended destinations in the preview."))
+        }
+        result.notices = Array(Set(result.notices)).sorted()
+        try result.validate()
         return result
     }
 
@@ -74,7 +109,7 @@ public enum BrowserImportFiles {
         return try BrowserImportReaders.read(data, name: source)
     }
 
-    private static func bounded(_ url: URL) throws -> Data {
+    static func bounded(_ url: URL) throws -> Data {
         let info = try url.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey, .isRegularFileKey])
         guard info.isSymbolicLink != true, info.isRegularFile == true,
               let size = info.fileSize, size <= BrowserImportDocument.maximumBytes else { throw BrowserImportProblem.capacity }
@@ -151,24 +186,42 @@ public enum BrowserImportFiles {
             throw BrowserImportProblem.unsupported("No verified browser organization was found in this folder. Select a profile folder or export bookmarks as HTML. Dia’s proprietary workspace formats are not assumed to match Chromium bookmarks.")
         }
         var result = try combine(documents, source: source, mergeProfile: true)
+        for index in result.nodes.indices where result.nodes[index].kind == .profile {
+            result.nodes[index].detail = String(url.lastPathComponent.prefix(255))
+        }
         if historyOnly { return result }
+        let firefox = ["places.sqlite", "zen-sessions.jsonlz4", "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4"].contains {
+            FileManager.default.fileExists(atPath: url.appendingPathComponent($0).path)
+        }
+        if firefox {
+            try configureFirefoxProfile(&result, at: url)
+        }
         if url.pathComponents.contains("Dia") || source.localizedCaseInsensitiveContains("Dia") {
             result.notices.append("Dia’s Chromium bookmarks and history are verified. Proprietary workspace organization has no verified format here; export those links as bookmarks HTML. Names inferred from profile folders can be changed in Destinations.")
         }
-        result.notices.append("Encrypted Chromium session files are not decrypted. If open tabs or groups are not listed, save them as bookmarks in the source browser and export HTML instead.")
+        if !firefox { result.notices.append("Encrypted Chromium session files are not decrypted. If open tabs or groups are not listed, save them as bookmarks in the source browser and export HTML instead.") }
         return result
     }
 
     static func combine(_ documents: [BrowserImportDocument], source: String, mergeProfile: Bool = false) throws -> BrowserImportDocument {
         var result = BrowserImportDocument(source: source)
+        var mergedProfiles = Set<String>()
         for (index, document) in documents.enumerated() {
             guard result.nodes.count + document.nodes.count <= BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
             let prefix = "\(index)."
+            let localProfiles = Set(document.nodes.filter { mergeProfile && $0.kind == .profile && ($0.id == "profile" || $0.id.hasPrefix("container.")) }.map(\.id))
+            func remap(_ id: String) -> String { localProfiles.contains(id) ? id : prefix + id }
             for var node in document.nodes {
-                if mergeProfile, node.id == "profile", result.nodes.contains(where: { $0.id == "profile" }) { continue }
-                node.id = mergeProfile && node.id == "profile" ? "profile" : prefix + node.id
-                node.parentID = node.parentID.map { mergeProfile && $0 == "profile" ? "profile" : prefix + $0 }
+                if localProfiles.contains(node.id), !mergedProfiles.insert(node.id).inserted { continue }
+                node.id = remap(node.id)
+                node.parentID = node.parentID.map(remap)
                 result.nodes.append(node)
+            }
+            for var collection in document.collections {
+                collection.id = remap(collection.id)
+                collection.profileIDs = collection.profileIDs.map(remap)
+                collection.defaultProfileIDs = Set(collection.defaultProfileIDs.map(remap))
+                result.collections.append(collection)
             }
             result.notices.append(contentsOf: document.notices)
         }
@@ -222,8 +275,9 @@ public enum BrowserImportFiles {
                 }
             }
         }
+        let contextualHistory = try firefox && query(copy, "PRAGMA table_info(moz_historyvisits)").contains { $0[1] == "userContextId" }
         let sql = firefox
-            ? "SELECT p.url,p.title,v.visit_date FROM moz_historyvisits v JOIN moz_places p ON p.id=v.place_id WHERE v.visit_date>=?1 ORDER BY v.visit_date DESC,v.id DESC LIMIT 50001"
+            ? "SELECT p.url,p.title,v.visit_date\(contextualHistory ? ",v.userContextId" : "") FROM moz_historyvisits v JOIN moz_places p ON p.id=v.place_id WHERE v.visit_date>=?1 ORDER BY v.visit_date DESC,v.id DESC LIMIT 50001"
             : "SELECT u.url,u.title,v.visit_time FROM visits v JOIN urls u ON u.id=v.url WHERE v.visit_time>=?1 ORDER BY v.visit_time DESC,v.id DESC LIMIT 50001"
         let cutoff = (Date().addingTimeInterval(-365 * 86_400).timeIntervalSince1970 + (firefox ? 0 : 11_644_473_600)) * 1_000_000
         let visits = try query(copy, sql, minimumTime: cutoff)
@@ -233,8 +287,10 @@ public enum BrowserImportFiles {
         for row in visits.prefix(BrowserImportDocument.maximumVisits) {
             guard let value = Double(row[2]) else { continue }
             let seconds = value / 1_000_000 - (firefox ? 0 : 11_644_473_600)
-            try builder.visit(row[0], title: row[1], time: Date(timeIntervalSince1970: seconds))
+            let profile = try builder.context(contextualHistory ? (Int(row[3]) ?? 0) : 0)
+            try builder.visit(row[0], title: row[1], time: Date(timeIntervalSince1970: seconds), profile: profile)
         }
+        if firefox { builder.document.addFirefoxCollections() }
         try builder.document.validate(); return builder.document
     }
 

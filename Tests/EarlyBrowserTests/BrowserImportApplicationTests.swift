@@ -152,4 +152,126 @@ struct BrowserImportApplicationTests {
         #expect(app.browserImportBatches.isEmpty)
         await fixture.cleanup()
     }
+
+    @Test func deletingTheOnlyImportedProfileRemovesHistoryJournalAndMarker() async throws {
+        let fixture = Fixture(); await fixture.start()
+        let app = fixture.application, doc = source(withHistory: true)
+        #expect(await app.importBrowser(doc, selected: Set(doc.nodes.map(\.id)),
+            destinations: ["profile": .init(profileName: "Imported Work", spaceName: "Work")], flatten: false).succeeded)
+        let batch = try #require(app.browserImportBatches.first), profile = try #require(batch.profiles.first?.id)
+        let file = fixture.directory.appendingPathComponent("History/" + profile.uuidString + ".sqlite")
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        // Imported history was never opened in the browser; no cached store is required.
+        await app.deleteProfile(profile)
+        #expect(!app.profiles.contains { $0.id == profile })
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(app.browserImportBatches.isEmpty)
+        #expect(app.workspace?.browserImportBatchIDs?.contains(batch.id) == false)
+        let journal = BrowserImportJournal(directory: fixture.directory.appendingPathComponent("BrowserImports"))
+        #expect(try await journal.entries().isEmpty)
+        #expect(await app.undoBrowserImport(batch).succeeded, "A stale confirmation must not recreate deleted data")
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        let restarted = EarlyAppDelegate(); restarted.presentWindow = { _ in }; await fixture.start(restarted)
+        #expect(restarted.browserImportBatches.isEmpty)
+        #expect(restarted.workspace?.browserImportBatchIDs?.contains(batch.id) == false)
+        restarted.closeWindow(nil); _ = await restarted.persistence?.flush()
+        await fixture.cleanup()
+    }
+
+    @Test func deletingOneProfilePrunesAMixedImportAndRemainingUndoSurvivesRestart() async throws {
+        let fixture = Fixture(); await fixture.start()
+        let app = fixture.application
+        var doc = source(withHistory: true)
+        let work = source(withHistory: true).nodes.map { original in
+            var node = original; node.id = "work." + node.id; node.parentID = node.parentID.map { "work." + $0 }; node.title = "Work " + node.title
+            return node
+        }
+        doc.nodes += work
+        var mapping = destinations(app)
+        mapping["work.profile"] = .init(profileName: "Imported Work", spaceName: "Work")
+        #expect(await app.importBrowser(doc, selected: Set(doc.nodes.map(\.id)), destinations: mapping, flatten: false).succeeded)
+        let batch = try #require(app.browserImportBatches.first), workID = try #require(batch.profiles.first?.id)
+        await app.deleteProfile(workID)
+        let retained = try #require(app.browserImportBatches.first)
+        #expect(retained.id == batch.id && retained.profiles.isEmpty)
+        #expect(retained.tabs.allSatisfy { $0.profileID != workID })
+        #expect(retained.spaces.allSatisfy { $0.profileID != workID })
+        #expect(retained.historyProfiles == [app.workspace!.defaultProfileID])
+        #expect(retained.folders.count == 1)
+        let restarted = EarlyAppDelegate(); restarted.presentWindow = { _ in }; await fixture.start(restarted)
+        let recovered = try #require(restarted.browserImportBatches.first)
+        #expect(recovered == retained)
+        let history = try #require(restarted.history(for: restarted.workspace!.defaultProfileID))
+        let url = URL(string: "https://example.invalid/later")!
+        try await history.record(url, title: "Later visit", at: Date())
+        // Use the stale original confirmation: Undo consults the pruned journal.
+        #expect(await restarted.undoBrowserImport(batch).succeeded)
+        #expect(try await history.search("known-visit", limit: 5).isEmpty)
+        #expect(try await history.search("later", limit: 5).count == 1)
+        #expect(!FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("History/" + workID.uuidString + ".sqlite").path))
+        restarted.closeWindow(nil); _ = await restarted.persistence?.flush()
+        await fixture.cleanup()
+    }
+
+    @Test func aFailedProfileDeletionKeepsImportRecordsAndHistory() async throws {
+        let fixture = Fixture(); await fixture.start()
+        let app = fixture.application, doc = source(withHistory: true)
+        #expect(await app.importBrowser(doc, selected: Set(doc.nodes.map(\.id)),
+            destinations: ["profile": .init(profileName: "Imported Work", spaceName: "Work")], flatten: false).succeeded)
+        let batch = try #require(app.browserImportBatches.first), profile = try #require(batch.profiles.first?.id)
+        try await withLockedSession(at: fixture.directory.appendingPathComponent("session.sqlite")) { await app.deleteProfile(profile) }
+        #expect(app.profileError != nil)
+        #expect(app.profiles.contains { $0.id == profile })
+        #expect(app.browserImportBatches == [batch])
+        let journal = BrowserImportJournal(directory: fixture.directory.appendingPathComponent("BrowserImports"))
+        #expect(try await journal.entries().first?.batch == batch)
+        let history = HistoryStore(fileURL: fixture.directory.appendingPathComponent("History/" + profile.uuidString + ".sqlite"))
+        #expect(try await history.search("known-visit", limit: 5).count == 1)
+        await history.close()
+        await app.deleteProfile(profile)
+        #expect(app.browserImportBatches.isEmpty)
+        await fixture.cleanup()
+    }
+
+    @Test func startupReconcilesADeletionInterruptedBeforeJournalCleanup() async throws {
+        let fixture = Fixture(); await fixture.start()
+        let app = fixture.application, doc = source(withHistory: true)
+        #expect(await app.importBrowser(doc, selected: Set(doc.nodes.map(\.id)),
+            destinations: ["profile": .init(profileName: "Imported Work", spaceName: "Work")], flatten: false).succeeded)
+        let batch = try #require(app.browserImportBatches.first), profile = try #require(batch.profiles.first?.id)
+        var durable = try #require(app.workspace)
+        let deleted = durable.deleteProfile(profile); #expect(deleted)
+        app.persistence?.enqueue(durable); #expect(await app.persistence?.flush() == true)
+        fixture.defaults.set([profile.uuidString], forKey: "pendingProfileCleanup")
+        let restarted = EarlyAppDelegate(); restarted.presentWindow = { _ in }; await fixture.start(restarted)
+        #expect(restarted.browserImportBatches.isEmpty)
+        #expect(restarted.workspace?.browserImportBatchIDs?.contains(batch.id) == false)
+        await restarted.retryWebsiteDataCleanup()
+        #expect(!FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("History/" + profile.uuidString + ".sqlite").path))
+        restarted.closeWindow(nil); _ = await restarted.persistence?.flush()
+        await fixture.cleanup()
+    }
+
+    @Test func failedJournalPruningIsVisibleAndFinishesAtNextLaunch() async throws {
+        let fixture = Fixture(); await fixture.start()
+        let app = fixture.application, doc = source(withHistory: true)
+        #expect(await app.importBrowser(doc, selected: Set(doc.nodes.map(\.id)),
+            destinations: ["profile": .init(profileName: "Imported Work", spaceName: "Work")], flatten: false).succeeded)
+        let batch = try #require(app.browserImportBatches.first), profile = try #require(batch.profiles.first?.id)
+        let directory = fixture.directory.appendingPathComponent("BrowserImports")
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        await app.deleteProfile(profile)
+        #expect(!app.profiles.contains { $0.id == profile })
+        #expect(app.browserImportBatches.isEmpty)
+        #expect(app.browserImportError?.contains("cleanup is pending") == true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let restarted = EarlyAppDelegate(); restarted.presentWindow = { _ in }; await fixture.start(restarted)
+        #expect(restarted.browserImportBatches.isEmpty && restarted.browserImportError == nil)
+        #expect(restarted.workspace?.browserImportBatchIDs?.contains(batch.id) == false)
+        let journal = BrowserImportJournal(directory: directory)
+        #expect(try await journal.entries().isEmpty)
+        restarted.closeWindow(nil); _ = await restarted.persistence?.flush()
+        await fixture.cleanup()
+    }
 }

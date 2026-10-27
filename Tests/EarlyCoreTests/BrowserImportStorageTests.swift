@@ -151,7 +151,7 @@ struct BrowserImportStorageTests {
         #expect(doc.source == "Safari")
         #expect(doc.nodes.filter { $0.kind == .bookmark }.count == 3)
         #expect(doc.nodes.filter { $0.kind == .history }.count == 1)
-        #expect(doc.nodes.filter { $0.kind == .profile }.count == 2)
+        #expect(doc.nodes.filter { $0.kind == .profile }.count == 1)
         #expect(doc.initiallySelected.isDisjoint(with: doc.nodes.filter { $0.kind == .history }.map(\.id)))
         let current = BrowserWorkspace()
         let mapping = Dictionary(uniqueKeysWithValues: doc.destinationGroups.map { ($0.id, BrowserImportDestination(profileID: current.defaultProfileID, profileName: "Default", spaceID: current.sessions[0].activeSpaceID, spaceName: "Personal")) })
@@ -162,7 +162,7 @@ struct BrowserImportStorageTests {
         let other = root.appendingPathComponent("History — Work.json")
         try helper.fixture("SafariHistory.json").write(to: other)
         let multiple = try BrowserImportFiles.readSafariExports([bookmarks, history, other])
-        #expect(multiple.nodes.filter { $0.kind == .profile }.count == 3)
+        #expect(multiple.nodes.filter { $0.kind == .profile }.count == 2)
         #expect(Set(multiple.nodes.map(\.id)).count == multiple.nodes.count)
     }
     @Test func safariBatchRejectsNonHistoryJSONCredentialsAndUnsupportedFiles() throws {

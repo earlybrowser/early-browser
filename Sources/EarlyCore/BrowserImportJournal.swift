@@ -43,7 +43,12 @@ public actor BrowserImportJournal {
         var available: [BrowserImportBatch] = []
         for var entry in try entries() {
             if committed.contains(entry.batch.id) {
-                if entry.state != .complete { entry.state = .complete; try write(entry) }
+                guard let retained = entry.batch.retaining(in: workspace) else {
+                    try remove(entry.batch.id); continue
+                }
+                if entry.state != .complete || entry.batch != retained {
+                    entry.batch = retained; entry.state = .complete; try write(entry)
+                }
                 available.append(entry.batch)
             } else {
                 for profile in entry.batch.historyProfiles {

@@ -8,8 +8,9 @@ public struct BrowserImportDocument: Equatable, Sendable {
     public var source: String
     public var nodes: [BrowserImportNode]
     public var notices: [String]
-    public init(source: String, nodes: [BrowserImportNode] = [], notices: [String] = []) {
-        self.source = source; self.nodes = nodes; self.notices = notices
+    public var collections: [BrowserImportCollection]
+    public init(source: String, nodes: [BrowserImportNode] = [], notices: [String] = [], collections: [BrowserImportCollection] = []) {
+        self.source = source; self.nodes = nodes; self.notices = notices; self.collections = collections
     }
     public static let maximumBytes = 64 * 1024 * 1024
     public static let maximumNodes = 80_000
@@ -40,8 +41,22 @@ public struct BrowserImportDocument: Equatable, Sendable {
     public func validate() throws {
         guard nodes.count <= Self.maximumNodes, Set(nodes.map(\.id)).count == nodes.count else { throw BrowserImportProblem.capacity }
         let byID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
+        guard Set(collections.map(\.id)).count == collections.count else { throw BrowserImportProblem.invalid }
+        for collection in collections {
+            guard byID[collection.id]?.kind == .category, !collection.profileIDs.isEmpty,
+                  Set(collection.profileIDs).count == collection.profileIDs.count,
+                  collection.profileIDs.allSatisfy({ byID[$0]?.kind == .profile }),
+                  collection.defaultProfileIDs.isSubset(of: Set(collection.profileIDs)),
+                  collection.allowsCopies || collection.defaultProfileIDs.count <= 1 else { throw BrowserImportProblem.invalid }
+            var parent = byID[collection.id]?.parentID
+            var seen = Set<String>()
+            while let id = parent, seen.insert(id).inserted {
+                guard !collections.contains(where: { $0.id == id }) else { throw BrowserImportProblem.invalid }
+                parent = byID[id]?.parentID
+            }
+        }
         for node in nodes {
-            guard !node.id.isEmpty, node.id.utf8.count <= 1024, node.title.count <= 512 else { throw BrowserImportProblem.invalid }
+            guard !node.id.isEmpty, node.id.utf8.count <= 1024, node.title.count <= 512, (node.detail?.count ?? 0) <= 1024 else { throw BrowserImportProblem.invalid }
             guard node.kind != .profile || node.parentID == nil,
                   node.order.map({ (0...Self.maximumNodes).contains($0) }) ?? true else { throw BrowserImportProblem.invalid }
             var parent = node.parentID, seen: Set<String> = [node.id]
@@ -77,17 +92,20 @@ public struct BrowserImportNode: Identifiable, Codable, Equatable, Sendable {
     public var color: BrowserSpace.Color?
     public var icon: SpaceIcon?
     public var order: Int?
+    public var detail: String?
     public init(id: String, parentID: String? = nil, kind: Kind, title: String, url: URL? = nil,
-                visitedAt: Date? = nil, color: BrowserSpace.Color? = nil, icon: SpaceIcon? = nil, order: Int? = nil) {
+                visitedAt: Date? = nil, color: BrowserSpace.Color? = nil, icon: SpaceIcon? = nil, order: Int? = nil, detail: String? = nil) {
         self.id = id; self.parentID = parentID; self.kind = kind
         self.title = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(512))
         if self.title.isEmpty { self.title = url?.host ?? "Untitled" }
         self.url = url; self.visitedAt = visitedAt; self.color = color; self.icon = icon; self.order = order
+        self.detail = detail.map { String($0.prefix(1024)) }
     }
 }
 
 public enum BrowserImportProblem: LocalizedError, Equatable, Sendable {
     case invalid, capacity, cancelled, unsupported(String), missingDestination, tooDeep(String)
+    case collectionDestination(String)
     public var errorDescription: String? {
         switch self {
         case .invalid: "This file does not contain a supported browser export, or its organization is damaged."
@@ -96,6 +114,7 @@ public enum BrowserImportProblem: LocalizedError, Equatable, Sendable {
         case .unsupported(let message): message
         case .missingDestination: "A destination changed or was deleted. Choose your destinations again."
         case .tooDeep(let name): "“\(name)” exceeds eight nested folder levels. Choose Flatten Deep Folders, another destination, or deselect this branch."
+        case .collectionDestination(let name): "Choose a destination for “\(name)” before importing."
         }
     }
 }

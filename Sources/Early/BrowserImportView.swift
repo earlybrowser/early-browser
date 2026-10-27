@@ -71,6 +71,7 @@ struct BrowserImportSheet: View {
     @State private var expanded = Set<String>()
     @State private var search = ""
     @State private var destinations: [String: BrowserImportDestination] = [:]
+    @State private var collectionTargets: [String: Set<String>] = [:]
     @State private var rows: [BrowserImportTree.Row] = []
     @State private var step = 0
     @State private var reading: Task<BrowserImportDocument, Error>?
@@ -179,7 +180,7 @@ struct BrowserImportSheet: View {
     private var exportInstructions: String {
         switch source {
         case "Safari":
-            "In Safari, choose File → Export Browsing Data to File. Export Bookmarks and History, then unzip the file. Select the bookmarks HTML and history JSON together here."
+            "In Safari, choose File → Export Browsing Data to File. Export Bookmarks, Reading List or History, unzip the file, then select the HTML and history JSON files together here."
         case "Chrome":
             "Open Chrome’s Bookmark Manager, then choose ⋮ → Export bookmarks. Choose the saved HTML file here."
         case "Arc":
@@ -252,6 +253,7 @@ struct BrowserImportSheet: View {
                     }.frame(width: 18, height: 20)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(row.node.title).lineLimit(1)
+                        if let detail = row.node.detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                         if let url = row.node.url { Text(url.absoluteString).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                     }
                     Spacer()
@@ -265,30 +267,8 @@ struct BrowserImportSheet: View {
     private func destinationView(_ document: BrowserImportDocument) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Source profiles remain separate by default. Choose an existing profile only when you intend to combine their website identities.")
-                    .font(.callout).foregroundStyle(.secondary)
-                ForEach(document.destinationGroups(selecting: selected)) { group in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(group.title).font(.headline)
-                        Picker("Profile", selection: Binding(get: { destinations[group.id]?.profileID }, set: { id in
-                            destinations[group.id]?.profileID = id; destinations[group.id]?.spaceID = nil
-                        })) {
-                            Text("Create a new profile").tag(UUID?.none)
-                            ForEach(application.profiles) { Text($0.name).tag(Optional($0.id)) }
-                        }
-                        if destinations[group.id]?.profileID == nil {
-                            TextField("New profile name", text: field(group.id, \.profileName))
-                                .accessibilityIdentifier("browserImport.profileName.\(group.id)")
-                        }
-                        Picker("Space", selection: Binding(get: { destinations[group.id]?.spaceID }, set: { destinations[group.id]?.spaceID = $0 })) {
-                            Text("Create a new Space").tag(UUID?.none)
-                            if let profile = destinations[group.id]?.profileID, let session = application.workspace?.session(for: profile) {
-                                ForEach(session.spaces) { Text($0.name).tag(Optional($0.id)) }
-                            }
-                        }
-                        if destinations[group.id]?.spaceID == nil { TextField("New Space name", text: field(group.id, \.spaceName)) }
-                    }.padding(12).background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-                }
+                BrowserImportDestinations(document: document, selected: selected, workspace: application.workspace,
+                    destinations: $destinations, collectionTargets: $collectionTargets)
                 Toggle("Flatten selected folders deeper than eight nested levels", isOn: $flatten)
                 Text("Without flattening, any affected branch is identified before importing. You can go back and deselect it. No Imported Bookmarks wrapper folder is added. Today tabs go to one destination window per profile.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -306,6 +286,7 @@ struct BrowserImportSheet: View {
                         preview.batch.tabs.contains { $0.profileID == profile.id } || preview.batch.spaces.contains { $0.profileID == profile.id } || preview.history[profile.id] != nil
                     }) { profile in
                         Text("\(profile.name): \(preview.workspace.session(for: profile.id)?.spaces.filter { space in preview.batch.spaces.contains(space) || preview.batch.tabs.contains { $0.spaceID == space.id } }.map(\.name).joined(separator: ", ") ?? "")")
+                            .accessibilityIdentifier("browserImport.reviewProfile.\(profile.id)")
                     }
                     if !preview.flattened.isEmpty { Text("Flattened branches: \(Array(Set(preview.flattened)).sorted().joined(separator: ", "))").foregroundStyle(.secondary) }
                 }
@@ -318,9 +299,6 @@ struct BrowserImportSheet: View {
         }.accessibilityIdentifier("browserImport.review")
     }
 
-    private func field(_ id: String, _ key: WritableKeyPath<BrowserImportDestination, String>) -> Binding<String> {
-        Binding(get: { destinations[id]?[keyPath: key] ?? "" }, set: { destinations[id]?[keyPath: key] = String($0.prefix(64)) })
-    }
     private func updateRows() { rows = tree?.rows(selected: selected, expanded: expanded, search: search) ?? [] }
     private func label(_ kind: BrowserImportNode.Kind) -> String {
         switch kind {
@@ -364,7 +342,8 @@ struct BrowserImportSheet: View {
                     let value = try await task.value
                     try Task.checkCancellation()
                     document = value; tree = BrowserImportTree(value); selected = value.initiallySelected
-                    expanded = Set(value.destinationGroups.map(\.id)); step = 0; search = ""
+                    expanded = Set(value.destinationGroups.map(\.id) + value.collections.map(\.id)); step = 0; search = ""
+                    collectionTargets = value.defaultCollectionTargets
                     destinations = Dictionary(uniqueKeysWithValues: value.destinationGroups.map { group in
                         var owner = group
                         while owner.kind != .profile, let parent = owner.parentID, let next = value.nodes.first(where: { $0.id == parent }) { owner = next }
@@ -383,10 +362,11 @@ struct BrowserImportSheet: View {
         if step == 1 {
             guard let current = application.browserImportSnapshot() else { return }
             reviewing = true
-            let selected = selected, destinations = destinations, flatten = flatten
+            let selected = selected, destinations = destinations, flatten = flatten, collectionTargets = collectionTargets
             let validationInput = application.browserImportValidation()
             let task = Task.detached {
-                try document.candidate(into: current, selecting: selected, destinations: destinations, flattenDeepFolders: flatten, using: validationInput)
+                try document.candidate(into: current, selecting: selected, destinations: destinations, flattenDeepFolders: flatten,
+                    collectionTargets: collectionTargets, using: validationInput)
             }
             reviewTask = task
             Task {
@@ -399,7 +379,7 @@ struct BrowserImportSheet: View {
         } else {
             importing = true
             Task {
-                let result = await application.importBrowser(document, selected: selected, destinations: destinations, flatten: flatten)
+                let result = await application.importBrowser(document, selected: selected, destinations: destinations, flatten: flatten, collectionTargets: collectionTargets)
                 message = result.message; succeeded = result.succeeded; importing = false
                 if !result.succeeded { step = 1 }
             }
