@@ -68,6 +68,37 @@ struct DownloadStoreTests {
 
     private let hello = URL(string: "data:text/plain;base64,aGVsbG8gd29ybGQ=")! // "hello world"
 
+    /// A different process creates the chosen file after Early returns its
+    /// destination, before WebKit tries to open it.
+    private final class DestinationCollision: NSObject, WKDownloadDelegate {
+        let store: DownloadStore
+        let contents = Data("Another process owns this file".utf8)
+        var destination: URL?
+        var creationError: Error?
+        var downloadError: NSError?
+        var cancelsAfterChoosing = false
+
+        init(store: DownloadStore) { self.store = store }
+
+        func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                      suggestedFilename: String) async -> URL? {
+            guard let chosen = await store.download(download, decideDestinationUsing: response,
+                                                  suggestedFilename: suggestedFilename) else { return nil }
+            do { try contents.write(to: chosen, options: .withoutOverwriting) }
+            catch { creationError = error; return nil }
+            destination = chosen
+            if cancelsAfterChoosing, let item = store.items.first(where: { $0.download === download }) { store.cancel(item) }
+            return chosen
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            downloadError = error as NSError
+            store.download(download, didFailWithError: error, resumeData: resumeData)
+        }
+
+        func downloadDidFinish(_ download: WKDownload) { store.downloadDidFinish(download) }
+    }
+
     @Test func filenamesAreSanitizedAndNeverReplaceExistingOrReservedFiles() {
         for suggested in ["../../etc/passwd", ".hidden", "a:b\\c", " \n ", ""] {
             let name = DownloadStore.sanitizedFilename(suggested)
@@ -83,6 +114,105 @@ struct DownloadStoreTests {
         #expect(unique.lastPathComponent == "Report 4.pdf")
         #expect(DownloadStore.uniqueDestination(for: "notes", in: folder, reserved: []) { $0.lastPathComponent == "notes" }
             .lastPathComponent == "notes 2")
+    }
+
+    @Test func filenameProbeKeepsAFileCreatedAfterNameSelection() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyNameRace-\(UUID())", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let chosen = DownloadStore.uniqueDestination(for: "résumé.txt", in: folder, reserved: [])
+        let contents = Data("A file created after the name was selected".utf8)
+        try contents.write(to: chosen)
+
+        #expect(DownloadStore.acceptsName(chosen))
+        #expect(try Data(contentsOf: chosen) == contents)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == [chosen.lastPathComponent])
+        #expect(DownloadStore.uniqueDestination(for: "résumé.txt", in: folder, reserved: []).lastPathComponent == "résumé 2.txt")
+    }
+
+    @Test func filenameProbeDoesNotFollowOrRemoveDestinationLinks() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyNameLink-\(UUID())", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let target = folder.appending(path: "original.txt"), link = folder.appending(path: "résumé.txt")
+        let contents = Data("Keep the original and its link".utf8)
+        try contents.write(to: target)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        #expect(DownloadStore.acceptsName(link))
+        #expect(try Data(contentsOf: target) == contents)
+        #expect(try link.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).count == 2)
+    }
+
+    @Test func filenameProbeChecksTheFilesystemWithoutLeavingFiles() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyNameProbe-\(UUID())", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for name in ["plain.txt", "résumé.txt", String(repeating: "日", count: 100) + ".pdf"] {
+            #expect(DownloadStore.acceptsName(folder.appending(path: name)))
+            #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+        }
+        #expect(!DownloadStore.acceptsName(folder.appending(path: String(repeating: "x", count: 300) + ".txt")))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+
+        // A directory with the same name does not make the basename invalid.
+        let existing = folder.appending(path: "résumé.txt", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: false)
+        let neighbor = existing.appending(path: "keep.txt")
+        try Data("Keep".utf8).write(to: neighbor)
+        #expect(DownloadStore.acceptsName(existing))
+        #expect(try Data(contentsOf: neighbor) == Data("Keep".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == [existing.lastPathComponent])
+    }
+
+    @Test(arguments: [false, true])
+    func aCollisionAfterChoosingTheDownloadDestinationKeepsTheOtherFile(cancel: Bool) async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanup() }
+        let collision = DestinationCollision(store: fixture.store)
+        collision.cancelsAfterChoosing = cancel
+        fixture.manager.onDownloadStarted = { item in item.download?.delegate = collision }
+        #expect(fixture.manager.startDownload(hello, from: fixture.tab.id))
+        try await waitUntil("destination collision") { fixture.store.items.first.map { !$0.state.isActive } == true }
+
+        #expect(collision.creationError == nil)
+        let destination = try #require(collision.destination)
+        if cancel {
+            // Explicit cancellation cleans up in WebKit's completion callback.
+            try await Task.sleep(for: .milliseconds(150))
+        } else { #expect(collision.downloadError != nil, "WebKit refuses the other process's file") }
+        #expect(fixture.store.items.first?.state != .finished)
+        #expect(try Data(contentsOf: destination) == collision.contents)
+        #expect(!fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download))
+    }
+
+    @Test func filenameProbeDoesNotTreatStorageFailuresAsInvalidNames() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyNameUnavailable-\(UUID())", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let contents = Data("A file, not a directory".utf8)
+        let file = folder.appending(path: "file")
+        try contents.write(to: file)
+        #expect(DownloadStore.acceptsName(file.appending(path: "résumé.txt")), "Let WebKit report the storage error without renaming")
+        #expect(try Data(contentsOf: file) == contents)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["file"])
+    }
+
+    @Test func cancellingBeforeTheBodyArrivesDoesNotLeaveAnEmptyPartialFile() async throws {
+        let server = try LocalHTTPServer(body: Data(repeating: 1, count: 1000), initialChunk: 0)
+        let fixture = Fixture()
+        defer { server.stop(); fixture.cleanup() }
+        #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id))
+        try await waitUntil("empty partial file") {
+            fixture.store.items.first?.destination.map { FileManager.default.fileExists(atPath: $0.path) } == true
+        }
+        let item = try #require(fixture.store.items.first)
+        let destination = try #require(item.destination)
+        #expect(item.completedBytes == 0)
+        fixture.store.cancel(item)
+        try await waitUntil("WebKit removes its empty partial file") { !FileManager.default.fileExists(atPath: destination.path) }
+        #expect(item.state == .cancelled)
     }
 
     /// The disk counts UTF-16 units (255 at most), not characters or bytes:
