@@ -534,7 +534,7 @@ struct PasswordsSettingsSection: View {
             let completion: (NSApplication.ModalResponse) -> Void = { response in
                 guard response == .OK, let url = panel.url else { return }
                 do {
-                    try Data(vault.exportCSV().utf8).write(to: url, options: .atomic)
+                    try PasswordCSV.write(vault.exportCSV(), to: url)
                 } catch {
                     notice = PasswordNotice(title: "The passwords couldn’t be exported", message: error.localizedDescription)
                 }
