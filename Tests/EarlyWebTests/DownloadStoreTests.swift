@@ -68,6 +68,66 @@ struct DownloadStoreTests {
 
     private let hello = URL(string: "data:text/plain;base64,aGVsbG8gd29ybGQ=")! // "hello world"
 
+    /// Synthetic counters need no transfer or actual file on disk.
+    private func progressItem(in store: DownloadStore, completed: Int64, expected: Int64?,
+                              state: DownloadItem.State = .downloading) -> DownloadItem {
+        let item = store.recordSavedFile(at: FileManager.default.temporaryDirectory.appending(path: "EarlyProgress-\(UUID()).test"), source: nil)
+        item.state = state
+        item.completedBytes = completed
+        item.expectedBytes = expected
+        return item
+    }
+
+    @Test func activeProgressCombinesHugeByteCountsWithoutOverflow() throws {
+        let store = DownloadStore()
+        _ = progressItem(in: store, completed: Int64.max / 2, expected: Int64.max)
+        _ = progressItem(in: store, completed: Int64.max / 2, expected: Int64.max)
+        #expect(abs(try #require(store.activeProgress) - 0.5) < 0.000_001)
+        _ = progressItem(in: store, completed: Int64.max, expected: Int64.max)
+        let fraction = try #require(store.activeProgress)
+        #expect(fraction.isFinite && abs(fraction - 2.0 / 3.0) < 0.000_001)
+    }
+
+    @Test func activeProgressUsesByteWeightsAndOnlyActiveDownloads() throws {
+        let store = DownloadStore()
+        #expect(store.activeProgress == nil)
+        let preparing = progressItem(in: store, completed: 0, expected: 100, state: .preparing)
+        let downloading = progressItem(in: store, completed: 450, expected: 900)
+        for state in [DownloadItem.State.paused, .finished, .failed, .cancelled] {
+            _ = progressItem(in: store, completed: Int64.max, expected: nil, state: state)
+        }
+        #expect(store.activeCount == 2)
+        #expect(abs(try #require(store.activeProgress) - 0.45) < 0.000_001)
+        preparing.completedBytes = 100
+        #expect(abs(try #require(store.activeProgress) - 0.55) < 0.000_001)
+        preparing.state = .finished
+        #expect(store.activeProgress == 0.5)
+        downloading.state = .paused
+        #expect(store.activeProgress == nil)
+    }
+
+    @Test(arguments: [Int64.min, -1, 0, 50, 100, Int64.max])
+    func activeProgressClampsEachDownloadsCompletedCount(completed: Int64) throws {
+        let store = DownloadStore()
+        _ = progressItem(in: store, completed: completed, expected: 100)
+        _ = progressItem(in: store, completed: 100, expected: 100)
+        let expected = completed <= 0 ? 0.5 : (completed >= 100 ? 1.0 : 0.75)
+        let fraction = try #require(store.activeProgress)
+        #expect(fraction.isFinite && fraction == expected)
+    }
+
+    @Test(arguments: [nil, 0, -1, Int64.min] as [Int64?])
+    func activeProgressStaysIndeterminateForUnknownSizes(expected: Int64?) {
+        let store = DownloadStore()
+        _ = progressItem(in: store, completed: 50, expected: 100)
+        let unknown = progressItem(in: store, completed: 0, expected: expected)
+        #expect(store.activeProgress == nil)
+        unknown.expectedBytes = 100
+        #expect(store.activeProgress == 0.25)
+        unknown.state = .cancelled
+        #expect(store.activeProgress == 0.5)
+    }
+
     /// A different process creates the chosen file after Early returns its
     /// destination, before WebKit tries to open it.
     private final class DestinationCollision: NSObject, WKDownloadDelegate {

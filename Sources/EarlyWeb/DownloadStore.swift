@@ -110,11 +110,16 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
 
     /// Combined progress of active listed downloads, or nil while any size is unknown.
     public var activeProgress: Double? {
-        let active = items.filter { $0.state.isActive }
-        guard !active.isEmpty, active.allSatisfy({ ($0.expectedBytes ?? 0) > 0 }) else { return nil }
-        let expected = active.reduce(Int64(0)) { $0 + ($1.expectedBytes ?? 0) }
-        let completed = active.reduce(Int64(0)) { $0 + min($1.completedBytes, $1.expectedBytes ?? 0) }
-        return Double(completed) / Double(expected)
+        var expected = 0.0, completed = 0.0
+        for item in items where item.state.isActive {
+            guard let total = item.expectedBytes, total > 0 else { return nil }
+            // Convert before adding: even valid Int64 counts can overflow when
+            // several downloads are combined. Keep each contribution in range.
+            expected += Double(total)
+            completed += Double(min(total, max(0, item.completedBytes)))
+        }
+        guard expected > 0, expected.isFinite, completed.isFinite else { return nil }
+        return min(1, max(0, completed / expected))
     }
 
     @discardableResult
