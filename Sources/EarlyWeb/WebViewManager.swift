@@ -99,6 +99,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     @ObservationIgnored var passwordTestSchemes: Set<String> = []
     let passwordPanel = PasswordSuggestionPanel()
     @ObservationIgnored var focusedPasswordField: FocusedPasswordField?
+    @ObservationIgnored var passwordPanelField: FocusedPasswordField?
     /// Lets local files the person opened open again after a restart; nil in tests.
     @ObservationIgnored public var localFiles: LocalFileBookmarks?
     /// The app macOS would open a link with, and opening it; tests replace both.
