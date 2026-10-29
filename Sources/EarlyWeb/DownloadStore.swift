@@ -2,6 +2,7 @@
 
 import AppKit
 import CoreServices
+import Darwin
 import Observation
 import WebKit
 
@@ -109,11 +110,16 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
 
     /// Combined progress of active listed downloads, or nil while any size is unknown.
     public var activeProgress: Double? {
-        let active = items.filter { $0.state.isActive }
-        guard !active.isEmpty, active.allSatisfy({ ($0.expectedBytes ?? 0) > 0 }) else { return nil }
-        let expected = active.reduce(Int64(0)) { $0 + ($1.expectedBytes ?? 0) }
-        let completed = active.reduce(Int64(0)) { $0 + min($1.completedBytes, $1.expectedBytes ?? 0) }
-        return Double(completed) / Double(expected)
+        var expected = 0.0, completed = 0.0
+        for item in items where item.state.isActive {
+            guard let total = item.expectedBytes, total > 0 else { return nil }
+            // Convert before adding: even valid Int64 counts can overflow when
+            // several downloads are combined. Keep each contribution in range.
+            expected += Double(total)
+            completed += Double(min(total, max(0, item.completedBytes)))
+        }
+        guard expected > 0, expected.isFinite, completed.isFinite else { return nil }
+        return min(1, max(0, completed / expected))
     }
 
     @discardableResult
@@ -220,16 +226,22 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
             return
         }
         guard item.state.isActive else { return }
-        item.state = .cancelled
         // A replacement's staging folder goes with its partial file; the file
-        // it was going to replace stays.
-        let partial = item.replacing == nil ? item.destination : item.destination?.deletingLastPathComponent()
+        // it was going to replace stays. An unstarted transfer does not own a
+        // file another process may have created at its chosen destination.
+        let partial = partialFileForRemoval(of: item)
+        let destination = item.destination
+        item.state = .cancelled
         if let download = item.download {
             tracked.removeValue(forKey: ObjectIdentifier(download))
             // Settles immediately: WebKit does not always report a cancelled
             // download as failed. Remove the partial file once it stops writing.
-            download.cancel { _ in
-                if let partial { try? FileManager.default.removeItem(at: partial) }
+            download.cancel { resumeData in
+                // Resume data also identifies a file WebKit created before any
+                // body bytes arrived. A refused destination supplies none.
+                if let partial = partial ?? (resumeData == nil ? nil : destination) {
+                    try? FileManager.default.removeItem(at: partial)
+                }
             }
         }
         releaseTransfer(item)
@@ -303,14 +315,17 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         } else {
             let directory = directory
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            var candidate = Self.uniqueDestination(for: suggestedFilename, in: directory, reserved: reserved)
+            let candidate = Self.uniqueDestination(for: suggestedFilename, in: directory, reserved: reserved)
+            var name = suggestedFilename
             // A name this disk still refuses (other file systems allow less)
             // becomes a plain one, rather than failing the download.
             if !Self.acceptsName(candidate) {
                 let ext = candidate.pathExtension
-                candidate = Self.uniqueDestination(for: ext.isEmpty ? "Download" : "Download.\(ext)", in: directory, reserved: reserved)
+                name = ext.isEmpty ? "Download" : "Download.\(ext)"
             }
-            destination = candidate
+            // A different process may have taken the candidate while its name
+            // was checked. Choose again without touching that process's file.
+            destination = Self.uniqueDestination(for: name, in: directory, reserved: reserved)
         }
         reserved.insert(destination.standardizedFileURL.path)
         item.destination = destination
@@ -375,6 +390,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     public func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         guard let item = tracked.removeValue(forKey: ObjectIdentifier(download)) else { return }
         let nsError = error as NSError
+        synchronizeProgress(item)
         releaseTransfer(item)
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled && resumeData == nil {
             item.state = .cancelled
@@ -387,7 +403,8 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
                 return
             }
         }
-        // Never leave an incomplete file that looks like a finished download.
+        // Remove our partial file, but never a destination WebKit refused
+        // because another process had already created it.
         discardPartialFile(of: item)
     }
 
@@ -420,13 +437,18 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     }
 
     private func discardPartialFile(of item: DownloadItem) {
-        if let destination = item.destination, FileManager.default.fileExists(atPath: destination.path) {
-            try? FileManager.default.removeItem(at: destination)
-        }
-        if item.replacing != nil, let staging = item.destination?.deletingLastPathComponent() {
-            try? FileManager.default.removeItem(at: staging)
-        }
+        if let partial = partialFileForRemoval(of: item) { try? FileManager.default.removeItem(at: partial) }
         releaseReservation(item)
+    }
+
+    private func partialFileForRemoval(of item: DownloadItem) -> URL? {
+        // A replacement uses our private staging directory, never the original.
+        if item.replacing != nil { return item.destination?.deletingLastPathComponent() }
+        synchronizeProgress(item)
+        // WebKit can report an existing destination as just "cancelled". Until
+        // it writes bytes or supplies resume data, the path is not ours to erase.
+        guard item.completedBytes > 0 || item.resumeData != nil else { return nil }
+        return item.destination
     }
 
     /// The oldest settled entries go first. Paused and resumable downloads
@@ -481,14 +503,31 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         return result
     }
 
-    /// Whether this disk takes the name: some file systems allow less than APFS.
-    /// Short plain names are taken everywhere, so only others are tried.
+    /// Checks the basename on the destination's filesystem, never at the actual
+    /// destination. Only name errors reject it; WebKit reports other I/O errors.
     static func acceptsName(_ url: URL) -> Bool {
         let name = url.lastPathComponent
         if name.utf16.count <= 64, name.allSatisfy({ $0.isASCII && !"?*<>|\"".contains($0) }) { return true }
-        guard FileManager.default.createFile(atPath: url.path, contents: nil) else { return false }
-        try? FileManager.default.removeItem(at: url)
-        return true
+        let template = url.deletingLastPathComponent().appending(path: ".Early-Name-XXXXXX").path
+        var path = Array(template.utf8CString)
+        return path.withUnsafeMutableBufferPointer { buffer in
+            // mkdtemp creates a new owner-only directory on the same volume.
+            guard let directory = mkdtemp(buffer.baseAddress!) else { return true }
+            defer { _ = Darwin.rmdir(directory) }
+            let folder = Darwin.open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard folder >= 0 else { return true }
+            defer { _ = Darwin.close(folder) }
+            let file = name.withCString {
+                Darwin.openat(folder, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+            }
+            guard file >= 0 else {
+                let failure = errno
+                return failure != ENAMETOOLONG && failure != EINVAL && failure != EILSEQ
+            }
+            defer { _ = Darwin.close(file) }
+            _ = name.withCString { Darwin.unlinkat(folder, $0, 0) }
+            return true
+        }
     }
 
     /// Finder-style numbering ("Report 2.pdf") avoids replacing existing files

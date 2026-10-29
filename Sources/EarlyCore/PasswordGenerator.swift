@@ -142,7 +142,8 @@ public enum PasswordGenerator {
         return String(characters.shuffled(using: &generator))
     }
 
-    static func satisfies(_ password: String, rules: PasswordRules, maxLength: Int?) -> Bool {
+    /// Whether an existing suggestion or draft still fits the field's rules.
+    public static func satisfies(_ password: String, rules: PasswordRules, maxLength: Int?) -> Bool {
         let count = password.count
         if let limit = maxLength, limit > 0, count > limit { return false }
         if let limit = rules.maxLength, count > limit { return false }

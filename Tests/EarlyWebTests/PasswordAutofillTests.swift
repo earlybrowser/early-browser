@@ -474,6 +474,175 @@ struct PasswordAutofillTests {
         #expect(ContinuousClock.now - start < .milliseconds(500))
     }
 
+    /// Exercises popup state without putting a window on the user's screen.
+    private final class PasswordTestWindow: NSWindow {
+        override var isKeyWindow: Bool { true }
+    }
+
+    private func passwordWindow(for view: WKWebView) -> NSWindow {
+        let window = PasswordTestWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
+                                        styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        return window
+    }
+
+    private func observePasswordMenu(in view: WKWebView, frame: WKFrameInfo? = nil) async throws {
+        _ = try await view.callAsyncJavaScript("""
+            const original = globalThis.__earlyPasswords;
+            globalThis.menuCalls = [];
+            globalThis.__earlyPasswords = { ...original, menu(token, selected) {
+                menuCalls.push([token, selected]);
+                original.menu(token, selected);
+            }};
+            """, in: frame, contentWorld: PasswordFormObserver.world)
+    }
+
+    @Test(arguments: ["maxlength", "passwordrules"])
+    func changedRulesDismissAnEmptyStrongPasswordList(attribute: String) async throws {
+        let fixture = makeFixture(["join": Self.signUp])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("join"), view = try fixture.page(tab).view
+        let window = passwordWindow(for: view)
+        defer { window.close() }
+        try await observePasswordMenu(in: view)
+        let manager = fixture.manager
+        let field = try await focus("new", in: view, fixture)
+        #expect(manager.passwordPanel.isVisible)
+        manager.passwordPanel.moveHighlight(1)
+
+        let rules = attribute == "passwordrules" ? "minlength: 999999999" : "minlength: 12"
+        let limit = attribute == "maxlength" ? 4 : 0
+        // A second click on the already focused field reports its changed rules
+        // without closing the old popup first.
+        manager.handlePasswordMessage("focus", body: ["token": field.token, "role": "new", "rect": field.rect,
+            "rules": rules, "maxLength": limit], frame: field.frame, in: view)
+
+        #expect(!manager.passwordPanel.isVisible && manager.passwordPanel.highlighted == nil)
+        #expect(manager.focusedPasswordField?.token == field.token)
+        #expect(try await run("return menuCalls.at(-1)?.[0] === null && menuCalls.at(-1)?.[1] === false", in: view) as? Bool == true,
+                "The page must stop forwarding arrows and Return to a closed popup")
+        #expect(manager.passwords?.drafts.isEmpty == true)
+    }
+
+    @Test func changingRulesRefreshesSuggestionsWithoutLosingSavedDrafts() async throws {
+        let fixture = makeFixture(["join": Self.signUp])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("join"), view = try fixture.page(tab).view
+        let window = passwordWindow(for: view)
+        defer { window.close() }
+        try await observePasswordMenu(in: view)
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        let field = try await focus("new", in: view, fixture)
+        guard case .strongPassword(let original) = manager.passwordPanel.items.first else { Issue.record("No suggestion"); return }
+        manager.passwordPanel.moveHighlight(1)
+        manager.showPasswordSuggestions()
+        #expect(manager.passwordPanel.items.first == .strongPassword(original) && manager.passwordPanel.highlighted == 0)
+        vault.saveDraft(origin: field.origin, username: "", password: original)
+
+        // A compatible change keeps the suggestion and its keyboard highlight.
+        manager.handlePasswordMessage("focus", body: ["token": field.token, "role": "new", "rect": field.rect,
+            "rules": "minlength: 12", "maxLength": 40], frame: field.frame, in: view)
+        #expect(manager.passwordPanel.items.first == .strongPassword(original) && manager.passwordPanel.highlighted == 0)
+
+        // A shorter field must not inherit the longer draft or visible row.
+        manager.handlePasswordMessage("focus", body: ["token": field.token, "role": "new", "rect": field.rect,
+            "rules": "minlength: 12", "maxLength": 12], frame: field.frame, in: view)
+        guard case .strongPassword(let shorter) = manager.passwordPanel.items.first else { Issue.record("No shorter suggestion"); return }
+        #expect(shorter.count == 12 && manager.passwordPanel.highlighted == nil)
+
+        manager.handlePasswordMessage("focus", body: ["token": field.token, "role": "new", "rect": field.rect,
+            "rules": "required: digit; minlength: 12; max-consecutive: 2", "maxLength": 12], frame: field.frame, in: view)
+        guard case .strongPassword(let digits) = manager.passwordPanel.items.first else { Issue.record("No digits suggestion"); return }
+        #expect(digits.count == 12 && digits.allSatisfy(\.isNumber))
+        #expect(vault.drafts.count == 1 && vault.drafts.first?.password == original, "An incompatible saved draft is never discarded")
+
+        // Restoring the original field requirements brings back the saved draft.
+        manager.handlePasswordMessage("focus", body: ["token": field.token, "role": "new", "rect": field.rect,
+            "rules": "minlength: 12; required: lower; required: upper; required: digit", "maxLength": 0], frame: field.frame, in: view)
+        #expect(manager.passwordPanel.items.first == .strongPassword(original))
+        _ = try await run("document.getElementById('user').value = 'ada'", in: view)
+        manager.passwordPanel.moveHighlight(1)
+        #expect(manager.passwordPanel.chooseHighlighted())
+        try await fixture.waitUntil("chosen draft updated") { vault.drafts.first?.username == "ada" }
+        #expect(try await run("return document.getElementById('new').value", in: view) as? String == original)
+        #expect(!manager.passwordPanel.isVisible && manager.passwordPanel.highlighted == nil)
+        #expect(try await run("return menuCalls.at(-1)?.[0] === null && menuCalls.at(-1)?.[1] === false", in: view) as? Bool == true)
+    }
+
+    @Test func switchingFieldsCannotReuseOrChooseTheOldFieldsSuggestion() async throws {
+        let fixture = makeFixture(["join": Self.signUp + "<form><input id=other type=password autocomplete=new-password></form>"])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("join"), view = try fixture.page(tab).view
+        let window = passwordWindow(for: view)
+        defer { window.close() }
+        let manager = fixture.manager
+        let first = try await focus("new", in: view, fixture)
+        let oldChoice = try #require(manager.passwordPanel.items.first), chooseOld = manager.passwordPanel.onChoose
+        let second = try await focus("other", in: view, fixture)
+        #expect(first.token != second.token && manager.passwordPanel.items.first != oldChoice)
+        chooseOld?(oldChoice)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(try await run("return [document.getElementById('new').value, document.getElementById('other').value]", in: view) as? [String] == ["", ""])
+        #expect(manager.passwords?.drafts.isEmpty == true)
+    }
+
+    @Test func switchingFramesClearsTheOldMenuAndKeepsTheChoiceInItsOwnFrame() async throws {
+        let fixture = makeFixture([
+            "outer": Self.signUp + "<iframe id=embedded src=early-tools://fixture/child width=400 height=200></iframe>",
+            "child": "<input id=new type=password autocomplete=new-password>"
+        ])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("outer"), view = try fixture.page(tab).view
+        let window = passwordWindow(for: view)
+        defer { window.close() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        try await observePasswordMenu(in: view)
+        _ = try await focus("new", in: view, fixture)
+        let first = try #require(manager.passwordPanel.items.first)
+        _ = try await run("""
+            const child = document.getElementById('embedded').contentWindow;
+            Object.defineProperty(child.navigator, 'userActivation', { value: { isActive: true }, configurable: true });
+            child.document.getElementById('new').focus();
+            """, in: view)
+        try await fixture.waitUntil("child frame focused") { manager.focusedPasswordField?.frame.isMainFrame == false }
+        let field = try #require(manager.focusedPasswordField)
+        #expect(!field.frame.isMainFrame && manager.passwordPanel.items.first != first)
+        #expect(try await run("return menuCalls.at(-1)?.[0] === null", in: view) as? Bool == true)
+        manager.passwordPanel.moveHighlight(1)
+        #expect(manager.passwordPanel.chooseHighlighted())
+        try await fixture.waitUntil("child frame draft") { vault.drafts.count == 1 }
+        let draft = try #require(vault.drafts.first)
+        #expect(draft.origin == field.origin)
+        #expect(try await run("return document.getElementById('new').value", in: view) as? String == "")
+        #expect(try await view.callAsyncJavaScript("return document.getElementById('new').value", in: field.frame,
+                                                 contentWorld: PasswordFormObserver.world) as? String == draft.password)
+    }
+
+    @Test(arguments: ["maxlength", "passwordrules", "role", "removed", "hidden", "readonly", "focus"])
+    func aChangedFieldIsRecheckedBeforeFilling(change: String) async throws {
+        let fixture = makeFixture(["join": Self.signUp])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("join"), view = try fixture.page(tab).view
+        let manager = fixture.manager
+        let field = try await focus("new", in: view, fixture)
+        guard case .strongPassword(let password) = manager.passwordSuggestions(for: field).first else { Issue.record("No suggestion"); return }
+        let script: String
+        switch change {
+        case "maxlength": script = "node.maxLength = 4"
+        case "passwordrules": script = "node.setAttribute('passwordrules', 'minlength: 999999999')"
+        case "role": script = "document.getElementById('confirm').remove(); node.autocomplete = 'current-password'"
+        case "removed": script = "node.remove()"
+        case "hidden": script = "node.style.display = 'none'"
+        case "readonly": script = "node.readOnly = true"
+        default: script = "document.getElementById('user').focus()"
+        }
+        _ = try await run("const node = document.getElementById('new'); \(script);", in: view)
+        #expect(await manager.fillPasswordField(field, username: nil, password: password, mode: "new") == nil)
+        #expect(try await run("return [document.getElementById('new')?.value || '', document.getElementById('confirm')?.value || '']", in: view) as? [String] == ["", ""])
+        #expect(manager.passwords?.drafts.isEmpty == true)
+    }
+
     /// A key kept in memory; tests never use the Keychain.
     final class TestKey: PasswordVaultKey, @unchecked Sendable {
         private let lock = NSLock()

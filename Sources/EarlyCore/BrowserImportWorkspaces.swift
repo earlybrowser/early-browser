@@ -155,11 +155,10 @@ extension BrowserImportReaders {
         var mirrored: [String: [String]] = [:]
         for tab in tabs {
             guard tab["zenIsEmpty"] as? Bool != true, tab["zenIsGlance"] as? Bool != true,
-                  let entries = tab["entries"] as? [[String: Any]], !entries.isEmpty else { continue }
+                  let entry = currentSessionEntry(in: tab) else { continue }
             let context = tab["userContextId"] as? Int ?? 0, favorite = tab["zenEssential"] as? Bool == true
             let originalSpace = tab["zenWorkspace"] as? String
             let root = try owner(context)
-            let index = min(max((tab["index"] as? Int ?? entries.count) - 1, 0), entries.count - 1), entry = entries[index]
             if let identity = tab["zenSyncId"] as? String, !identity.isEmpty {
                 let signature = [String(context), originalSpace ?? "", tab["groupId"] as? String ?? "", String(favorite),
                     String(tab["pinned"] as? Bool ?? false), entry["url"] as? String ?? "", tab["zenStaticLabel"] as? String ?? entry["title"] as? String ?? ""]

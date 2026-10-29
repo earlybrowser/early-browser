@@ -48,8 +48,16 @@ struct FocusedPasswordField {
     weak var view: WKWebView?
     let rect: [String: Any]
     var typed: String
+    let rulesText: String
     let rules: PasswordRules
     let maxLength: Int?
+
+    func matches(_ other: FocusedPasswordField) -> Bool {
+        // Tokens are generated separately for every element in every document,
+        // including frames. A navigation or another field gets a new token.
+        tabID == other.tabID && token == other.token && origin == other.origin && role == other.role
+            && view != nil && view === other.view
+    }
 }
 
 /// An HTTP (Basic, Digest or NTLM) sign-in request, for the sign-in sheet.
@@ -229,7 +237,7 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             // A sign-up form's user name is new: no saved accounts for it.
             if (!role || (role === 'username' && form.kind !== 'login')) return;
             post({ type: 'focus', token: tokenFor(node), role, rect: rectOf(node),
-                   maxLength: node.maxLength > 0 ? node.maxLength : 0, rules: node.getAttribute('passwordrules') || '' });
+                   maxLength: node.maxLength > 0 ? node.maxLength : 0, rules: (node.getAttribute('passwordrules') || '').slice(0, 512) });
         };
         const editable = node => isPassword(node) || isText(node);
         // Only a person's click or key shows the list, not a page focusing a field.
@@ -315,10 +323,17 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
 
         window.__earlyPasswords = Object.freeze({
             // Fills like typing, so the page's own scripts see the values.
-            fill(token, username, password, mode) {
+            fill(token, username, password, mode, expectedRole, rules, maxLength) {
                 const node = fieldFor(token);
-                if (!node) return null;
+                if (!node || node.readOnly || !visible(node) || !onTop(node)
+                    || node.getRootNode().activeElement !== node) return null;
                 const form = describe(scopeOf(node));
+                if (roleOf(node, form) !== expectedRole) return null;
+                // Recheck in the same script turn as filling: a page can change
+                // a field's requirements while its suggestion is still open.
+                if (mode === 'new' && (expectedRole !== 'new'
+                    || (node.getAttribute('passwordrules') || '').slice(0, 512) !== rules
+                    || Math.max(0, node.maxLength) !== maxLength)) return null;
                 const set = (input, value) => {
                     if (!input || input.readOnly || input.disabled) return;
                     setValue.call(input, value);
@@ -376,11 +391,12 @@ extension WebViewManager {
                   let token = body["token"] as? String, !token.isEmpty, token.utf8.count <= 128,
                   visibleTabIDs.contains(id), view.window?.isKeyWindow != false else { return }
             let maxLength = body["maxLength"] as? Int
+            let rules = text("rules", 512)
             focusedPasswordField = FocusedPasswordField(tabID: id, token: token, role: role, origin: origin, frame: frame,
                 // Only typing narrows the list: a filled-in user name still
                 // lists every account, to switch to another.
                 view: view, rect: body["rect"] as? [String: Any] ?? [:], typed: "",
-                rules: PasswordRules.parse(text("rules", 512)), maxLength: maxLength.flatMap { $0 > 0 ? $0 : nil })
+                rulesText: rules, rules: PasswordRules.parse(rules), maxLength: maxLength.flatMap { $0 > 0 ? $0 : nil })
             showPasswordSuggestions()
         case "input":
             guard var field = focusedPasswordField, field.token == body["token"] as? String, field.view === view else { return }
@@ -431,8 +447,15 @@ extension WebViewManager {
         case .new:
             // Never in a private window, where it could not be kept.
             guard savesPasswords, !vault.isNeverSaved(field.origin) else { return [] }
-            // A form tried again gets the same strong password, not another.
-            guard let password = vault.recentDraft(origin: field.origin)?.password
+            // Keep a compatible draft, or the same suggestion while this field's
+            // list is open. Incompatible drafts remain saved for recovery.
+            let draft = vault.recentDraft(origin: field.origin)?.password
+            var shown: String?
+            if passwordPanel.isVisible, passwordPanelField?.matches(field) == true,
+               case .strongPassword(let password) = passwordPanel.items.first { shown = password }
+            guard let password = [draft, shown].compactMap({ $0 }).first(where: {
+                PasswordGenerator.satisfies($0, rules: field.rules, maxLength: field.maxLength)
+            })
                     ?? PasswordGenerator.strongPassword(rules: field.rules, maxLength: field.maxLength) else { return [] }
             items = [.strongPassword(password)]
         case .username, .current:
@@ -448,41 +471,49 @@ extension WebViewManager {
 
     func showPasswordSuggestions() {
         guard let field = focusedPasswordField, let vault = passwords, let view = field.view else { return }
+        if let previous = passwordPanelField, !previous.matches(field) { hidePasswordSuggestions(keepingField: true) }
         guard vault.isReady else {
             // The first sign-in field opens the saved passwords.
             Task { @MainActor [weak self] in
-                guard await vault.load(), let self, self.focusedPasswordField?.token == field.token else { return }
+                guard await vault.load(), let self, self.focusedPasswordField?.matches(field) == true else { return }
                 self.showPasswordSuggestions()
             }
             return
         }
-        // A strong password stays the same while its list is open.
-        var items = passwordSuggestions(for: field)
-        if field.role == .new, passwordPanel.isVisible, let shown = passwordPanel.items.first, case .strongPassword = shown {
-            items[0] = shown
-        }
+        let items = passwordSuggestions(for: field)
         guard !items.isEmpty, let window = view.window, let rect = Self.screenRect(of: field.rect, in: view) else {
             hidePasswordSuggestions(keepingField: true)
             return
         }
         let host = URL(string: field.origin)?.host ?? field.origin
-        passwordPanel.onChoose = { [weak self] in self?.choosePasswordSuggestion($0) }
+        passwordPanelField = field
+        passwordPanel.onChoose = { [weak self] item in
+            guard let self, self.focusedPasswordField?.matches(field) == true else { return }
+            self.choosePasswordSuggestion(item)
+        }
         passwordPanel.onHighlight = { [weak self] index in self?.setPageMenu(open: true, selected: index != nil) }
+        passwordPanel.onClose = { [weak self] in self?.clearPasswordMenu() }
         passwordPanel.show(items, title: field.role == .new ? "Strong password for \(host)" : "Passwords for \(host)",
                            below: rect, in: window, style: passwordListStyle())
         setPageMenu(open: true, selected: passwordPanel.highlighted != nil)
     }
 
     func hidePasswordSuggestions(keepingField: Bool = false) {
-        if passwordPanel.isVisible { setPageMenu(open: false, selected: false) }
+        clearPasswordMenu()
         passwordPanel.onChoose = nil
+        passwordPanel.onHighlight = nil
         passwordPanel.close()
         if !keepingField { focusedPasswordField = nil }
     }
 
+    private func clearPasswordMenu() {
+        setPageMenu(open: false, selected: false)
+        passwordPanelField = nil
+    }
+
     /// While the list is open the page forwards arrows, Return and Escape.
     private func setPageMenu(open: Bool, selected: Bool) {
-        guard let field = focusedPasswordField, let view = field.view else { return }
+        guard let field = passwordPanelField, let view = field.view else { return }
         view.callAsyncJavaScript("globalThis.__earlyPasswords?.menu(token, selected)",
                                  arguments: ["token": open ? field.token : NSNull(), "selected": selected],
                                  in: field.frame, in: PasswordFormObserver.world) { _ in }
@@ -508,13 +539,15 @@ extension WebViewManager {
         guard let field = focusedPasswordField, let vault = passwords else { return }
         switch item {
         case .login(let id, _):
-            guard let login = vault.login(id: id) else { return }
+            guard field.role != .new, let login = vault.login(id: id), login.origin == field.origin else { return }
             Task { @MainActor [weak self] in
                 guard let self, await self.fillPasswordField(field, username: login.username, password: login.password, mode: "login") != nil
                 else { return }
                 if self.savesPasswords { vault.markUsed(id) }
             }
         case .strongPassword(let password):
+            guard field.role == .new, savesPasswords, !vault.isNeverSaved(field.origin),
+                  PasswordGenerator.satisfies(password, rules: field.rules, maxLength: field.maxLength) else { return }
             Task { @MainActor [weak self] in
                 guard let self, let username = await self.fillPasswordField(field, username: nil, password: password, mode: "new"),
                       self.savesPasswords else { return }
@@ -529,18 +562,15 @@ extension WebViewManager {
         }
     }
 
-    /// Returns the form's user name after filling, or nil if the field is gone.
+    /// Returns the form's user name after filling, or nil if its context changed.
     func fillPasswordField(_ field: FocusedPasswordField, username: String?, password: String, mode: String) async -> String? {
-        guard let view = field.view, tabID(for: view) == field.tabID else { return nil }
-        return await fillPasswordField(token: field.token, frame: field.frame, in: view, username: username, password: password, mode: mode)
-    }
-
-    func fillPasswordField(token: String, frame: WKFrameInfo, in view: WKWebView, username: String?, password: String,
-                           mode: String) async -> String? {
+        guard let view = field.view, tabID(for: view) == field.tabID, visibleTabIDs.contains(field.tabID),
+              focusedPasswordField?.matches(field) == true else { return nil }
         let result = try? await view.callAsyncJavaScript(
-            "return globalThis.__earlyPasswords?.fill(token, username, password, mode) ?? null",
-            arguments: ["token": token, "username": username ?? NSNull(), "password": password, "mode": mode],
-            in: frame, contentWorld: PasswordFormObserver.world)
+            "return globalThis.__earlyPasswords?.fill(token, username, password, mode, role, rules, maxLength) ?? null",
+            arguments: ["token": field.token, "username": username ?? NSNull(), "password": password, "mode": mode,
+                        "role": field.role.rawValue, "rules": field.rulesText, "maxLength": field.maxLength ?? 0],
+            in: field.frame, contentWorld: PasswordFormObserver.world)
         return (result as? [String: Any])?["username"] as? String
     }
 

@@ -128,6 +128,14 @@ private extension Double {
 }
 
 extension BrowserImportReaders {
+    /// Session indexes are one-based. Clamp before subtracting so even Int.min
+    /// is safe; missing or unusable indexes keep the last-entry fallback.
+    static func currentSessionEntry(in tab: [String: Any]) -> [String: Any]? {
+        guard let entries = tab["entries"] as? [[String: Any]], !entries.isEmpty else { return nil }
+        let index = min(max(tab["index"] as? Int ?? entries.count, 1), entries.count) - 1
+        return entries[index]
+    }
+
     struct Builder {
         var document: BrowserImportDocument
         var serial = 0
@@ -191,9 +199,7 @@ extension BrowserImportReaders {
                 }
                 for tab in window["tabs"] as? [[String: Any]] ?? [] {
                     guard tab["zenIsEmpty"] as? Bool != true, tab["zenIsGlance"] as? Bool != true,
-                          let entries = tab["entries"] as? [[String: Any]], !entries.isEmpty else { continue }
-                    let index = min(max((tab["index"] as? Int ?? entries.count) - 1, 0), entries.count - 1)
-                    let entry = entries[index]
+                          let entry = BrowserImportReaders.currentSessionEntry(in: tab) else { continue }
                     let container = tab["userContextId"] as? Int ?? 0
                     var parent = "profile"
                     if container > 0 {

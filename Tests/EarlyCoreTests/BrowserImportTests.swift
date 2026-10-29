@@ -65,11 +65,60 @@ struct BrowserImportTests {
         #expect(visit.visitedAt == Date(timeIntervalSince1970: 1_793_059_200))
         let firefox = try BrowserImportReaders.read(fixture("FirefoxSession.json"), name: "Firefox")
         #expect(firefox.nodes.filter { $0.kind == .pin }.count == 1)
+        #expect(firefox.nodes.first { $0.kind == .pin }?.url?.path == "/current")
         #expect(firefox.nodes.filter { $0.kind == .openTab }.count == 1)
         #expect(firefox.initiallySelected.count == 1)
         #expect(!firefox.nodes.contains { $0.url?.path == "/private" })
         #expect(!String(describing: firefox).contains("DO-NOT-IMPORT"))
     }
+
+    func sessionDocument(_ tab: [String: Any], browser: String) throws -> BrowserImportDocument {
+        let json: [String: Any] = browser == "Zen"
+            ? ["spaces": [], "tabs": [tab]]
+            : ["windows": [["tabs": [tab]]]]
+        return try BrowserImportReaders.read(JSONSerialization.data(withJSONObject: json), name: browser)
+    }
+
+    @Test(arguments: ["Firefox", "Zen"], [Int.min, Int.min + 1, -1, 0, 1, 2, 3, 4, Int.max])
+    func sessionIndexesStayWithinTheAvailableEntries(browser: String, index: Int) throws {
+        let entries = (1...3).map { ["url": "https://example.invalid/page\($0)", "title": "Page \($0)"] }
+        let doc = try sessionDocument(["entries": entries, "index": index, "pinned": true], browser: browser)
+        let pages = doc.nodes.filter { $0.url != nil }
+        let expected = index <= 1 ? 1 : (index >= 3 ? 3 : 2)
+        #expect(pages.count == 1)
+        #expect(pages.first?.url?.path == "/page\(expected)")
+        #expect(pages.first?.title == "Page \(expected)")
+        #expect(pages.first?.kind == .pin)
+    }
+
+    @Test(arguments: ["Firefox", "Zen"])
+    func missingOrUnusableSessionIndexesKeepTheLastEntryFallback(browser: String) throws {
+        let entries = [["url": "https://example.invalid/first", "title": "First"],
+                       ["url": "https://example.invalid/last", "title": "Last"]]
+        let indexes: [Any?] = [nil, NSNull(), "1", 1.5, [], ["value": 1], UInt64.max]
+        for index in indexes {
+            var tab: [String: Any] = ["entries": entries]
+            tab["index"] = index
+            let doc = try sessionDocument(tab, browser: browser)
+            let pages = doc.nodes.filter { $0.url != nil }
+            #expect(pages.count == 1)
+            #expect(pages.first?.url?.path == "/last")
+            #expect(pages.first?.title == "Last")
+            #expect(pages.first?.kind == .openTab)
+        }
+    }
+
+    @Test(arguments: ["Firefox", "Zen"])
+    func emptyOrUnusableSessionEntriesAreSkipped(browser: String) throws {
+        let values: [Any?] = [nil, NSNull(), [], "not entries", ["url": "https://example.invalid/"]]
+        for entries in values {
+            var tab: [String: Any] = ["index": Int.min]
+            tab["entries"] = entries
+            let doc = try sessionDocument(tab, browser: browser)
+            #expect(!doc.nodes.contains { $0.url != nil })
+        }
+    }
+
     @Test func importedTodayTabsBelongToOneWindowAndExistingBrowsingIsUntouched() throws {
         var current = BrowserWorkspace()
         let profile = current.defaultProfileID, space = current.sessions[0].activeSpaceID
@@ -271,6 +320,7 @@ struct BrowserImportTests {
         #expect(zen.nodes.filter { $0.kind == .pin }.count == 1)
         #expect(zen.nodes.filter { $0.kind == .openTab }.count == 1)
         let pin = try #require(zen.nodes.first { $0.kind == .pin })
+        #expect(pin.url?.path == "/reference")
         #expect(zen.nodes.first { $0.id == pin.parentID }?.title == "Synthetic Folder")
     }
 
