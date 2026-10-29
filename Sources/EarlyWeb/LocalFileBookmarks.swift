@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import Foundation
+import EarlyCore
 
 /// Lets a local file the person opened open again after Early restarts.
 /// macOS lets Early read a file someone opened (in Finder, File › Open File…
@@ -22,6 +23,7 @@ public final class LocalFileBookmarks {
     private(set) var bookmarks: [String: Data] = [:]
     /// Files whose permission is open, with how many pages read them.
     private var open: [String: (url: URL, readers: Int)] = [:]
+    private var isRemoved = false
 
     public init(fileURL: URL?) {
         self.fileURL = fileURL
@@ -34,7 +36,7 @@ public final class LocalFileBookmarks {
 
     /// A file the person just opened, while macOS lets Early read it.
     public func remember(_ url: URL) {
-        guard url.isFileURL,
+        guard !isRemoved, url.isFileURL,
               let data = try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
                                                includingResourceValuesForKeys: nil, relativeTo: nil) else { return }
         bookmarks[Self.key(url)] = data
@@ -44,6 +46,7 @@ public final class LocalFileBookmarks {
     /// Before a page reads a local file: its permission opens, by bookmark
     /// when it has one, and the file is found where it is now.
     public func access(_ url: URL) -> Access {
+        guard !isRemoved else { return .unavailable }
         let key = Self.key(url)
         if let reading = open[key] {
             open[key] = (reading.url, reading.readers + 1)
@@ -102,15 +105,18 @@ public final class LocalFileBookmarks {
         save()
     }
 
-    public func removeFile() {
+    public func removeFile() throws {
+        isRemoved = true
         bookmarks.removeAll()
-        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+        for reading in open.values { reading.url.stopAccessingSecurityScopedResource() }
+        open.removeAll()
+        try ProfileDataCleanup.removeItem(at: fileURL)
     }
 
     /// A bookmark that can't be written only means the file asks to be opened
     /// again after a restart, as before; nothing else depends on it.
     private func save() {
-        guard let fileURL, let data = try? PropertyListEncoder().encode(bookmarks) else { return }
+        guard !isRemoved, let fileURL, let data = try? PropertyListEncoder().encode(bookmarks) else { return }
         try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: fileURL, options: .atomic)
     }

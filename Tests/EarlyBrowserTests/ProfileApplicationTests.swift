@@ -6,6 +6,29 @@ import EarlyCore
 import Testing
 import WebKit
 
+/// A temporary shared key with a failing per-profile legacy-key removal.
+private final class ProfileCleanupTestKey: PasswordVaultKey, @unchecked Sendable {
+    private let current: FileVaultKey
+    private let lock = NSLock()
+    private var refusesRemoval = false
+    private var attempts = 0
+    init(file: URL, profile: UUID) { current = FileVaultKey(file: file, profile: profile) }
+    var removalFails: Bool {
+        get { lock.withLock { refusesRemoval } }
+        set { lock.withLock { refusesRemoval = newValue } }
+    }
+    var removalAttempts: Int { lock.withLock { attempts } }
+    func existing() throws -> Data? { try current.existing() }
+    func make() throws -> Data { try current.make() }
+    func remove() throws { try current.remove() }
+    func removeLegacy() throws {
+        try lock.withLock {
+            attempts += 1
+            if refusesRemoval { throw CocoaError(.fileWriteNoPermission) }
+        }
+    }
+}
+
 /// No windows are presented and no input events are synthesized. These tests
 /// exercise the real application controller, writer, and ephemeral WebKit stores.
 @Suite(.serialized) @MainActor
@@ -29,8 +52,8 @@ struct ProfileApplicationTests {
             application.presentWindow = { [weak self] in self?.opened.append($0) }
         }
 
-        func start() async -> [UUID] {
-            await application.bootstrap(launchStore: FirstLaunchStore(defaults: defaults), preferences: preferences,
+        func start(_ app: EarlyAppDelegate? = nil) async -> [UUID] {
+            await (app ?? application).bootstrap(launchStore: FirstLaunchStore(defaults: defaults), preferences: preferences,
                 defaults: defaults, storageDirectory: directory, isTesting: true)
         }
 
@@ -331,6 +354,102 @@ struct ProfileApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test(arguments: ["Permissions", "LocalFiles", "Extensions", "Extensions/Files", "History", "Passwords"])
+    func failedProfileFileCleanupRemainsPendingAndRetriesAfterRestart(folder: String) async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        await app.retryWebsiteDataCleanup()
+        let work = try #require(app.createProfile(name: "Work", color: .blue))
+        let directory = fixture.directory.appendingPathComponent(folder == "Passwords" ? EarlyAppDelegate.passwordsFolder : folder)
+        let suffix = folder == "LocalFiles" ? ".plist" : folder == "Extensions/Files" ? "" : folder == "History" ? ".sqlite" : folder == "Passwords" ? ".vault" : ".json"
+        let file = directory.appendingPathComponent(work.uuidString + suffix)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("Synthetic profile data".utf8).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+
+        await app.deleteProfile(work)
+        #expect(!app.profiles.contains { $0.id == work })
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(fixture.defaults.stringArray(forKey: "pendingProfileCleanup")?.contains(work.uuidString) == true)
+        #expect(app.profileError != nil, "A failed cleanup must be reported")
+
+        let restarted = EarlyAppDelegate()
+        _ = await fixture.start(restarted)
+        await restarted.retryWebsiteDataCleanup()
+        #expect(fixture.defaults.stringArray(forKey: "pendingProfileCleanup")?.contains(work.uuidString) == true)
+        #expect(restarted.profileError != nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        await restarted.retryWebsiteDataCleanup()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(fixture.defaults.stringArray(forKey: "pendingProfileCleanup")?.contains(work.uuidString) != true)
+        #expect(restarted.profileError == nil)
+        restarted.closeWindow(nil)
+        _ = await restarted.persistence?.flush()
+        await fixture.cleanup()
+    }
+
+    @Test func restartRetriesFailedKeyCleanupWithoutAVaultFileAndKeepsTheSurvivingProfile() async throws {
+        let fixture = Fixture(), app = fixture.application
+        let passwords = fixture.directory.appendingPathComponent(EarlyAppDelegate.passwordsFolder)
+        let keyFile = passwords.appendingPathComponent("Key")
+        var keys: [UUID: ProfileCleanupTestKey] = [:]
+        let provider: (UUID) -> any PasswordVaultKey = { id in
+            if let key = keys[id] { return key }
+            let key = ProfileCleanupTestKey(file: keyFile, profile: id)
+            keys[id] = key
+            return key
+        }
+        app.passwordKeyProvider = provider
+        _ = await fixture.start()
+        await app.retryWebsiteDataCleanup()
+        let personalID = try #require(app.workspace?.defaultProfileID)
+        let personal = try #require(app.passwords(for: personalID))
+        #expect(await personal.load())
+        personal.save(origin: "https://example.com", username: "personal", password: "keep")
+        #expect(await personal.flush())
+        let personalFile = passwords.appendingPathComponent(personalID.uuidString + ".vault")
+        let personalData = try Data(contentsOf: personalFile), sharedKey = try Data(contentsOf: keyFile)
+        let workID = try #require(app.createProfile(name: "Work", color: .blue))
+        let work = try #require(app.passwords(for: workID)), workKey = try #require(keys[workID])
+        #expect(await work.load())
+        work.save(origin: "https://example.com", username: "work", password: "delete")
+        #expect(await work.flush())
+        let workFile = passwords.appendingPathComponent(workID.uuidString + ".vault")
+        workKey.removalFails = true
+
+        await app.deleteProfile(workID)
+        #expect(!app.profiles.contains { $0.id == workID })
+        #expect(!FileManager.default.fileExists(atPath: workFile.path), "Only the legacy-key removal failed")
+        #expect(app.profileError != nil && work.saveError != nil)
+        #expect(fixture.defaults.stringArray(forKey: "pendingProfileCleanup")?.contains(workID.uuidString) == true)
+        #expect(workKey.removalAttempts > 0)
+        let attempts = workKey.removalAttempts
+        #expect(app.passwords(for: workID) == nil && app.history(for: workID) == nil)
+        #expect(work.save(origin: "https://example.com", username: "late", password: "ignore") == nil)
+
+        let restarted = EarlyAppDelegate()
+        restarted.passwordKeyProvider = provider
+        _ = await fixture.start(restarted)
+        await restarted.retryWebsiteDataCleanup()
+        #expect(workKey.removalAttempts > attempts, "Keys are retried even though the vault file is already gone")
+        #expect(fixture.defaults.stringArray(forKey: "pendingProfileCleanup")?.contains(workID.uuidString) == true)
+        workKey.removalFails = false
+        await restarted.retryWebsiteDataCleanup()
+        #expect(fixture.defaults.stringArray(forKey: "pendingProfileCleanup")?.contains(workID.uuidString) != true)
+        #expect(restarted.profileError == nil)
+        #expect(try Data(contentsOf: keyFile) == sharedKey)
+        #expect(try Data(contentsOf: personalFile) == personalData)
+        let reopened = try #require(restarted.passwords(for: personalID))
+        #expect(await reopened.load())
+        #expect(reopened.logins.map(\.password) == ["keep"])
+        #expect(keys[personalID]?.removalAttempts == 0)
+        restarted.closeWindow(nil)
+        _ = await restarted.persistence?.flush()
+        await fixture.cleanup()
+    }
+
     @Test func startupPreferenceKeepsAllSavedOrganizationWithoutAllocatingPages() async throws {
         let fixture = Fixture()
         _ = await fixture.start()
@@ -402,6 +521,10 @@ struct ProfileApplicationTests {
             let saved = try await repository.loadWorkspace()
             #expect(saved == durable)
         }
+        await app.retryWebsiteDataCleanup()
+        #expect(app.profiles.contains { $0.id == workID }, "A pending cleanup request never erases a still-live profile")
+        #expect(vault.logins.first?.password == "keep-this-password")
+        #expect(app.windowModel(windowID) === work && work.webViews.existingView(for: tab) === view)
         await app.deleteProfile(workID)
         #expect(!app.profiles.contains { $0.id == workID } && vault.logins.isEmpty)
         #expect(try await repository.loadWorkspace()?.profiles.contains { $0.id == workID } == false)

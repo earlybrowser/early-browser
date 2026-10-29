@@ -288,6 +288,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         if catalog.installed(source: source) != nil { throw ExtensionError.alreadyAdded }
         guard let bundle = Bundle(url: discovered.extensionURL) else { throw ExtensionError.missing }
         let webExtension = try await WKWebExtension(appExtensionBundle: bundle)
+        guard !catalog.isRemoved else { throw CancellationError() }
         let item = InstalledExtension(source: source, name: webExtension.displayName ?? discovered.appName,
                                       version: webExtension.displayVersion ?? webExtension.version ?? "")
         catalog.add(item)
@@ -300,6 +301,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     public func add(files url: URL) async throws -> InstalledExtension {
         guard let filesDirectory else { throw ExtensionError.missing }
         let webExtension = try await WKWebExtension(resourceBaseURL: url)
+        guard !catalog.isRemoved else { throw CancellationError() }
         let id = UUID()
         let folderName = id.uuidString
         let destination = filesDirectory.appending(path: folderName, directoryHint: .isDirectory)
@@ -360,11 +362,19 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     }
 
     /// What every extension stored, for deleting the profile.
-    public func removeAllData() async {
-        unloadAll()
+    public func removeAllData() async throws {
+        var unloadFailure: (any Error)?
+        for (id, context) in contexts {
+            do {
+                if controller.extensionContexts.contains(context) { try controller.unload(context) }
+                contexts[id] = nil
+            } catch { unloadFailure = error }
+        }
         let types = Set<WKWebExtension.DataType>([.local, .session, .synchronized])
         let records = await controller.dataRecords(ofTypes: types)
         if !records.isEmpty { await controller.removeData(ofTypes: types, from: records) }
+        if let unloadFailure { throw unloadFailure }
+        if let error = records.lazy.flatMap(\.errors).first { throw error }
     }
 
     /// Items extensions add to a page's menu.

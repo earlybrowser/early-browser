@@ -126,6 +126,12 @@ struct HistoryStoreTests {
         #expect(FileManager.default.fileExists(atPath: file.path))
         try await history.removeFile()
         #expect(!FileManager.default.fileExists(atPath: file.path))
+        await #expect(throws: SessionError.self) { try await history.record(early, title: "Late callback", at: start) }
+        try await history.removeFile()
+        for suffix in ["", "-wal", "-shm"] {
+            #expect(!FileManager.default.fileExists(atPath: file.path + suffix),
+                    "A removed history store cannot reopen itself")
+        }
         try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
 

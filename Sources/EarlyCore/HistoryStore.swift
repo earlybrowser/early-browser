@@ -54,6 +54,7 @@ public actor HistoryStore {
     /// Used only on this actor, and in `deinit` once nothing else can.
     nonisolated(unsafe) private var db: OpaquePointer?
     private var insertsSincePrune = 0
+    private var isRemoved = false
 
     public init(fileURL: URL, retention: TimeInterval = 365 * 24 * 60 * 60) {
         self.fileURL = fileURL
@@ -262,10 +263,11 @@ public actor HistoryStore {
 
     /// Closes and removes this profile's history file, e.g. when the profile is deleted.
     public func removeFile() throws {
+        isRemoved = true
         close()
         for suffix in ["", "-wal", "-shm"] {
             let url = URL(fileURLWithPath: fileURL.path + suffix)
-            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            try ProfileDataCleanup.removeItem(at: url)
         }
     }
 
@@ -285,6 +287,7 @@ public actor HistoryStore {
     }
 
     private func open() throws -> OpaquePointer {
+        guard !isRemoved else { throw SessionError.database("This profile’s history was deleted.") }
         if let db { return db }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         var handle: OpaquePointer?

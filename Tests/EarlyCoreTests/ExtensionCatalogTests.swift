@@ -32,8 +32,14 @@ struct ExtensionCatalogTests {
         #expect(reopened.installed(app.id)?.source.isFromApp == true && reopened.installed(files.id)?.source.isFromApp == false)
         reopened.remove(app.id)
         #expect(ExtensionCatalog(fileURL: file).extensions.map(\.id) == [files.id])
-        reopened.removeFile()
+        try reopened.removeFile()
         #expect(!FileManager.default.fileExists(atPath: file.path))
+        reopened.add(app)
+        reopened.change(files.id) { $0.isEnabled = true }
+        reopened.retrySaving()
+        try reopened.removeFile()
+        #expect(reopened.extensions.isEmpty && !FileManager.default.fileExists(atPath: file.path),
+                "An installation finishing after profile deletion cannot save its catalog")
     }
 
     /// Turning an extension off when its catalog can't be written says so;

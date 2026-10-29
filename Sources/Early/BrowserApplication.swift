@@ -53,6 +53,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var sitePermissionStores: [UUID: SitePermissions] = [:]
     /// Each profile's saved passwords, opened when first needed.
     @ObservationIgnored private var passwordVaults: [UUID: PasswordVault] = [:]
+    /// Tests supply isolated keys; normal builds use the profile's key provider.
+    @ObservationIgnored var passwordKeyProvider: ((UUID) -> any PasswordVaultKey)?
     /// Each profile's bookmarks for local files it opened; a private session's stay in memory.
     @ObservationIgnored private var localFileStores: [UUID: LocalFileBookmarks] = [:]
     /// Settings › Passwords opens only with Touch ID or the Mac's password.
@@ -110,7 +112,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var applyingWorkspace = false
     @ObservationIgnored private var restoringFocus = false
     @ObservationIgnored private var pendingRestoredWindows: Set<UUID> = []
-    @ObservationIgnored private var cleaningWebsiteData = false
+    @ObservationIgnored private var profileCleanupTask: Task<Void, Never>?
+    @ObservationIgnored private var profileCleanupError: String?
+    @ObservationIgnored private var profileCleanupIcons: [UUID: [FaviconStore]] = [:]
     private var primaryWindowIsOpen = false
     /// Whether the window in front shows a page, for ⌘W's title. SwiftUI
     /// doesn't observe the key window, and a menu that read it itself kept
@@ -376,6 +380,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func sitePermissions(for id: UUID) -> SitePermissions {
+        guard isPrivateProfile(id) || profiles.contains(where: { $0.id == id }) else { return SitePermissions(fileURL: nil) }
         if let store = sitePermissionStores[id] { return store }
         let store = SitePermissions(fileURL: isPrivateProfile(id) ? nil : sitePermissionsFile(for: id))
         sitePermissionStores[id] = store
@@ -388,6 +393,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// A profile's local-file bookmarks, keeping only those its tabs still need.
     func localFiles(for id: UUID) -> LocalFileBookmarks? {
+        guard isPrivateProfile(id) || profiles.contains(where: { $0.id == id }) else { return nil }
         if let store = localFileStores[id] { return store }
         let store = LocalFileBookmarks(fileURL: isPrivateProfile(id) ? nil : localFilesFile(for: id))
         if let session = workspace?.session(for: id) {
@@ -414,11 +420,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// A profile's saved passwords. Private sessions have none of their own.
     func passwords(for id: UUID) -> PasswordVault? {
-        if let vault = passwordVaults[id] { return vault }
         guard !isPrivateProfile(id), profiles.contains(where: { $0.id == id }) else { return nil }
+        if let vault = passwordVaults[id] { return vault }
         // UI automation keeps passwords in memory and never uses the Keychain.
-        let vault = testing ? PasswordVault(fileURL: nil, key: nil)
-            : PasswordVault(fileURL: passwordsFile(for: id), key: vaultKey(for: id))
+        let vault = PasswordVault(fileURL: passwordsFile(for: id), key: passwordKey(for: id))
         passwordVaults[id] = vault
         return vault
     }
@@ -433,6 +438,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
         return KeychainVaultKey(profile: id)
+    }
+
+    private func passwordKey(for id: UUID) -> (any PasswordVaultKey)? {
+        if let passwordKeyProvider { return passwordKeyProvider(id) }
+        return testing ? nil : vaultKey(for: id)
     }
 
     /// Settings › Passwords for a profile, searching for a website.
@@ -458,6 +468,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func extensionCatalog(for id: UUID) -> ExtensionCatalog {
+        guard profiles.contains(where: { $0.id == id }) else { return ExtensionCatalog(fileURL: nil) }
         if let catalog = extensionCatalogs[id] { return catalog }
         let catalog = ExtensionCatalog(fileURL: extensionsFile(for: id))
         extensionCatalogs[id] = catalog
@@ -963,8 +974,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func history(for id: UUID) -> HistoryStore? {
+        guard profiles.contains(where: { $0.id == id }) else { return nil }
         if let store = historyStores[id] { return store }
-        guard profiles.contains(where: { $0.id == id }), let file = historyFile(for: id) else { return nil }
+        guard let file = historyFile(for: id) else { return nil }
         let store = HistoryStore(fileURL: file)
         historyStores[id] = store
         return store
@@ -1193,6 +1205,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         var pending = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
         if !pending.contains(id.uuidString) { pending.append(id.uuidString) }
         defaults.set(pending, forKey: "pendingProfileCleanup")
+        guard defaults.synchronize() else {
+            profileError = "The profile could not be deleted because its cleanup request couldn’t be saved. Its windows and data were kept."
+            return
+        }
         applyingWorkspace = true
         persistence?.enqueue(draft)
         guard await persistence?.flush() == true else {
@@ -1204,6 +1220,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         workspace = draft
         profileError = nil
         let icons = visibleModels.filter { $0.coordinator.profileID == id }.map { $0.webViews.favicons }
+        profileCleanupIcons[id] = icons
         let closing = windows.filter { $0.model.coordinator.profileID == id }.map(\.id)
         for windowID in closing {
             nativeWindow(id: windowID)?.close()
@@ -1215,33 +1232,17 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         dataStores.removeValue(forKey: id)
         downloadStores.removeValue(forKey: id)?.cancelAll()
-        let history = historyStores.removeValue(forKey: id)
-        sitePermissionStores.removeValue(forKey: id)?.removeFile()
-        localFileStores.removeValue(forKey: id)?.removeFile()
-        if let file = localFilesFile(for: id) { try? FileManager.default.removeItem(at: file) }
-        if #available(macOS 15.4, *) {
-            (privateExtensionHosts.removeValue(forKey: id) as? ExtensionHost)?.unloadAll()
-            // Without a host this run, one is made just to erase what its extensions stored.
-            let host = extensionHosts.removeValue(forKey: id) as? ExtensionHost ?? (testing ? nil
-                : ExtensionHost(catalog: ExtensionCatalog(fileURL: nil), filesDirectory: nil, websiteDataStore: .nonPersistent(),
-                                storageIdentifier: id, isPrivate: false))
-            await host?.removeAllData()
-        }
-        extensionCatalogs.removeValue(forKey: id)?.removeFile()
         pullRequestFeeds.removeValue(forKey: id)?.stop()
-        if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
         if extensionsProfileID == id { extensionsProfileID = nil }
-        if let vault = passwordVaults.removeValue(forKey: id) { vault.removeAll() }
-        else { PasswordVault.remove(fileURL: passwordsFile(for: id), key: testing ? nil : vaultKey(for: id)) }
         if passwordsProfileID == id { passwordsProfileID = nil }
+        if privacyProfileID == id { privacyProfileID = nil }
+        closedWindows.removeAll { $0.session.profileID == id }
         applyingWorkspace = false
         saveAll()
         guard await persistence?.flush() == true else {
             profileError = "The profile change could not be saved. Its website data was kept. \(persistence?.error ?? "")"
             return
         }
-        for store in icons { await store.shutdown() }
-        try? await history?.removeFile()
         await reconcileBrowserImports()
         await Task.yield()
         await retryWebsiteDataCleanup()
@@ -1265,39 +1266,119 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func retryWebsiteDataCleanup() async {
-        guard persistence?.isAvailable == true, !cleaningWebsiteData else { return }
-        cleaningWebsiteData = true
-        defer { cleaningWebsiteData = false }
+        guard persistence?.isAvailable == true else { return }
+        // Join recovery already in flight, then include requests added while it
+        // was running. Interactive deletion waits for its cleanup to settle.
+        if let profileCleanupTask {
+            await profileCleanupTask.value
+            await retryWebsiteDataCleanup()
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performProfileCleanup()
+            self.profileCleanupTask = nil
+        }
+        profileCleanupTask = task
+        await task.value
+    }
+
+    private func performProfileCleanup() async {
         var attempted = Set<String>()
         // Startup recovery and an interactive deletion can overlap. One worker
         // drains new requests as they arrive; failures wait until next launch.
         while await persistence?.flush() == true {
             let pending = (defaults.stringArray(forKey: "pendingProfileCleanup") ?? []).filter { !attempted.contains($0) }
-            guard !pending.isEmpty else { return }
+            guard !pending.isEmpty else {
+                if (defaults.stringArray(forKey: "pendingProfileCleanup") ?? []).isEmpty {
+                    if profileError == profileCleanupError { profileError = nil }
+                    profileCleanupError = nil
+                }
+                return
+            }
             for value in pending {
                 attempted.insert(value)
                 guard let id = UUID(uuidString: value), !profiles.contains(where: { $0.id == id }) else { continue }
                 do {
-                    if !testing {
-                        try await WKWebsiteDataStore.remove(forIdentifier: id)
-                        try await FaviconStore.removeCache(for: id)
-                    }
-                    if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
-                    if let file = sitePermissionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
-                    if let file = localFilesFile(for: id) { try? FileManager.default.removeItem(at: file) }
-                    if let file = extensionsFile(for: id) { try? FileManager.default.removeItem(at: file) }
-                    if let files = extensionFilesDirectory(for: id) { try? FileManager.default.removeItem(at: files) }
-                    if let file = passwordsFile(for: id), FileManager.default.fileExists(atPath: file.path) {
-                        PasswordVault.remove(fileURL: file, key: testing ? nil : vaultKey(for: id))
-                    }
+                    try await removeProfileData(id)
                     var remaining = defaults.stringArray(forKey: "pendingProfileCleanup") ?? []
                     remaining.removeAll { $0 == value }
                     defaults.set(remaining, forKey: "pendingProfileCleanup")
                 } catch {
-                    profileError = "The profile was removed, but its website data could not yet be erased. Early will retry on next launch. \(error.localizedDescription)"
+                    let message = "The profile was removed, but some of its data could not yet be erased. Early will retry on next launch. \(error.localizedDescription)"
+                    profileCleanupError = message
+                    profileError = message
                 }
             }
         }
+    }
+
+    private struct ProfileCleanupFailure: LocalizedError {
+        let failures: [String]
+        var errorDescription: String? { failures.joined(separator: " ") }
+    }
+
+    /// The same cleanup contract for deletion and restart recovery. Every area
+    /// is attempted; one failed removal keeps the profile's retry record.
+    private func removeProfileData(_ id: UUID) async throws {
+        var failures: [String] = []
+        func attempt(_ label: String, _ operation: () async throws -> Void) async {
+            do { try await operation() }
+            catch { failures.append("\(label): \(error.localizedDescription)") }
+        }
+        await attempt("Permissions") {
+            if let store = sitePermissionStores[id] { try store.removeFile() }
+            try ProfileDataCleanup.removeItem(at: sitePermissionsFile(for: id))
+            sitePermissionStores[id] = nil
+        }
+        await attempt("Local files") {
+            if let store = localFileStores[id] { try store.removeFile() }
+            try ProfileDataCleanup.removeItem(at: localFilesFile(for: id))
+            localFileStores[id] = nil
+        }
+        await attempt("Extensions") {
+            if let catalog = extensionCatalogs[id] { try catalog.removeFile() }
+            try ProfileDataCleanup.removeItem(at: extensionsFile(for: id))
+            extensionCatalogs[id] = nil
+        }
+        if #available(macOS 15.4, *) {
+            await attempt("Private extension data") {
+                try await (privateExtensionHosts[id] as? ExtensionHost)?.removeAllData()
+                privateExtensionHosts[id] = nil
+            }
+            await attempt("Extension data") {
+                // Recovery also clears extension storage for profiles that were
+                // deleted before their extensions could be unloaded and erased.
+                let host = extensionHosts[id] as? ExtensionHost ?? (testing ? nil
+                    : ExtensionHost(catalog: ExtensionCatalog(fileURL: nil), filesDirectory: nil,
+                                    websiteDataStore: .nonPersistent(), storageIdentifier: id, isPrivate: false))
+                try await host?.removeAllData()
+                extensionHosts[id] = nil
+            }
+        }
+        await attempt("Extension files") { try ProfileDataCleanup.removeItem(at: extensionFilesDirectory(for: id)) }
+        await attempt("Passwords") {
+            if let vault = passwordVaults[id] {
+                try await vault.removeAll()
+                // Also remove any orphaned file if this was an in-memory vault.
+                try ProfileDataCleanup.removeItem(at: passwordsFile(for: id))
+            } else { try await PasswordVault.remove(fileURL: passwordsFile(for: id), key: passwordKey(for: id)) }
+            passwordVaults[id] = nil
+        }
+        await attempt("History") {
+            if let store = historyStores[id] { try await store.removeFile() }
+            else if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
+            historyStores[id] = nil
+        }
+        if !testing {
+            await attempt("Website data") { try await WKWebsiteDataStore.remove(forIdentifier: id) }
+        }
+        await attempt("Website icons") {
+            for store in profileCleanupIcons[id] ?? [] { await store.shutdown() }
+            if !testing { try await FaviconStore.removeCache(for: id) }
+            profileCleanupIcons[id] = nil
+        }
+        if !failures.isEmpty { throw ProfileCleanupFailure(failures: failures) }
     }
 
     func closeWindow(_ id: UUID?) {

@@ -229,6 +229,7 @@ public final class PasswordVault {
     @ObservationIgnored private var symmetricKey: SymmetricKey?
     @ObservationIgnored private var loading: Task<Bool, Never>?
     @ObservationIgnored private var writing: Task<Void, Never>?
+    @ObservationIgnored private var removing: Task<Void, Error>?
     /// Opened with an earlier build's key: re-encrypted with the current one,
     /// then the old key goes.
     @ObservationIgnored private var movesFromLegacyKey = false
@@ -531,32 +532,52 @@ public final class PasswordVault {
 
     /// Deleting a profile: its file and key go, and no open or save still
     /// under way can write or restore anything afterwards.
-    public func removeAll() {
+    public func removeAll() async throws {
+        if let removing { return try await removing.value }
         generation += 1
         isRemoved = true
+        let previousLoad = loading, previousWrite = writing
         loading = nil
-        writing = nil
         logins = []
         neverSaved = []
         drafts = []
         symmetricKey = nil
         saveError = nil
         state = .unavailable("This profile’s passwords were deleted.", canReset: false)
-        Self.remove(fileURL: fileURL, key: key)
+        let fileURL = fileURL, key = key
+        let task = Task { @MainActor in
+            // A pending key creation or file write must finish before removal,
+            // even though its generation can no longer publish saved state.
+            _ = await previousLoad?.value
+            await previousWrite?.value
+            try await Self.remove(fileURL: fileURL, key: key)
+        }
+        removing = task
+        defer { removing = nil; writing = nil }
+        do { try await task.value }
+        catch {
+            saveError = "This profile’s passwords could not yet be erased. \(error.localizedDescription)"
+            throw error
+        }
     }
 
-    public nonisolated static func remove(fileURL: URL?, key: (any PasswordVaultKey)?) {
-        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
-        guard let key else { return }
-        Task.detached {
-            try? key.remove()
-            try? key.removeLegacy()
-        }
+    public nonisolated static func remove(fileURL: URL?, key: (any PasswordVaultKey)?) async throws {
+        try await Task.detached(priority: .utility) {
+            try ProfileDataCleanup.removeItem(at: fileURL)
+            // Retry keys even when an earlier attempt already removed the file.
+            // Shared key implementations deliberately keep other profiles' keys.
+            try key?.remove()
+            try key?.removeLegacy()
+        }.value
     }
 
     /// Waits for pending writes, and tells whether everything was written.
     @discardableResult
     public func flush() async -> Bool {
+        if let removing {
+            do { try await removing.value }
+            catch { return false }
+        }
         await writing?.value
         return saveError == nil
     }
@@ -603,11 +624,9 @@ public final class PasswordVault {
                     return "Your passwords couldn’t be written to disk. \(error.localizedDescription)"
                 }
             }.value
-            guard self.generation == started else {
-                // Deleted while this was being written: what it wrote goes too.
-                if self.isRemoved { try? FileManager.default.removeItem(at: fileURL) }
-                return
-            }
+            // Removal waits for this task, then erases the file and reports any
+            // error through the shared cleanup path.
+            guard self.generation == started else { return }
             if let failure {
                 self.saveError = failure
                 return
