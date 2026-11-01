@@ -158,6 +158,24 @@ struct PasswordAutofillTests {
         #expect((try await focus("mail", in: labeled, fixture)).role == .username, "Its label says it's an email address")
     }
 
+    @Test func choosingAnAccountStillFillsAReinsertedPasswordField() async throws {
+        let fixture = makeFixture(["login": Self.login])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        vault.save(origin: "early-tools://fixture", username: "ada", password: "synthetic-password")
+        let tab = try await fixture.open("login"), view = try fixture.page(tab).view
+        let first = try await focus("pass", in: view, fixture)
+        try await run("globalThis.detachedPassword = document.getElementById('pass'); detachedPassword.remove();", in: view)
+        try await Task.sleep(for: .milliseconds(100))
+        try await run("document.getElementById('form').append(detachedPassword);", in: view)
+        let second = try await focus("pass", in: view, fixture)
+        #expect(first.token == second.token)
+        let login = try #require(vault.login(origin: "early-tools://fixture", username: "ada"))
+        manager.choosePasswordSuggestion(.login(login.id, username: "ada"))
+        try await fixture.waitUntil("reinserted field filled") { vault.login(id: login.id)?.lastUsed != nil }
+        #expect(try await fixture.evaluate("[user.value, pass.value]", in: tab) as? [String] == ["ada", "synthetic-password"])
+    }
+
     /// A person's click, as real mouse events through a window: the only kind
     /// page scripts can't imitate. `offset` reaches into a frame at the point.
     private func personClicks(_ id: String, in view: WKWebView, window: NSWindow, offset: CGPoint? = nil) async throws {
