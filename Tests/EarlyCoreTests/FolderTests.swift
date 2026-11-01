@@ -6,6 +6,41 @@ import Testing
 
 @Suite @MainActor
 struct FolderTests {
+    @Test func collapsedFolderSelectionFollowsTheActiveTabWithoutRememberingOldClicks() throws {
+        let browser = BrowserCoordinator(startup: .returningSession)
+        let root = try #require(browser.createFolder(name: "Root"))
+        let child = try #require(browser.createFolder(name: "Child", parentID: root))
+        let other = try #require(browser.createFolder(name: "Other"))
+        let first = try #require(browser.navigate(to: URL(string: "https://example.com/first")!,
+            target: .newTab(spaceID: browser.activeSpaceID)))
+        #expect(browser.moveTab(first, toFolder: child))
+        let tabs = browser.tabStore.tabs
+        func selectedFolder(visible: Set<UUID>) -> UUID? {
+            let active = browser.activeTabID.flatMap { browser.tabStore.tab(id: $0) }
+            return SidebarFolderPreview.collapsedFolderHiding(active, in: browser.folders, visible: visible)
+        }
+        browser.toggleFolder(child)
+        #expect(selectedFolder(visible: [root, child, other]) == child)
+        browser.toggleFolder(root)
+        #expect(selectedFolder(visible: [root, other]) == root)
+        browser.toggleFolder(root)
+        #expect(selectedFolder(visible: [root, child, other]) == child)
+        browser.toggleFolder(child)
+        #expect(selectedFolder(visible: [root, child, other]) == nil)
+        #expect(browser.activeTabID == first && browser.tabStore.tabs == tabs,
+                "Collapsing and expanding does not switch or change the active page")
+
+        browser.toggleFolder(child)
+        let second = try #require(browser.navigate(to: URL(string: "https://example.com/second")!,
+            target: .newTab(spaceID: browser.activeSpaceID)))
+        #expect(selectedFolder(visible: [root, child, other]) == nil, "A Today tab clears the old folder indicator")
+        #expect(browser.moveTab(second, toFolder: other))
+        browser.toggleFolder(other)
+        #expect(selectedFolder(visible: [root, child, other]) == other)
+        #expect(browser.folders.first { $0.id == child }?.isExpanded == false,
+                "The previous folder stays collapsed without staying selected")
+    }
+
     @Test func creatingSubfolderRevealsAncestorsAndKeepsNewChildCollapsed() throws {
         let browser = BrowserCoordinator(startup: .returningSession)
         let root = try #require(browser.createFolder(name: "Root"))

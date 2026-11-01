@@ -17,8 +17,24 @@ public struct SidebarFolderPreview: Equatable, Sendable {
         showsDropSlot = receivesSlot && !isDragSource
     }
 
+    /// A collapsed row stands in for the active pin hidden inside it. Highlight
+    /// only that visible row, never the expanded ancestors or a hidden child.
+    public static func collapsedFolderHiding(_ tab: BrowserTab?, in folders: [BrowserFolder],
+                                             visible: Set<UUID>) -> UUID? {
+        guard let tab, tab.isOpen, tab.pinnedURL != nil, !tab.isFavorite, let folderID = tab.folderID else { return nil }
+        let byID = Dictionary(folders.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var next: UUID? = folderID
+        var seen = Set<UUID>()
+        while let id = next, seen.insert(id).inserted {
+            guard let folder = byID[id], folder.spaceID == tab.spaceID else { return nil }
+            if visible.contains(id) { return folder.isExpanded ? nil : id }
+            next = folder.parentID
+        }
+        return nil
+    }
+
     /// One outer group and one hovered folder, regardless of nesting depth.
-    /// Without hover, only an active drag destination can paint a background.
+    /// The collapsed active-tab indicator is drawn separately from this set.
     /// Geometry and hit testing still include the transparent intermediate rows.
     public static func backgroundFolderIDs(in folders: [BrowserFolder], visible: Set<UUID>,
                                            hovered: Set<UUID> = [], dropTarget: UUID? = nil) -> Set<UUID> {
