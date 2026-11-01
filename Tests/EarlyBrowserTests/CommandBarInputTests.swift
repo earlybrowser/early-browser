@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import EarlyCore
 @testable import EarlyBrowser
+import SwiftUI
 import Testing
+import WebKit
 
 @Suite(.serialized) @MainActor
 struct CommandBarInputTests {
@@ -116,6 +119,77 @@ struct CommandBarInputTests {
         #expect(CommandBarScrollRouting.target(at: NSPoint(x: 900, y: 100), outside: card, in: page) == nil)
         #expect(CommandBarScrollRouting.target(at: NSPoint(x: 750, y: 600), outside: card, in: page) == nil)
         #expect(CommandBarScrollRouting.target(at: NSPoint(x: 500, y: 200), outside: card, in: page) == nil)
+    }
+
+    @MainActor private final class WheelFixturePages: NSObject, WKURLSchemeHandler {
+        func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
+            guard let url = task.request.url else { return }
+            let data = Data("<html><head><title>Hosted wheel fixture</title></head><body style='margin:0;min-height:3000px'>Scroll</body></html>".utf8)
+            task.didReceive(URLResponse(url: url, mimeType: "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
+            task.didReceive(data)
+            task.didFinish()
+        }
+        func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {}
+    }
+
+    @Test func wheelRoutingUsesTheActualCommandCardAndHostedPageGeometry() async throws {
+        _ = NSApplication.shared
+        let suite = "local.early.tests.command.wheel.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(false, forKey: "onlineSearchSuggestions")
+        let space = UUID(), profile = UUID()
+        let input = NavigationInput(allowedSchemes: ["http", "https", "early-test"])
+        let tab = BrowserTab(spaceID: space, profileID: profile, title: "Scroll",
+            currentURL: URL(string: "early-test://fixture/scroll")!)
+        let store = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyWheel-\(UUID()).sqlite")
+        let pages = WheelFixturePages()
+        let model = BrowserWindowModel(startup: .returningSession,
+            session: BrowserSession(profileID: profile, activeSpaceID: space, tabs: [tab], selectionBySpace: [space: tab.id]),
+            repository: SessionRepository(fileURL: store, input: input), input: input, isTesting: true,
+            restorationError: nil, defaults: defaults,
+            configureWebView: { $0.setURLSchemeHandler(pages, forURLScheme: "early-test") })
+        model.onSave = { _ in }
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1024, height: 674),
+            styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: AnyView(BrowserWindowView(model: model).transaction { $0.disablesAnimations = true }))
+        window.contentView = hosting
+        hosting.frame.size = CGSize(width: 1024, height: 674)
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            model.cancelWindowInteractions()
+            model.cancelCommandBarQueries()
+            model.webViews.discardAll()
+            defaults.removePersistentDomain(forName: suite)
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: store.path + suffix) }
+        }
+        let page = try #require(model.activePage?.view)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while page.title != "Hosted wheel fixture", ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(page.title == "Hosted wheel fixture")
+        #expect(model.perform(.presentCommandBar(.newTab)))
+        model.updateQuery("keep query while scrolling")
+        func findCard(in view: NSView) -> NSView? {
+            if String(reflecting: type(of: view)).contains("CommandBarCardAnchor.AnchorView") { return view }
+            return view.subviews.lazy.compactMap { findCard(in: $0) }.first
+        }
+        let layoutDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        repeat {
+            hosting.layoutSubtreeIfNeeded()
+            if let card = findCard(in: hosting), !card.bounds.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(20))
+        } while ContinuousClock.now < layoutDeadline
+        let card = try #require(findCard(in: hosting))
+        let point = CGPoint(x: 941.4, y: 106)
+        #expect(CommandBarScrollRouting.target(at: point, outside: card, in: page) === page)
+        let insetPoint = page.convert(CGPoint(x: 24, y: page.bounds.maxY - 24), to: nil)
+        #expect(CommandBarScrollRouting.target(at: insetPoint, outside: card, in: page) === page)
+        #expect(model.coordinator.commandBar?.query == "keep query while scrolling")
+        #expect(!window.isVisible)
     }
 
     @Test func aShortQueryStaysOneLineAndWrappingAdaptsToNarrowerWindows() {
