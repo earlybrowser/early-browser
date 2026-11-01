@@ -35,7 +35,9 @@ public struct BrowserSplitLayout: Equatable, Sendable {
         let minimum = min(0.45, max(0.2, usable > 0 ? 120 / usable : 0.45))
         fractionRange = minimum...(1 - minimum)
         fraction = min(max(leadingFraction.isFinite ? leadingFraction : 0.5, minimum), 1 - minimum)
-        let left = usable * fraction
+        // Share whole-point pane edges with WebKit's history-swipe viewport.
+        // Rounding only the boundary preserves the gap and total width.
+        let left = min(usable, max(0, (usable * fraction).rounded()))
         leading = CGRect(x: 0, y: 0, width: left, height: height)
         divider = CGRect(x: left, y: 0, width: gap, height: height)
         trailing = CGRect(x: left + gap, y: 0, width: max(0, usable - left), height: height)

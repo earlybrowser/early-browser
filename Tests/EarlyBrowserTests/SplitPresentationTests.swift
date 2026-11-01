@@ -503,6 +503,56 @@ struct SplitPresentationTests {
         #expect(abs(frame.minY - windowInset) < 0.5 && frame.height > 500, "Full-height grab area: \(frame)")
     }
 
+    @Test func sidebarAndSplitResizingKeepHistorySwipeViewportsOnWholePoints() async throws {
+        let fixture = Fixture(servePages: true), model = fixture.model
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: AnyView(BrowserWindowView(model: model).transaction { $0.disablesAnimations = true }))
+        window.contentView = hosting
+        hosting.frame.size = CGSize(width: 1000, height: 700)
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            fixture.cleanup()
+        }
+        let page = try #require(model.activePage), originalView = page.view
+        let selected = try #require(model.coordinator.focusedTabID)
+        func checkViewports() async throws {
+            hosting.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(50))
+            hosting.layoutSubtreeIfNeeded()
+            for id in model.coordinator.activeSplitGroup?.panes.map(\.tabID) ?? [selected] {
+                let view = try #require(model.webViews.pages[id]?.view)
+                let frame = view.convert(view.bounds, to: nil)
+                // WebKit crops the history image in device pixels, then compares
+                // its dimensions with its integer-point drawing-area size. A
+                // half-point viewport still mismatches on a Retina display.
+                #expect(frame.width == frame.width.rounded() && frame.height == frame.height.rounded(), "Fractional swipe viewport: \(frame)")
+                #expect(frame.minX == frame.minX.rounded() && frame.minY == frame.minY.rounded(), "Fractional capture origin: \(frame)")
+                #expect(view.allowsBackForwardNavigationGestures)
+            }
+        }
+        for width in [237.4296875, 270.5, 319.25] {
+            model.sidebarWidth = width
+            for hidden in [false, true, false] {
+                model.preferences.sidebarAutoHides = hidden
+                try await checkViewports()
+                #expect(model.coordinator.focusedTabID == selected && model.activePage?.view === originalView)
+            }
+        }
+        #expect(model.perform(.splitTab(fixture.tabs[1].id, .trailing)))
+        let group = try #require(model.coordinator.activeSplitGroup)
+        model.beginSplitResize(group.id)
+        for fraction in [0.37, 0.5, 0.63] {
+            model.updateSplitResize(fraction)
+            try await checkViewports()
+        }
+        model.finishSplitResize(commit: false)
+        #expect(model.webViews.pages[selected]?.view === originalView, "No reload or replacement to repair a preview")
+        #expect(!window.isVisible)
+    }
+
     @Test(arguments: [false, true])
     func freshDragSplitEnablesDividerWhenSidebarDragEndsWithoutASwap(animationsEnabled: Bool) async throws {
         let fixture = Fixture(), model = fixture.model
