@@ -230,6 +230,10 @@ public final class PasswordVault {
     @ObservationIgnored private var loading: Task<Bool, Never>?
     @ObservationIgnored private var writing: Task<Void, Never>?
     @ObservationIgnored private var removing: Task<Void, Error>?
+    @ObservationIgnored private var requestedRevision: UInt64 = 0
+    @ObservationIgnored private var durableRevision: UInt64 = 0
+    /// The encrypted-file boundary also lets tests suspend or fail real writes.
+    @ObservationIgnored var writeFile: @Sendable (Data, URL) throws -> Void = PasswordVault.writeEncryptedFile
     /// Opened with an earlier build's key: re-encrypted with the current one,
     /// then the old key goes.
     @ObservationIgnored private var movesFromLegacyKey = false
@@ -336,6 +340,8 @@ public final class PasswordVault {
             try? FileManager.default.moveItem(at: fileURL, to: aside)
         }
         generation += 1
+        requestedRevision = 0
+        durableRevision = 0
         symmetricKey = nil
         logins = []
         neverSaved = []
@@ -538,6 +544,9 @@ public final class PasswordVault {
         isRemoved = true
         let previousLoad = loading, previousWrite = writing
         loading = nil
+        writing = nil
+        requestedRevision = 0
+        durableRevision = 0
         logins = []
         neverSaved = []
         drafts = []
@@ -571,15 +580,19 @@ public final class PasswordVault {
         }.value
     }
 
-    /// Waits for pending writes, and tells whether everything was written.
+    /// Includes edits arriving during the wait, not just the write that happened
+    /// to be active when flush began. A failure keeps the latest changes in memory.
     @discardableResult
     public func flush() async -> Bool {
-        if let removing {
-            do { try await removing.value }
-            catch { return false }
+        while true {
+            if let removing {
+                do { try await removing.value; return true }
+                catch { return false }
+            }
+            guard let writing else { break }
+            await writing.value
         }
-        await writing?.value
-        return saveError == nil
+        return saveError == nil && durableRevision == requestedRevision
     }
 
     /// Writes the passwords again after a failed save.
@@ -592,12 +605,14 @@ public final class PasswordVault {
 
     private func persist() {
         guard let fileURL, let key, !isRemoved else { return }
-        let contents = Contents(logins: logins, neverSaved: neverSaved, drafts: drafts)
-        let previous = writing
+        requestedRevision += 1
+        // The live arrays are the newest pending snapshot. Only the active
+        // write retains a separate copy; bursts never queue whole vaults.
+        guard writing == nil else { return }
         let started = generation
         writing = Task { @MainActor [weak self] in
-            await previous?.value
             guard let self, self.generation == started else { return }
+            defer { if self.generation == started { self.writing = nil } }
             if self.symmetricKey == nil {
                 // The first save, or passwords moving from an earlier build's key.
                 let made = await Task.detached { try? key.make() }.value
@@ -612,31 +627,42 @@ public final class PasswordVault {
                 self.saveError = "Your passwords couldn’t be encrypted."
                 return
             }
-            // Encrypting and writing the whole file happen off the main actor;
-            // writes still run one after another, in order.
-            let failure = await Task.detached(priority: .userInitiated) { () -> String? in
-                guard let data = try? Self.encrypt(contents, key: symmetric) else { return "Your passwords couldn’t be encrypted." }
-                do {
-                    try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try data.write(to: fileURL, options: .atomic)
-                    return nil
-                } catch {
-                    return "Your passwords couldn’t be written to disk. \(error.localizedDescription)"
+            while self.durableRevision < self.requestedRevision {
+                let revision = self.requestedRevision
+                let contents = Contents(logins: self.logins, neverSaved: self.neverSaved, drafts: self.drafts)
+                let writeFile = self.writeFile
+                // Encryption and disk I/O stay off the main actor. After this
+                // write, take only the newest revision that arrived meanwhile.
+                let failure = await Task.detached(priority: .userInitiated) { () -> String? in
+                    guard let data = try? Self.encrypt(contents, key: symmetric) else { return "Your passwords couldn’t be encrypted." }
+                    do {
+                        try writeFile(data, fileURL)
+                        return nil
+                    } catch {
+                        return "Your passwords couldn’t be written to disk. \(error.localizedDescription)"
+                    }
+                }.value
+                // Removal drains this in-flight write before erasing the file.
+                guard self.generation == started else { return }
+                if let failure {
+                    self.saveError = failure
+                    return
                 }
-            }.value
-            // Removal waits for this task, then erases the file and reports any
-            // error through the shared cleanup path.
-            guard self.generation == started else { return }
-            if let failure {
-                self.saveError = failure
-                return
-            }
-            self.saveError = nil
-            if self.movesFromLegacyKey {
-                self.movesFromLegacyKey = false
-                Task.detached { try? key.removeLegacy() }
+                self.durableRevision = revision
+                // An older success must not clear an error while newer changes
+                // are still pending. Retry reports success only once up to date.
+                if self.durableRevision == self.requestedRevision { self.saveError = nil }
+                if self.movesFromLegacyKey {
+                    self.movesFromLegacyKey = false
+                    Task.detached { try? key.removeLegacy() }
+                }
             }
         }
+    }
+
+    private nonisolated static func writeEncryptedFile(_ data: Data, to fileURL: URL) throws {
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: fileURL, options: .atomic)
     }
 
     private nonisolated static func encrypt(_ contents: Contents, key: SymmetricKey) throws -> Data {
