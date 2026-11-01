@@ -383,6 +383,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard isPrivateProfile(id) || profiles.contains(where: { $0.id == id }) else { return SitePermissions(fileURL: nil) }
         if let store = sitePermissionStores[id] { return store }
         let store = SitePermissions(fileURL: isPrivateProfile(id) ? nil : sitePermissionsFile(for: id))
+        store.onChange = { [weak self] changed in
+            for owner in self?.visibleModels ?? [] where owner.sitePermissions === changed {
+                owner.webViews.applySitePermissions()
+            }
+        }
         sitePermissionStores[id] = store
         return store
     }

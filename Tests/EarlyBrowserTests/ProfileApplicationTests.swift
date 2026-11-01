@@ -3,6 +3,7 @@
 import AppKit
 import EarlyCore
 @testable import EarlyBrowser
+@testable import EarlyWeb
 import Testing
 import WebKit
 
@@ -255,6 +256,50 @@ struct ProfileApplicationTests {
         #expect(snapshot.sessions.count == 2)
         #expect(snapshot.session(for: legacy.profileID)?.additionalWindows.count == 1)
         #expect(snapshot.session(for: workID)?.additionalWindows.isEmpty == true)
+        await fixture.cleanup()
+    }
+
+    @Test func permissionChangesReachEveryWindowInOnlyTheirOwnProfile() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application, personal = try #require(app.model)
+        let siblingID = try #require(app.openNewWindow(from: personal))
+        let sibling = try #require(app.windowModel(siblingID))
+        let workID = try #require(app.createProfile(name: "Work", color: .purple))
+        app.openProfile(workID)
+        let workWindowID = try #require(fixture.opened.last)
+        let work = try #require(app.windowModel(workWindowID))
+        let privateWindowID = try #require(app.openPrivateWindow(from: personal))
+        let privateModel = try #require(app.windowModel(privateWindowID))
+        let origin = "https://call.example.com", address = URL(string: "https://call.example.com/room")!
+        let owners = [personal, sibling, work, privateModel]
+        var stops: [Int: [SitePermission]] = [:]
+        var pages: [BrowserPage] = []
+        for (index, owner) in owners.enumerated() {
+            owner.sitePermissions.set(.allow, for: [.camera, .microphone], origin: origin)
+            let id = try #require(owner.coordinator.navigate(to: address, target: .newTab(spaceID: owner.coordinator.activeSpaceID)))
+            let tab = try #require(owner.coordinator.tabStore.tab(id: id))
+            let page = owner.webViews.prepare(tab) // No network or real capture.
+            page.captureGrants["frame"] = .init(origin: origin, permissions: [.camera, .microphone])
+            pages.append(page)
+            owner.webViews.endCapture = { _, permission in stops[index, default: []].append(permission) }
+        }
+        #expect(personal.sitePermissions === sibling.sitePermissions)
+        #expect(personal.sitePermissions !== privateModel.sitePermissions && privateModel.sitePermissions.fileURL == nil)
+        // Settings edits the shared store directly.
+        app.sitePermissions(for: personal.coordinator.profileID).set(.block, for: [.camera], origin: origin)
+        #expect(stops == [0: [.camera], 1: [.camera]])
+        personal.setSitePermission(.camera, .allow)
+        // Site Controls must use that same fanout path.
+        stops.removeAll()
+        sibling.setSitePermission(.microphone, .block)
+        #expect(stops == [0: [.microphone], 1: [.microphone]])
+        stops.removeAll()
+        privateModel.setSitePermission(.camera, .block)
+        #expect(stops == [3: [.camera]])
+        #expect(owners.enumerated().allSatisfy { index, owner in
+            owner.webViews.pages.values.contains { $0 === pages[index] }
+        }, "Permission changes keep the existing pages")
         await fixture.cleanup()
     }
 

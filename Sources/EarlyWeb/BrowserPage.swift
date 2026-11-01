@@ -78,6 +78,20 @@ public final class BrowserPage {
     var recentUsername: RecentUsername?
     public internal(set) var cameraCapture = WKMediaCaptureState.none
     public internal(set) var microphoneCapture = WKMediaCaptureState.none
+    /// Capture grants belong to a document, not its latest URL (History API
+    /// changes do not end capture). Keys identify isolated frame documents.
+    var captureDocumentID = UUID()
+    var captureGrants: [String: CaptureGrant] = [:]
+    struct CaptureGrant {
+        let origin: String
+        var permissions: Set<SitePermission>
+    }
+
+    func resetCaptureGrants() {
+        captureDocumentID = UUID()
+        captureGrants.removeAll()
+    }
+
     /// The committed main document's MIME type, e.g. a viewed PDF.
     public internal(set) var documentMIMEType: String?
     var pendingDocumentMIMEType: String?

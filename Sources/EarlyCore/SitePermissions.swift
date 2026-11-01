@@ -75,6 +75,9 @@ public final class SitePermissions {
     /// They still apply until Early quits, and ``retrySaving()`` tries again.
     public private(set) var saveError: String?
     @ObservationIgnored public let fileURL: URL?
+    /// The application applies choices to every window sharing this store,
+    /// including when a choice cannot yet be saved to disk.
+    @ObservationIgnored public var onChange: ((SitePermissions) -> Void)?
     @ObservationIgnored private var isRemoved = false
 
     public init(fileURL: URL?) {
@@ -125,6 +128,7 @@ public final class SitePermissions {
         for permission in permissions { choices[permission] = decision == .ask ? nil : decision }
         guard decisions[origin] ?? [:] != choices else { return }
         decisions[origin] = choices.isEmpty ? nil : choices
+        onChange?(self)
         save()
     }
 
@@ -132,6 +136,7 @@ public final class SitePermissions {
     public func removeAll() {
         guard !decisions.isEmpty else { return }
         decisions.removeAll()
+        onChange?(self)
         save()
     }
 

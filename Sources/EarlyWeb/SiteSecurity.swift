@@ -44,8 +44,46 @@ extension WebViewManager {
         case .cameraAndMicrophone: [.camera, .microphone]
         @unknown default: []
         }
-        decidePermission(permissions, origin: SitePermissions.origin(scheme: origin.protocol, host: origin.host, port: origin.port),
-                         host: origin.host, in: webView) { decisionHandler($0 ? .grant : .deny) }
+        decideCapturePermission(permissions, origin: SitePermissions.origin(scheme: origin.protocol, host: origin.host, port: origin.port),
+                                host: origin.host, frame: frame, in: webView) { decisionHandler($0 ? .grant : .deny) }
+    }
+
+    /// A frame's isolated token lasts only for its document. Check it on both
+    /// sides of the prompt, so a navigated or removed frame cannot inherit an
+    /// answer. Record the actual requesting origin, including embedded sites.
+    func decideCapturePermission(_ permissions: [SitePermission], origin: String?, host: String,
+                                 frame: WKFrameInfo, in view: WKWebView,
+                                 decide: @escaping @MainActor (Bool) -> Void) {
+        guard let id = tabID(for: view), let page = pages[id], let origin, let store = sitePermissions,
+              !permissions.isEmpty, permissions.allSatisfy({ $0 == .camera || $0 == .microphone }) else {
+            decide(false); return
+        }
+        let documentID = page.captureDocumentID
+        let isCurrent = { [weak self, weak page] in
+            guard let self, let page else { return false }
+            return self.pages[id] === page && page.captureDocumentID == documentID && self.sitePermissions === store
+        }
+        captureFrameToken(in: view, frame: frame) { [weak self, weak page] token in
+            guard let self, let token, isCurrent() else { decide(false); return }
+            self.decidePermission(permissions, origin: origin, host: host, in: view) { [weak self, weak page] allowed in
+                guard let self, allowed, isCurrent() else { decide(false); return }
+                self.captureFrameToken(in: view, frame: frame) { [weak page] currentToken in
+                    guard let page, isCurrent(), currentToken == token,
+                          store.decision(for: origin, permissions) == .allow else { decide(false); return }
+                    var grant = page.captureGrants[token] ?? .init(origin: origin, permissions: [])
+                    grant.permissions.formUnion(permissions)
+                    page.captureGrants[token] = grant
+                    decide(true)
+                }
+            }
+        }
+    }
+
+    private func captureFrameToken(in view: WKWebView, frame: WKFrameInfo, completion: @escaping @MainActor (String?) -> Void) {
+        view.evaluateJavaScript("globalThis.__earlyMediaControl?.documentToken ?? null", in: frame, in: .defaultClient) { result in
+            let token = (try? result.get()) as? String
+            completion(token.flatMap { !$0.isEmpty && $0.count <= 64 ? $0 : nil })
+        }
     }
 
     /// WebKit asks this from macOS 27; earlier systems never offer location.
@@ -67,22 +105,27 @@ extension WebViewManager {
     /// answer is saved for the site; a dismissed prompt saves nothing.
     func decidePermission(_ permissions: [SitePermission], origin: String?, host: String, in view: WKWebView,
                           decide: @escaping @MainActor (Bool) -> Void) {
-        guard !permissions.isEmpty, let origin, let store = sitePermissions else { decide(false); return }
+        guard !permissions.isEmpty, let origin, let store = sitePermissions,
+              let id = tabID(for: view), let page = pages[id], !page.processTerminated else { decide(false); return }
         switch store.decision(for: origin, permissions) {
         case .allow: decide(true)
         case .block: decide(false)
         case .ask:
             let asked = permissions.filter { store.decision(for: origin, $0) == .ask }
+            let choices = permissions.map { store.decision(for: origin, $0) }
+            let documentID = page.captureDocumentID
             let alert = NSAlert()
             alert.messageText = "Allow “\(host)” to use \(Self.permissionPhrase(asked))?"
             alert.informativeText = "Early remembers your choice for this website. You can change it in Site Controls in the address bar."
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Don’t Allow")
-            presentAlert(alert, in: view) { response, _ in
-                guard let response else { decide(false); return }
+            presentAlert(alert, in: view) { [weak self, weak page] response, _ in
+                guard let self, let page, self.pages[id] === page, page.captureDocumentID == documentID,
+                      self.sitePermissions === store, let response,
+                      permissions.map({ store.decision(for: origin, $0) }) == choices else { decide(false); return }
                 let allowed = response == .alertFirstButtonReturn
                 store.set(allowed ? .allow : .block, for: asked, origin: origin)
-                decide(allowed)
+                decide(allowed && store.decision(for: origin, permissions) == .allow)
             }
         }
     }
@@ -149,20 +192,28 @@ extension WebViewManager {
     /// Ends camera or microphone capture in one tab.
     public func stopCapture(_ permission: SitePermission, in id: UUID) {
         guard let view = pages[id]?.view else { return }
-        switch permission {
-        case .camera: view.setCameraCaptureState(.none, completionHandler: nil)
-        case .microphone: view.setMicrophoneCaptureState(.none, completionHandler: nil)
-        case .location, .downloads: break
-        }
+        endCapture(view, permission)
     }
 
-    /// A newly blocked camera or microphone stops in every tab of the site.
+    /// Includes embedded origins and grants that have not begun capture yet.
+    /// WebKit can stop one device type per tab, but not one frame's stream:
+    /// blocking a frame's camera also ends other camera streams in that tab.
+    /// The microphone, other tabs, and other profiles are independent.
     public func applySitePermissions() {
-        guard let store = sitePermissions else { return }
-        for (id, page) in pages {
-            guard let origin = page.view.url.flatMap(SitePermissions.origin(of:)) else { continue }
-            if page.cameraCapture != .none, store.decision(for: origin, .camera) == .block { stopCapture(.camera, in: id) }
-            if page.microphoneCapture != .none, store.decision(for: origin, .microphone) == .block { stopCapture(.microphone, in: id) }
+        for id in pages.keys { applySitePermissions(in: id) }
+    }
+
+    func applySitePermissions(in id: UUID) {
+        guard let store = sitePermissions, let page = pages[id] else { return }
+        for permission in [SitePermission.camera, .microphone] {
+            let blockedFrame = page.captureGrants.values.contains {
+                $0.permissions.contains(permission) && store.decision(for: $0.origin, permission) == .block
+            }
+            let active = permission == .camera ? page.cameraCapture : page.microphoneCapture
+            let blockedPage = active != .none && page.view.url.flatMap(SitePermissions.origin(of:)).map {
+                store.decision(for: $0, permission) == .block
+            } == true
+            if blockedFrame || blockedPage { stopCapture(permission, in: id) }
         }
     }
 }

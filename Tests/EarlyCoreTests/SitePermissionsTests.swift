@@ -72,12 +72,15 @@ struct SitePermissionsTests {
         }
         let file = folder.appending(path: "profile.json")
         let store = SitePermissions(fileURL: file)
+        var applied: [SitePermissionDecision] = []
+        store.onChange = { applied.append($0.decision(for: "https://meet.example.com", .camera)) }
         store.set(.allow, for: [.camera], origin: "https://meet.example.com")
         #expect(store.saveError == nil)
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
         store.set(.block, for: [.camera], origin: "https://meet.example.com")
         #expect(store.saveError != nil, "The failed write is reported")
         #expect(store.decision(for: "https://meet.example.com", .camera) == .block, "It applies until Early quits")
+        #expect(applied == [.allow, .block], "Live pages receive the block even if persistence fails")
         #expect(SitePermissions(fileURL: file).decision(for: "https://meet.example.com", .camera) == .allow, "Not on disk yet")
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         store.retrySaving()

@@ -530,7 +530,9 @@ final class BrowserWindowModel {
     func setSitePermission(_ permission: SitePermission, _ decision: SitePermissionDecision) {
         guard let origin = currentSiteOrigin else { return }
         sitePermissions.set(decision, for: [permission], origin: origin)
-        webViews.applySitePermissions()
+        // The application fans out to all windows of the profile. A standalone
+        // model (e.g. a preview) still applies its own choices.
+        if application == nil { webViews.applySitePermissions() }
     }
 
     func copyCurrentURL() {
