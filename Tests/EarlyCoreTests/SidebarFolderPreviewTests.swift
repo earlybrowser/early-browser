@@ -5,7 +5,7 @@ import Testing
 @testable import EarlyCore
 
 struct SidebarFolderPreviewTests {
-    @Test func deepFoldersPaintOnlyOuterAndCurrentBackgrounds() {
+    @Test func deepFoldersPaintOnlyOuterAndHoveredBackgrounds() {
         let space = UUID()
         var folders: [BrowserFolder] = [], parent: UUID?
         for level in 0...8 {
@@ -13,20 +13,34 @@ struct SidebarFolderPreviewTests {
             folders.append(folder); parent = folder.id
         }
         let all = Set(folders.map(\.id)), root = folders[0].id, leaf = folders[8].id
-        let current = SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, current: leaf, hovered: all)
-        #expect(current == [root, leaf])
-        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, current: root) == [root])
-        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, current: leaf) == [root, leaf])
-        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: [root, folders[1].id], current: leaf) == [root, folders[1].id])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, hovered: all) == [root, leaf])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, hovered: [root]) == [root])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all, hovered: [leaf]) == [root, leaf])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: [root, folders[1].id], hovered: all) == [root, folders[1].id])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: all).isEmpty,
+                "Expanded folders stay transparent after the pointer leaves")
     }
-    @Test func folderBackgroundsFollowTheCurrentBranchAndIgnoreStaleIDs() {
+    @Test func movingBetweenBranchesAndLeavingClearsThePreviousBackgrounds() {
         let first = BrowserFolder(spaceID: UUID(), name: "First", isExpanded: true)
         let child = BrowserFolder(spaceID: first.spaceID, parentID: first.id, name: "Child")
         let other = BrowserFolder(spaceID: UUID(), name: "Other", isExpanded: true)
         let folders = [child, other, first], visible = Set(folders.map(\.id))
-        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, current: other.id) == [other.id])
-        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, current: other.id, hovered: [first.id, child.id]) == [first.id, child.id])
-        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, current: UUID()).isEmpty)
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, hovered: [first.id, child.id]) == [first.id, child.id])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, hovered: [other.id]) == [other.id])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible).isEmpty)
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, hovered: [UUID()]).isEmpty)
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: [first.id, other.id], hovered: [child.id]).isEmpty,
+                "A child hidden by collapsing its parent cannot keep a background")
+    }
+
+    @Test func dragDestinationsKeepTheirOutlineWithoutLeavingAnIdleBackground() {
+        let root = BrowserFolder(spaceID: UUID(), name: "Root", isExpanded: true)
+        let middle = BrowserFolder(spaceID: root.spaceID, parentID: root.id, name: "Middle", isExpanded: true)
+        let target = BrowserFolder(spaceID: root.spaceID, parentID: middle.id, name: "Target")
+        let folders = [root, middle, target], visible = Set(folders.map(\.id))
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible, dropTarget: target.id) == [root.id, target.id])
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: visible).isEmpty)
+        #expect(SidebarFolderPreview.backgroundFolderIDs(in: folders, visible: [root.id], dropTarget: target.id).isEmpty)
     }
 
     @Test func nestingUsesTheSameLayoutSnapshotAsInsertionInsteadOfChasingItsPreview() {

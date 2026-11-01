@@ -450,7 +450,6 @@ extension BrowserWindowView {
             ? nil : FolderBounceEvent(folders: affected)
         withAnimation(folderExpansionAnimation) {
             model.coordinator.toggleFolder(folder.id)
-            lastOpenedFolder = folder.isExpanded ? folder.parentID : folder.id
         }
         // Opening a live folder reads it again if it's been a while.
         if folder.live != nil, !folder.isExpanded { model.pullRequests?.refreshIfStale() }
@@ -711,9 +710,12 @@ extension BrowserWindowView {
         var groups: Set<UUID> = []
         if sidebarVisible, let point = sidebarPointer.location,
            sectionFrames[false]?.contains(point) == true {
-            for folder in model.coordinator.folders where folderPreview(folder).showsPanel {
-                if folderGroupFrame(folder.id)?.contains(point) == true {
-                    groups.insert(folder.id)
+            // Headers and expanded groups share one pointer source. Recompute
+            // against visible rows after scrolling, collapsing, or changing Spaces
+            // so a removed header cannot leave its old hover state behind.
+            for id in folderHitFrames.keys where id != hiddenDragItemID {
+                if folderGroupFrame(id)?.contains(point) == true {
+                    groups.insert(id)
                 }
             }
         }
@@ -787,8 +789,8 @@ extension BrowserWindowView {
             let affected: Set<UUID> = reduceMotion || draggingTab != nil ? [] : folderBounceEvent?.folders ?? []
             let heights = panels.filter { affected.contains($0.id) }.map(\.frame.height)
             let backgroundIDs = SidebarFolderPreview.backgroundFolderIDs(in: model.coordinator.folders,
-                visible: Set(panels.map(\.id)), current: currentFolderBackground,
-                hovered: showsFolderDragTargets ? [] : hoveredFolderGroups.union(hoveredFolder.map { [$0] } ?? []))
+                visible: Set(panels.map(\.id)), hovered: draggingTab == nil ? hoveredFolderGroups : [],
+                dropTarget: showsFolderDragTargets ? dropFolder ?? pendingFolder : nil)
             // One clock and one pixel displacement preserve the padding between
             // nested islands. Independent percentage springs can cross edges.
             folderPanelBackgrounds(panels, backgroundIDs: backgroundIDs, affected: affected, size: geometry.size)
@@ -803,17 +805,6 @@ extension BrowserWindowView {
                 CubicKeyframe(CGFloat.zero, duration: 0.06)
             }
         }.allowsHitTesting(false).accessibilityHidden(true)
-    }
-
-    var currentFolderBackground: UUID? {
-        if showsFolderDragTargets, let target = dropFolder ?? pendingFolder { return target }
-        switch focusedSidebarControl {
-        case .folder(let id), .folderToggle(let id): return id
-        case .tab(let id), .close(let id), .media(let id):
-            return model.coordinator.tabStore.tab(id: id)?.folderID
-        default:
-            return lastOpenedFolder ?? model.coordinator.activeTabID.flatMap { model.coordinator.tabStore.tab(id: $0)?.folderID }
-        }
     }
 
     func folderPanelBackgrounds(_ panels: [FolderPanel], backgroundIDs: Set<UUID>, affected: Set<UUID>,
