@@ -55,13 +55,22 @@ public actor HistoryStore {
     nonisolated(unsafe) private var db: OpaquePointer?
     private var insertsSincePrune = 0
     private var isRemoved = false
+    private static let busyTimeout: Int32 = 2000
+    private static let checkpointRetryDelays: [Duration] = [.milliseconds(100), .milliseconds(500), .seconds(2)]
+    private(set) var checkpointPending = false
+    private(set) var checkpointRetryTask: Task<Void, Never>?
+    private var checkpointGeneration: UInt64 = 0
+    private var nextCheckpointAttempt = ContinuousClock.now
 
     public init(fileURL: URL, retention: TimeInterval = 365 * 24 * 60 * 60) {
         self.fileURL = fileURL
         self.retention = retention
     }
 
-    deinit { if let db { sqlite3_close(db) } }
+    deinit {
+        checkpointRetryTask?.cancel()
+        if let db { sqlite3_close(db) }
+    }
 
     /// Pages Early can open again: never local files, nothing past 4 KB.
     /// Not local files, and not a page's source, which is a view of another page.
@@ -92,7 +101,7 @@ public actor HistoryStore {
         insertsSincePrune += 1
         if insertsSincePrune >= 200 {
             insertsSincePrune = 0
-            try deleteVisits(before: date.addingTimeInterval(-retention))
+            try deleteVisits(before: date.addingTimeInterval(-retention), cleaningLog: false)
         }
     }
 
@@ -159,7 +168,7 @@ public actor HistoryStore {
     public func deleteVisits(_ ids: [Int64]) throws {
         guard !ids.isEmpty else { return }
         let db = try open()
-        try Self.transaction(db) {
+        try performDeletion(db) {
             for chunk in stride(from: 0, to: ids.count, by: 500).map({ Array(ids[$0..<min($0 + 500, ids.count)]) }) {
                 let marks = chunk.indices.map { "?\($0 + 1)" }.joined(separator: ",")
                 try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE id IN (\(marks))", chunk.map { .integer($0) })
@@ -173,7 +182,7 @@ public actor HistoryStore {
     public func deletePages(_ urls: [URL]) throws {
         guard !urls.isEmpty else { return }
         let db = try open()
-        try Self.transaction(db) {
+        try performDeletion(db) {
             for url in urls {
                 try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT id FROM pages WHERE url = ?1", [.text(url.absoluteString)])
                 try Self.run(db, "DELETE FROM visits WHERE page_id IN (SELECT id FROM pages WHERE url = ?1)", [.text(url.absoluteString)])
@@ -185,7 +194,7 @@ public actor HistoryStore {
     /// Clears visits from `since` to now; nil clears all history.
     public func deleteVisits(since: Date?) throws {
         let db = try open()
-        try Self.transaction(db) {
+        try performDeletion(db) {
             if let since {
                 try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE visited_at >= ?1",
                              [.real(since.timeIntervalSince1970)])
@@ -198,8 +207,12 @@ public actor HistoryStore {
     }
 
     public func deleteVisits(before date: Date) throws {
+        try deleteVisits(before: date, cleaningLog: true)
+    }
+
+    private func deleteVisits(before date: Date, cleaningLog: Bool) throws {
         let db = try open()
-        try Self.transaction(db) {
+        try performDeletion(db, cleaningLog: cleaningLog) {
             try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE visited_at < ?1",
                          [.real(date.timeIntervalSince1970)])
             try Self.run(db, "DELETE FROM visits WHERE visited_at < ?1", [.real(date.timeIntervalSince1970)])
@@ -249,7 +262,7 @@ public actor HistoryStore {
     /// Deletes only visits this batch actually inserted, keeping later native visits.
     public func undoBrowserImport(_ batchID: UUID) throws {
         let db = try open()
-        try Self.transaction(db) {
+        try performDeletion(db) {
             try Self.run(db, "INSERT OR IGNORE INTO touched SELECT page_id FROM visits WHERE id IN (SELECT visit_id FROM browser_import_visits WHERE batch_id=?1)", [.text(batchID.uuidString)])
             try Self.run(db, "DELETE FROM visits WHERE id IN (SELECT visit_id FROM browser_import_visits WHERE batch_id=?1)", [.text(batchID.uuidString)])
             try Self.recountTouched(db)
@@ -257,6 +270,8 @@ public actor HistoryStore {
     }
 
     public func close() {
+        if !isRemoved { checkpointIfNeeded() }
+        cancelCheckpointRetry()
         if let db { sqlite3_close(db) }
         db = nil
     }
@@ -269,6 +284,73 @@ public actor HistoryStore {
             let url = URL(fileURLWithPath: fileURL.path + suffix)
             try ProfileDataCleanup.removeItem(at: url)
         }
+    }
+
+    // MARK: Deletion maintenance
+
+    private func performDeletion(_ db: OpaquePointer, cleaningLog: Bool = true, _ body: () throws -> Void) throws {
+        // Routine retention keeps its existing cost. Explicit deletion also
+        // zeros freed table pages so checkpointing does not copy deleted values
+        // out of the WAL and back into the database's free space.
+        guard cleaningLog else { return try Self.transaction(db, body) }
+        let previous = try Self.query(db, "PRAGMA secure_delete", []) { $0.integer(0) }.first ?? 0
+        try Self.execute(db, "PRAGMA secure_delete=ON;")
+        defer { try? Self.execute(db, "PRAGMA secure_delete=\(previous);") }
+        try Self.transaction(db, body)
+        requestCheckpoint()
+    }
+
+    private func requestCheckpoint() {
+        checkpointPending = true
+        checkpointIfNeeded()
+        scheduleCheckpointRetry()
+    }
+
+    /// A successful TRUNCATE checkpoint discards obsolete WAL frames through
+    /// SQLite, never by removing or truncating a live database file ourselves.
+    /// https://www.sqlite.org/c3ref/wal_checkpoint_v2.html
+    private func checkpointIfNeeded() {
+        guard checkpointPending, let db, !isRemoved else { return }
+        // A reader can keep an older snapshot open. Return immediately instead
+        // of blocking this actor's history queries and writes for two seconds.
+        sqlite3_busy_timeout(db, 0)
+        defer { sqlite3_busy_timeout(db, Self.busyTimeout) }
+        let result = sqlite3_wal_checkpoint_v2(db, "main", SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
+        nextCheckpointAttempt = .now.advanced(by: .seconds(1))
+        guard result == SQLITE_OK else { return }
+        checkpointPending = false
+        cancelCheckpointRetry()
+    }
+
+    private func scheduleCheckpointRetry() {
+        guard checkpointPending, db != nil, !isRemoved, checkpointRetryTask == nil else { return }
+        let generation = checkpointGeneration
+        checkpointRetryTask = Task { [weak self] in
+            for delay in Self.checkpointRetryDelays {
+                do { try await Task.sleep(for: delay) } catch { break }
+                guard await self?.retryCheckpoint(generation: generation) == true else { break }
+            }
+            await self?.finishCheckpointRetry(generation: generation)
+        }
+    }
+
+    private func retryCheckpoint(generation: UInt64) -> Bool {
+        guard generation == checkpointGeneration, !Task.isCancelled else { return false }
+        checkpointIfNeeded()
+        return checkpointPending
+    }
+
+    private func finishCheckpointRetry(generation: UInt64) {
+        guard generation == checkpointGeneration else { return }
+        checkpointRetryTask = nil
+        // Keep the request after the bounded retry burst. Later database use
+        // tries again after a cooldown; opening a new connection also retries.
+    }
+
+    private func cancelCheckpointRetry() {
+        checkpointGeneration &+= 1
+        checkpointRetryTask?.cancel()
+        checkpointRetryTask = nil
     }
 
     // MARK: SQLite
@@ -288,7 +370,13 @@ public actor HistoryStore {
 
     private func open() throws -> OpaquePointer {
         guard !isRemoved else { throw SessionError.database("This profile’s history was deleted.") }
-        if let db { return db }
+        if let db {
+            if checkpointPending, checkpointRetryTask == nil, ContinuousClock.now >= nextCheckpointAttempt {
+                checkpointIfNeeded()
+                scheduleCheckpointRetry()
+            }
+            return db
+        }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         var handle: OpaquePointer?
         let result = sqlite3_open_v2(fileURL.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
@@ -298,7 +386,7 @@ public actor HistoryStore {
             sqlite3_close(opened)
             throw error
         }
-        sqlite3_busy_timeout(opened, 2000)
+        sqlite3_busy_timeout(opened, Self.busyTimeout)
         do {
             try Self.execute(opened, """
                 PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
@@ -321,6 +409,9 @@ public actor HistoryStore {
             throw error
         }
         db = opened
+        // Finish a cleanup interrupted by closing or crashing while another
+        // reader held the log. This runs once per connection, not on each visit.
+        requestCheckpoint()
         return opened
     }
 
