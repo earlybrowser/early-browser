@@ -71,6 +71,7 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
           brew tap earlybrowser/tap "$PWD/tap"
+          brew trust --cask earlybrowser/tap/early
           brew style --cask earlybrowser/tap/early
           brew audit --cask --strict earlybrowser/tap/early
       - name: Push the cask
