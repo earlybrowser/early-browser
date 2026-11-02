@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import EarlyCore
 import UniformTypeIdentifiers
 import WebKit
 
@@ -12,6 +13,11 @@ struct PendingPanel {
     let sheet: NSWindow?
     let owner: AnyObject?
     let cancel: () -> Void
+}
+
+struct PendingDocumentWrite {
+    let pageID: UUID?
+    let task: Task<Void, Never>
 }
 
 /// AppKit reports print completion through an Objective-C selector.
@@ -44,6 +50,7 @@ extension WebViewManager {
 
     /// Closing or deleting the page answers a pending upload with "cancel".
     func cancelDocumentPanel(_ id: UUID) {
+        for write in documentWrites.values where write.pageID == id { write.task.cancel() }
         guard let pending = documentPanels.removeValue(forKey: id) else { return }
         pages[id]?.hasDialog = false
         pending.cancel()
@@ -125,8 +132,11 @@ extension WebViewManager {
             self.endDocumentPanel(id)
             guard response == .OK, let destination = panel?.url, let view = self.pages[id]?.view else { return }
             let source = view.url
+            let generation = self.pages[id]?.navigationGeneration
             view.createPDF { [weak self] result in
-                self?.write(result, to: destination, source: source, failure: "The PDF could not be saved.")
+                guard let self, self.pages[id]?.view === view,
+                      self.pages[id]?.navigationGeneration == generation else { return }
+                self.write(result, to: destination, source: source, failure: "The PDF could not be saved.", pageID: id)
             }
         }
         return true
@@ -158,13 +168,31 @@ extension WebViewManager {
         return true
     }
 
-    func write(_ result: Result<Data, Error>, to destination: URL, source: URL?, failure: String) {
-        do {
-            try result.get().write(to: destination, options: .atomic)
-            downloads.recordSavedFile(at: destination, source: source)
-        } catch {
-            onNotice?(failure)
+    func write(_ result: Result<Data, Error>, to destination: URL, source: URL?, failure: String, pageID: UUID? = nil) {
+        let writer = documentWriter
+        performDocumentSave(pageID: pageID, to: destination, source: source, failure: failure) {
+            try await writer(result.get(), destination)
         }
+    }
+
+    private func performDocumentSave(pageID: UUID?, to destination: URL, source: URL?, failure: String,
+                                     operation: @escaping @Sendable () async throws -> Void) {
+        let token = UUID()
+        let task = Task { @MainActor [weak self] in
+            do {
+                try Task.checkCancellation()
+                try await operation()
+                guard let self else { return }
+                self.documentWrites[token] = nil
+                guard !Task.isCancelled else { return }
+                self.downloads.recordSavedFile(at: destination, source: source)
+            } catch {
+                guard let self else { return }
+                self.documentWrites[token] = nil
+                if !(error is CancellationError) { self.onNotice?(failure) }
+            }
+        }
+        documentWrites[token] = PendingDocumentWrite(pageID: pageID, task: task)
     }
 
     /// A static copy of the current document that can't run anything: scripts,
@@ -174,13 +202,21 @@ extension WebViewManager {
     /// and images keep pointing at the website, and the text is UTF-8. Typed
     /// form values are not part of the saved markup.
     func saveHTMLSnapshot(of view: WKWebView, source: URL, to destination: URL) {
+        let id = tabID(for: view), generation = id.flatMap { pages[$0]?.navigationGeneration }
         view.evaluateJavaScript(Self.htmlSnapshotScript, in: nil, in: Self.documentWorld) { [weak self] result in
             guard let self else { return }
+            if let id {
+                guard self.pages[id]?.view === view, self.pages[id]?.navigationGeneration == generation else { return }
+            }
             guard case .success(let value) = result, let html = value as? String else {
                 self.onNotice?("The page could not be saved.")
                 return
             }
-            self.write(.success(Data(html.utf8)), to: destination, source: source, failure: "The page could not be saved.")
+            let writer = self.documentWriter
+            self.performDocumentSave(pageID: id, to: destination, source: source, failure: "The page could not be saved.") {
+                let data = try await BackgroundFileIO.run { Data(html.utf8) }
+                try await writer(data, destination)
+            }
         }
     }
 
@@ -227,10 +263,9 @@ extension WebViewManager {
     /// An explicit save goes to the chosen file and appears in Downloads.
     private func saveOriginal(_ url: URL, from id: UUID, to destination: URL, failure: String) {
         if url.isFileURL {
-            do {
-                try Self.copyFile(url, replacing: destination)
-                downloads.recordSavedFile(at: destination, source: nil)
-            } catch { onNotice?(failure) }
+            performDocumentSave(pageID: id, to: destination, source: nil, failure: failure) {
+                try await BackgroundFileIO.copy(url, to: destination)
+            }
             return
         }
         if !startDownload(url, from: id, to: destination) { onNotice?(failure) }
@@ -238,9 +273,8 @@ extension WebViewManager {
 
     /// Saving a file onto itself leaves it alone. Any other destination is
     /// replaced only by a complete copy, so a failed save never loses it.
-    static func copyFile(_ source: URL, replacing destination: URL) throws {
-        if isSameFile(source, destination) { return }
-        try Data(contentsOf: source, options: .mappedIfSafe).write(to: destination, options: .atomic)
+    nonisolated static func copyFile(_ source: URL, replacing destination: URL) throws {
+        try BackgroundFileIO.copySynchronously(source, to: destination)
     }
 
     /// The same file under another spelling too: a different letter case, a

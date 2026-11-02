@@ -16,11 +16,12 @@ Reduce Motion support intact.
 ## Testing and pull requests
 
 Run `swift test --no-parallel` for core, WebKit, and application-controller changes;
-native fixtures share AppKit/WebKit process and run-loop resources. Run
-relevant UI tests for interface changes, and describe any manual checks.
-UI tests control the mouse and keyboard:
-keep your Mac unlocked, allow Xcode's requested automation permissions, and close
-overlays that could cover the app. The HTTPS smoke test needs internet access.
+native fixtures share AppKit/WebKit process and run-loop resources. Include
+relevant UI coverage for interface changes, and describe any manual checks.
+Native UI tests control the mouse and keyboard and run on CI for this project;
+compile them locally with `build-for-testing` without executing them. The HTTPS
+smoke test needs internet access. Package fixtures use unshown native hosts and
+must not activate windows or synthesize global input.
 
 Open a PR against `main` with a short explanation of what changed, why, and what
 you tested. Include screenshots or a recording for visible changes. If a check
@@ -33,8 +34,12 @@ result bundles are attached to the workflow run for seven days. Maintainers
 can also start the workflow from the Actions tab. A green run does not replace
 manual review of animation, accessibility, or behavior on other macOS versions.
 
-The [workflow plan](.github/WORKFLOWS.md) describes inactive scaffolds for release,
-Homebrew, and repository checks. These are not implemented or active checks yet.
+The [workflow reference](.github/WORKFLOWS.md) describes the active test, release
+and Homebrew-publication workflows, their artifact flow, and the remaining
+inactive templates. A version tag builds and drafts a release; publishing a
+stable draft updates the tap. Developer ID signing and notarization remain
+future work. Release secrets belong in the protected environment, never in Git
+or test output.
 
 ## AI-assisted contributions
 

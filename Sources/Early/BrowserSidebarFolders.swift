@@ -41,7 +41,7 @@ extension BrowserWindowView {
             .accessibilityIdentifier("folder.\(folder.id)")
             .accessibilityLabel(folder.name)
             .accessibilityValue(isFolderOpen(folder) ? "Expanded" : "Collapsed")
-            .accessibilityHint("Level \((BrowserFolder.nestingDepth(of: folder.id, in: model.coordinator.folders) ?? 0) + 1). \(folderPath(folder)). Click to expand or collapse. Option-click to rename.")
+            .accessibilityHint("Level \((model.coordinator.tabStore.folderHierarchy.depth(of: folder.id) ?? 0) + 1). \(folderPath(folder)). Click to expand or collapse. Option-click to rename.")
             .accessibilityActions {
                 Button("Rename Folder") { editFolder(folder, parent: folder.parentID) }
                 if model.coordinator.tabStore.canCreateFolder(in: folder.id, spaceID: folder.spaceID) {

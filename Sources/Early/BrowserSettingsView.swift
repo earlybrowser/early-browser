@@ -57,7 +57,6 @@ struct BrowserSettingsView: View {
     @State private var profileEditor: ProfileEditorRequest?
     @State private var deletingProfile: BrowserProfile?
     @State private var selectedProfileID: UUID?
-    @State private var sessionMessage: String?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -410,34 +409,48 @@ struct BrowserSettingsView: View {
                 Divider().padding(.vertical, 6)
                 SettingsToggle("Show the command bar in empty windows", detail: "When Early opens, or a new window opens, without a tab, show the command bar ready to type. Early’s first launch always shows it.", isOn: $preferences.showsCommandBarInEmptyWindows, identifier: "settings.commandBarInEmptyWindows")
             }
-            SettingsCard {
-                HStack {
-                    Label("Local session", systemImage: application.persistence?.error == nil ? "checkmark.shield" : "exclamationmark.triangle").font(.headline)
-                    Spacer()
-                    Text(application.persistence?.isSaving == true ? "Saving…" : application.persistence?.error == nil ? "Saved" : "Needs attention")
-                        .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("settings.saveStatus")
+            if let writer = application.persistence, let error = writer.error {
+                SettingsCard {
+                    SessionSavingError(application: application, writer: writer, error: error,
+                                       identifier: "settings.sessionSaveError")
                 }
-                Text("Your organization is saved automatically on this Mac. Cookies and logins stay in each profile’s separate WebKit store. This is local storage, not cross-device sync.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if let error = application.persistence?.error { Text(error).font(.callout).foregroundStyle(.red) }
-                else if let date = application.persistence?.lastSavedAt { Text("Last saved \(date.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(.secondary) }
-                HStack(spacing: 12) {
-                    Button("Save Now") {
-                        application.saveAll()
-                        Task { sessionMessage = await application.persistence?.flush() == true ? "Session saved." : "Could not save. Your existing snapshot was kept." }
-                    }
-                    .disabled(application.persistence?.isAvailable != true || application.persistence?.isSaving == true)
-                    .accessibilityIdentifier("settings.saveNow")
-                    Button("Show in Finder") {
-                        if let url = application.storageURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-                    }
-                    .disabled(application.storageURL == nil)
-                }
-                if let sessionMessage { Text(sessionMessage).font(.caption).foregroundStyle(.secondary) }
             }
             BrowserImportCard(application: application)
             StatePortabilityCard(application: application)
         }
+    }
+}
+
+/// Shown only while saving needs attention, in Settings and affected windows.
+struct SessionSavingError: View {
+    @Bindable var application: EarlyAppDelegate
+    @Bindable var writer: SessionAutosaver
+    let error: String
+    let identifier: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Your session couldn’t be saved", systemImage: "exclamationmark.triangle")
+                .font(.headline)
+            Text(error).font(.callout).fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if writer.isAvailable {
+                HStack(spacing: 10) {
+                    Button("Retry") { Task { await application.retrySessionSave() } }
+                        .disabled(!application.canRetrySessionSave || writer.isSaving || application.isRetryingSessionSave)
+                        .accessibilityIdentifier(identifier + ".retry")
+                    if writer.isSaving || application.isRetryingSessionSave {
+                        ProgressView("Saving…").controlSize(.small)
+                            .accessibilityIdentifier(identifier + ".progress")
+                    }
+                }
+            } else {
+                Text("Your existing session is kept. Browsing is temporary until storage is repaired and Early is restarted.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(identifier)
     }
 }
 

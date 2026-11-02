@@ -128,6 +128,9 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     @ObservationIgnored public var onLoad: ((_ baseURL: URL) -> Void)?
     /// Asks the person to allow something; tests answer it.
     @ObservationIgnored public var askForAccess: ((_ extensionName: String, _ request: String) async -> Bool)?
+    @ObservationIgnored private var installations: [UUID: Task<InstalledExtension, Error>] = [:]
+    @ObservationIgnored private var isRemoving = false
+    @ObservationIgnored var copyExtensionFiles: @Sendable (URL, URL) throws -> Void = ExtensionFileTransfer.copy
 
     public init(catalog: ExtensionCatalog, filesDirectory: URL?, websiteDataStore: WKWebsiteDataStore,
                 storageIdentifier: UUID?, isPrivate: Bool) {
@@ -158,10 +161,11 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     @discardableResult
     public func load(_ id: UUID) async -> Bool {
+        guard !isRemoving, !catalog.isRemoved else { return false }
         guard contexts[id] == nil, let item = catalog.installed(id) else { return contexts[id] != nil }
         do {
             let webExtension = try await Self.webExtension(for: item, filesDirectory: filesDirectory)
-            guard catalog.installed(id)?.isEnabled == true, contexts[id] == nil else { return false }
+            guard !isRemoving, !catalog.isRemoved, catalog.installed(id)?.isEnabled == true, contexts[id] == nil else { return false }
             let context = WKWebExtensionContext(for: webExtension)
             context.uniqueIdentifier = item.id.uuidString
             let scheme = item.source.isFromApp ? BrowserExtensions.appScheme : BrowserExtensions.fileScheme
@@ -284,36 +288,76 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     /// A Mac app's Safari Web Extension, loaded from the app in place.
     public func add(_ discovered: DiscoveredExtension) async throws -> InstalledExtension {
+        guard !catalog.isRemoved, !isRemoving else { throw CancellationError() }
         let source = ExtensionSource.app(extensionPath: discovered.extensionURL.path, bundleIdentifier: discovered.bundleIdentifier)
         if catalog.installed(source: source) != nil { throw ExtensionError.alreadyAdded }
         guard let bundle = Bundle(url: discovered.extensionURL) else { throw ExtensionError.missing }
         let webExtension = try await WKWebExtension(appExtensionBundle: bundle)
-        guard !catalog.isRemoved else { throw CancellationError() }
+        try Task.checkCancellation()
+        guard !catalog.isRemoved, !isRemoving else { throw CancellationError() }
         let item = InstalledExtension(source: source, name: webExtension.displayName ?? discovered.appName,
                                       version: webExtension.displayVersion ?? webExtension.version ?? "")
         catalog.add(item)
         await load(item.id)
+        guard !catalog.isRemoved, !isRemoving else { throw CancellationError() }
         return item
     }
 
     /// A folder or ZIP the person chose: checked, then copied into Early's
     /// storage so it keeps working if the original moves.
     public func add(files url: URL) async throws -> InstalledExtension {
+        guard !catalog.isRemoved, !isRemoving else { throw CancellationError() }
         guard let filesDirectory else { throw ExtensionError.missing }
-        let webExtension = try await WKWebExtension(resourceBaseURL: url)
-        guard !catalog.isRemoved else { throw CancellationError() }
         let id = UUID()
-        let folderName = id.uuidString
-        let destination = filesDirectory.appending(path: folderName, directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
-        // A folder or a ZIP is copied as it is: WebKit reads a ZIP directly.
-        try FileManager.default.copyItem(at: url, to: destination)
-        let item = InstalledExtension(id: id, source: .files(folderName: folderName),
-                                      name: webExtension.displayName ?? url.deletingPathExtension().lastPathComponent,
-                                      version: webExtension.displayVersion ?? webExtension.version ?? "")
-        catalog.add(item)
-        await load(item.id)
-        return item
+        let copier = copyExtensionFiles
+        let task = Task { @MainActor in
+            let staged = filesDirectory.appendingPathComponent(".install-\(id)")
+            let destination = filesDirectory.appendingPathComponent(id.uuidString)
+            var copied = false, moved = false, published = false
+            do {
+                try await BackgroundFileIO.run {
+                    try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
+                    try copier(url, staged)
+                }
+                copied = true
+                try Task.checkCancellation()
+                guard !self.catalog.isRemoved, !self.isRemoving else { throw CancellationError() }
+                // WebKit's async validation remains on its required actor, but
+                // it reads our completed copy rather than a selected source.
+                let webExtension = try await WKWebExtension(resourceBaseURL: staged)
+                try Task.checkCancellation()
+                guard !self.catalog.isRemoved, !self.isRemoving else { throw CancellationError() }
+                try await BackgroundFileIO.run {
+                    try Task.checkCancellation()
+                    try ExtensionFileTransfer.publish(staged, to: destination)
+                }
+                moved = true
+                try Task.checkCancellation()
+                guard !self.catalog.isRemoved, !self.isRemoving else { throw CancellationError() }
+                let item = InstalledExtension(id: id, source: .files(folderName: id.uuidString),
+                    name: webExtension.displayName ?? url.deletingPathExtension().lastPathComponent,
+                    version: webExtension.displayVersion ?? webExtension.version ?? "")
+                self.catalog.add(item)
+                published = true
+                await self.load(item.id)
+                guard !self.catalog.isRemoved, !self.isRemoving else { throw CancellationError() }
+                return item
+            } catch {
+                if !published {
+                    // Cleanup is intentionally not cancelled: profile deletion
+                    // waits for this task before removing the parent directory.
+                    let removeStaged = copied, removeDestination = moved
+                    await Task.detached(priority: .utility) {
+                        if removeStaged { try? FileManager.default.removeItem(at: staged) }
+                        if removeDestination { try? FileManager.default.removeItem(at: destination) }
+                    }.value
+                }
+                throw error
+            }
+        }
+        installations[id] = task
+        defer { installations[id] = nil }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     /// Removes it from the profile, with its data and copied files.
@@ -324,7 +368,8 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         let own = await controller.dataRecords(ofTypes: types).filter { $0.uniqueIdentifier == item.id.uuidString }
         if !own.isEmpty { await controller.removeData(ofTypes: types, from: own) }
         if case .files(let folderName) = item.source, let filesDirectory {
-            try? FileManager.default.removeItem(at: filesDirectory.appending(path: folderName, directoryHint: .isDirectory))
+            let url = filesDirectory.appending(path: folderName, directoryHint: .isDirectory)
+            try? await BackgroundFileIO.run { try FileManager.default.removeItem(at: url) }
         }
         catalog.remove(id)
     }
@@ -363,6 +408,10 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     /// What every extension stored, for deleting the profile.
     public func removeAllData() async throws {
+        isRemoving = true
+        let pending = Array(installations.values)
+        pending.forEach { $0.cancel() }
+        for task in pending { _ = try? await task.value }
         var unloadFailure: (any Error)?
         for (id, context) in contexts {
             do {

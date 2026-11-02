@@ -77,10 +77,28 @@ extension WebViewManager {
     /// Keeps the page's current markup for its `view-source:` tab and returns
     /// that tab's address.
     public func capturePageSource(_ id: UUID) async -> URL? {
-        guard let view = pages[id]?.view, let page = view.url, let address = NavigationInput.sourceURL(of: page),
-              let source = await pageSource(id) else { return nil }
-        sourcePages.store(source, title: view.title ?? "", for: page)
-        return address
+        guard let capture = await sourceCapture(id) else { return nil }
+        sourcePages.store(capture.source, title: capture.title, for: capture.page)
+        return capture.address
+    }
+
+    /// A temporary lease keeps even an oversized source intact until the
+    /// synchronous opener registers its new tab. Failed opens release it too.
+    public func openPageSource(_ id: UUID, using open: (URL) -> Bool) async -> Bool {
+        guard let capture = await sourceCapture(id) else { return false }
+        let lease = sourcePages.lease(capture.page)
+        defer { sourcePages.releaseLease(lease) }
+        sourcePages.store(capture.source, title: capture.title, for: capture.page)
+        return open(capture.address)
+    }
+
+    private func sourceCapture(_ id: UUID) async -> (page: URL, address: URL, title: String, source: String)? {
+        guard let owner = pages[id], let page = owner.view.url,
+              let address = NavigationInput.sourceURL(of: page) else { return nil }
+        let generation = owner.navigationGeneration
+        guard let source = await pageSource(id), pages[id] === owner,
+              owner.navigationGeneration == generation, owner.view.url == page else { return nil }
+        return (page, address, owner.view.title ?? "", source)
     }
 }
 
@@ -88,16 +106,91 @@ extension WebViewManager {
 /// generated page runs no scripts and loads nothing, from the website or else.
 @MainActor
 final class PageSourcePages: NSObject, WKURLSchemeHandler {
-    private var snapshots: [URL: (title: String, source: String)] = [:]
+    private struct Snapshot {
+        let title: String
+        let source: String
+        let bytes: Int
+    }
+    private var snapshots: [URL: Snapshot] = [:]
     private var order: [URL] = []
+    private var owners: [UUID: URL] = [:]
+    private var views: [ObjectIdentifier: UUID] = [:]
+    private var leases: [UUID: URL] = [:]
+    private(set) var retainedBytes = 0
+    var inactiveBytes: Int {
+        let protected = protectedPages
+        return snapshots.reduce(0) { $0 + (protected.contains($1.key) ? 0 : $1.value.bytes) }
+    }
+    var snapshotCount: Int { snapshots.count }
+    var activeUsers: Int { owners.count }
     static let limit = 20
+    /// Eight MiB keeps an ordinary inactive source available for Back/reopen,
+    /// without retaining the previous 100 MiB of unused synthetic snapshots.
+    /// Active source tabs are exempt: their full source must remain reloadable.
+    static let inactiveByteLimit = 8 * 1024 * 1024
+    private let byteLimit: Int
     static let explanation = "The page as it is now, including changes made by its scripts. Early doesn’t download it again."
 
+    init(inactiveByteLimit: Int = PageSourcePages.inactiveByteLimit) {
+        byteLimit = max(0, inactiveByteLimit)
+        super.init()
+    }
+
     func store(_ source: String, title: String, for page: URL) {
-        snapshots[page] = (title, source)
+        retainedBytes -= snapshots[page]?.bytes ?? 0
+        let snapshot = Snapshot(title: title, source: source, bytes: title.utf8.count + source.utf8.count)
+        snapshots[page] = snapshot
+        retainedBytes += snapshot.bytes
         order.removeAll { $0 == page }
         order.append(page)
-        while order.count > Self.limit { snapshots[order.removeFirst()] = nil }
+        trim()
+    }
+
+    func lease(_ page: URL) -> UUID {
+        let id = UUID(); leases[id] = page; return id
+    }
+    func releaseLease(_ id: UUID) { leases[id] = nil; trim() }
+
+    func reconcile(_ tabs: [BrowserTab]) {
+        owners = Dictionary(tabs.filter(\.isOpen).compactMap { tab in
+            NavigationInput.page(ofSource: tab.currentURL).map { (tab.id, $0) }
+        }, uniquingKeysWith: { first, _ in first })
+        trim()
+    }
+
+    func register(_ view: WKWebView, tab: UUID, url: URL) {
+        views[ObjectIdentifier(view)] = tab
+        navigate(tab: tab, to: url)
+    }
+    func unregister(_ view: WKWebView) { views[ObjectIdentifier(view)] = nil }
+    func navigate(tab: UUID, to url: URL?) {
+        owners[tab] = url.flatMap(NavigationInput.page(ofSource:))
+        trim()
+    }
+    func release(tab: UUID) { owners[tab] = nil; trim() }
+    func contains(_ page: URL) -> Bool { snapshots[page] != nil }
+    func clear() {
+        snapshots = [:]; order = []; owners = [:]; views = [:]; leases = [:]; retainedBytes = 0
+    }
+    func dropInactive() {
+        let protected = protectedPages
+        for page in order where !protected.contains(page) { remove(page) }
+        order.removeAll { snapshots[$0] == nil }
+    }
+    private var protectedPages: Set<URL> { Set(owners.values).union(leases.values) }
+    private func remove(_ page: URL) {
+        retainedBytes -= snapshots.removeValue(forKey: page)?.bytes ?? 0
+    }
+    private func trim() {
+        let protected = protectedPages
+        var unused = order.filter { !protected.contains($0) }
+        var bytes = unused.reduce(0) { $0 + (snapshots[$1]?.bytes ?? 0) }
+        while unused.count > Self.limit || bytes > byteLimit {
+            let page = unused.removeFirst()
+            bytes -= snapshots[page]?.bytes ?? 0
+            remove(page)
+        }
+        order.removeAll { snapshots[$0] == nil }
     }
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
@@ -105,6 +198,7 @@ final class PageSourcePages: NSObject, WKURLSchemeHandler {
             task.didFailWithError(URLError(.badURL))
             return
         }
+        if let tab = views[ObjectIdentifier(webView)] { navigate(tab: tab, to: url) }
         let html = snapshots[page].map { Self.render($0.source, title: $0.title, page: page) } ?? Self.unavailable(page)
         let headers = ["Content-Type": "text/html; charset=utf-8",
                        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"]
@@ -117,8 +211,32 @@ final class PageSourcePages: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {}
 
     static func escape(_ text: String) -> String {
-        text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+        var result = ""
+        appendEscaped(text, to: &result)
+        return result
+    }
+
+    private static func appendEscaped(_ text: String, to result: inout String) {
+        // Append complete unchanged spans and small substitutions directly to
+        // the final page, rather than making four whole escaped-string copies.
+        let bytes = text.utf8
+        var start = bytes.startIndex, index = start
+        while index < bytes.endIndex {
+            let replacement: String?
+            switch bytes[index] {
+            case 38: replacement = "&amp;"
+            case 60: replacement = "&lt;"
+            case 62: replacement = "&gt;"
+            case 34: replacement = "&quot;"
+            default: replacement = nil
+            }
+            if let replacement {
+                result.append(contentsOf: text[start..<index]); result.append(replacement)
+                start = bytes.index(after: index)
+            }
+            index = bytes.index(after: index)
+        }
+        result.append(contentsOf: text[start...])
     }
 
     private static let style = """
@@ -133,8 +251,14 @@ final class PageSourcePages: NSObject, WKURLSchemeHandler {
 
     static func render(_ source: String, title: String, page: URL) -> String {
         let name = title.isEmpty ? (page.host ?? page.absoluteString) : title
-        return "<!doctype html><meta charset=\"utf-8\">\(style)<title>Source of \(escape(name))</title>"
-            + "<header>\(escape(explanation))</header><pre>\(escape(source))</pre>"
+        var html = "<!doctype html><meta charset=\"utf-8\">\(style)<title>Source of "
+        appendEscaped(name, to: &html)
+        html += "</title><header>"
+        appendEscaped(explanation, to: &html)
+        html += "</header><pre>"
+        appendEscaped(source, to: &html)
+        html += "</pre>"
+        return html
     }
 
     static func unavailable(_ page: URL) -> String {

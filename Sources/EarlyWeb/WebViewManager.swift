@@ -125,6 +125,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     var identities: [ObjectIdentifier: UUID] = [:]
     var dialogs: [UUID: PendingDialog] = [:]
     var documentPanels: [UUID: PendingPanel] = [:]
+    var documentWrites: [UUID: PendingDocumentWrite] = [:]
+    @ObservationIgnored var documentWriter: @Sendable (Data, URL) async throws -> Void = { data, url in
+        try await BackgroundFileIO.write(data, to: url)
+    }
     private var controllerOwners: [ObjectIdentifier: Set<UUID>] = [:]
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
     @ObservationIgnored var recoveryTasks: [UUID: Task<Void, Never>] = [:]
@@ -185,6 +189,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     @discardableResult
     public func reconcile(tabs: [BrowserTab]) -> Bool {
         guard tabs.allSatisfy({ $0.profileID == profileID }), Set(tabs.map(\.id)).count == tabs.count else { return false }
+        sourcePages.reconcile(tabs)
         let all = Set(tabs.map(\.id)), open = Set(tabs.filter(\.isOpen).map(\.id))
         for id in Array(pages.keys) where !open.contains(id) { discard(tabID: id) }
         for id in Array(lifecycles.keys) where !all.contains(id) { lifecycles[id] = nil }
@@ -293,7 +298,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func handleMemoryPressure(_ pressure: PageRetentionPolicy.Pressure) {
         self.pressure = pressure
-        if pressure != .normal { snapshots.clear() }
+        if pressure != .normal { snapshots.clear(); sourcePages.dropInactive() }
         _ = enforceRetention()
     }
 
@@ -365,6 +370,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let controller = configuration.userContentController
         registerHandlers(controller, for: tab.id)
         let view = BrowserWebView(frame: .zero, configuration: configuration)
+        sourcePages.register(view, tab: tab.id, url: url ?? tab.currentURL)
         // WebKit generates the base identity and inherits the opener's suffix
         // in popup configurations. Do not overwrite a supplied configuration.
         view.onOpenWindowLink = { [weak self, weak view] url in
@@ -662,6 +668,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     /// Explicit close/delete/shutdown always release. Policy eviction uses the
     /// same cleanup while retaining a bounded stale thumbnail for the switcher.
     public func discard(tabID: UUID) {
+        sourcePages.release(tab: tabID)
         navigationDiagnostics.removeAll { $0.tabID == tabID }
         releasePage(tabID: tabID, preservingSnapshot: false)
         retentionPolicy.forget(tabID)
@@ -679,6 +686,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         if focusedPasswordField?.tabID == tabID { hidePasswordSuggestions() }
         if lifecycles[tabID] != nil { transition(tabID, .discard) }
         guard let page = pages[tabID] else { return }
+        sourcePages.unregister(page.view)
         // Removing a view/owner and stopping resource loads does not stop its
         // media. An outgoing SwiftUI transition can still retain the document.
         // Native suspension covers HTML media, embedded frames and Web Audio,
@@ -727,6 +735,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         retentionTask?.cancel()
         retentionTask = nil
         snapshots.clear()
+        sourcePages.clear()
         navigationDiagnostics.removeAll()
         protections.removeAll()
         muteChoices.removeAll()

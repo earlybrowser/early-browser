@@ -4,7 +4,7 @@ import Foundation
 
 /// Ordered metadata for one profile, independent of presentation and live views.
 public struct TabStore: Equatable, Sendable {
-    public enum PinnedItem: Identifiable {
+    public enum PinnedItem: Identifiable, Sendable {
         case tab(BrowserTab), folder(BrowserFolder)
         public var id: UUID {
             switch self { case .tab(let tab): tab.id; case .folder(let folder): folder.id }
@@ -17,13 +17,16 @@ public struct TabStore: Equatable, Sendable {
     /// One sibling order for tabs AND folders. Old sessions retain their
     /// folders-first layout until a move assigns explicit positions.
     public func pinnedItems(in spaceID: UUID, parentID: UUID?) -> [PinnedItem] {
-        let items = folders.filter { $0.spaceID == spaceID && $0.parentID == parentID }.map(PinnedItem.folder)
-            + tabs.filter { $0.spaceID == spaceID && $0.folderID == parentID && $0.pinnedURL != nil && !$0.isFavorite }.map(PinnedItem.tab)
-        return items.enumerated().sorted {
-            let left = $0.element.position ?? Int.max, right = $1.element.position ?? Int.max
-            return left == right ? $0.offset < $1.offset : left < right
-        }.map(\.element)
+        index.pins[.init(space: spaceID, parent: parentID)] ?? []
     }
+
+    public func hasPinnedItems(in spaceID: UUID, parentID: UUID?) -> Bool {
+        index.pins[.init(space: spaceID, parent: parentID)]?.isEmpty == false
+    }
+
+    public var folderHierarchy: BrowserFolderHierarchy { index.hierarchy }
+    public func folders(in spaceID: UUID) -> [BrowserFolder] { index.foldersBySpace[spaceID] ?? [] }
+    public func folder(id: UUID) -> BrowserFolder? { index.folders[id].map { folders[$0] } }
 
     @discardableResult
     public mutating func placePin(_ id: UUID, before target: UUID?) -> Bool {
@@ -91,14 +94,30 @@ public struct TabStore: Equatable, Sendable {
     }
 
     private mutating func assignPositions(_ ids: [UUID]) {
+        // Resolve once before changing either array; every changed position
+        // still invalidates derived readers, but never triggers another scan.
+        let tabIndices = index.tabs, folderIndices = index.folders
         for (position, id) in ids.enumerated() {
-            if let index = tabs.firstIndex(where: { $0.id == id }) { tabs[index].sidebarPosition = position }
-            else if let index = folders.firstIndex(where: { $0.id == id }) { folders[index].sidebarPosition = position }
+            if let index = tabIndices[id] { tabs[index].sidebarPosition = position }
+            else if let index = folderIndices[id] { folders[index].sidebarPosition = position }
         }
     }
     public enum Section: String, Sendable { case regular, pinned, favorites }
-    public private(set) var tabs: [BrowserTab]
-    public private(set) var folders: [BrowserFolder]
+    public private(set) var tabs: [BrowserTab] { didSet { invalidateIndex() } }
+    public private(set) var folders: [BrowserFolder] { didSet { invalidateIndex() } }
+    private var indexCache = TabStoreIndexCache()
+    private var index: TabStoreIndex { indexCache.value(tabs: tabs, folders: folders) }
+
+    private mutating func invalidateIndex() {
+        // Value copies may be read on different actors. Mutating one must not
+        // install its index into another copy whose persisted arrays differ.
+        if isKnownUniquelyReferenced(&indexCache) { indexCache.invalidate() }
+        else { indexCache = TabStoreIndexCache() }
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.tabs == rhs.tabs && lhs.folders == rhs.folders
+    }
 
     public init(tabs: [BrowserTab] = [], folders: [BrowserFolder] = []) {
         self.tabs = tabs
@@ -106,7 +125,7 @@ public struct TabStore: Equatable, Sendable {
     }
 
     public func tab(id: UUID) -> BrowserTab? {
-        tabs.first { $0.id == id }
+        index.tabs[id].map { tabs[$0] }
     }
 
     mutating func moveTab(_ id: UUID, toSpace spaceID: UUID) -> Bool {
@@ -230,17 +249,23 @@ public struct TabStore: Equatable, Sendable {
 
     @discardableResult
     public mutating func reorder(_ id: UUID, relativeTo targetID: UUID, after: Bool) -> Bool {
-        guard id != targetID, let source = tab(id: id),
-              let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        let lookup = index.tabs
+        guard id != targetID, let index = lookup[id] else { return false }
+        let source = tabs[index]
         if source.pinnedURL != nil && !source.isFavorite {
             let siblings = pinnedItems(in: source.spaceID, parentID: source.folderID).map(\.id).filter { $0 != id }
             guard let targetIndex = siblings.firstIndex(of: targetID) else { return false }
             let next = after ? siblings.dropFirst(targetIndex + 1).first : targetID
             return placePin(id, before: next)
         }
-        guard peers(of: source).contains(where: { $0.id == targetID }) else { return false }
+        guard let targetIndex = lookup[targetID] else { return false }
+        let target = tabs[targetIndex]
+        guard target.profileID == source.profileID, target.isFavorite == source.isFavorite,
+              (target.pinnedURL != nil) == (source.pinnedURL != nil),
+              source.isFavorite || target.spaceID == source.spaceID,
+              target.folderID == source.folderID else { return false }
         let moved = tabs.remove(at: index)
-        let destination = tabs.firstIndex(where: { $0.id == targetID })!
+        let destination = targetIndex - (index < targetIndex ? 1 : 0)
         tabs.insert(moved, at: destination + (after ? 1 : 0))
         return true
     }
@@ -250,23 +275,14 @@ public struct TabStore: Equatable, Sendable {
         favorites.filter(\.isOpen) + pinnedTabs(in: spaceID).filter(\.isOpen) + todayTabs(in: spaceID)
     }
 
-    public var favorites: [BrowserTab] { tabs.filter(\.isFavorite) }
+    public var favorites: [BrowserTab] { index.favorites }
 
     public func pinnedTabs(in spaceID: UUID) -> [BrowserTab] {
-        func ordered(parent: UUID?, depth: Int) -> [BrowserTab] {
-            guard depth <= 32 else { return [] }
-            return pinnedItems(in: spaceID, parentID: parent).flatMap { item -> [BrowserTab] in
-                switch item {
-                case .tab(let tab): return [tab]
-                case .folder(let folder): return ordered(parent: folder.id, depth: depth + 1)
-                }
-            }
-        }
-        return ordered(parent: nil, depth: 0)
+        index.orderedPins[spaceID] ?? []
     }
 
     public func todayTabs(in spaceID: UUID) -> [BrowserTab] {
-        tabs.filter { $0.spaceID == spaceID && $0.pinnedURL == nil && !$0.isFavorite && $0.isOpen }
+        index.today[spaceID] ?? []
     }
 
     @discardableResult
@@ -327,8 +343,9 @@ public struct TabStore: Equatable, Sendable {
         folders = candidate
         // Reveal the new child through every ancestor, while keeping the child
         // itself collapsed. Validation guarantees a finite, same-space path.
+        let folderIndices = index.folders
         var parent = parentID
-        while let id = parent, let index = folders.firstIndex(where: { $0.id == id }) {
+        while let id = parent, let index = folderIndices[id] {
             folders[index].isExpanded = true
             parent = folders[index].parentID
         }
@@ -338,8 +355,8 @@ public struct TabStore: Equatable, Sendable {
     public func canCreateFolder(in parentID: UUID?, spaceID: UUID) -> Bool {
         guard let parentID else { return true }
         guard !isLiveFolder(parentID) else { return false }
-        guard folders.contains(where: { $0.id == parentID && $0.spaceID == spaceID }),
-              let depth = BrowserFolder.nestingDepth(of: parentID, in: folders) else { return false }
+        guard folder(id: parentID)?.spaceID == spaceID,
+              let depth = folderHierarchy.depth(of: parentID) else { return false }
         return depth < BrowserFolder.maximumNestingDepth
     }
 
@@ -371,7 +388,22 @@ public struct TabStore: Equatable, Sendable {
     }
 
     public func canMoveFolder(_ id: UUID, to parentID: UUID?) -> Bool {
-        guard let index = folders.firstIndex(where: { $0.id == id }), !isLiveFolder(parentID) else { return false }
+        let derived = index
+        guard let index = derived.folders[id], !isLiveFolder(parentID) else { return false }
+        if derived.hierarchy.isValid {
+            let newDepth: Int
+            if let parentID {
+                guard let parent = derived.hierarchy.folder(parentID), parent.spaceID == folders[index].spaceID,
+                      parentID != id,
+                      derived.hierarchy.ancestors(of: parentID)?.contains(where: { $0.id == id }) == false,
+                      let depth = derived.hierarchy.depth(of: parentID) else { return false }
+                newDepth = depth + 1
+            } else { newDepth = 0 }
+            guard let height = derived.hierarchy.subtreeHeight(of: id) else { return false }
+            return newDepth + height <= BrowserFolder.maximumNestingDepth
+        }
+        // Retain repair behavior for standalone/legacy malformed metadata;
+        // normal validated sessions take the indexed path above.
         var candidate = folders
         candidate[index].parentID = parentID
         guard (try? BrowserFolder.validate(candidate)) != nil else { return false }
@@ -428,17 +460,28 @@ public struct TabStore: Equatable, Sendable {
         } else { ids.append(id) }
         guard moveFolder(id, to: parentID) else { return false }
         assignPositions(ids)
+        let folderIndices = index.folders
         var parent = parentID
-        while let id = parent, let folder = folders.first(where: { $0.id == id }) {
-            setFolderExpanded(id, expanded: true)
-            parent = folder.parentID
+        while let id = parent, let position = folderIndices[id] {
+            folders[position].isExpanded = true
+            parent = folders[position].parentID
         }
         return true
     }
 
     public mutating func setFolderExpanded(_ id: UUID, expanded: Bool) {
         guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
+        guard folders[index].isExpanded != expanded else { return }
         folders[index].isExpanded = expanded
+    }
+
+    /// Startup closes folder presentation without repeatedly looking up and
+    /// rewriting each record or changing tab metadata and selection.
+    public mutating func collapseFolders() {
+        guard folders.contains(where: \.isExpanded) else { return }
+        var updated = folders
+        for index in updated.indices where updated[index].isExpanded { updated[index].isExpanded = false }
+        folders = updated
     }
 
     @discardableResult
@@ -449,8 +492,9 @@ public struct TabStore: Equatable, Sendable {
             guard let folder = folders.first(where: { $0.id == folderID }), folder.spaceID == tabs[index].spaceID else { return false }
             if tabs[index].pinnedURL == nil { guard setPinned(id, pinned: true) else { return false } }
             // Reveal the destination path, without selecting or reloading the page.
+            let folderIndices = self.index.folders
             var parent: UUID? = folderID
-            while let id = parent, let position = folders.firstIndex(where: { $0.id == id }) {
+            while let id = parent, let position = folderIndices[id] {
                 folders[position].isExpanded = true
                 parent = folders[position].parentID
             }
@@ -465,7 +509,7 @@ public struct TabStore: Equatable, Sendable {
     /// Only its source adds or removes a live folder's pins.
     public func isLiveFolder(_ id: UUID?) -> Bool {
         guard let id else { return false }
-        return folders.contains { $0.id == id && $0.live != nil }
+        return folder(id: id)?.live != nil
     }
 
     /// A Space has at most one live folder per source: a second would list
@@ -521,8 +565,12 @@ public struct TabStore: Equatable, Sendable {
             }
         }
         var order: [UUID] = []
+        var liveIndices: [String: Int] = [:]
+        for (index, tab) in tabs.enumerated() where tab.folderID == folderID {
+            if let id = tab.liveItemID, liveIndices[id] == nil { liveIndices[id] = index }
+        }
         for item in wanted {
-            if let index = tabs.firstIndex(where: { $0.folderID == folderID && $0.liveItemID == item.id }) {
+            if let index = liveIndices[item.id] {
                 if tabs[index].pinnedTitle != item.title {
                     tabs[index].pinnedTitle = item.title
                     if !tabs[index].isOpen { tabs[index].title = item.title }
@@ -567,11 +615,12 @@ public struct TabStore: Equatable, Sendable {
     @discardableResult
     public mutating func revealFolderAncestors(of id: UUID) -> Bool {
         guard let tab = tab(id: id) else { return false }
+        let folderIndices = index.folders
         var parent = tab.folderID
         var seen = Set<UUID>()
         var expandedAny = false
         while let folderID = parent, seen.insert(folderID).inserted,
-              let position = folders.firstIndex(where: { $0.id == folderID }) {
+              let position = folderIndices[folderID] {
             if !folders[position].isExpanded {
                 folders[position].isExpanded = true
                 expandedAny = true

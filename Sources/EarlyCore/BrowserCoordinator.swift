@@ -43,9 +43,7 @@ public final class BrowserCoordinator {
         self.focusedPaneByGroupID = focusedPaneByGroupID
         self.spaces = spaces ?? BrowserSpace.migrated(profileID: profileID, activeID: activeSpaceID,
             tabs: tabStore.tabs, folders: tabStore.folders, selection: selectionBySpace, closed: recentlyClosed)
-        for folder in tabStore.folders {
-            self.tabStore.setFolderExpanded(folder.id, expanded: false)
-        }
+        self.tabStore.collapseFolders()
         pruneSelections()
         restoreSelection()
         if case .firstLaunch = startup, tabStore.tabs.isEmpty {
@@ -289,7 +287,7 @@ public final class BrowserCoordinator {
                        splitGroups: splitGroups, focusedPaneByGroupID: focusedPaneByGroupID)
     }
 
-    public var folders: [BrowserFolder] { tabStore.folders.filter { $0.spaceID == activeSpaceID } }
+    public var folders: [BrowserFolder] { tabStore.folders(in: activeSpaceID) }
 
     /// Replace a window's metadata after an atomic workspace operation. Runtime
     /// views are owned by its profile's manager and are reconciled by the caller.

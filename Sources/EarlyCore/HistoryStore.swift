@@ -64,10 +64,21 @@ public actor HistoryStore {
     /// Repeated import commands prepared for the latest batch, independent of
     /// its visit count. Internal diagnostics keep bulk-work regressions visible.
     private(set) var importBatchStatementCount = 0
+    /// Counts only started read queries; the optional observation is used by
+    /// deterministic cancellation fixtures, never to interrupt a connection.
+    private(set) var searchStatementCount = 0
+    private var searchProgress: (@Sendable () -> Void)?
 
     public init(fileURL: URL, retention: TimeInterval = 365 * 24 * 60 * 60) {
         self.fileURL = fileURL
         self.retention = retention
+    }
+
+    init(fileURL: URL, retention: TimeInterval = 365 * 24 * 60 * 60,
+         searchProgress: @escaping @Sendable () -> Void) {
+        self.fileURL = fileURL
+        self.retention = retention
+        self.searchProgress = searchProgress
     }
 
     deinit {
@@ -117,12 +128,13 @@ public actor HistoryStore {
 
     /// Pages whose title or address contains every word, most visited first.
     public func search(_ query: String, limit: Int) throws -> [HistoryPage] {
+        try Task.checkCancellation()
         let words = Self.words(query)
         guard !words.isEmpty, limit > 0 else { return [] }
         let filter = words.indices.map { "(title LIKE ?\($0 + 1) ESCAPE '\\' OR url LIKE ?\($0 + 1) ESCAPE '\\')" }
         let sql = "SELECT url, title, last_visit, visit_count FROM pages WHERE \(filter.joined(separator: " AND ")) "
             + "ORDER BY visit_count DESC, last_visit DESC LIMIT \(min(limit, 500))"
-        return try Self.query(try open(), sql, words.map { .text("%\(Self.escapeLike($0))%") }) { row in
+        return try searchQuery(try open(), sql, words.map { .text("%\(Self.escapeLike($0))%") }) { row in
             guard let url = URL(string: row.text(0)) else { return nil }
             return HistoryPage(url: url, title: row.text(1), lastVisit: Date(timeIntervalSince1970: row.real(2)),
                                visitCount: Int(row.integer(3)))
@@ -131,10 +143,11 @@ public actor HistoryStore {
 
     /// Pages last visited since `date`, most recent first, for the History menu.
     public func recentPages(since date: Date, limit: Int) throws -> [HistoryPage] {
+        try Task.checkCancellation()
         guard limit > 0 else { return [] }
         let sql = "SELECT url, title, last_visit, visit_count FROM pages WHERE last_visit >= ?1 "
             + "ORDER BY last_visit DESC LIMIT \(min(limit, 500))"
-        return try Self.query(try open(), sql, [.real(date.timeIntervalSince1970)]) { row in
+        return try searchQuery(try open(), sql, [.real(date.timeIntervalSince1970)]) { row in
             guard let url = URL(string: row.text(0)) else { return nil }
             return HistoryPage(url: url, title: row.text(1), lastVisit: Date(timeIntervalSince1970: row.real(2)),
                                visitCount: Int(row.integer(3)))
@@ -146,6 +159,7 @@ public actor HistoryStore {
     /// visit: by time, then by visit, so visits sharing a time aren't skipped.
     public func visits(matching query: String = "", before: Date? = nil, continuing: HistoryVisit? = nil,
                        limit: Int = 500) throws -> [HistoryVisit] {
+        try Task.checkCancellation()
         let words = Self.words(query)
         var conditions = words.indices.map { "(p.title LIKE ?\($0 + 1) ESCAPE '\\' OR p.url LIKE ?\($0 + 1) ESCAPE '\\')" }
         var values: [Value] = words.map { .text("%\(Self.escapeLike($0))%") }
@@ -161,7 +175,7 @@ public actor HistoryStore {
         let sql = "SELECT v.id, p.url, p.title, v.visited_at FROM visits v JOIN pages p ON p.id = v.page_id"
             + (conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND "))
             + " ORDER BY v.visited_at DESC, v.id DESC LIMIT \(max(0, min(limit, 5000)))"
-        return try Self.query(try open(), sql, values) { row in
+        return try searchQuery(try open(), sql, values) { row in
             guard let url = URL(string: row.text(1)) else { return nil }
             return HistoryVisit(id: row.integer(0), url: url, title: row.text(2),
                                 visitedAt: Date(timeIntervalSince1970: row.real(3)))
@@ -529,14 +543,42 @@ public actor HistoryStore {
         guard sqlite3_step(statement) == SQLITE_DONE else { throw failure(db) }
     }
 
-    private static func query<T>(_ db: OpaquePointer, _ sql: String, _ values: [Value], _ read: (Row) -> T?) throws -> [T] {
+    private final class SearchProgress {
+        let observe: (@Sendable () -> Void)?
+        init(_ observe: (@Sendable () -> Void)?) { self.observe = observe }
+    }
+
+    /// This synchronous actor operation owns the handler for exactly one
+    /// query. No cancellation callback calls sqlite3_interrupt later, so a
+    /// cancelled request cannot accidentally interrupt the next query/write.
+    private func searchQuery<T>(_ db: OpaquePointer, _ sql: String, _ values: [Value], _ read: (Row) -> T?) throws -> [T] {
+        try Task.checkCancellation()
+        searchStatementCount += 1
+        let progress = SearchProgress(searchProgress)
+        sqlite3_progress_handler(db, 1000, { context in
+            if let context { Unmanaged<SearchProgress>.fromOpaque(context).takeUnretainedValue().observe?() }
+            return Task.isCancelled ? 1 : 0
+        }, Unmanaged.passUnretained(progress).toOpaque())
+        defer { sqlite3_progress_handler(db, 0, nil, nil) }
+        return try withExtendedLifetime(progress) {
+            try Self.query(db, sql, values, cancellable: true, read)
+        }
+    }
+
+    private static func query<T>(_ db: OpaquePointer, _ sql: String, _ values: [Value],
+                                 cancellable: Bool = false, _ read: (Row) -> T?) throws -> [T] {
+        if cancellable { try Task.checkCancellation() }
         var statement: OpaquePointer?
-        try check(sqlite3_prepare_v2(db, sql, -1, &statement, nil), db)
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
         defer { sqlite3_finalize(statement) }
+        if cancellable { try Task.checkCancellation() }
+        try check(prepared, db)
         try bind(statement!, values, db)
         var rows: [T] = []
         while true {
+            if cancellable { try Task.checkCancellation() }
             let status = sqlite3_step(statement)
+            if cancellable { try Task.checkCancellation() }
             if status == SQLITE_DONE { break }
             guard status == SQLITE_ROW else { throw failure(db) }
             if let value = read(Row(statement: statement!)) { rows.append(value) }
@@ -564,7 +606,10 @@ public struct HistorySearchProvider: CommandSearchProvider {
     public init(store: HistoryStore) { self.store = store }
 
     public func candidates(matching query: String, limit: Int) async throws -> [CommandSearchCandidate] {
-        try await store.search(query, limit: limit).map { page in
+        try Task.checkCancellation()
+        let pages = try await store.search(query, limit: limit)
+        try Task.checkCancellation()
+        return pages.map { page in
             CommandSearchCandidate(id: "history.\(page.url.absoluteString)", kind: .history, target: .page(page.url),
                 title: page.title.isEmpty ? (page.url.host ?? page.url.absoluteString) : page.title,
                 detail: page.url.absoluteString, terms: [page.title, page.url.absoluteString],

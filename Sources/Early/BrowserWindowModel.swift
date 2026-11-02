@@ -507,7 +507,7 @@ final class BrowserWindowModel {
     func showPageSource(_ id: UUID) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            guard let address = await self.webViews.capturePageSource(id), self.openLocations([address]) else {
+            guard await self.webViews.openPageSource(id, using: { self.openLocations([$0]) }) else {
                 self.notice = "The page’s source couldn’t be shown."
                 return
             }

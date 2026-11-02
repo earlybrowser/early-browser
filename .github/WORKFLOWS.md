@@ -1,47 +1,67 @@
-# Workflow plan
+# GitHub Actions workflows
 
-Only files in `.github/workflows/` are active. Files in
-`.github/workflow-templates/` are unfinished scaffolds, not release automation.
-They are manual-only and contain failing placeholder steps. Even if a template
-is moved into the active folder too early, it cannot publish anything or claim
-an implementation is complete.
+Files in `.github/workflows/` are active. Files in
+`.github/workflow-templates/` are inactive historical scaffolds and must not be
+copied over the working release or publication workflows.
 
-## Current tests
+## Tests
 
-`workflows/tests.yml` runs the package tests and four UI shards on separate
-macOS runners. Xcode discovers the enabled tests and assigns each test to one
-shard. Keep this complete-suite coverage when extending or reorganizing tests.
+`workflows/tests.yml` runs on pull requests, pushes to `main`, and manual dispatch.
+It uses macOS 26 runners and Xcode 26.6. One job runs
+`swift test --no-parallel`; four separate jobs run native UI tests. Xcode discovers
+the enabled UI tests, and the sorted identifiers are interleaved across the four
+shards. Each shard executes serially to avoid competing mouse/keyboard input.
 
-## Future workflows
+The workflow has read-only repository permissions and disables persisted checkout
+credentials. New commits cancel obsolete test runs for the same ref. Logs,
+selected test lists, crash reports and UI result bundles are retained for seven
+days. Keep complete-suite discovery when adding tests; do not maintain separate
+manual lists of tests or reduce the shard count as a release prerequisite.
 
-- `workflow-templates/release.yml`: build, sign, notarize, and package on macOS;
-  then publish those exact artifacts from Linux. Never publish from a PR run.
-- `workflow-templates/homebrew.yml`: update the tap from an already published
-  release on Linux; then verify installation on macOS without rebuilding Early.
-- `workflow-templates/repository-checks.yml`: documentation/link checks and
-  repository security checks on Linux. Website deployment belongs in the website
-  repository if it remains separate from the browser.
+## Release
 
-Before enabling distribution, change the UI matrix to three balanced shards.
-Together with the package job, one test run then uses four macOS slots. Release
-and Homebrew workflows share a distribution concurrency group so their macOS
-work does not overlap. Multiple PRs still share the account's macOS limit; this
-is headroom, not a reserved runner or a global priority rule.
+`workflows/release.yml` runs when a `v*` tag is pushed. It validates the version,
+runs package tests, builds the Apple Silicon Release app with
+`Scripts/release.sh`, signs its Sparkle update feed, and creates a **draft** GitHub
+release containing the ZIP, `SHA256SUMS` and `appcast.xml`. Version and build number
+are passed to the packaged build; tagging does not edit `Config/Early.xcconfig`.
 
-## Enabling a template
+Before tagging, merge the intended version/configuration changes and confirm the
+package job and all four UI shards passed for that exact `main` commit. The
+release job itself does not rerun the UI shards. Review the resulting draft and
+assets before publishing it. A tag with a version suffix creates a prerelease.
 
-1. Replace every failing placeholder with real commands and validation. Settle
-   the owned bundle identifier, release versioning, signing/notarization, supported
-   architectures, and archive format before implementing distribution.
-2. Configure and protect the `release` environment. Keep signing credentials out
-   of PR jobs. Give tap updates a credential scoped to the tap repository, not a
-   broad account token.
-3. Require successful tests for the exact release commit. Verify artifact identity
-   and checksums before publishing or updating Homebrew; do not silently rebuild
-   or substitute a different commit between stages.
-4. Review triggers, permissions, and queue behavior. Templates are manual-only;
-   add trusted version-tag/release triggers or reusable-workflow connections only
-   once implemented. Do not cancel an active release when another is requested.
-5. Move the completed file into `.github/workflows/` and validate it with
-   `actionlint`. Exercise the distribution pipeline on a prerelease before making
-   it part of normal releases.
+The job uses the `release` environment and repository write permission to create
+the draft. `SPARKLE_ED_PRIVATE_KEY` is exposed only to the feed-signing step,
+after the app is built. Keep its value outside Git and logs. The current workflow
+uses ad-hoc app signing and does not notarize: Sparkle update signing is separate
+from Developer ID signing. Paid-account signing/notarization remains future work.
+
+Release concurrency is grouped by tag and is not cancelled by newer test runs.
+Published tags and signed assets must not be moved or replaced; fix code in a
+new unused version.
+
+## Homebrew publication
+
+`workflows/publish.yml` runs when a stable release is published. It downloads the
+published checksum, writes the cask in `earlybrowser/homebrew-tap`, and runs
+`brew style` and `brew audit` before pushing a changed cask. It uses the existing
+release artifact; it does not rebuild Early. An unchanged cask is a no-op.
+
+The workflow uses the `release` environment. `TAP_DEPLOY_KEY` is supplied to the
+tap checkout; repository access for the app stays read-only. Tap updates are
+serialized by the `homebrew-tap` concurrency group. Prereleases are skipped by
+the automatic release event. To retry publication deliberately, manually run
+the workflow with the intended release tag selected as its ref.
+
+Tests, releases and tap publication do not share a global macOS-slot reservation;
+GitHub queues jobs according to account capacity.
+
+## Remaining templates
+
+`workflow-templates/release.yml` and `homebrew.yml` describe an earlier proposed
+distribution architecture; the active files above are the current implementation.
+`workflow-templates/repository-checks.yml` is still unfinished and inactive.
+Website deployment belongs to the separate website repository. Any future
+workflow change needs validation against the actual files, permissions and
+artifact paths rather than treating a template as implemented automation.

@@ -28,8 +28,6 @@ sentinels to prove unrelated session/CSV fields are discarded.
   with localized entry names and an excluded fake password CSV. Stored ZIP and
   malicious/CRC variants are generated directly in the tests.
 
-The capability matrix and primary format references are in
-[Documentation/BrowserImport.md](../../../../Documentation/BrowserImport.md).
 Private formats can change; a new advertised schema needs a sanitized fixture and
 corresponding parser tests. Selecting a browser brand never implies access to
 its undocumented data.

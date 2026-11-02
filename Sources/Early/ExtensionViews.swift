@@ -485,6 +485,8 @@ private struct ExtensionsSettingsContent: View {
                     webExtension = try await WKWebExtension(appExtensionBundle: bundle)
                     fallback = found.appName
                 case .files(let url):
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                     webExtension = try await WKWebExtension(resourceBaseURL: url)
                     fallback = url.deletingPathExtension().lastPathComponent
                 }
