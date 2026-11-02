@@ -125,23 +125,6 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
 Native UI automation runs on CI only. Local package tests use unshown native
 fixtures; they do not control your mouse or keyboard.
 
-### Make a release
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer Scripts/release.sh 0.2.0
-```
-
-This builds `build/Release/Early-0.2.0.zip` and `SHA256SUMS`. To publish one,
-first update `MARKETING_VERSION` in `Config/Early.xcconfig`, merge the change,
-and confirm all tests passed on that exact `main` commit. Then push a tag
-(`git tag v0.2.0 && git push origin v0.2.0`): GitHub Actions builds
-it, signs the update and drafts the release, and publishing the draft updates
-the Homebrew tap.
-
-Tagging does not edit the configuration file. Current releases are ad-hoc signed
-and not notarized; Sparkle signs their update feed separately. See the
-[workflow reference](.github/WORKFLOWS.md) for the active release steps.
-
 ### Measure page lifecycle
 
 ```sh
