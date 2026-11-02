@@ -56,11 +56,7 @@ private struct BrowserWindowRoot: View {
                     // Names the window in the Window menu and for VoiceOver.
                     .navigationTitle(model.isPrivate ? "Early — Private" : "Early")
             } else {
-                Color(nsColor: .windowBackgroundColor)
-                    .overlay(alignment: .topLeading) {
-                        WindowControls().frame(width: 60, height: 32).padding(.leading, 12).padding(.top, 10)
-                    }
-                    .ignoresSafeArea(.container, edges: .top)
+                BrowserWindowLoadingView(preferences: preferences)
             }
         }
         .frame(minWidth: 640, minHeight: 420)

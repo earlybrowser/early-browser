@@ -254,7 +254,10 @@ struct BrowserWindowView: View {
                 if preview.showsContents {
                     items += folderItems(in: spaceID, parent: folder.id, depth: depth + 1)
                 }
-                if folder.live != nil, isFolderOpen(folder), !model.isPrivate {
+                if folder.live != nil, isFolderOpen(folder), !model.isPrivate,
+                   let feed = model.pullRequests,
+                   LiveFolderStatusRow.message(for: feed.status,
+                       hasPins: folderHasChildren(folder.id, in: folder.spaceID)) != nil {
                     items.append(.liveStatus(folder, depth + 1))
                 }
                 if preview.showsPanel {
@@ -386,7 +389,7 @@ struct BrowserWindowView: View {
         }
         .animation(sidebarMotion, value: sidebarAutoHides)
         .animation(sidebarMotion, value: sidebarVisible)
-        .padding(6)
+        .padding(BrowserChromeLayout.windowPadding)
         .coordinateSpace(name: "browserWindow")
         .overlay(alignment: .topLeading) {
             if case .tab(let tab) = dragSourceItem, dragLanding == nil, tabDragIsOverContent {
@@ -659,7 +662,7 @@ struct BrowserWindowView: View {
                 .padding(.top, 16)
         }
         .animation(folderDragAnimation, value: revealDropSections)
-        .padding(.horizontal, sidebarAutoHides ? 5 : 2)
+        .padding(.horizontal, BrowserChromeLayout.sidebarHorizontalPadding + (sidebarAutoHides ? 3 : 0))
         .padding(.top, sidebarAutoHides ? 3 : 0)
         .padding(.bottom, sidebarAutoHides ? 17 : 14)
         .frame(width: model.sidebarWidth + (sidebarAutoHides ? 3 : 0))
