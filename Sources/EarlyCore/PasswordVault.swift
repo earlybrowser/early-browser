@@ -232,6 +232,7 @@ public final class PasswordVault {
     @ObservationIgnored private var removing: Task<Void, Error>?
     @ObservationIgnored private var requestedRevision: UInt64 = 0
     @ObservationIgnored private var durableRevision: UInt64 = 0
+    @ObservationIgnored private var mutationRevision: UInt64 = 0
     /// The encrypted-file boundary also lets tests suspend or fail real writes.
     @ObservationIgnored var writeFile: @Sendable (Data, URL) throws -> Void = PasswordVault.writeEncryptedFile
     /// Opened with an earlier build's key: re-encrypted with the current one,
@@ -520,18 +521,80 @@ public final class PasswordVault {
     public func importRows(_ rows: [PasswordCSV.Row], skipped: Int = 0) -> ImportSummary {
         var summary = ImportSummary(skipped: skipped)
         guard isReady else { return summary }
-        let date = now()
-        for row in rows {
-            if let saved = logins.first(where: { $0.origin == row.origin && $0.username == row.username }) {
-                if saved.password == row.password { summary.duplicates += 1 } else { summary.conflicts += 1 }
-                continue
-            }
-            logins.append(SavedLogin(origin: row.origin, username: row.username, password: row.password,
-                                     realm: row.realm, note: row.note, created: date))
-            summary.added += 1
-        }
-        if summary.added > 0 { persist() }
+        let merged = Self.merge(rows, into: logins, skipped: skipped, date: now(), checking: {})
+        summary = merged.summary
+        if summary.added > 0 { logins = merged.logins; persist() }
         return summary
+    }
+
+    public enum ImportFailure: Error, Equatable { case unavailable, saving }
+
+    /// File reading, parsing and bulk preparation run off the main actor. Edits
+    /// arriving during that work are merged again against the latest logins.
+    public func importCSV(from url: URL, onSaving: () -> Void = {}) async throws -> ImportSummary {
+        try await importCSV(read: { try PasswordCSV.read(url) }, onSaving: onSaving)
+    }
+
+    func importCSV(read: @escaping @Sendable () throws -> PasswordCSV.Parsed,
+                   onSaving: () -> Void = {}) async throws -> ImportSummary {
+        guard isReady, !isRemoved else { throw ImportFailure.unavailable }
+        let started = generation
+        let parsed = try await Self.importWork(read)
+        while true {
+            try Task.checkCancellation()
+            guard isReady, !isRemoved, generation == started else { throw ImportFailure.unavailable }
+            let revision = mutationRevision, existing = logins, date = now()
+            let merged = try await Self.importWork {
+                try Self.merge(parsed.rows, into: existing, skipped: parsed.skipped, date: date,
+                               checking: { try Task.checkCancellation() })
+            }
+            try Task.checkCancellation()
+            guard isReady, !isRemoved, generation == started else { throw ImportFailure.unavailable }
+            guard revision == mutationRevision else { continue }
+            // This is the commit boundary. Cancellation before it changes
+            // nothing; afterward finish the save and report its real outcome.
+            onSaving()
+            if merged.summary.added > 0 { logins = merged.logins; persist() }
+            let saved = await flush()
+            guard isReady, !isRemoved, generation == started else { throw ImportFailure.unavailable }
+            guard saved else { throw ImportFailure.saving }
+            return merged.summary
+        }
+    }
+
+    private nonisolated static func importWork<Value: Sendable>(
+        _ operation: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
+        let task = Task.detached(priority: .userInitiated, operation: operation)
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    private struct ImportIdentity: Hashable { var origin: String; var username: String }
+    private struct ImportMerge: Sendable { var logins: [SavedLogin]; var summary: ImportSummary }
+
+    private nonisolated static func merge(_ rows: [PasswordCSV.Row], into existing: [SavedLogin],
+        skipped: Int, date: Date, checking check: () throws -> Void) rethrows -> ImportMerge {
+        var passwords: [ImportIdentity: String] = [:]
+        for (index, login) in existing.enumerated() {
+            if index % 256 == 0 { try check() }
+            let id = ImportIdentity(origin: login.origin, username: login.username)
+            if passwords[id] == nil { passwords[id] = login.password }
+        }
+        var logins = existing, summary = ImportSummary(skipped: skipped)
+        for (index, row) in rows.enumerated() {
+            if index % 256 == 0 { try check() }
+            let id = ImportIdentity(origin: row.origin, username: row.username)
+            if let saved = passwords[id] {
+                if saved == row.password { summary.duplicates += 1 } else { summary.conflicts += 1 }
+            } else {
+                passwords[id] = row.password
+                logins.append(SavedLogin(origin: row.origin, username: row.username, password: row.password,
+                                        realm: row.realm, note: row.note, created: date))
+                summary.added += 1
+            }
+        }
+        try check()
+        return ImportMerge(logins: logins, summary: summary)
     }
 
     public func exportCSV() -> String { PasswordCSV.export(logins) }
@@ -604,6 +667,7 @@ public final class PasswordVault {
     // MARK: Storage
 
     private func persist() {
+        mutationRevision += 1
         guard let fileURL, let key, !isRemoved else { return }
         requestedRevision += 1
         // The live arrays are the newest pending snapshot. Only the active

@@ -545,12 +545,12 @@ struct PasswordCSVTests {
         #expect(throws: PasswordCSV.Failure.unrecognized) { try PasswordCSV.parse("") }
     }
 
-    @Test func fieldsAreQuotedOnlyWhenNeeded() {
+    @Test func fieldsAreQuotedOnlyWhenNeeded() throws {
         #expect(PasswordCSV.field("plain") == "plain")
         #expect(PasswordCSV.field("a,b") == "\"a,b\"")
         #expect(PasswordCSV.field("say \"hi\"") == "\"say \"\"hi\"\"\"")
         #expect(PasswordCSV.field(" padded") == "\" padded\"")
-        #expect(PasswordCSV.records("a,\"b\nc\",d\n\ne,f") == [["a", "b\nc", "d"], ["e", "f"]])
+        #expect(try PasswordCSV.records("a,\"b\nc\",d\n\ne,f") == [["a", "b\nc", "d"], ["e", "f"]])
     }
 }
 

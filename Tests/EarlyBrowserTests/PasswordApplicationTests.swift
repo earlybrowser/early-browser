@@ -143,6 +143,22 @@ struct PasswordApplicationTests {
         #expect(await lock.unlock() == false && !lock.isUnlocked)
     }
 
+    @Test func cancelledOrDeletedPasswordImportsNeverOfferToTrashTheSource() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyCancelledPasswords-\(UUID()).csv")
+        try Data("url,username,password\nhttps://example.com,ada,synthetic\n".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let vault = PasswordVault(fileURL: nil, key: nil)
+        let task = Task { await PasswordsSettingsSection.importFile(file, into: vault) }
+        task.cancel()
+        let cancelled = await task.value
+        #expect(cancelled.title == "Import cancelled" && cancelled.importedFile == nil && cancelled.unsavedFile == nil)
+        #expect(vault.logins.isEmpty && FileManager.default.fileExists(atPath: file.path))
+        try await vault.removeAll()
+        let deleted = await PasswordsSettingsSection.importFile(file, into: vault)
+        #expect(deleted.title == "Passwords weren’t imported" && deleted.importedFile == nil)
+        #expect(await PasswordsSettingsSection.importSaved(file, in: vault).importedFile == nil)
+    }
+
     @Test func importingReportsWhatHappenedAndCopiedPasswordsAreConcealed() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswordImport-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

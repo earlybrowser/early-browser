@@ -229,17 +229,76 @@ public enum BrowserImportFiles {
         try result.validate(); return result
     }
 
+    /// Limits cover the logical database, including committed pages in its WAL.
+    /// Repeated source changes can restart SQLite's backup; charge every page
+    /// requested, including recopied pages, instead of trusting net progress.
+    struct DatabaseLimits {
+        var maximumBytes: Int64 = 1024 * 1024 * 1024
+        var maximumCopiedBytes: Int64 = 2 * 1024 * 1024 * 1024
+        var maximumSteps = 16_384
+        var maximumDuration: TimeInterval = 30
+        var maximumBusyRetries = 10
+        var pagesPerStep: Int32 = 256
+    }
+
+    struct DatabaseHooks {
+        var temporaryDirectory = FileManager.default.temporaryDirectory
+        var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        var sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+        var step: (OpaquePointer, Int32) -> Int32 = { sqlite3_backup_step($0, $1) }
+    }
+
+    private final class DatabaseBudget {
+        let limits: DatabaseLimits
+        let now: () -> TimeInterval
+        let started: TimeInterval
+        init(limits: DatabaseLimits, now: @escaping () -> TimeInterval) {
+            self.limits = limits; self.now = now; started = now()
+        }
+        var expired: Bool { now() - started >= limits.maximumDuration }
+        func check() throws {
+            try Task.checkCancellation()
+            guard !expired else { throw DatabaseBudget.problem }
+        }
+        static var problem: BrowserImportProblem {
+            .unsupported("The source database is too large, keeps changing, or took too long to read. Quit that browser and try again, or use its export option.")
+        }
+    }
+
     /// Online backup produces one coherent read snapshot, even with an active WAL.
     public static func database(_ url: URL, source: String, firefox: Bool) throws -> BrowserImportDocument {
-        let info = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .fileSizeKey])
-        guard info.isSymbolicLink != true, (info.fileSize ?? 0) <= 1024 * 1024 * 1024 else { throw BrowserImportProblem.capacity }
+        try database(url, source: source, firefox: firefox, limits: DatabaseLimits(), hooks: DatabaseHooks())
+    }
+
+    static func database(_ url: URL, source: String, firefox: Bool,
+                         limits: DatabaseLimits, hooks: DatabaseHooks = DatabaseHooks()) throws -> BrowserImportDocument {
+        let budget = DatabaseBudget(limits: limits, now: hooks.now)
+        try budget.check()
+        guard limits.maximumBytes > 0, limits.maximumCopiedBytes > 0, limits.maximumSteps > 0,
+              limits.maximumBusyRetries >= 0, limits.pagesPerStep > 0,
+              limits.maximumDuration.isFinite, limits.maximumDuration > 0 else { throw DatabaseBudget.problem }
+        guard url.isFileURL else { throw DatabaseBudget.problem }
+        let info = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey])
+        guard info.isSymbolicLink != true, info.isRegularFile == true,
+              Int64(info.fileSize ?? 0) <= limits.maximumBytes else { throw DatabaseBudget.problem }
         var original: OpaquePointer?, copy: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &original, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        guard sqlite3_open_v2(url.path, &original, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let original else {
             if let original { sqlite3_close(original) }
             throw BrowserImportProblem.unsupported("The source database cannot be read. Quit that browser and select its profile folder again, or use its export option.")
         }
         defer { sqlite3_close(original) }
-        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyBrowserImport-" + UUID().uuidString)
+        let context = Unmanaged.passUnretained(budget).toOpaque()
+        sqlite3_progress_handler(original, 10_000, { context in
+            guard let context else { return 0 }
+            return Task.isCancelled || Unmanaged<DatabaseBudget>.fromOpaque(context).takeUnretainedValue().expired ? 1 : 0
+        }, context)
+        defer { sqlite3_progress_handler(original, 0, nil, nil) }
+        let pageSize = try databaseInteger(original, "PRAGMA page_size", budget: budget)
+        let pageCount = try databaseInteger(original, "PRAGMA page_count", budget: budget)
+        let (logicalSize, overflow) = pageCount.multipliedReportingOverflow(by: pageSize)
+        guard pageSize >= 512, pageSize <= 65_536, pageSize.nonzeroBitCount == 1, pageCount > 0,
+              !overflow, logicalSize <= limits.maximumBytes else { throw DatabaseBudget.problem }
+        let temporary = hooks.temporaryDirectory.appendingPathComponent("EarlyBrowserImport-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         guard sqlite3_open(temporary.appendingPathComponent("snapshot.sqlite").path, &copy) == SQLITE_OK, let copy else {
             if let copy { sqlite3_close(copy) }; try? FileManager.default.removeItem(at: temporary)
@@ -247,26 +306,62 @@ public enum BrowserImportFiles {
         }
         defer { sqlite3_close(copy); try? FileManager.default.removeItem(at: temporary) }
         sqlite3_limit(copy, SQLITE_LIMIT_LENGTH, 64 * 1024)
-        sqlite3_progress_handler(copy, 10_000, { _ in Task.isCancelled ? 1 : 0 }, nil)
+        sqlite3_progress_handler(copy, 10_000, { context in
+            guard let context else { return 0 }
+            return Task.isCancelled || Unmanaged<DatabaseBudget>.fromOpaque(context).takeUnretainedValue().expired ? 1 : 0
+        }, context)
+        // Set the source's page size before limiting pages. This prevents a
+        // growing WAL from making even a single backup step exceed the cap.
+        guard sqlite3_exec(copy, "PRAGMA page_size=\(pageSize); PRAGMA max_page_count=\(limits.maximumBytes / pageSize)", nil, nil, nil) == SQLITE_OK else {
+            throw DatabaseBudget.problem
+        }
 
         guard let backup = sqlite3_backup_init(copy, "main", original, "main") else { throw BrowserImportProblem.invalid }
-        var status: Int32 = SQLITE_OK, retries = 0
-        repeat {
-            if Task.isCancelled { sqlite3_backup_finish(backup); throw CancellationError() }
-            status = sqlite3_backup_step(backup, 256)
-            if status == SQLITE_BUSY || status == SQLITE_LOCKED { retries += 1; Thread.sleep(forTimeInterval: 0.02) }
-        } while status == SQLITE_OK || ((status == SQLITE_BUSY || status == SQLITE_LOCKED) && retries < 10)
-        let finished = sqlite3_backup_finish(backup)
-        guard status == SQLITE_DONE, finished == SQLITE_OK else {
-            throw BrowserImportProblem.unsupported("The source database is busy. Quit the source browser, then try again.")
+        var needsFinish = true
+        defer { if needsFinish { sqlite3_backup_finish(backup) } }
+        var retries = 0, steps = 0, copiedBytes: Int64 = 0
+        var remaining = pageCount
+        while true {
+            try budget.check()
+            guard steps < limits.maximumSteps else { throw DatabaseBudget.problem }
+            let allowance = (limits.maximumCopiedBytes - copiedBytes) / pageSize
+            let requested = min(Int64(limits.pagesPerStep), max(1, remaining), allowance)
+            guard requested > 0 else { throw DatabaseBudget.problem }
+            let status = hooks.step(backup, Int32(requested))
+            steps += 1
+            try budget.check()
+            if status == SQLITE_BUSY || status == SQLITE_LOCKED {
+                guard retries < limits.maximumBusyRetries else {
+                    throw BrowserImportProblem.unsupported("The source database is busy. Quit the source browser, then try again, or use its export option.")
+                }
+                retries += 1; hooks.sleep(0.02)
+                continue
+            }
+            guard status == SQLITE_OK || status == SQLITE_DONE else { throw DatabaseBudget.problem }
+            // Requested pages are bounded by remaining allowance, so this
+            // charge cannot overflow even if backup restarts at every step.
+            copiedBytes += requested * pageSize
+            let total = Int64(sqlite3_backup_pagecount(backup))
+            remaining = Int64(sqlite3_backup_remaining(backup))
+            let (size, overflow) = total.multipliedReportingOverflow(by: pageSize)
+            guard !overflow, size <= limits.maximumBytes else { throw DatabaseBudget.problem }
+            if status == SQLITE_DONE { break }
         }
+        let finished = sqlite3_backup_finish(backup)
+        needsFinish = false
+        guard finished == SQLITE_OK else { throw DatabaseBudget.problem }
+        try budget.check()
+        let copiedPages = try databaseInteger(copy, "PRAGMA page_count", budget: budget)
+        let (copiedSize, copiedOverflow) = copiedPages.multipliedReportingOverflow(by: pageSize)
+        guard !copiedOverflow, copiedSize <= limits.maximumBytes else { throw DatabaseBudget.problem }
         var builder = BrowserImportReaders.Builder(name: source)
         if firefox {
-            let rows = try query(copy, "SELECT b.id,b.parent,b.type,b.title,p.url,b.position FROM moz_bookmarks b LEFT JOIN moz_places p ON p.id=b.fk ORDER BY b.position,b.id LIMIT 80001")
+            let rows = try query(copy, "SELECT b.id,b.parent,b.type,b.title,p.url,b.position FROM moz_bookmarks b LEFT JOIN moz_places p ON p.id=b.fk ORDER BY b.position,b.id LIMIT 80001", budget: budget)
             guard rows.count <= BrowserImportDocument.maximumNodes else { throw BrowserImportProblem.capacity }
             let ids = Set(rows.map { $0[0] })
             let roots = Set(rows.filter { !ids.contains($0[1]) || $0[1] == $0[0] }.map { $0[0] })
             for row in rows where !roots.contains(row[0]) {
+                try budget.check()
                 let parent = ids.contains(row[1]) && !roots.contains(row[1]) && row[1] != row[0] ? "bookmark." + row[1] : "profile"
                 if row[2] == "2" {
                     builder.document.nodes.append(.init(id: "bookmark." + row[0], parentID: parent, kind: .folder, title: row[3], order: Int(row[5])))
@@ -275,34 +370,55 @@ public enum BrowserImportFiles {
                 }
             }
         }
-        let contextualHistory = try firefox && query(copy, "PRAGMA table_info(moz_historyvisits)").contains { $0[1] == "userContextId" }
+        let contextualHistory = try firefox && query(copy, "PRAGMA table_info(moz_historyvisits)", budget: budget).contains { $0[1] == "userContextId" }
         let sql = firefox
             ? "SELECT p.url,p.title,v.visit_date\(contextualHistory ? ",v.userContextId" : "") FROM moz_historyvisits v JOIN moz_places p ON p.id=v.place_id WHERE v.visit_date>=?1 ORDER BY v.visit_date DESC,v.id DESC LIMIT 50001"
             : "SELECT u.url,u.title,v.visit_time FROM visits v JOIN urls u ON u.id=v.url WHERE v.visit_time>=?1 ORDER BY v.visit_time DESC,v.id DESC LIMIT 50001"
         let cutoff = (Date().addingTimeInterval(-365 * 86_400).timeIntervalSince1970 + (firefox ? 0 : 11_644_473_600)) * 1_000_000
-        let visits = try query(copy, sql, minimumTime: cutoff)
+        let visits = try query(copy, sql, minimumTime: cutoff, budget: budget)
         if visits.count > BrowserImportDocument.maximumVisits {
             builder.document.notices.append("History preview contains the latest 50,000 known visits within Early’s one-year retention period. Use a smaller export to select older visits within that period.")
         }
         for row in visits.prefix(BrowserImportDocument.maximumVisits) {
+            try budget.check()
             guard let value = Double(row[2]) else { continue }
             let seconds = value / 1_000_000 - (firefox ? 0 : 11_644_473_600)
             let profile = try builder.context(contextualHistory ? (Int(row[3]) ?? 0) : 0)
             try builder.visit(row[0], title: row[1], time: Date(timeIntervalSince1970: seconds), profile: profile)
         }
         if firefox { builder.document.addFirefoxCollections() }
-        try builder.document.validate(); return builder.document
+        try builder.document.validate()
+        try budget.check()
+        return builder.document
     }
 
-    private static func query(_ db: OpaquePointer, _ sql: String, minimumTime: Double? = nil) throws -> [[String]] {
+    private static func databaseInteger(_ db: OpaquePointer, _ sql: String, budget: DatabaseBudget) throws -> Int64 {
+        try budget.check()
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw BrowserImportProblem.invalid }
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
         defer { sqlite3_finalize(statement) }
+        try budget.check()
+        guard prepared == SQLITE_OK, let statement else { throw DatabaseBudget.problem }
+        let status = sqlite3_step(statement)
+        try budget.check()
+        guard status == SQLITE_ROW else { throw DatabaseBudget.problem }
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    private static func query(_ db: OpaquePointer, _ sql: String, minimumTime: Double? = nil,
+                              budget: DatabaseBudget) throws -> [[String]] {
+        try budget.check()
+        var statement: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+        defer { sqlite3_finalize(statement) }
+        try budget.check()
+        guard prepared == SQLITE_OK else { throw BrowserImportProblem.invalid }
         if let minimumTime { sqlite3_bind_double(statement, 1, minimumTime) }
         var rows: [[String]] = [], totalBytes = 0
         while true {
-            try Task.checkCancellation()
+            try budget.check()
             let status = sqlite3_step(statement)
+            try budget.check()
             if status == SQLITE_DONE { return rows }
             guard status == SQLITE_ROW else { throw BrowserImportProblem.invalid }
             var row: [String] = []

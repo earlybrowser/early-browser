@@ -28,9 +28,31 @@ public enum PasswordCSV {
         public var skipped: Int
     }
 
-    public enum Failure: Error, Equatable {
+    public enum Failure: Error, Equatable, LocalizedError {
         /// No address and password columns: not a password export.
         case unrecognized
+        case capacity
+        case malformed
+
+        public var errorDescription: String? {
+            switch self {
+            case .unrecognized: "Choose a CSV file exported from a browser or password manager."
+            case .capacity: "This password export is too large. Import a smaller file with at most 100,000 rows, 64 MB in total, and 1 MB per field."
+            case .malformed: "This CSV file has an unfinished quoted field. Export it again from your browser or password manager."
+            }
+        }
+    }
+
+    /// Generous bounds for the supported browser and password-manager exports,
+    /// including long notes and extra columns. Exceeding a bound rejects the
+    /// whole import rather than quietly losing rows or truncating a password.
+    public struct Limits: Sendable {
+        public var maximumBytes = 64 * 1024 * 1024
+        public var maximumRows = 100_000
+        public var maximumFieldBytes = 1024 * 1024
+        public var maximumColumns = 128
+        public init() {}
+        public static let standard = Limits()
     }
 
     static let addressColumns = ["url", "login_uri", "website", "web site", "login url", "uri", "address"]
@@ -38,33 +60,39 @@ public enum PasswordCSV {
     static let passwordColumns = ["password", "login_password"]
     static let noteColumns = ["note", "notes", "extra", "comments"]
 
-    public static func parse(_ text: String) throws -> Parsed {
-        var records = records(text)
-        guard !records.isEmpty else { throw Failure.unrecognized }
-        let header = records.removeFirst().map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-        func column(_ names: [String]) -> Int? {
+    public static func parse(_ text: String, limits: Limits = .standard) throws -> Parsed {
+        var header: [String]?
+        var address: Int?, password: Int?, username: Int?, note: Int?, realm: Int?, type: Int?
+        func column(_ names: [String], in header: [String]) -> Int? {
             for name in names { if let index = header.firstIndex(of: name) { return index } }
             return nil
         }
-        guard let address = column(addressColumns), let password = column(passwordColumns) else { throw Failure.unrecognized }
-        let username = column(usernameColumns), note = column(noteColumns)
-        let realm = column(["httprealm"]), type = column(["type"])
         var parsed = Parsed(rows: [], skipped: 0)
-        for record in records {
+        try scan(text, limits: limits) { record in
+            if header == nil {
+                let columns = record.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                header = columns
+                address = column(addressColumns, in: columns); password = column(passwordColumns, in: columns)
+                guard address != nil, password != nil else { throw Failure.unrecognized }
+                username = column(usernameColumns, in: columns); note = column(noteColumns, in: columns)
+                realm = column(["httprealm"], in: columns); type = column(["type"], in: columns)
+                return
+            }
             func value(_ index: Int?) -> String {
                 guard let index, index < record.count else { return "" }
                 return record[index]
             }
             // Bitwarden also exports notes, cards and identities.
-            if type != nil, !["", "login"].contains(value(type).lowercased()) { parsed.skipped += 1; continue }
+            if type != nil, !["", "login"].contains(value(type).lowercased()) { parsed.skipped += 1; return }
             guard let origin = origin(from: value(address)), !value(password).isEmpty else {
                 parsed.skipped += 1
-                continue
+                return
             }
             let httpRealm = value(realm)
             parsed.rows.append(Row(origin: origin, username: value(username), password: value(password),
                                    note: value(note), realm: httpRealm.isEmpty ? nil : httpRealm))
         }
+        guard header != nil else { throw Failure.unrecognized }
         return parsed
     }
 
@@ -96,41 +124,71 @@ public enum PasswordCSV {
     }
 
     /// RFC 4180 records: quoted fields may hold commas, quotes and line breaks.
-    static func records(_ text: String) -> [[String]] {
+    static func records(_ text: String) throws -> [[String]] {
         var records: [[String]] = []
+        try scan(text, limits: .standard) { records.append($0) }
+        return records
+    }
+
+    /// Scan UTF-8 delimiters without retaining a second copy of every row.
+    /// Quoted Unicode, CRLF, commas and escaped quotes preserve their contents.
+    private static func scan(_ text: String, limits: Limits, recordFound: ([String]) throws -> Void) throws {
+        try Task.checkCancellation()
+        guard limits.maximumBytes >= 0, limits.maximumRows > 0,
+              limits.maximumFieldBytes > 0, limits.maximumColumns > 0,
+              text.utf8.count <= limits.maximumBytes else { throw Failure.capacity }
         var record: [String] = []
-        var field = ""
+        var field: [UInt8] = []
         var quoted = false
-        var characters = (text.first == "\u{FEFF}" ? String(text.dropFirst()) : text).makeIterator()
-        var pending: Character?
-        func endRecord() {
-            record.append(field)
-            field = ""
-            if !(record.count == 1 && record[0].isEmpty) { records.append(record) }
-            record = []
+        var bytes = text.utf8.makeIterator(), pending: UInt8?
+        var processed = 0, rowCount = 0
+        if text.hasPrefix("\u{FEFF}") { for _ in 0..<3 { _ = bytes.next() } }
+        func endField() throws {
+            guard record.count < limits.maximumColumns else { throw Failure.capacity }
+            record.append(String(decoding: field, as: UTF8.self))
+            field.removeAll(keepingCapacity: true)
         }
-        while let character = pending ?? characters.next() {
+        func endRecord() throws {
+            try Task.checkCancellation()
+            try endField()
+            if !(record.count == 1 && record[0].isEmpty) {
+                // The first record is the header, not an imported row.
+                guard rowCount <= limits.maximumRows else { throw Failure.capacity }
+                rowCount += 1
+                try recordFound(record)
+            }
+            record.removeAll(keepingCapacity: true)
+        }
+        func append(_ byte: UInt8) throws {
+            guard field.count < limits.maximumFieldBytes else { throw Failure.capacity }
+            field.append(byte)
+        }
+        while let byte = pending ?? bytes.next() {
             pending = nil
+            processed += 1
+            if processed % 4096 == 0 { try Task.checkCancellation() }
             if quoted {
-                if character == "\"" {
-                    let next = characters.next()
-                    if next == "\"" { field.append("\"") } else { quoted = false; pending = next }
+                if byte == 34 {
+                    let next = bytes.next()
+                    if next == 34 { try append(34) } else { quoted = false; pending = next }
                 } else {
-                    field.append(character)
+                    try append(byte)
                 }
                 continue
             }
-            switch character {
-            case "\"" where field.isEmpty: quoted = true
-            case ",":
-                record.append(field)
-                field = ""
-            // "\r\n" is one Character in Swift.
-            case "\n", "\r", "\r\n": endRecord()
-            default: field.append(character)
+            switch byte {
+            case 34 where field.isEmpty: quoted = true
+            case 44: try endField()
+            case 10: try endRecord()
+            case 13:
+                try endRecord()
+                let next = bytes.next()
+                if next != 10 { pending = next }
+            default: try append(byte)
             }
         }
-        if !field.isEmpty || !record.isEmpty { endRecord() }
-        return records
+        guard !quoted else { throw Failure.malformed }
+        if !field.isEmpty || !record.isEmpty { try endRecord() }
+        try Task.checkCancellation()
     }
 }

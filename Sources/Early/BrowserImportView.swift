@@ -66,15 +66,13 @@ struct BrowserImportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var source = ""
     @State private var document: BrowserImportDocument?
-    @State private var tree: BrowserImportTree?
-    @State private var selected = Set<String>()
-    @State private var expanded = Set<String>()
+    @State private var previewState = BrowserImportPreviewController()
     @State private var search = ""
     @State private var destinations: [String: BrowserImportDestination] = [:]
     @State private var collectionTargets: [String: Set<String>] = [:]
-    @State private var rows: [BrowserImportTree.Row] = []
     @State private var step = 0
-    @State private var reading: Task<BrowserImportDocument, Error>?
+    @State private var reading: Task<BrowserImportPreparedSource, Error>?
+    @State private var readID = UUID()
     @State private var reviewing = false
     @State private var reviewTask: Task<BrowserImportCandidate, Error>?
     @State private var importing = false
@@ -115,20 +113,22 @@ struct BrowserImportSheet: View {
             }
             Spacer(minLength: 0)
             HStack {
-                if reading != nil || reviewing || importing { ProgressView().controlSize(.small) }
+                if reading != nil || previewState.isPreparing || reviewing || importing { ProgressView().controlSize(.small) }
                 if document != nil && !succeeded && !importing {
                     Button(step == 0 ? "Choose Another Source" : "Back") {
                         message = nil; preview = nil
-                        if step == 0 { document = nil; tree = nil } else { step -= 1 }
+                        if step == 0 {
+                            document = nil; previewState.clear(); search = ""; readID = UUID()
+                        } else { step -= 1 }
                     }.disabled(reviewing)
                 }
                 Spacer()
-                Button(succeeded ? "Done" : "Cancel") { reading?.cancel(); reviewTask?.cancel(); dismiss() }
+                Button(succeeded ? "Done" : "Cancel") { cancelPreparation(); dismiss() }
                     .keyboardShortcut(.cancelAction).disabled(importing)
                 if document != nil, !succeeded {
                     Button(step == 2 ? "Import Selected Items" : step == 1 ? "Review" : "Continue") { advance() }
                         .keyboardShortcut(.defaultAction)
-                        .disabled(importing || reviewing || selectedContentCount == 0)
+                        .disabled(importing || reviewing || previewState.isPreparing || selectedContentCount == 0)
                         .accessibilityIdentifier("browserImport.continue")
                 }
             }
@@ -140,8 +140,9 @@ struct BrowserImportSheet: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Import from Another Browser")
         .accessibilityIdentifier("browserImport.wizard")
-        .onDisappear { reading?.cancel(); reviewTask?.cancel() }
-        .onChange(of: search) { _, _ in updateRows() }
+        .onDisappear { cancelPreparation() }
+        .onChange(of: search) { _, value in previewState.setSearch(value) }
+        .onChange(of: source) { _, _ in cancelPreparation() }
     }
 
     private var sourceView: some View {
@@ -229,31 +230,33 @@ struct BrowserImportSheet: View {
         selected.count
     }
 
+    private var selected: Set<String> { previewState.selected }
+
     private func selection(_ document: BrowserImportDocument) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            if tree?.selectableIDs.isEmpty == true {
+            if previewState.tree?.selectableIDs.isEmpty == true {
                 Text("No supported items were found. Choose another source or export bookmarks as HTML.").font(.callout)
                 ForEach(document.notices, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
             }
             HStack {
                 TextField("Search names or addresses", text: $search).textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("browserImport.search")
-                Button("Select All") { selected = tree?.selectableIDs ?? []; updateRows() }
-                Button("Select None") { selected.removeAll(); updateRows() }
+                Button("Select All") { previewState.selectAll() }
+                Button("Select None") { previewState.selectNone() }
             }
             Text("\(selectedContentCount) items selected. Checking a folder includes its contents; searching does not change selection.")
                 .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("browserImport.selectionCount")
-            List(rows) { row in
+            List(previewState.rows) { row in
                 HStack(spacing: 8) {
                     if row.hasChildren {
                         Button {
-                            if !expanded.insert(row.id).inserted { expanded.remove(row.id) }; updateRows()
-                        } label: { Image(systemName: expanded.contains(row.id) ? "chevron.down" : "chevron.right").font(.caption) }
+                            previewState.toggleExpansion(row.id)
+                        } label: { Image(systemName: previewState.expanded.contains(row.id) ? "chevron.down" : "chevron.right").font(.caption) }
                             .buttonStyle(.plain).frame(width: 14)
-                            .accessibilityLabel("\(expanded.contains(row.id) ? "Collapse" : "Expand") \(row.node.title)")
+                            .accessibilityLabel("\(previewState.expanded.contains(row.id) ? "Collapse" : "Expand") \(row.node.title)")
                     } else { Color.clear.frame(width: 14) }
                     ImportCheckbox(state: row.state, label: row.node.title) {
-                        if let tree { selected = tree.toggling(row.id, selected: selected); updateRows() }
+                        previewState.toggleSelection(row.id)
                     }.frame(width: 18, height: 20)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(row.node.title).lineLimit(1)
@@ -278,6 +281,9 @@ struct BrowserImportSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+        // The review captures these mappings. Keep its preview and the eventual
+        // import on the same choices while that candidate is being prepared.
+        .disabled(reviewing || importing)
     }
 
     private func reviewView(_ document: BrowserImportDocument) -> some View {
@@ -303,7 +309,12 @@ struct BrowserImportSheet: View {
         }.accessibilityIdentifier("browserImport.review")
     }
 
-    private func updateRows() { rows = tree?.rows(selected: selected, expanded: expanded, search: search) ?? [] }
+    private func cancelPreparation() {
+        readID = UUID()
+        reading?.cancel(); reading = nil
+        reviewTask?.cancel(); reviewTask = nil; reviewing = false
+        previewState.clear()
+    }
     private func label(_ kind: BrowserImportNode.Kind) -> String {
         switch kind {
         case .profile: "Profile"; case .space: "Space"; case .category: "Optional"; case .folder: "Folder"
@@ -315,6 +326,8 @@ struct BrowserImportSheet: View {
         let selectedSource = source
         let historyOnly = folder && chromiumHistoryOnly
         let safariFiles = !folder && selectedSource == "Safari"
+        let request = UUID()
+        readID = request
         let panel = NSOpenPanel()
         panel.canChooseDirectories = folder; panel.canChooseFiles = !folder
         panel.allowsMultipleSelection = safariFiles
@@ -330,37 +343,37 @@ struct BrowserImportSheet: View {
         }
         panel.begin { response in
             let urls = panel.urls
-            guard response == .OK, let url = urls.first else { return }
+            guard response == .OK, let url = urls.first, readID == request, source == selectedSource else { return }
             message = nil
             let name = selectedSource == "Other browser" ? url.deletingPathExtension().lastPathComponent : selectedSource
             let task = Task.detached {
                 let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
                 defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
-                if safariFiles { return try BrowserImportFiles.readSafariExports(urls) }
-                if historyOnly { return try BrowserImportFiles.readChromiumHistory(url, source: name) }
-                return try BrowserImportFiles.read(url, source: name)
+                let value: BrowserImportDocument
+                if safariFiles { value = try BrowserImportFiles.readSafariExports(urls) }
+                else if historyOnly { value = try BrowserImportFiles.readChromiumHistory(url, source: name) }
+                else { value = try BrowserImportFiles.read(url, source: name) }
+                return try BrowserImportPreparedSource(value)
             }
             reading = task
             Task {
                 do {
                     let value = try await task.value
                     try Task.checkCancellation()
-                    document = value; tree = BrowserImportTree(value); selected = value.initiallySelected
-                    expanded = Set(value.destinationGroups.map(\.id) + value.collections.map(\.id)); step = 0; search = ""
-                    collectionTargets = value.defaultCollectionTargets
-                    destinations = Dictionary(uniqueKeysWithValues: value.destinationGroups.map { group in
-                        var owner = group
-                        while owner.kind != .profile, let parent = owner.parentID, let next = value.nodes.first(where: { $0.id == parent }) { owner = next }
-                        return (group.id, BrowserImportDestination(profileName: owner.title, spaceName: group.kind == .space ? group.title : "Personal"))
-                    })
-                    updateRows()
-                } catch { if !(error is CancellationError) { message = error.localizedDescription } }
+                    guard readID == request, source == selectedSource else { return }
+                    document = value.tree.document; previewState.install(value); step = 0; search = ""
+                    collectionTargets = value.tree.document.defaultCollectionTargets
+                    destinations = value.destinations
+                } catch {
+                    guard readID == request else { return }
+                    if !(error is CancellationError) { message = error.localizedDescription }
+                }
                 reading = nil
             }
         }
     }
     private func advance() {
-        guard let document else { return }
+        guard let document, !previewState.isPreparing else { return }
         message = nil
         if step == 0 { step = 1; return }
         if step == 1 {
@@ -368,6 +381,7 @@ struct BrowserImportSheet: View {
             reviewing = true
             let selected = selected, destinations = destinations, flatten = flatten, collectionTargets = collectionTargets
             let validationInput = application.browserImportValidation()
+            let request = readID
             let task = Task.detached {
                 try document.candidate(into: current, selecting: selected, destinations: destinations, flattenDeepFolders: flatten,
                     collectionTargets: collectionTargets, using: validationInput)
@@ -375,9 +389,14 @@ struct BrowserImportSheet: View {
             reviewTask = task
             Task {
                 do {
-                    preview = try await task.value
+                    let value = try await task.value
+                    guard readID == request, !task.isCancelled else { return }
+                    preview = value
                     step = 2
-                } catch { message = error.localizedDescription }
+                } catch {
+                    guard readID == request else { return }
+                    if !(error is CancellationError) { message = error.localizedDescription }
+                }
                 reviewing = false; reviewTask = nil
             }
         } else {
