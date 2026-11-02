@@ -302,9 +302,16 @@ struct BrowserWindowView: View {
                     .accessibilityIdentifier("browser.content")
                 VStack {
                     if let error = model.persistence.error {
-                        Text(error).font(.callout).padding(12)
-                            .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
-                            .accessibilityIdentifier("browser.persistenceError")
+                        Group {
+                            if let application = model.application {
+                                SessionSavingError(application: application, writer: model.persistence, error: error,
+                                                   identifier: "browser.persistenceError")
+                            } else {
+                                Text(error).font(.callout).accessibilityIdentifier("browser.persistenceError")
+                            }
+                        }
+                        .padding(12)
+                        .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
                     }
                     if let notice = model.notice {
                         HStack {

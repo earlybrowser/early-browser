@@ -8,7 +8,8 @@ import Observation
 /// Encoding and SQLite I/O take place on SessionRepository's actor.
 @MainActor @Observable
 final class SessionAutosaver {
-    private let repository: SessionRepository
+    @ObservationIgnored private let write: @Sendable (BrowserWorkspace, UInt64) async throws -> Void
+    @ObservationIgnored private let delay: Duration
     private let disabledReason: String?
     private var pending: BrowserWorkspace?
     private var writer: Task<Void, Never>?
@@ -18,8 +19,10 @@ final class SessionAutosaver {
     private(set) var lastSavedAt: Date?
     var isAvailable: Bool { disabledReason == nil }
 
-    init(repository: SessionRepository, disabledReason: String?) {
-        self.repository = repository
+    init(repository: SessionRepository, disabledReason: String?, delay: Duration = .milliseconds(150),
+         write: (@Sendable (BrowserWorkspace, UInt64) async throws -> Void)? = nil) {
+        self.write = write ?? { try await repository.saveWorkspace($0, revision: $1) }
+        self.delay = delay
         self.disabledReason = disabledReason
         error = disabledReason
     }
@@ -30,17 +33,24 @@ final class SessionAutosaver {
         guard writer == nil else { return }
         isSaving = true
         writer = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(150))
+            try? await Task.sleep(for: self?.delay ?? .zero)
             guard let self else { return }
+            var latestError = self.error
             while let snapshot = self.pending {
                 self.pending = nil
                 self.revision += 1
                 do {
-                    try await self.repository.saveWorkspace(snapshot, revision: self.revision)
-                    self.error = nil
+                    try await self.write(snapshot, self.revision)
+                    latestError = nil
                     self.lastSavedAt = Date()
-                } catch { self.error = error.localizedDescription }
+                } catch {
+                    latestError = error.localizedDescription
+                    self.error = latestError
+                }
             }
+            // An older successful write must not hide the error while a newer
+            // snapshot is still being saved or about to fail.
+            self.error = latestError
             self.isSaving = false
             self.writer = nil
         }

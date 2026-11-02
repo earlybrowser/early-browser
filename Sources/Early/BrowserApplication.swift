@@ -27,6 +27,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     private(set) var persistence: SessionAutosaver?
     private(set) var storageURL: URL?
     private(set) var profileOperationInProgress = false
+    private(set) var isRetryingSessionSave = false
     var profileError: String?
     var settingsSection: BrowserSettingsSection = .appearance
     var browserImportPresented = false
@@ -1083,6 +1084,24 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         captureWorkspace()
         if let workspace { persistence?.enqueue(workspace) }
         updatePullRequestFeeds()
+    }
+
+    var canRetrySessionSave: Bool {
+        workspace != nil && persistence?.isAvailable == true && !profileOperationInProgress
+            && !applyingWorkspace && !isTerminating
+    }
+
+    /// Retry captures every currently open window, rather than re-enqueuing
+    /// the snapshot that originally failed. New edits join the same writer.
+    @discardableResult
+    func retrySessionSave() async -> Bool {
+        guard canRetrySessionSave, let persistence else { return false }
+        if isRetryingSessionSave { return await persistence.flush() }
+        isRetryingSessionSave = true
+        defer { isRetryingSessionSave = false }
+        captureWorkspace()
+        if let workspace { persistence.enqueue(workspace) }
+        return await persistence.flush()
     }
 
     /// Every tab, pin and Favorite address in the profile's open windows.

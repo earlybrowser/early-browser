@@ -749,6 +749,27 @@ final class EarlyUITests: XCTestCase {
         return String(row.identifier.dropFirst("profile.".count))
     }
 
+    func testSessionsSettingsKeepsAutomaticSavingWithoutTheRoutineStatusCard() {
+        let app = launchFreshApp()
+        app.typeKey(.escape, modifierFlags: [])
+        openSettings(app, section: "sessions")
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "settings.restoreSession").firstMatch.exists)
+        XCTAssertTrue(app.buttons["settings.exportState"].isEnabled)
+        XCTAssertTrue(app.buttons["settings.importState"].isEnabled)
+        XCTAssertTrue(app.buttons["settings.browserImport"].isEnabled)
+        XCTAssertFalse(app.staticTexts["Local session"].exists)
+        XCTAssertFalse(app.buttons["settings.saveNow"].exists)
+        XCTAssertFalse(app.staticTexts["settings.saveStatus"].exists)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "settings.sessionSaveError").firstMatch.exists)
+        app.typeKey("w", modifierFlags: .command)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.textFields["commandBar.query"].waitForExistence(timeout: 10))
+        openSettings(app, section: "sessions")
+        XCTAssertTrue(app.buttons["settings.exportState"].isEnabled)
+        XCTAssertFalse(app.buttons["settings.saveNow"].exists)
+    }
+
     func testSettingsPersistWithoutReplacingTheLiveWebsite() throws {
         // Native macOS switches expose NSNumber values on some runner versions
         // and strings on others. Both describe the same checked state.
