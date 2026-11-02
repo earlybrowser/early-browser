@@ -61,6 +61,9 @@ public actor HistoryStore {
     private(set) var checkpointRetryTask: Task<Void, Never>?
     private var checkpointGeneration: UInt64 = 0
     private var nextCheckpointAttempt = ContinuousClock.now
+    /// Repeated import commands prepared for the latest batch, independent of
+    /// its visit count. Internal diagnostics keep bulk-work regressions visible.
+    private(set) var importBatchStatementCount = 0
 
     public init(fileURL: URL, retention: TimeInterval = 365 * 24 * 60 * 60) {
         self.fileURL = fileURL
@@ -223,38 +226,45 @@ public actor HistoryStore {
     /// A bulk transaction adds only real known visits. Imported source identities
     /// are unique across batches; repeating an export does not inflate history.
     public func importVisits(_ records: [BrowserImportNode], batchID: UUID, now: Date = Date()) throws -> Int {
+        try Task.checkCancellation()
         guard records.count <= BrowserImportDocument.maximumVisits else { throw BrowserImportProblem.capacity }
         let db = try open()
-        // Reuse an indexed lookup; never load an unbounded prior import history
-        // into memory just to check this bounded batch.
-        var lookup: OpaquePointer?
-        try Self.check(sqlite3_prepare_v2(db, "SELECT 1 FROM browser_import_visits WHERE source_key=?1", -1, &lookup, nil), db)
-        defer { sqlite3_finalize(lookup) }
+        importBatchStatementCount = 0
+        func prepare(_ sql: String) throws -> ImportStatement {
+            let statement = try ImportStatement(db: db, sql: sql)
+            importBatchStatementCount += 1
+            return statement
+        }
+        // The indexed dedup lookup and all four writes are compiled once per
+        // batch. Each use clears its bindings; an error finalizes the commands
+        // as the enclosing transaction rolls back, keeping the next import clean.
+        let lookup = try prepare("SELECT 1 FROM browser_import_visits WHERE source_key=?1")
+        let page = try prepare("INSERT OR IGNORE INTO pages(url,title,last_visit) VALUES(?1,?2,?3)")
+        let visit = try prepare("INSERT INTO visits(page_id,visited_at) SELECT id,?2 FROM pages WHERE url=?1")
+        let source = try prepare("INSERT INTO browser_import_visits(visit_id,batch_id,source_key) VALUES(?1,?2,?3)")
+        let touched = try prepare("INSERT OR IGNORE INTO touched SELECT id FROM pages WHERE url=?1")
+        let oldest = now.addingTimeInterval(-retention), latest = now.addingTimeInterval(300)
+        let batch = batchID.uuidString
         var seen = Set<String>(), count = 0
         try Self.transaction(db) {
             for item in records {
                 try Task.checkCancellation()
                 guard let url = item.url, BrowserImportDocument.webURL(url.absoluteString) != nil,
                       let date = item.visitedAt, date.timeIntervalSince1970.isFinite,
-                      date >= now.addingTimeInterval(-retention), date <= now.addingTimeInterval(300) else { continue }
+                      date >= oldest, date <= latest else { continue }
                 let key = BrowserImportDocument.identity(url.absoluteString + "|" + String(date.timeIntervalSince1970))
                 guard seen.insert(key).inserted else { continue }
-                try Self.bind(lookup!, [.text(key)], db)
-                let found = sqlite3_step(lookup)
-                try Self.check(sqlite3_reset(lookup), db)
-                if found == SQLITE_ROW { continue }
-                guard found == SQLITE_DONE else { throw Self.failure(db) }
-                try Self.run(db, "INSERT OR IGNORE INTO pages(url,title,last_visit) VALUES(?1,?2,?3)",
-                             [.text(url.absoluteString), .text(Self.clean(item.title)), .real(date.timeIntervalSince1970)])
-                try Self.run(db, "INSERT INTO visits(page_id,visited_at) SELECT id,?2 FROM pages WHERE url=?1",
-                             [.text(url.absoluteString), .real(date.timeIntervalSince1970)])
+                if try lookup.step([.text(key)], expecting: SQLITE_ROW) { continue }
+                try page.run([.text(url.absoluteString), .text(Self.clean(item.title)), .real(date.timeIntervalSince1970)])
+                try visit.run([.text(url.absoluteString), .real(date.timeIntervalSince1970)])
                 let id = sqlite3_last_insert_rowid(db)
-                try Self.run(db, "INSERT INTO browser_import_visits(visit_id,batch_id,source_key) VALUES(?1,?2,?3)",
-                             [.integer(id), .text(batchID.uuidString), .text(key)])
-                try Self.run(db, "INSERT OR IGNORE INTO touched SELECT id FROM pages WHERE url=?1", [.text(url.absoluteString)])
+                try source.run([.integer(id), .text(batch), .text(key)])
+                try touched.run([.text(url.absoluteString)])
                 count += 1
             }
+            try Task.checkCancellation()
             try Self.recountTouched(db)
+            try Task.checkCancellation()
         }
         return count
     }
@@ -366,6 +376,49 @@ public actor HistoryStore {
         func text(_ column: Int32) -> String { sqlite3_column_text(statement, column).map { String(cString: $0) } ?? "" }
         func real(_ column: Int32) -> Double { sqlite3_column_double(statement, column) }
         func integer(_ column: Int32) -> Int64 { sqlite3_column_int64(statement, column) }
+    }
+
+    /// Short-lived actor-local commands. Their lifetime ends with this batch;
+    /// no statement survives closing/removing the history connection.
+    private final class ImportStatement {
+        private let db: OpaquePointer
+        private let statement: OpaquePointer
+
+        init(db: OpaquePointer, sql: String) throws {
+            var prepared: OpaquePointer?
+            let status = sqlite3_prepare_v2(db, sql, -1, &prepared, nil)
+            guard status == SQLITE_OK, let prepared else {
+                sqlite3_finalize(prepared)
+                throw HistoryStore.failure(db)
+            }
+            self.db = db
+            statement = prepared
+        }
+
+        deinit { sqlite3_finalize(statement) }
+
+        func run(_ values: [Value]) throws {
+            _ = try step(values, expecting: SQLITE_DONE)
+        }
+
+        /// A lookup can finish without a row. Both outcomes fully reset the
+        /// command, including the SQLITE_ROW case which has not reached DONE.
+        func step(_ values: [Value], expecting expected: Int32) throws -> Bool {
+            do {
+                try HistoryStore.bind(statement, values, db)
+                let status = sqlite3_step(statement)
+                guard status == expected || status == SQLITE_DONE else { throw HistoryStore.failure(db) }
+                try HistoryStore.check(sqlite3_reset(statement), db)
+                try HistoryStore.check(sqlite3_clear_bindings(statement), db)
+                return status == expected
+            } catch {
+                // Preserve the original error while still releasing a cursor
+                // or partially bound value before rolling back the batch.
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                throw error
+            }
+        }
     }
 
     private func open() throws -> OpaquePointer {
