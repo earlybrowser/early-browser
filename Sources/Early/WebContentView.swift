@@ -142,8 +142,19 @@ struct TestWindowState: NSViewRepresentable {
 /// Sidebar hosting requires verified compatibility hooks; without them, the
 /// window keeps AppKit's standard titlebar buttons.
 struct WindowControls: NSViewRepresentable {
-    func makeNSView(context: Context) -> ControlsHost { ControlsHost(frame: .zero) }
-    func updateNSView(_ view: ControlsHost, context: Context) { view.synchronize() }
+    var isVisible = true
+
+    func makeNSView(context: Context) -> ControlsHost {
+        let view = ControlsHost(frame: .zero)
+        // Set before attachment, so even the first native layout has the saved
+        // visibility while the window is waiting for its session to load.
+        view.controlsVisible = isVisible
+        return view
+    }
+    func updateNSView(_ view: ControlsHost, context: Context) {
+        view.controlsVisible = isVisible
+        view.synchronize()
+    }
     static func dismantleNSView(_ view: ControlsHost, coordinator: ()) { view.detach() }
 
     /// Hosting AppKit's titlebar buttons in the sidebar depends on undocumented
@@ -293,6 +304,7 @@ struct WindowControls: NSViewRepresentable {
     }
 
     final class ControlsHost: NSView {
+        var controlsVisible = true
         // Weak on both sides: this registry must not keep windows or SwiftUI
         // representables alive. Only viewDidMoveToWindow may claim ownership;
         // updates/notifications from a superseded host cannot steal it back.
@@ -434,7 +446,7 @@ struct WindowControls: NSViewRepresentable {
             guard ownsControls, let window else { setHovered(false); return }
             let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
             let isAppOrWindowActive = window.isKeyWindow || window.isMainWindow || NSApp.isActive
-            setHovered(isAppOrWindowActive && !sheetIsPresenting && window.attachedSheet == nil
+            setHovered(isAppOrWindowActive && controlsVisible && !sheetIsPresenting && window.attachedSheet == nil
                        && !isHiddenOrHasHiddenAncestor
                        && bounds.contains(point) && visibleRect.contains(point))
         }
@@ -558,7 +570,7 @@ struct WindowControls: NSViewRepresentable {
             nativeContainer.frame = bounds
             nativeContainer.autoresizingMask = [.width, .height]
             nativeContainer.wantsLayer = true
-            let hasSheet = sheetIsPresenting || window.attachedSheet != nil
+            let hidesControls = !controlsVisible || sheetIsPresenting || window.attachedSheet != nil
 
             var currentButtons: [NativeControl] = []
             let defaultParent = findNativeTitlebarView()
@@ -583,7 +595,7 @@ struct WindowControls: NSViewRepresentable {
                                                         frame: button.frame, wasHidden: button.isHidden,
                                                         postedFrameChanges: button.postsFrameChangedNotifications))
                 }
-                button.isHidden = hasSheet
+                button.isHidden = hidesControls
                 button.postsFrameChangedNotifications = true
                 NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: button)
                 NotificationCenter.default.addObserver(self, selector: #selector(nativeButtonFrameDidChange),
@@ -607,7 +619,7 @@ struct WindowControls: NSViewRepresentable {
                 appearanceOverlay.wantsLayer = true
                 addSubview(appearanceOverlay, positioned: .above, relativeTo: nativeContainer)
             }
-            appearanceOverlay.isHidden = hasSheet
+            appearanceOverlay.isHidden = hidesControls
             layoutButtons()
             if hosting == .undecided, !nativeControls.isEmpty {
                 guard hostedButtonsIgnoreRepositioning() else { useStandardControls(); return }
@@ -637,17 +649,17 @@ struct WindowControls: NSViewRepresentable {
 
         private func layoutButtons() {
             guard ownsControls else { return }
-            let hasSheet = sheetIsPresenting || window?.attachedSheet != nil
+            let hidesControls = !controlsVisible || sheetIsPresenting || window?.attachedSheet != nil
             ControlsContainer.isPositioningButtons = true
             defer { ControlsContainer.isPositioningButtons = false }
             for control in nativeControls where control.button.superview === nativeContainer {
                 let button = control.button
                 let index: CGFloat = control.kind == .closeButton ? 0 : (control.kind == .miniaturizeButton ? 1 : 2)
-                button.isHidden = hasSheet
+                button.isHidden = hidesControls
                 button.setFrameOrigin(NSPoint(x: index * 22,
                     y: (bounds.height - button.frame.height) / 2))
             }
-            appearanceOverlay.isHidden = hasSheet
+            appearanceOverlay.isHidden = hidesControls
             appearanceOverlay.buttonFrames = nativeControls
                 .filter { $0.button.superview === nativeContainer }
                 .map { (kind: $0.kind, frame: $0.button.frame) }

@@ -208,6 +208,38 @@ struct PullRequestsApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test func liveFolderOnlyReservesSpaceForVisibleStatusMessages() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let model = try #require(fixture.application.model)
+        let feed = try #require(model.pullRequests)
+        let folder = try #require(model.addGitHubLiveFolder())
+        let statusID = "live-status-\(folder)"
+        func rowIDs() -> [String] { BrowserWindowView(model: model).sidebarItems.map(\.id) }
+
+        #expect(rowIDs().contains(statusID), "An empty folder still shows its loading message")
+        try await Self.waitUntil { feed.status == .ready && self.pins(model, in: folder).count == 1 }
+        let readyRows = rowIDs()
+        #expect(!readyRows.contains(statusID), "No invisible status row may add spacing beneath the last pin")
+
+        fixture.answer = [.opened: .offline, .assigned: .found([]), .reviewRequested: .found([])]
+        feed.refresh()
+        try await Self.waitUntil { feed.status == .offline }
+        #expect(pins(model, in: folder).count == 1)
+        #expect(rowIDs().contains(statusID), "Failures remain visible alongside cached pins")
+
+        fixture.answer = Self.found([Self.item])
+        feed.refresh()
+        try await Self.waitUntil { feed.status == .ready }
+        #expect(rowIDs() == readyRows, "Recovery removes the message and its spacing")
+
+        fixture.answer = Self.found([])
+        feed.refresh()
+        try await Self.waitUntil { feed.status == .ready && self.pins(model, in: folder).isEmpty }
+        #expect(rowIDs().contains(statusID), "The empty-folder explanation remains visible")
+        await fixture.cleanup()
+    }
+
     @Test func liveFolderNotesSayWhatsHappening() {
         #expect(LiveFolderStatusRow.message(for: .loading, hasPins: false)?.text == "Reading GitHub…")
         #expect(LiveFolderStatusRow.message(for: .loading, hasPins: true) == nil)

@@ -2,7 +2,9 @@
 
 import AppKit
 @testable import EarlyBrowser
+import EarlyCore
 import ObjectiveC
+import SwiftUI
 import Testing
 
 /// Unshown native windows only: no app launch, visible window or input
@@ -10,6 +12,60 @@ import Testing
 @Suite(.serialized) @MainActor
 struct WindowControlsCompatibilityTests {
     private let kinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+
+    @Test(arguments: [false, true])
+    func loadingControlsMatchRestoredSidebarWithoutFlashing(autoHides: Bool) async throws {
+        _ = NSApplication.shared
+        let suite = "local.early.tests.startup.controls.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(autoHides, forKey: "sidebarAutoHides")
+        let preferences = BrowserPreferences(defaults: defaults)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyStartupControls-\(UUID())")
+        let model = BrowserWindowModel(startup: .returningSession, session: BrowserSession(),
+            repository: SessionRepository(fileURL: directory.appendingPathComponent("session.sqlite")),
+            input: NavigationInput(), isTesting: true, restorationError: nil, defaults: defaults, preferences: preferences)
+        model.onSave = { _ in }
+        let window = makeWindow()
+        window.styleMask.insert(.fullSizeContentView)
+        let hosting = NSHostingView(rootView: AnyView(BrowserWindowLoadingView(preferences: preferences)))
+        window.contentView = hosting
+        defer {
+            hosting.rootView = AnyView(EmptyView())
+            hosting.layoutSubtreeIfNeeded()
+            window.close()
+            model.cancelWindowInteractions()
+            model.cancelCommandBarQueries()
+            model.webViews.discardAll()
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        hosting.layoutSubtreeIfNeeded()
+        let buttons = try kinds.map { try #require(window.standardWindowButton($0)) }
+        let titlebar = try #require(titlebarContainer(of: window))
+        #expect(titlebar.isHidden)
+        #expect(buttons.allSatisfy { $0.isHidden == autoHides })
+        let loadingFrames = buttons.map { $0.convert($0.bounds, to: hosting) }
+
+        hosting.rootView = AnyView(BrowserWindowView(model: model).transaction { $0.disablesAnimations = true })
+        hosting.layoutSubtreeIfNeeded()
+        // Include the one-turn native ownership reconciliation after SwiftUI
+        // replaces the loading host. The window is never brought on screen.
+        try await Task.sleep(for: .milliseconds(50))
+        hosting.layoutSubtreeIfNeeded()
+        #expect(titlebar.isHidden)
+        #expect(WindowControls.ControlsHost.ownsControls(in: window))
+        for (index, button) in buttons.enumerated() {
+            let restoredFrame = button.convert(button.bounds, to: hosting)
+            if autoHides {
+                #expect(restoredFrame.maxX <= 0, "The hidden sidebar must not expose its controls at startup")
+            } else {
+                #expect(!button.isHidden)
+                #expect(abs(restoredFrame.minX - loadingFrames[index].minX) < 0.5)
+                #expect(abs(restoredFrame.minY - loadingFrames[index].minY) < 0.5)
+            }
+        }
+        #expect(!window.isVisible)
+    }
 
     @Test func verifiesPrivateHookSignaturesBeforeUse() throws {
         let origin = try #require(class_getInstanceMethod(NSView.self, #selector(NSView.setFrameOrigin(_:))))

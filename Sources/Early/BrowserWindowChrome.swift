@@ -5,6 +5,36 @@ import EarlyCore
 import EarlyWeb
 import SwiftUI
 
+/// Shared by the loading window and the sidebar so native controls don't move
+/// when the asynchronously restored session becomes available.
+enum BrowserChromeLayout {
+    static let windowPadding: CGFloat = 6
+    static let sidebarHorizontalPadding: CGFloat = 2
+    static let navigationLeadingPadding: CGFloat = 7
+    static let windowControlsSize = CGSize(width: 60, height: 32)
+}
+
+struct BrowserWindowLoadingView: View {
+    let preferences: BrowserPreferences
+
+    var body: some View {
+        Color(nsColor: .windowBackgroundColor)
+            .overlay(alignment: .topLeading) {
+                // Keep a native host even while hidden: omitting it would leave
+                // AppKit's standard titlebar buttons visible during startup.
+                WindowControls(isVisible: !preferences.sidebarAutoHides)
+                    .frame(width: BrowserChromeLayout.windowControlsSize.width,
+                           height: BrowserChromeLayout.windowControlsSize.height)
+                    .padding(.leading, BrowserChromeLayout.windowPadding
+                             + BrowserChromeLayout.sidebarHorizontalPadding + BrowserChromeLayout.navigationLeadingPadding)
+                    .padding(.top, BrowserChromeLayout.windowPadding)
+                    .allowsHitTesting(!preferences.sidebarAutoHides)
+                    .accessibilityHidden(preferences.sidebarAutoHides)
+            }
+            .ignoresSafeArea(.container, edges: .top)
+    }
+}
+
 /// The window's top controls: New Tab, Back, Forward, Reload and the address bar.
 extension BrowserWindowView {
     var newTabButton: some View {
@@ -31,7 +61,8 @@ extension BrowserWindowView {
     var navigationControls: some View {
         let preservingAppearance = model.application?.profileOperationInProgress == true
         return HStack(spacing: 4) {
-            WindowControls().frame(width: 60, height: 32)
+            WindowControls().frame(width: BrowserChromeLayout.windowControlsSize.width,
+                                   height: BrowserChromeLayout.windowControlsSize.height)
             Button {
                 model.perform(.toggleSidebar)
                 sidebarHovered = false
@@ -71,7 +102,7 @@ extension BrowserWindowView {
         .background(WindowDragRegion())
         // Match the traffic lights' top inset: 6 pt of window padding plus
         // 9 pt from centering the native 14 pt buttons in this 32 pt row.
-        .padding(.leading, 7)
+        .padding(.leading, BrowserChromeLayout.navigationLeadingPadding)
     }
 
     func historyEntries(forward: Bool) -> [WebViewManager.HistoryListEntry] {
