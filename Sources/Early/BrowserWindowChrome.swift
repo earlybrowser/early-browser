@@ -38,6 +38,7 @@ extension BrowserWindowView {
             } label: {
                 Image(systemName: "sidebar.left").frame(width: 32, height: 32)
             }
+            .buttonStyle(SpaceControlStyle(cornerRadius: 8))
             .browserKeyboardFocus(cornerRadius: 8)
             .accessibilityLabel(sidebarAutoHides ? "Keep sidebar visible" : "Auto-hide sidebar")
             .accessibilityValue(sidebarAutoHides ? "Auto-hide enabled" : "Always visible")

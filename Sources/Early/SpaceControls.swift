@@ -305,11 +305,31 @@ struct SpaceFooter: View {
     private func signalReorder() { BrowserHaptics.alignment(enabled: model.preferences.haptics) }
 }
 
-/// Swipes briefly lock controls while settling. Keep their colors unchanged
-/// during that lock instead of PlainButtonStyle's dim/restore flash.
+/// Compact sidebar controls share the navigation buttons' neutral hover fill.
+/// Swipes briefly lock footer controls while settling; their artwork keeps its
+/// colors instead of PlainButtonStyle's dim/restore flash.
 struct SpaceControlStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 6
+
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.opacity(configuration.isPressed ? 0.8 : 1)
+        Appearance(configuration: configuration, cornerRadius: cornerRadius)
+    }
+
+    private struct Appearance: View {
+        let configuration: ButtonStyleConfiguration
+        let cornerRadius: CGFloat
+        @State private var hovered = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        var body: some View {
+            configuration.label
+                .opacity(configuration.isPressed ? 0.8 : 1)
+                .background(Color.primary.opacity(hovered ? (configuration.isPressed ? 0.13 : 0.075) : 0),
+                            in: RoundedRectangle(cornerRadius: cornerRadius))
+                .onHover { hovered = $0 }
+                .onDisappear { hovered = false }
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: hovered)
+        }
     }
 }
 
