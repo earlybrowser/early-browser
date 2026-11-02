@@ -42,11 +42,15 @@ final class EarlyUITests: XCTestCase {
     private func waitForBrowserImportSelection(_ count: Int, in app: XCUIApplication) {
         let selected = app.staticTexts["browserImport.selectionCount"]
         let expected = "\(count) items selected."
-        let ready = NSPredicate { _, _ in
-            guard selected.exists, selected.label.hasPrefix(expected) else { return false }
-            return app.buttons["browserImport.continue"].isEnabled == (count > 0)
-        }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 5), .completed,
+        // SwiftUI static text can expose its contents as AXValue on macOS.
+        // Match the same label-or-value contract used for import summaries.
+        let selectionReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == YES AND (label BEGINSWITH %@ OR value BEGINSWITH %@)", expected, expected),
+            object: selected)
+        let continueReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == YES AND enabled == %@", NSNumber(value: count > 0)),
+            object: app.buttons["browserImport.continue"])
+        XCTAssertEqual(XCTWaiter.wait(for: [selectionReady, continueReady], timeout: 5), .completed,
             "The import preview must publish its current selection before continuing")
     }
 
