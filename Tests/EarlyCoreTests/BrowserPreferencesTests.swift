@@ -6,6 +6,18 @@ import Testing
 
 @Suite @MainActor
 struct BrowserPreferencesTests {
+    @Test func fractionalSidebarWidthsAreAlignedOnRestoreAndResize() throws {
+        let suite = "local.early.tests.sidebarWidth.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(237.4296875, forKey: "sidebarWidth")
+        let preferences = BrowserPreferences(defaults: defaults)
+        #expect(preferences.sidebarWidth == 237, "Existing widths are repaired without resetting preferences")
+        preferences.sidebarWidth = 270.5
+        #expect(preferences.sidebarWidth == 271 && defaults.double(forKey: "sidebarWidth") == 271)
+        #expect(BrowserPreferences(defaults: defaults).sidebarWidth == 271)
+    }
+
     @Test func settingsPersistAndMigrateExistingKeysInAnIsolatedDomain() throws {
         let suite = "local.early.tests.preferences.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))

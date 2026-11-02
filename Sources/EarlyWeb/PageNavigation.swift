@@ -238,6 +238,7 @@ extension WebViewManager {
     }
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
+        pages[id]?.resetCaptureGrants()
         pages[id]?.playingFrames.removeAll()
         pages[id]?.mediaFrames.removeAll()
         pages[id]?.isPlayingMedia = false
@@ -344,6 +345,7 @@ extension WebViewManager {
         page.navigationGeneration = UUID()
         page.failure = "The web content process stopped. Reload to reopen this page."
         page.processTerminated = true
+        page.resetCaptureGrants()
         page.isLoading = false
         page.isPlayingMedia = false
         page.playingFrames.removeAll()

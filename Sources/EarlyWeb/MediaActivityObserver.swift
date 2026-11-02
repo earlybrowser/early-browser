@@ -126,7 +126,7 @@ final class MediaActivityObserver: NSObject, WKScriptMessageHandlerWithReply {
         window.addEventListener('pagehide', () => { hidden = true; send(false, true); });
         window.addEventListener('pageshow', () => { hidden = false; last = null; scan(document); update(); });
         // Only the native owner in the isolated world can set tab mute state.
-        globalThis.__earlyMediaControl = {applyState};
+        globalThis.__earlyMediaControl = {applyState, get documentToken() { return hidden ? null : token; }};
         scan(document);
         update();
     })();

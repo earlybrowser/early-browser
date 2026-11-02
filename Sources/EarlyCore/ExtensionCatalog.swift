@@ -98,6 +98,7 @@ public final class ExtensionCatalog {
     /// They still apply until Early quits, and ``retrySaving()`` tries again.
     public private(set) var saveError: String?
     @ObservationIgnored public let fileURL: URL?
+    public private(set) var isRemoved = false
 
     public init(fileURL: URL?) {
         self.fileURL = fileURL
@@ -111,7 +112,7 @@ public final class ExtensionCatalog {
     public func installed(source: ExtensionSource) -> InstalledExtension? { extensions.first { $0.source == source } }
 
     public func add(_ item: InstalledExtension) {
-        guard installed(item.id) == nil, installed(source: item.source) == nil else { return }
+        guard !isRemoved, installed(item.id) == nil, installed(source: item.source) == nil else { return }
         extensions.append(item)
         save()
     }
@@ -136,15 +137,17 @@ public final class ExtensionCatalog {
     }
 
     /// Deleting a profile.
-    public func removeFile() {
+    public func removeFile() throws {
+        isRemoved = true
         extensions.removeAll()
-        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+        try ProfileDataCleanup.removeItem(at: fileURL)
+        saveError = nil
     }
 
     public func retrySaving() { save() }
 
     private func save() {
-        guard let fileURL else { return }
+        guard !isRemoved, let fileURL else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         do {

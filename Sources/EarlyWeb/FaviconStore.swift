@@ -2,6 +2,7 @@
 
 import AppKit
 import CryptoKit
+import EarlyCore
 import ImageIO
 import Observation
 import UniformTypeIdentifiers
@@ -43,7 +44,7 @@ public final class FaviconStore {
     public nonisolated static func removeCache(for profileID: UUID) async throws {
         guard let directory = cacheDirectory(for: profileID) else { return }
         try await Task.detached(priority: .utility) {
-            if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
+            try ProfileDataCleanup.removeItem(at: directory)
         }.value
     }
 

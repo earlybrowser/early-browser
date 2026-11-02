@@ -67,6 +67,48 @@ final class MemoryVaultKey: PasswordVaultKey, @unchecked Sendable {
     func removeLegacy() throws { lock.withLock { old = nil } }
 }
 
+/// Pauses actual key creation or refuses deletion without touching the Keychain.
+private final class CleanupTestKey: PasswordVaultKey, @unchecked Sendable {
+    enum Failure { case current, legacy }
+    let memory = MemoryVaultKey(legacy: Data(repeating: 7, count: 32))
+    let makeGate: DispatchSemaphore?
+    private let lock = NSLock()
+    private var started = false
+    private var removals = 0
+    private var failure: Failure?
+
+    init(failure: Failure? = nil, pauseCreation: Bool = false) {
+        self.failure = failure
+        makeGate = pauseCreation ? DispatchSemaphore(value: 0) : nil
+    }
+
+    var makeStarted: Bool { lock.withLock { started } }
+    var removalCount: Int { lock.withLock { removals } }
+    func allowRemoval() { lock.withLock { failure = nil } }
+    func existing() throws -> Data? { try memory.existing() }
+    func legacy() throws -> Data? { try memory.legacy() }
+    func make() throws -> Data {
+        lock.withLock { started = true }
+        if let makeGate, makeGate.wait(timeout: .now() + 10) != .success {
+            throw PasswordVault.KeyError(status: errSecInteractionNotAllowed)
+        }
+        return try memory.make()
+    }
+    func remove() throws {
+        try lock.withLock {
+            removals += 1
+            if failure == .current { throw PasswordVault.KeyError(status: errSecAuthFailed) }
+        }
+        try memory.remove()
+    }
+    func removeLegacy() throws {
+        try lock.withLock {
+            if failure == .legacy { throw PasswordVault.KeyError(status: errSecAuthFailed) }
+        }
+        try memory.removeLegacy()
+    }
+}
+
 @Suite @MainActor
 struct PasswordVaultTests {
     private func file() -> URL {
@@ -175,7 +217,7 @@ struct PasswordVaultTests {
         #expect(await fresh.load())
         fresh.save(origin: "https://a.example", username: "a", password: "b")
         await fresh.flush()
-        fresh.removeAll()
+        try await fresh.removeAll()
         #expect(!FileManager.default.fileExists(atPath: url.path))
         // The key goes in the background.
         for _ in 0..<200 where key.key != nil { try await Task.sleep(for: .milliseconds(20)) }
@@ -251,7 +293,7 @@ struct PasswordVaultTests {
         #expect(await vault.load())
         slow.delay = 0.3
         vault.save(origin: "https://example.com", username: "ada", password: "deleted")
-        vault.removeAll()
+        try await vault.removeAll()
         try await Task.sleep(for: .milliseconds(600))
         #expect(await vault.flush())
         #expect(!FileManager.default.fileExists(atPath: url.path), "The save can't bring the file back")
@@ -269,7 +311,7 @@ struct PasswordVaultTests {
         let opening = PasswordVault(fileURL: url, key: key)
         let load = Task { await opening.load() }
         try await Task.sleep(for: .milliseconds(50))
-        opening.removeAll()
+        try await opening.removeAll()
         #expect(await load.value == false)
         #expect(opening.logins.isEmpty, "Nothing is restored")
         #expect(!FileManager.default.fileExists(atPath: url.path))
@@ -285,11 +327,82 @@ struct PasswordVaultTests {
             #expect(await vault.load())
             for index in 0..<2_000 { vault.save(origin: "https://site\(index).example", username: "ada", password: "pw\(index)") }
             for _ in 0..<yields { await Task.yield() }
-            vault.removeAll()
+            try await vault.removeAll()
             #expect(await vault.flush())
             try await Task.sleep(for: .milliseconds(20))
             #expect(!FileManager.default.fileExists(atPath: url.path), "No file after \(yields) yields")
         }
+    }
+
+    @Test func deletionWaitsForKeyCreationBeforeRemovingIt() async throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let key = CleanupTestKey(pauseCreation: true)
+        defer { key.makeGate?.signal() }
+        let vault = PasswordVault(fileURL: url, key: key)
+        #expect(await vault.load())
+        vault.save(origin: "https://example.com", username: "ada", password: "pending")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !key.makeStarted {
+            try #require(ContinuousClock.now < deadline, "The save reached key creation")
+            await Task.yield()
+        }
+        var finished = false
+        let deletion = Task { try await vault.removeAll(); finished = true }
+        while vault.isReady {
+            try #require(ContinuousClock.now < deadline, "Deletion started")
+            await Task.yield()
+        }
+        #expect(!finished && key.removalCount == 0, "Deletion must drain the in-flight key creation")
+        key.makeGate?.signal()
+        try await deletion.value
+        #expect(finished && key.removalCount == 1)
+        #expect(key.memory.key == nil && key.memory.legacyKey == nil)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(await vault.flush())
+    }
+
+    @Test(arguments: [false, true])
+    func keyRemovalFailuresCanBeRetriedAfterTheVaultFileIsGone(legacy: Bool) async throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let key = CleanupTestKey(failure: legacy ? .legacy : .current)
+        let vault = PasswordVault(fileURL: url, key: key)
+        #expect(await vault.load())
+        vault.save(origin: "https://example.com", username: "ada", password: "remove")
+        #expect(await vault.flush())
+        await #expect(throws: PasswordVault.KeyError.self) { try await vault.removeAll() }
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(vault.saveError != nil && !vault.isReady)
+        #expect(await vault.flush() == false)
+        #expect(key.memory.legacyKey != nil)
+        if !legacy { #expect(key.memory.key != nil) }
+        key.allowRemoval()
+        try await vault.removeAll()
+        #expect(await vault.flush())
+        #expect(vault.saveError == nil && key.memory.key == nil && key.memory.legacyKey == nil)
+    }
+
+    @Test func removingOneVaultKeepsTheSharedKeyAndOtherProfilesPasswords() async throws {
+        let url = file(), survivorURL = url.deletingLastPathComponent().appending(path: "survivor.vault")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let keyFile = url.deletingLastPathComponent().appending(path: "Key")
+        let survivorKey = FileVaultKey(file: keyFile, profile: UUID())
+        let deleted = PasswordVault(fileURL: url, key: FileVaultKey(file: keyFile, profile: UUID()))
+        let survivor = PasswordVault(fileURL: survivorURL, key: survivorKey)
+        #expect(await deleted.load())
+        #expect(await survivor.load())
+        deleted.save(origin: "https://example.com", username: "delete", password: "one")
+        #expect(await deleted.flush())
+        survivor.save(origin: "https://example.com", username: "keep", password: "two")
+        #expect(await survivor.flush())
+        let sharedKey = try Data(contentsOf: keyFile), savedVault = try Data(contentsOf: survivorURL)
+        try await deleted.removeAll()
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(try Data(contentsOf: keyFile) == sharedKey && Data(contentsOf: survivorURL) == savedVault)
+        let reopened = PasswordVault(fileURL: survivorURL, key: survivorKey)
+        #expect(await reopened.load())
+        #expect(reopened.logins.map(\.password) == ["two"])
     }
 
     @Test func failedSavesAreReportedAndCanBeTriedAgain() async throws {

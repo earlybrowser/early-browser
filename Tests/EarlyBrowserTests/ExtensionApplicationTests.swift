@@ -258,6 +258,11 @@ struct ExtensionApplicationTests {
         #expect(!FileManager.default.fileExists(atPath: catalog.path) && !FileManager.default.fileExists(atPath: files.path))
         #expect(app.extensionsProfileID == nil && app.runningExtensionHosts(of: workID).isEmpty)
         #expect(host.contexts.isEmpty)
+        await #expect(throws: CancellationError.self) { try await host.add(files: folder) }
+        await host.loadEnabled()
+        #expect(host.contexts.isEmpty && host.catalog.extensions.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: catalog.path) && !FileManager.default.fileExists(atPath: files.path),
+                "An old extension picker cannot recreate a deleted profile's files")
         await fixture.cleanup()
     }
 

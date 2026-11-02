@@ -75,6 +75,93 @@ struct SiteSecurityTests {
         #expect(WebViewManager.permissionPhrase([.location]) == "your location")
     }
 
+    @Test func embeddedCaptureTracksItsDocumentAndStopsOnlyTheBlockedDevice() async throws {
+        let fixture = PageToolFixture(pages: [
+            "one": "<iframe src='early-tools://fixture/child'></iframe>", "child": "<title>Embedded call</title>",
+            "two": "<title>Next document</title>"
+        ])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("one"), page = try fixture.page(tab)
+        let manager = fixture.manager, store = SitePermissions(fileURL: nil)
+        manager.sitePermissions = store
+        let embedded = "https://call.example.com"
+        store.set(.allow, for: [.camera, .microphone], origin: embedded)
+        try await fixture.waitUntil("embedded document") { page.mediaFrames.values.contains { !$0.isMainFrame } }
+        let frame = try #require(page.mediaFrames.values.first { !$0.isMainFrame })
+        let allowed = await withCheckedContinuation { continuation in
+            manager.decideCapturePermission([.camera, .microphone], origin: embedded, host: "call.example.com", frame: frame,
+                                             in: page.view) { continuation.resume(returning: $0) }
+        }
+        #expect(allowed && page.captureGrants.count == 1)
+        #expect(page.captureGrants.values.first?.origin == embedded)
+        var stops: [SitePermission] = []
+        manager.endCapture = { view, permission in
+            #expect(view === page.view)
+            stops.append(permission)
+        }
+        store.set(.block, for: [.camera], origin: "https://unrelated.example.com")
+        manager.applySitePermissions()
+        #expect(stops.isEmpty)
+        store.set(.block, for: [.camera], origin: embedded)
+        manager.applySitePermissions()
+        #expect(stops == [.camera], "Revoke even before capture's first active-state callback; leave the mic alone")
+
+        // The current document remains live while a new navigation is pending.
+        manager.beginLoading(tab.id)
+        manager.applySitePermissions()
+        #expect(stops == [.camera, .camera])
+        manager.webView(page.view, didCommit: nil)
+        #expect(page.captureGrants.isEmpty)
+        manager.applySitePermissions()
+        #expect(stops == [.camera, .camera], "No grants leak into the next document")
+    }
+
+    @Test func removingACaptureFrameDropsItsGrantAndReinsertionGetsANewIdentity() async throws {
+        let fixture = PageToolFixture(pages: ["one": "<iframe src='early-tools://fixture/child'></iframe>", "child": "<title>Call</title>"])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("one"), page = try fixture.page(tab), manager = fixture.manager
+        let store = SitePermissions(fileURL: nil), origin = "https://call.example.com"
+        manager.sitePermissions = store
+        store.set(.allow, for: [.camera], origin: origin)
+        try await fixture.waitUntil("child") { page.mediaFrames.values.contains { !$0.isMainFrame } }
+        let frame = try #require(page.mediaFrames.values.first { !$0.isMainFrame })
+        let allowed = await withCheckedContinuation { continuation in
+            manager.decideCapturePermission([.camera], origin: origin, host: "call.example.com", frame: frame,
+                                             in: page.view) { continuation.resume(returning: $0) }
+        }
+        #expect(allowed)
+        let token = try #require(page.captureGrants.keys.first)
+        _ = try await fixture.evaluate("document.querySelector('iframe').remove()", in: tab)
+        try await fixture.waitUntil("removed capture document") { page.captureGrants.isEmpty }
+        _ = try await fixture.evaluate("document.body.innerHTML = '<iframe src=\"early-tools://fixture/child\"></iframe>'", in: tab)
+        try await fixture.waitUntil("new child") { page.mediaFrames.values.contains { !$0.isMainFrame } }
+        let newFrame = try #require(page.mediaFrames.values.first { !$0.isMainFrame })
+        let again = await withCheckedContinuation { continuation in
+            manager.decideCapturePermission([.camera], origin: origin, host: "call.example.com", frame: newFrame,
+                                             in: page.view) { continuation.resume(returning: $0) }
+        }
+        #expect(again && page.captureGrants.count == 1 && page.captureGrants[token] == nil)
+        manager.discard(tabID: tab.id)
+        #expect(page.captureGrants.isEmpty, "Even a retained closed page drops its grants")
+    }
+
+    @Test func aCaptureDecisionCannotLandAfterTheDocumentWasReplaced() async throws {
+        let fixture = PageToolFixture(pages: ["one": "<title>Call</title>"])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("one"), page = try fixture.page(tab), manager = fixture.manager
+        let store = SitePermissions(fileURL: nil), origin = "https://call.example.com"
+        manager.sitePermissions = store
+        store.set(.allow, for: [.camera], origin: origin)
+        try await fixture.waitUntil("main frame") { !page.mediaFrames.isEmpty }
+        let frame = try #require(page.mediaFrames.values.first)
+        let allowed = await withCheckedContinuation { continuation in
+            manager.decideCapturePermission([.camera], origin: origin, host: "call.example.com", frame: frame,
+                                             in: page.view) { continuation.resume(returning: $0) }
+            manager.webView(page.view, didCommit: nil)
+        }
+        #expect(!allowed && page.captureGrants.isEmpty)
+    }
+
     @Test func leavingAPlayingTabMovesItsVideoOutAndReturningBringsItBack() async throws {
         let fixture = PageToolFixture(pages: ["video": "<title>Video</title>", "other": "<title>Other</title>"])
         defer { fixture.cleanup() }

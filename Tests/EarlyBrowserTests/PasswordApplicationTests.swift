@@ -2,7 +2,7 @@
 
 import AppKit
 @testable import EarlyBrowser
-import EarlyCore
+@testable import EarlyCore
 import EarlyWeb
 import Testing
 
@@ -11,6 +11,22 @@ import Testing
 /// keeps passwords in memory; the Keychain is never used.
 @Suite(.serialized) @MainActor
 struct PasswordApplicationTests {
+    private final class QuitWriteGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private let gates = [DispatchSemaphore(value: 0), DispatchSemaphore(value: 0)]
+        private var count = 0
+        var writes: Int { lock.withLock { count } }
+        func release(_ index: Int) { gates[index - 1].signal() }
+        func write(_ data: Data, to file: URL) throws {
+            let index = lock.withLock { count += 1; return count }
+            if index <= gates.count, gates[index - 1].wait(timeout: .now() + 10) != .success {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: file, options: .atomic)
+        }
+    }
+
     @MainActor private final class Fixture {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyPasswords-\(UUID())", isDirectory: true)
         let suite = "local.early.tests.passwords.\(UUID())"
@@ -200,6 +216,48 @@ struct PasswordApplicationTests {
 
     /// Quitting checks every profile's passwords reached the disk: Try Again
     /// writes them again, Cancel keeps Early open, Quit Anyway is a choice.
+    @Test func quittingWaitsForChangesAndDraftsAddedDuringTheLastSave() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswordQuit-\(UUID())")
+        let file = directory.appending(path: "profile.vault"), key = TestKey(), gate = QuitWriteGate()
+        let vault = PasswordVault(fileURL: file, key: key)
+        vault.writeFile = gate.write
+        defer {
+            gate.release(1); gate.release(2)
+            Task { _ = await vault.flush(); try? FileManager.default.removeItem(at: directory) }
+        }
+        func waitUntil(_ condition: () -> Bool) async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !condition() {
+                try #require(ContinuousClock.now < deadline)
+                try await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        #expect(await vault.load())
+        vault.save(origin: "https://example.com", username: "first", password: "one")
+        try await waitUntil { gate.writes == 1 }
+        var began = false, finished = false
+        let quitting = Task {
+            began = true
+            let result = await EarlyAppDelegate.passwordsSaved([vault]) { _ in
+                Issue.record("Successful pending writes do not need a quit warning")
+                return .alertSecondButtonReturn
+            }
+            finished = true
+            return result
+        }
+        try await waitUntil { began }
+        vault.save(origin: "https://example.com", username: "second", password: "two")
+        vault.saveDraft(origin: "https://new.example", username: "new", password: "generated")
+        gate.release(1)
+        try await waitUntil { gate.writes == 2 }
+        #expect(!finished, "Quitting cannot finish after only the older snapshot")
+        gate.release(2)
+        #expect(await quitting.value)
+        let reopened = PasswordVault(fileURL: file, key: key)
+        #expect(await reopened.load())
+        #expect(reopened.logins.count == 2 && reopened.drafts.map(\.password) == ["generated"])
+    }
+
     @Test func quittingAsksBeforeLosingPasswordsThatCouldntBeSaved() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswordQuit-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

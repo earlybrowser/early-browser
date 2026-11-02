@@ -99,22 +99,65 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
             try { window.webkit.messageHandlers.earlyPasswords.postMessage(message); } catch (_) {}
         };
         const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-        const tokens = new WeakMap();
+        let tokens = new WeakMap();
         const fields = new Map();
+        const makeCollector = () => typeof FinalizationRegistry === 'function'
+            ? new FinalizationRegistry(token => fields.delete(token)) : null;
+        let collected = makeCollector();
+        let sweep = null, sweepTimer = null, needsSweep = false;
+        const forget = token => {
+            const reference = fields.get(token);
+            if (reference) collected?.unregister(reference);
+            fields.delete(token);
+        };
+        // Bound work per turn, including on long-lived pages replacing forms.
+        // A weak reference releases the node, but its Map entry also needs to go.
+        const pruneFields = budget => {
+            if (!sweep) { sweep = fields.entries(); needsSweep = false; }
+            for (let i = 0; i < budget; i++) {
+                const next = sweep.next();
+                if (next.done) { sweep = null; return; }
+                const [token, reference] = next.value, node = reference.deref();
+                if (!node || !node.isConnected) forget(token);
+            }
+        };
+        const schedulePrune = (restart = true) => {
+            if (restart) needsSweep = true;
+            if (sweepTimer !== null || !fields.size) return;
+            sweepTimer = setTimeout(() => {
+                sweepTimer = null;
+                pruneFields(128);
+                if (sweep || needsSweep) schedulePrune(false);
+            }, 16);
+        };
+        const removals = new MutationObserver(records => {
+            if (records.some(record => record.removedNodes.length)) schedulePrune();
+        });
+        const observeRemovals = () => removals.observe(document, {subtree: true, childList: true});
+        observeRemovals();
         const newToken = () => typeof crypto.randomUUID === 'function' ? crypto.randomUUID()
             : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
         const tokenFor = node => {
+            pruneFields(8);
             let token = tokens.get(node);
             if (!token) {
                 token = newToken();
                 tokens.set(node, token);
-                fields.set(token, new WeakRef(node));
             }
+            // Reinserted fields retain their identity and restore a pruned entry.
+            if (!fields.has(token)) {
+                const reference = new WeakRef(node);
+                fields.set(token, reference);
+                collected?.register(node, token, reference);
+            }
+            schedulePrune();
             return token;
         };
         const fieldFor = token => {
             const node = fields.get(token)?.deref();
-            return node && node.isConnected ? node : null;
+            if (node && node.isConnected) return node;
+            forget(token);
+            return null;
         };
         const isInput = node => node instanceof HTMLInputElement;
         const isPassword = node => isInput(node) && node.type === 'password';
@@ -318,7 +361,17 @@ final class PasswordFormObserver: NSObject, WKScriptMessageHandler {
         const moved = () => { if (menuToken) post({ type: 'move' }); };
         window.addEventListener('scroll', moved, true);
         window.addEventListener('resize', moved);
-        window.addEventListener('pagehide', moved);
+        window.addEventListener('pagehide', () => {
+            moved();
+            menuToken = null; menuSelected = false; watching = null;
+            removals.disconnect();
+            clearTimeout(sweepTimer);
+            sweepTimer = null; sweep = null; needsSweep = false;
+            fields.clear();
+            tokens = new WeakMap();
+            collected = makeCollector();
+        });
+        window.addEventListener('pageshow', observeRemovals);
         window.addEventListener('blur', moved);
 
         window.__earlyPasswords = Object.freeze({

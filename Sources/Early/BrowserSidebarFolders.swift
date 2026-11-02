@@ -60,10 +60,6 @@ extension BrowserWindowView {
             BrowserFocusOutline(focused: focusedSidebarControl == .folder(folder.id)
                 || focusedSidebarControl == .folderToggle(folder.id), cornerRadius: PinnedIsland.cornerRadius)
         }
-        .onHover { hovering in
-            if hovering { hoveredFolder = folder.id }
-            else if hoveredFolder == folder.id { hoveredFolder = nil }
-        }
         .anchorPreference(key: FolderBoundaries.self, value: .bounds) {
             [.header(folder.id): $0]
         }
@@ -100,7 +96,7 @@ extension BrowserWindowView {
                 ForEach(model.coordinator.spaces) { space in
                     Button(space.name) {
                         endDrag()
-                        hoveredFolder = nil
+                        hoveredFolderGroups = []
                         focusedSidebarControl = nil
                         model.perform(.moveFolder(folder.id, toSpace: space.id))
                     }
@@ -120,7 +116,7 @@ extension BrowserWindowView {
             Divider()
             Button("Delete Folder", role: .destructive) {
                 endDrag()
-                hoveredFolder = nil
+                hoveredFolderGroups = []
                 focusedSidebarControl = nil
                 model.perform(.deleteFolder(folder.id))
             }

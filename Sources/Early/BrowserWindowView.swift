@@ -93,9 +93,7 @@ struct BrowserWindowView: View {
     @State var hoveredTab: UUID?
     @State var addressHovered = false
     @State var hoveredMedia: UUID?
-    @State var hoveredFolder: UUID?
     @State var hoveredFolderGroups: Set<UUID> = []
-    @State var lastOpenedFolder: UUID?
     @State var folderBounceEvent: FolderBounceEvent?
     @State var sidebarPointer = SidebarPointer()
     @State var windowPointer = SidebarPointer()
@@ -421,6 +419,10 @@ struct BrowserWindowView: View {
         .background { if model.isPrivate { PrivateWindowAppearance() } }
         .background(BrowserWindowPointerMonitor { point in
             windowPointer.location = point
+            if point == nil {
+                sidebarPointer.location = nil
+                hoveredFolderGroups = []
+            }
             guard sidebarAutoHides else { return }
             let inside = point != nil && (resizeStartWidth != nil
                 || SidebarRevealRegion.contains(point, sidebarWidth: model.sidebarWidth, revealed: sidebarHovered))
@@ -758,12 +760,9 @@ struct BrowserWindowView: View {
             endDrag()
             folderBounceEvent = nil
             hoveredTab = nil
-            hoveredFolder = nil
             hoveredFolderGroups = []
-            lastOpenedFolder = nil
             focusedSidebarControl = nil
         }
-        .onChange(of: model.coordinator.activeTabID) { _, _ in lastOpenedFolder = nil }
         .onChange(of: reduceMotion) { _, enabled in
             if enabled { folderBounceEvent = nil }
         }

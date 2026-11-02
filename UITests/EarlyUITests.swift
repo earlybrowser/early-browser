@@ -3453,17 +3453,26 @@ final class EarlyUITests: XCTestCase {
         let window = app.windows["browser"]
         let viewport = content.frame.intersection(window.frame)
         XCTAssertFalse(viewport.isEmpty)
-        let point = CGPoint(x: viewport.minX + viewport.width * 0.90, y: viewport.minY + viewport.height * 0.85)
+        // Stay near the viewport's top-left, clear of both the centered card
+        // and the fixture's fixed controls at the bottom of a small CI display.
+        let point = CGPoint(x: viewport.minX + 24, y: viewport.minY + 24)
+        XCTAssertTrue(viewport.contains(point))
         XCTAssertTrue(window.frame.contains(point), "The wheel must target the visible browser window")
         let scrollPoint = window.coordinate(withNormalizedOffset: .zero)
             .withOffset(CGVector(dx: point.x - window.frame.minX, dy: point.y - window.frame.minY))
         XCTAssertFalse(card.frame.contains(point), "The wheel must target the website, not the editor")
+        // Establish the page's pointer/tracking state before the wheel gesture,
+        // without clicking or moving keyboard focus away from the query editor.
+        scrollPoint.hover()
+        XCTAssertTrue(query.exists)
+        XCTAssertEqual(query.value as? String, draft)
         scrollPoint.scroll(byDeltaX: 0, deltaY: -400)
         let moved = NSPredicate { _, _ in
             guard position.exists, let text = position.value as? String else { return false }
             return Int(text).map { $0 > 0 } ?? false
         }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: moved, object: nil)], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: moved, object: nil)], timeout: 5), .completed,
+            "Expected webpage scrolling at \(point); viewport=\(viewport), card=\(card.frame), position=\(String(describing: position.value))")
         XCTAssertTrue(query.exists)
         XCTAssertEqual(query.value as? String, draft)
 

@@ -93,6 +93,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onManagePasswords: ((String?) -> Void)?
     /// Answers "Allow downloads?" for a host instead of Early's sheet (nil: dismissed); tests use it.
     @ObservationIgnored var askForDownloads: ((String, @escaping @MainActor (Bool?) -> Void) -> Void)?
+    /// Capture fixtures observe the native stop boundary without using devices.
+    @ObservationIgnored var endCapture: (WKWebView, SitePermission) -> Void = { view, permission in
+        switch permission {
+        case .camera: view.setCameraCaptureState(.none, completionHandler: nil)
+        case .microphone: view.setMicrophoneCaptureState(.none, completionHandler: nil)
+        case .location, .downloads: break
+        }
+    }
     /// Answers HTTP sign-in requests instead of Early's sheet; tests use it.
     @ObservationIgnored var askForSignIn: ((SignInRequest, WKWebView, @escaping @MainActor (SignInResponse?) -> Void) -> Void)?
     /// Other schemes whose pages tests treat as websites for passwords.
@@ -684,6 +692,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         automaticPictureInPictureTabs[tabID] = nil
         unregisterHandlers(page.view.configuration.userContentController, for: tabID)
         page.mediaFrames.removeAll()
+        page.resetCaptureGrants()
         page.playingFrames.removeAll()
         page.isPlayingMedia = false
         page.isLoading = false
@@ -777,6 +786,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         if removed {
             page.mediaFrames.removeValue(forKey: token)
             page.playingFrames.remove(token)
+            page.captureGrants.removeValue(forKey: token)
         } else {
             if let frame { page.mediaFrames[token] = frame }
             if playing { page.playingFrames.insert(token) }
@@ -809,8 +819,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.canGoForward = view.canGoForward
         let fullscreen = view.fullscreenState != .notInFullscreen
         if page.isFullscreen != fullscreen { page.isFullscreen = fullscreen }
+        let captureChanged = page.cameraCapture != view.cameraCaptureState || page.microphoneCapture != view.microphoneCaptureState
         if page.cameraCapture != view.cameraCaptureState { page.cameraCapture = view.cameraCaptureState }
         if page.microphoneCapture != view.microphoneCaptureState { page.microphoneCapture = view.microphoneCaptureState }
+        // A grant may start capturing just after the person blocks its origin.
+        // Keep document grants through idle periods: WebKit may reuse them.
+        if captureChanged && (page.cameraCapture != .none || page.microphoneCapture != .none) {
+            applySitePermissions(in: id)
+        }
         updateSecurity(page)
         if view.isLoading && page.failure == nil { transition(id, .startLoading) }
         else if !view.isLoading { transition(id, .stopLoading) }

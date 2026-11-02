@@ -75,6 +75,10 @@ public final class SitePermissions {
     /// They still apply until Early quits, and ``retrySaving()`` tries again.
     public private(set) var saveError: String?
     @ObservationIgnored public let fileURL: URL?
+    /// The application applies choices to every window sharing this store,
+    /// including when a choice cannot yet be saved to disk.
+    @ObservationIgnored public var onChange: ((SitePermissions) -> Void)?
+    @ObservationIgnored private var isRemoved = false
 
     public init(fileURL: URL?) {
         self.fileURL = fileURL
@@ -119,10 +123,12 @@ public final class SitePermissions {
     }
 
     public func set(_ decision: SitePermissionDecision, for permissions: [SitePermission], origin: String) {
+        guard !isRemoved else { return }
         var choices = decisions[origin] ?? [:]
         for permission in permissions { choices[permission] = decision == .ask ? nil : decision }
         guard decisions[origin] ?? [:] != choices else { return }
         decisions[origin] = choices.isEmpty ? nil : choices
+        onChange?(self)
         save()
     }
 
@@ -130,18 +136,21 @@ public final class SitePermissions {
     public func removeAll() {
         guard !decisions.isEmpty else { return }
         decisions.removeAll()
+        onChange?(self)
         save()
     }
 
-    public func removeFile() {
+    public func removeFile() throws {
+        isRemoved = true
         decisions.removeAll()
-        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+        try ProfileDataCleanup.removeItem(at: fileURL)
+        saveError = nil
     }
 
     public func retrySaving() { save() }
 
     private func save() {
-        guard let fileURL else { return }
+        guard !isRemoved, let fileURL else { return }
         let saved = decisions.mapValues { choices in
             Dictionary(uniqueKeysWithValues: choices.map { ($0.key.rawValue, $0.value.rawValue) })
         }

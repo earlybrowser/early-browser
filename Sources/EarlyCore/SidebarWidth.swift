@@ -9,6 +9,9 @@ public enum SidebarWidth {
 
     public static func clamped(_ value: Double) -> Double {
         guard value.isFinite else { return defaultValue }
-        return min(maximum, max(minimum, value))
+        // WebKit compares swipe-preview pixels with an integer-point viewport.
+        // Fractional sidebar drags can otherwise leave a half-point-wide page
+        // after SwiftUI layout, making valid history previews appear blank.
+        return min(maximum, max(minimum, value)).rounded()
     }
 }

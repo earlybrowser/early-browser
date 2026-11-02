@@ -94,8 +94,15 @@ struct LocalFileBookmarksTests {
         try FileManager.default.removeItem(at: kept)
         #expect(LocalFileBookmarks(fileURL: storeFile).access(kept) == .unavailable, "Deleted")
         #expect(store.access(URL(fileURLWithPath: "/nowhere/never-opened.html")) == .unavailable)
-        store.removeFile()
+        try store.removeFile()
         #expect(!FileManager.default.fileExists(atPath: storeFile.path))
+        store.remember(dropped)
+        #expect(store.access(dropped) == .unavailable)
+        store.release(dropped)
+        store.keepOnly([dropped])
+        try store.removeFile()
+        #expect(store.bookmarks.isEmpty && !FileManager.default.fileExists(atPath: storeFile.path),
+                "A late file-picker callback cannot restore bookmarks after profile deletion")
     }
 
     @Test func aFileThatCantBeOpenedSaysWhyInsteadOfABlankPage() async throws {

@@ -38,9 +38,14 @@ struct SitePermissionsTests {
         #expect(reopened.decisions[maps] == nil, "Ask is the default and is not stored")
         #expect(SitePermissions(fileURL: file).decisions[maps] == nil)
 
-        reopened.removeFile()
+        try reopened.removeFile()
         #expect(reopened.decisions.isEmpty && !FileManager.default.fileExists(atPath: file.path))
         #expect(SitePermissions(fileURL: file).decisions.isEmpty)
+        reopened.set(.allow, for: [.camera], origin: meet)
+        reopened.retrySaving()
+        try reopened.removeFile() // Missing files are already clean.
+        #expect(reopened.decisions.isEmpty && !FileManager.default.fileExists(atPath: file.path),
+                "A late permission callback cannot recreate a deleted profile's file")
     }
 
     @Test func privateStoresKeepChoicesInMemoryAndUnreadableFilesAreIgnored() throws {
@@ -67,12 +72,15 @@ struct SitePermissionsTests {
         }
         let file = folder.appending(path: "profile.json")
         let store = SitePermissions(fileURL: file)
+        var applied: [SitePermissionDecision] = []
+        store.onChange = { applied.append($0.decision(for: "https://meet.example.com", .camera)) }
         store.set(.allow, for: [.camera], origin: "https://meet.example.com")
         #expect(store.saveError == nil)
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
         store.set(.block, for: [.camera], origin: "https://meet.example.com")
         #expect(store.saveError != nil, "The failed write is reported")
         #expect(store.decision(for: "https://meet.example.com", .camera) == .block, "It applies until Early quits")
+        #expect(applied == [.allow, .block], "Live pages receive the block even if persistence fails")
         #expect(SitePermissions(fileURL: file).decision(for: "https://meet.example.com", .camera) == .allow, "Not on disk yet")
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         store.retrySaving()
