@@ -53,6 +53,8 @@ struct StatePortabilityCard: View {
     @Bindable var application: EarlyAppDelegate
     @State private var preview: StateImportPreview?
     @State private var outcome: EarlyAppDelegate.ImportOutcome?
+    @State private var transfer: Task<Void, Never>?
+    @State private var transferID: UUID?
 
     var body: some View {
         SettingsCard {
@@ -63,11 +65,18 @@ struct StatePortabilityCard: View {
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 12) {
                 Button("Export…", action: export)
-                    .disabled(application.workspace == nil)
+                    .disabled(application.workspace == nil || transfer != nil)
                     .accessibilityIdentifier("settings.exportState")
                 Button("Import…", action: chooseFile)
-                    .disabled(!application.canEditProfiles)
+                    .disabled(!application.canEditProfiles || transfer != nil)
                     .accessibilityIdentifier("settings.importState")
+            }
+            if transfer != nil {
+                HStack {
+                    ProgressView("Preparing file…").controlSize(.small)
+                    Spacer()
+                    Button("Cancel") { cancelTransfer() }.accessibilityIdentifier("settings.cancelStateTransfer")
+                }
             }
             if let outcome {
                 Text(outcome.message).font(.caption).foregroundStyle(outcome.succeeded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
@@ -85,6 +94,7 @@ struct StatePortabilityCard: View {
                 if let result { outcome = result }
             }
         }
+        .onDisappear { cancelTransfer() }
     }
 
     static func fileName(on date: Date = Date()) -> String {
@@ -92,7 +102,7 @@ struct StatePortabilityCard: View {
     }
 
     private func export() {
-        guard let data = try? application.stateArchive()?.encoded() else {
+        guard application.workspace != nil else {
             outcome = .init(message: "Early couldn’t prepare an export. Try again in a moment.", succeeded: false)
             return
         }
@@ -102,11 +112,17 @@ struct StatePortabilityCard: View {
         panel.canCreateDirectories = true
         panel.message = "The file lists the websites in your tabs. Passwords and cookies aren’t included."
         present(panel) { url in
-            do {
-                try data.write(to: url, options: .atomic)
-                outcome = .init(message: "Exported to “\(url.lastPathComponent)”.", succeeded: true)
-            } catch {
-                outcome = .init(message: "Couldn’t export. \(error.localizedDescription)", succeeded: false)
+            let request = UUID()
+            transferID = request
+            transfer = Task {
+                let result: EarlyAppDelegate.ImportOutcome
+                do {
+                    try await application.exportState(to: url)
+                    result = .init(message: "Exported to “\(url.lastPathComponent)”.", succeeded: true)
+                } catch is CancellationError { return }
+                catch { result = .init(message: "Couldn’t export. \(error.localizedDescription)", succeeded: false) }
+                guard transferID == request else { return }
+                outcome = result; transfer = nil; transferID = nil
             }
         }
     }
@@ -119,13 +135,26 @@ struct StatePortabilityCard: View {
         panel.prompt = "Review"
         panel.message = "Choose a file exported from Early. You’ll see what it contains before anything changes."
         present(panel) { url in
-            do {
-                preview = StateImportPreview(archive: try application.readStateArchive(at: url), fileName: url.lastPathComponent)
-                outcome = nil
-            } catch {
-                outcome = .init(message: (error as? EarlyStateArchive.Problem ?? .notAnArchive).message, succeeded: false)
+            let request = UUID()
+            transferID = request
+            transfer = Task {
+                do {
+                    let archive = try await application.readStateArchive(at: url)
+                    guard transferID == request else { return }
+                    preview = StateImportPreview(archive: archive, fileName: url.lastPathComponent)
+                    outcome = nil
+                } catch is CancellationError { return }
+                catch {
+                    guard transferID == request else { return }
+                    outcome = .init(message: (error as? EarlyStateArchive.Problem ?? .notAnArchive).message, succeeded: false)
+                }
+                transfer = nil; transferID = nil
             }
         }
+    }
+
+    private func cancelTransfer() {
+        transfer?.cancel(); transfer = nil; transferID = nil
     }
 
     private func present(_ panel: NSSavePanel, chosen: @escaping (URL) -> Void) {
@@ -148,6 +177,9 @@ struct StateImportSheet: View {
     /// Off unless the person turns it on: passwords, privacy and updates.
     @State private var includeSensitive = false
     @State private var importing = false
+    @State private var committing = false
+    @State private var operation: Task<Void, Never>?
+    @State private var operationID: UUID?
 
     var body: some View {
         let summaries = preview.archive.summary(against: application.workspace ?? BrowserWorkspace())
@@ -180,6 +212,7 @@ struct StateImportSheet: View {
             }
             .pickerStyle(.radioGroup)
             .accessibilityIdentifier("import.mode")
+            .disabled(importing)
             Text(mode == .addProfiles
                  ? "Each profile is added beside yours. Nothing you have now changes."
                  : "A profile that’s already here, or has the same name, gets the file’s Spaces, tabs and windows instead of its own, and keeps its passwords and website data. Other profiles are added.")
@@ -187,11 +220,13 @@ struct StateImportSheet: View {
             if let settings = preview.archive.settings {
                 Toggle("Also use the file’s settings, such as the search engine, shortcuts and appearance", isOn: $includeSettings)
                     .accessibilityIdentifier("import.settings")
+                    .disabled(importing)
                 let changes = application.sensitiveImportChanges(from: settings)
                 if includeSettings, !changes.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Toggle("Also change these password, privacy and update settings", isOn: $includeSensitive)
                             .accessibilityIdentifier("import.sensitiveSettings")
+                            .disabled(importing)
                         ForEach(changes, id: \.title) { change in
                             Text("\(change.title): \(change.value ? "On" : "Off")")
                                 .font(.callout).foregroundStyle(.secondary)
@@ -205,14 +240,23 @@ struct StateImportSheet: View {
             HStack {
                 if importing { ProgressView().controlSize(.small) }
                 Spacer()
-                Button("Cancel") { if !importing { onFinish(nil) } }
+                Button("Cancel") {
+                    operationID = nil; operation?.cancel(); operation = nil
+                    onFinish(nil)
+                }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(committing)
+                    .accessibilityIdentifier("import.cancel")
                 Button("Import") {
                     importing = true
-                    Task {
+                    let request = UUID()
+                    operationID = request
+                    operation = Task {
                         let outcome = await application.importState(preview.archive, mode: mode, includeSettings: includeSettings,
-                                                                    includeSensitiveSettings: includeSensitive)
-                        importing = false
+                                                                    includeSensitiveSettings: includeSensitive,
+                                                                    onCommitting: { committing = true })
+                        guard operationID == request else { return }
+                        importing = false; operation = nil; operationID = nil
                         onFinish(outcome)
                     }
                 }
@@ -223,7 +267,7 @@ struct StateImportSheet: View {
         }
         .padding(24)
         .frame(width: 480)
-        .disabled(importing)
+        .onDisappear { operationID = nil; operation?.cancel() }
         .interactiveDismissDisabled(importing)
     }
 

@@ -693,13 +693,21 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return EarlyStateArchive(workspace: workspace, settings: preferences?.portableSettings)
     }
 
-    /// A file to import, checked in full before anything changes.
-    func readStateArchive(at url: URL) throws -> EarlyStateArchive {
-        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > EarlyStateArchive.maximumSize {
-            throw EarlyStateArchive.Problem.tooLarge
-        }
-        guard let data = try? Data(contentsOf: url) else { throw EarlyStateArchive.Problem.notAnArchive }
-        return try EarlyStateArchive.decode(data, using: input)
+    /// A file to import, checked in full without blocking the interface.
+    func readStateArchive(at url: URL) async throws -> EarlyStateArchive {
+        let input = input
+        return try await BackgroundFileIO.run { try EarlyStateArchive.read(from: url, using: input) }
+    }
+
+    func exportState(to url: URL) async throws {
+        captureWorkspace()
+        guard let workspace else { throw EarlyStateArchive.Problem.invalid }
+        let settings = preferences?.portableSettings
+        try await BackgroundFileIO.run { try EarlyStateArchive.write(workspace: workspace, settings: settings, to: url) }
+    }
+
+    @ObservationIgnored var archiveBackupWriter: @Sendable (BrowserWorkspace, PortableSettings?, URL) async throws -> URL = { workspace, settings, directory in
+        try await BackgroundFileIO.run { try EarlyStateArchive.backup(workspace: workspace, settings: settings, in: directory, retaining: 5) }
     }
 
     /// The password, privacy and update settings a file would change here.
@@ -709,7 +717,6 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Copies of what was here before each import, newest kept.
     var backupsDirectory: URL? { storageURL?.deletingLastPathComponent().appending(path: "Backups", directoryHint: .isDirectory) }
-    static let backupLimit = 5
 
     private var browserImportJournal: BrowserImportJournal? {
         storageURL.map { BrowserImportJournal(directory: $0.deletingLastPathComponent().appendingPathComponent("BrowserImports")) }
@@ -884,7 +891,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// The whole result is checked, a backup of what's here is saved, then
     /// every window changes at once. Nothing changes if any step fails.
     func importState(_ archive: EarlyStateArchive, mode: EarlyStateArchive.ImportMode, includeSettings: Bool,
-                     includeSensitiveSettings: Bool = false) async -> ImportOutcome {
+                     includeSensitiveSettings: Bool = false, onCommitting: () -> Void = {}) async -> ImportOutcome {
         guard canEditProfiles, let preferences else {
             return ImportOutcome(message: "Early can’t import right now. Try again in a moment.", succeeded: false)
         }
@@ -893,16 +900,49 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }) else {
             return ImportOutcome(message: "Close any open website dialogs, then import again.", succeeded: false)
         }
-        captureWorkspace()
-        guard let current = workspace else { return ImportOutcome(message: EarlyStateArchive.Problem.invalid.message, succeeded: false) }
-        let result: EarlyStateArchive.ImportResult
-        do { result = try archive.merged(into: current, mode: mode, using: input) }
-        catch { return ImportOutcome(message: (error as? EarlyStateArchive.Problem ?? .invalid).message, succeeded: false) }
-        let backup: URL
-        do { backup = try writeBackup(EarlyStateArchive(workspace: current, settings: preferences.portableSettings)) }
-        catch {
-            return ImportOutcome(message: "Nothing was imported, because a backup of what you have couldn’t be saved. \(error.localizedDescription)",
-                                 succeeded: false)
+        let validation = input
+        var prepared: (EarlyStateArchive.ImportResult, URL)?
+        // Preparation deliberately leaves browsing usable. Rebase if a title,
+        // tab, profile or settings change arrived while the worker was busy.
+        // The finite retry bound avoids holding an import open indefinitely.
+        for _ in 0..<8 {
+            if Task.isCancelled { return .init(message: "Import cancelled. Nothing was changed.", succeeded: false) }
+            guard canEditProfiles else { return .init(message: "Early can’t import right now. Try again in a moment.", succeeded: false) }
+            captureWorkspace()
+            guard let current = workspace else { return .init(message: EarlyStateArchive.Problem.invalid.message, succeeded: false) }
+            let settings = preferences.portableSettings
+            let result: EarlyStateArchive.ImportResult
+            do {
+                result = try await BackgroundFileIO.run {
+                    let result = try archive.merged(into: current, mode: mode, using: validation)
+                    try Task.checkCancellation()
+                    return result
+                }
+            } catch is CancellationError { return .init(message: "Import cancelled. Nothing was changed.", succeeded: false) }
+            catch { return .init(message: (error as? EarlyStateArchive.Problem ?? .invalid).message, succeeded: false) }
+            guard canEditProfiles else { return .init(message: "Early can’t import right now. Try again in a moment.", succeeded: false) }
+            captureWorkspace()
+            guard workspace == current, preferences.portableSettings == settings else { continue }
+            let backup: URL
+            do {
+                guard let directory = backupsDirectory else { throw CocoaError(.fileWriteUnknown) }
+                backup = try await archiveBackupWriter(current, settings, directory)
+            } catch is CancellationError { return .init(message: "Import cancelled. Nothing was changed.", succeeded: false) }
+            catch {
+                return .init(message: "Nothing was imported, because a backup of what you have couldn’t be saved. \(error.localizedDescription)", succeeded: false)
+            }
+            if Task.isCancelled { return .init(message: "Import cancelled. Nothing was changed.", succeeded: false) }
+            guard canEditProfiles else { return .init(message: "Early can’t import right now. Try again in a moment.", succeeded: false) }
+            captureWorkspace()
+            guard workspace == current, preferences.portableSettings == settings else { continue }
+            guard !visibleModels.contains(where: {
+                $0.webViews.pages.values.contains(where: \.hasDialog) || $0.sidebarInteractionInProgress || $0.splitResize != nil
+            }) else { return .init(message: "Close any open website dialogs, then import again.", succeeded: false) }
+            prepared = (result, backup)
+            break
+        }
+        guard let (result, backup) = prepared else {
+            return .init(message: "Your browsing setup kept changing while the import was prepared. Nothing was imported. Try again in a moment.", succeeded: false)
         }
         profileOperationInProgress = true
         defer {
@@ -911,6 +951,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             deliverExternalLinks()
         }
         applyingWorkspace = true
+        onCommitting()
         // Commit the validated replacement before discarding live documents or
         // changing settings. A locked/full/unavailable database leaves the
         // existing workspace and its windows usable, with the backup intact.
@@ -948,24 +989,6 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         return ImportOutcome(message: "Imported \(imported). Tabs load when you choose them, and websites will ask you to sign in again.",
                              succeeded: true, backup: backup)
-    }
-
-    private func writeBackup(_ archive: EarlyStateArchive) throws -> URL {
-        guard let directory = backupsDirectory else { throw CocoaError(.fileWriteUnknown) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        var file = directory.appending(path: "Before Import \(formatter.string(from: archive.exportedAt)).json")
-        if FileManager.default.fileExists(atPath: file.path) {
-            file = directory.appending(path: "Before Import \(formatter.string(from: archive.exportedAt)) \(UUID().uuidString.prefix(4)).json")
-        }
-        try archive.encoded().write(to: file, options: .atomic)
-        let backups = ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.lastPathComponent.hasPrefix("Before Import ") && $0.pathExtension == "json" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for old in backups.dropLast(Self.backupLimit) where old != file { try? FileManager.default.removeItem(at: old) }
-        return file
     }
 
     /// Closes a browser window as if its close button were pressed.

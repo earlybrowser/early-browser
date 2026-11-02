@@ -125,6 +125,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     var identities: [ObjectIdentifier: UUID] = [:]
     var dialogs: [UUID: PendingDialog] = [:]
     var documentPanels: [UUID: PendingPanel] = [:]
+    var documentWrites: [UUID: PendingDocumentWrite] = [:]
+    @ObservationIgnored var documentWriter: @Sendable (Data, URL) async throws -> Void = { data, url in
+        try await BackgroundFileIO.write(data, to: url)
+    }
     private var controllerOwners: [ObjectIdentifier: Set<UUID>] = [:]
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
     @ObservationIgnored var recoveryTasks: [UUID: Task<Void, Never>] = [:]
