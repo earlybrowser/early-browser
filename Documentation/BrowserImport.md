@@ -98,6 +98,12 @@ selections and live WebViews are retained.
 ## Privacy and limits
 
 Passwords retain their separate **Settings → Passwords → Import CSV** flow.
+Password CSV reading, parsing and merging run in the background. That flow accepts
+up to 64 MiB, 100,000 data rows, 1 MiB per field and 128 columns; exceeding a limit
+rejects the file without truncating credentials. UTF-8, BOM-marked UTF-16 and
+Latin-1 exports are supported. Existing passwords win conflicts, including edits
+made during reading. Cancel is available before applying changes; once saving
+starts, Early finishes the write before offering to move the source to the Trash.
 Cookies, signed-in sessions, authentication tokens, browser settings and extensions
 are excluded. New profiles require signing in again. Private profiles are never
 import destinations. The source files are read only while user-selected access is
@@ -109,9 +115,12 @@ held; no permanent source permission/bookmark is kept.
   no traversal paths, symlinks, encrypted ZIPs or unchecked extraction.
 - Up to 80,000 normalized records. History previews at most 50,000 known visits
   within Early's one-year retention period; larger databases show this limit.
-  Future timestamps are excluded. Direct SQLite sources are capped at 1 GiB and
-  copied with the online backup API to a private, temporary coherent snapshot.
-  Busy sources give a close-the-source-browser/export alternative.
+  Future timestamps are excluded. Direct SQLite sources are capped at 1 GiB of
+  logical data, including committed WAL pages, and copied with the online backup
+  API to a private, temporary coherent snapshot. Each snapshot operation allows
+  2 GiB of cumulative copying, 16,384 steps, 30 seconds, and ten busy retries.
+  Changing or busy sources give a quit-the-source-browser/export alternative.
+  Cancellation and failed limits discard the entire temporary snapshot.
 - Result must fit Early's portable archive limits: 32 profiles, 20,000 tab records
   across windows, and a 16 MiB encoded archive.
 - Root folder depth is 0, with eight nested levels beneath it. Deeper imports name
@@ -167,6 +176,8 @@ Debug `build-for-testing` and Release `build` both succeeded. UI tests were
 compiled only; running them on CI remains required before merging.
 
 Fixture provenance is in [the fixture notes](../Tests/EarlyCoreTests/Fixtures/BrowserImport/README.md).
+Resource limits, regression coverage and comparable timing checks are described
+in [the import performance notes](ImportPerformance.md).
 
 Primary references:
 
