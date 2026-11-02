@@ -94,6 +94,9 @@ struct PasswordsSettingsSection: View {
     @State private var notice: PasswordNotice?
     @State private var replacingDraft: DraftReplacement?
     @State private var unlocking = false
+    @State private var importTask: Task<Void, Never>?
+    @State private var importID: UUID?
+    @State private var savingImport = false
 
     private var profileID: UUID? {
         let profiles = application.profiles
@@ -115,12 +118,14 @@ struct PasswordsSettingsSection: View {
             await lock.prompting { await vault.load() }
         }
         .onDisappear {
+            cancelImport()
             lock.lock()
             revealed = []
         }
         .onChange(of: lock.isUnlocked) { _, unlocked in
-            if !unlocked { revealed = []; editor = nil }
+            if !unlocked { revealed = []; editor = nil; cancelImport() }
         }
+        .onChange(of: profileID) { _, _ in cancelImport() }
         .sheet(item: $editor) { request in
             PasswordEditorSheet(request: request) { login in
                 guard let vault else { return nil }
@@ -165,7 +170,11 @@ struct PasswordsSettingsSection: View {
                presenting: notice) { notice in
             if let file = notice.importedFile {
                 Button("Keep File", role: .cancel) {}
-                Button("Move to Trash") { try? FileManager.default.trashItem(at: file, resultingItemURL: nil) }
+                Button("Move to Trash") {
+                    let scoped = file.startAccessingSecurityScopedResource()
+                    defer { if scoped { file.stopAccessingSecurityScopedResource() } }
+                    try? FileManager.default.trashItem(at: file, resultingItemURL: nil)
+                }
             } else if let file = notice.unsavedFile, let vault {
                 Button("Cancel", role: .cancel) {}
                 Button("Try Again") {
@@ -270,12 +279,23 @@ struct PasswordsSettingsSection: View {
                 transferCard("Import Passwords", symbol: "square.and.arrow.down",
                              detail: "Add passwords exported as a CSV file from Chrome, Safari, Firefox, 1Password, or Bitwarden.",
                              button: "Import…", identifier: "passwords.import") { importPasswords(into: vault) }
+                    .disabled(importTask != nil)
                 transferCard("Export Passwords", symbol: "square.and.arrow.up",
                              detail: "Save every password in this profile as a CSV file. Anyone who can open it can read them.",
                              button: "Export…", identifier: "passwords.export") { exportPasswords(from: vault) }
                     .disabled(vault.logins.isEmpty)
             }
             .fixedSize(horizontal: false, vertical: true)
+            if importTask != nil {
+                HStack {
+                    ProgressView(savingImport ? "Saving passwords…" : "Importing passwords…").controlSize(.small)
+                    Spacer()
+                    if !savingImport {
+                        Button("Cancel") { cancelImport() }
+                            .accessibilityIdentifier("passwords.cancelImport")
+                    }
+                }.accessibilityIdentifier("passwords.importProgress")
+            }
             HStack(spacing: 10) {
                 TextField("Search passwords", text: $application.passwordSearch)
                     .textFieldStyle(.roundedBorder)
@@ -475,45 +495,72 @@ struct PasswordsSettingsSection: View {
 
     private func importPasswords(into vault: PasswordVault) {
         lock.touch()
+        let destination = profileID
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.commaSeparatedText, .plainText]
         panel.allowsMultipleSelection = false
         panel.prompt = "Import"
         panel.message = "Choose a passwords file exported from a browser or password manager."
         let completion: (NSApplication.ModalResponse) -> Void = { response in
-            guard response == .OK, let url = panel.url else { return }
-            Task { notice = await Self.importFile(url, into: vault) }
+            guard response == .OK, let url = panel.url, destination == profileID,
+                  lock.isUnlocked, self.vault === vault else { return }
+            cancelImport()
+            let id = UUID()
+            importID = id
+            importTask = Task {
+                let result = await Self.importFile(url, into: vault, onSaving: {
+                    if importID == id { savingImport = true }
+                })
+                guard importID == id else { return }
+                importTask = nil; importID = nil; savingImport = false
+                guard destination == profileID, lock.isUnlocked else { return }
+                notice = result
+            }
         }
         if let window = NSApp.keyWindow { panel.beginSheetModal(for: window, completionHandler: completion) }
         else { completion(panel.runModal()) }
     }
 
+    private func cancelImport() {
+        importTask?.cancel()
+        importTask = nil; importID = nil; savingImport = false
+    }
+
     /// Reported as imported only once the passwords are written to disk; the
     /// file can't be moved to the Trash before then.
-    static func importFile(_ url: URL, into vault: PasswordVault) async -> PasswordNotice {
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
-            return PasswordNotice(title: "The file couldn’t be read", message: "Choose a CSV file of passwords.")
-        }
-        guard let parsed = try? PasswordCSV.parse(text) else {
+    static func importFile(_ url: URL, into vault: PasswordVault, onSaving: () -> Void = {}) async -> PasswordNotice {
+        let summary: PasswordVault.ImportSummary
+        do {
+            summary = try await vault.importCSV(from: url, onSaving: onSaving)
+        } catch PasswordVault.ImportFailure.saving {
+            return unsaved(url, in: vault)
+        } catch PasswordVault.ImportFailure.unavailable {
+            return PasswordNotice(title: "Passwords weren’t imported", message: "This profile’s passwords are no longer available. Choose a profile and try again.")
+        } catch is CancellationError {
+            return PasswordNotice(title: "Import cancelled", message: "No passwords were imported.")
+        } catch PasswordCSV.Failure.unrecognized {
             return PasswordNotice(title: "No passwords found",
                                   message: "This file doesn’t look like passwords exported from a browser or password manager.")
+        } catch let error as PasswordCSV.Failure {
+            return PasswordNotice(title: "Passwords weren’t imported", message: error.localizedDescription)
+        } catch {
+            return PasswordNotice(title: "The file couldn’t be read", message: "Choose a CSV file of passwords.")
         }
-        let summary = vault.importRows(parsed.rows, skipped: parsed.skipped)
         var lines = ["\(summary.added) \(summary.added == 1 ? "password was" : "passwords were") imported."]
         if summary.duplicates > 0 { lines.append("\(summary.duplicates) \(summary.duplicates == 1 ? "was" : "were") already saved.") }
         if summary.conflicts > 0 {
             lines.append("\(summary.conflicts) \(summary.conflicts == 1 ? "differs" : "differ") from a saved password; your saved \(summary.conflicts == 1 ? "one was" : "ones were") kept.")
         }
         if summary.skipped > 0 { lines.append("\(summary.skipped) without a website or password \(summary.skipped == 1 ? "was" : "were") skipped.") }
-        guard await vault.flush() else { return unsaved(url, in: vault) }
         lines.append("The file isn’t encrypted. You can move it to the Trash now.")
         return PasswordNotice(title: "Passwords imported", message: lines.joined(separator: " "), importedFile: url)
     }
 
     /// After Try Again: saved at last, or still not.
     static func importSaved(_ url: URL, in vault: PasswordVault) async -> PasswordNotice {
+        guard vault.isReady else { return PasswordNotice(title: "Passwords weren’t imported", message: "This profile’s passwords are no longer available.") }
         guard await vault.flush() else { return unsaved(url, in: vault) }
+        guard vault.isReady else { return PasswordNotice(title: "Passwords weren’t imported", message: "This profile’s passwords are no longer available.") }
         return PasswordNotice(title: "Passwords imported",
                               message: "They’re saved. The file isn’t encrypted. You can move it to the Trash now.", importedFile: url)
     }
