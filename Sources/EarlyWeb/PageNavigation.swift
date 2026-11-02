@@ -238,6 +238,7 @@ extension WebViewManager {
     }
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
+        sourcePages.navigate(tab: id, to: webView.url)
         pages[id]?.resetCaptureGrants()
         pages[id]?.playingFrames.removeAll()
         pages[id]?.mediaFrames.removeAll()
