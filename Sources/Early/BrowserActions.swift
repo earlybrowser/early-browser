@@ -29,11 +29,7 @@ extension BrowserWindowModel {
     /// rules. A stale/foreign result must not dismiss an editor or change focus.
     func canPerform(_ action: BrowserAction) -> Bool {
         if case .dismissCommandBar = action { return coordinator.commandBar != nil }
-        guard application?.profileOperationInProgress != true,
-              !sidebarInteractionInProgress, splitResize == nil, !spaceSwipeIsSettling,
-              !folderEditorIsPresented, renamingTabID == nil, spaceEditor == nil,
-              spaceDeletionID == nil, !hasVisibleDialog || leavesDialogTab(action), !documentPanelIsPresented,
-              !historyPresented else { return false }
+        guard passesWindowActionGate(leavingDialog: leavesDialogTab(action)) else { return false }
         switch action {
         case .presentCommandBar, .toggleSidebar:
             return true
@@ -373,14 +369,27 @@ extension BrowserWindowModel {
         coordinator.spaces.contains { $0.id == id && $0.profileID == coordinator.profileID }
     }
 
+    /// Shared by normal dispatch and bulk tab-search preparation. No actor
+    /// suspension occurs while building a candidate batch, so window-wide
+    /// availability is evaluated once rather than once for every saved pin.
+    private func passesWindowActionGate(leavingDialog: Bool) -> Bool {
+        application?.profileOperationInProgress != true
+            && !sidebarInteractionInProgress && splitResize == nil && !spaceSwipeIsSettling
+            && !folderEditorIsPresented && renamingTabID == nil && spaceEditor == nil
+            && spaceDeletionID == nil && (leavingDialog || !hasVisibleDialog)
+            && !documentPanelIsPresented && !historyPresented
+    }
+
 
     /// Snapshot searchable records and currently available actions on the main
     /// actor before handing the immutable array to `CommandSearch`.
     func commandSearchCandidates() -> [CommandSearchCandidate] {
         var candidates: [CommandSearchCandidate] = []
         var seenTabs = Set<UUID>()
-        for tab in favorites + pinnedTabs + todayTabs where seenTabs.insert(tab.id).inserted {
-            guard canPerform(.selectTab(tab.id)) else { continue }
+        let tabsAvailable = passesWindowActionGate(leavingDialog: true)
+        for tab in favorites + pinnedTabs + todayTabs where tabsAvailable && seenTabs.insert(tab.id).inserted {
+            guard tab.profileID == coordinator.profileID, tab.isVisible(in: coordinator.activeSpaceID),
+                  tab.isOpen || tab.pinnedURL != nil else { continue }
             let kind: CommandSearchCandidate.Kind = tab.isFavorite ? .favorite : (tab.pinnedURL != nil ? .pinnedTab : .openTab)
             let displayURL = (tab.isOpen ? tab.currentURL : (tab.pinnedURL ?? tab.currentURL)).absoluteString
             var terms = [tab.title, tab.currentURL.absoluteString]

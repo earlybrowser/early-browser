@@ -512,14 +512,7 @@ extension BrowserWindowView {
     }
 
     func folderPath(_ folder: BrowserFolder) -> String {
-        var names = [folder.name]
-        var parent = folder.parentID
-        var seen: Set<UUID> = [folder.id]
-        while let id = parent, seen.insert(id).inserted,
-              let ancestor = model.coordinator.folders.first(where: { $0.id == id }) {
-            names.insert(ancestor.name, at: 0)
-            parent = ancestor.parentID
-        }
-        return names.joined(separator: " / ")
+        let ancestors = model.coordinator.tabStore.folderHierarchy.ancestors(of: folder.id) ?? []
+        return (ancestors.reversed().map(\.name) + [folder.name]).joined(separator: " / ")
     }
 }

@@ -266,7 +266,7 @@ struct BrowserWindowView: View {
     }
 
     func folderHasChildren(_ id: UUID, in spaceID: UUID? = nil) -> Bool {
-        !model.coordinator.tabStore.pinnedItems(in: spaceID ?? model.coordinator.activeSpaceID, parentID: id).isEmpty
+        model.coordinator.tabStore.hasPinnedItems(in: spaceID ?? model.coordinator.activeSpaceID, parentID: id)
     }
 
     func folderPreview(_ folder: BrowserFolder) -> SidebarFolderPreview {

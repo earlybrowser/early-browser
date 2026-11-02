@@ -112,7 +112,7 @@ extension BrowserWindowView {
             var parent = landing.folderID, seen = Set<UUID>()
             while let id = parent, seen.insert(id).inserted {
                 if let frame = frames[id] { destination = frame; break }
-                parent = model.coordinator.folders.first { $0.id == id }?.parentID
+                parent = model.coordinator.tabStore.folder(id: id)?.parentID
             }
         }
         let fallback = areas[landing.section == .favorites ? "favorites" : (landing.section == .pinned ? "pinned" : "regular")]
@@ -295,13 +295,7 @@ extension BrowserWindowView {
     }
 
     func depth(of folder: BrowserFolder) -> Int {
-        var depth = 0, parent = folder.parentID, seen: Set<UUID> = [folder.id]
-        while let id = parent, seen.insert(id).inserted,
-              let ancestor = model.coordinator.folders.first(where: { $0.id == id }) {
-            depth += 1
-            parent = ancestor.parentID
-        }
-        return depth
+        model.coordinator.tabStore.folderHierarchy.depth(of: folder.id) ?? 0
     }
 
     func nestTarget(at point: CGPoint) -> UUID? {
@@ -725,7 +719,7 @@ extension BrowserWindowView {
 
     func folderGroupFrame(_ id: UUID) -> CGRect? {
         guard let header = itemFrame(id),
-              let folder = model.coordinator.folders.first(where: { $0.id == id }) else { return nil }
+              let folder = model.coordinator.tabStore.folder(id: id), folder.spaceID == model.coordinator.activeSpaceID else { return nil }
         let preview = folderPreview(folder)
         // The slot is usable immediately, including the frame before SwiftUI
         // publishes its first measurement after opening a closed folder.
@@ -740,7 +734,7 @@ extension BrowserWindowView {
         var seen: Set<UUID> = []
         while let folder = current, seen.insert(folder).inserted {
             if folder == id { return true }
-            current = model.coordinator.folders.first(where: { $0.id == folder })?.parentID
+            current = model.coordinator.tabStore.folder(id: folder)?.parentID
         }
         return false
     }
