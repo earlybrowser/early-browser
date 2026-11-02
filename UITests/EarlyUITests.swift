@@ -39,6 +39,17 @@ final class EarlyUITests: XCTestCase {
         return source
     }
 
+    private func waitForBrowserImportSelection(_ count: Int, in app: XCUIApplication) {
+        let selected = app.staticTexts["browserImport.selectionCount"]
+        let expected = "\(count) items selected."
+        let ready = NSPredicate { _, _ in
+            guard selected.exists, selected.label.hasPrefix(expected) else { return false }
+            return app.buttons["browserImport.continue"].isEnabled == (count > 0)
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 5), .completed,
+            "The import preview must publish its current selection before continuing")
+    }
+
     private func previewImportFile(_ file: URL, selectingAllFiles: Bool = false, in app: XCUIApplication) {
         let panel = app.windows["open-panel"]
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
@@ -109,11 +120,13 @@ final class EarlyUITests: XCTestCase {
         let search = app.textFields["browserImport.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         app.buttons["Select None"].click()
+        waitForBrowserImportSelection(0, in: app)
         XCTAssertFalse(app.buttons["browserImport.continue"].isEnabled)
         search.click(); search.typeText("One")
         let one = app.checkBoxes["One"]
         XCTAssertTrue(one.waitForExistence(timeout: 5))
         one.click()
+        waitForBrowserImportSelection(1, in: app)
         let value = app.checkBoxes["Research"].value
         let mixedState = (value as? NSNumber)?.intValue ?? (value as? String).flatMap(Int.init)
         XCTAssertEqual(mixedState, 2, "An ancestor reports partial selection")
@@ -152,6 +165,7 @@ final class EarlyUITests: XCTestCase {
         app.buttons["browserImport.chooseFile"].click()
         previewImportFile(directory.appendingPathComponent("Bookmarks.html"), selectingAllFiles: true, in: app)
         XCTAssertTrue(app.buttons["Select All"].waitForExistence(timeout: 5)); app.buttons["Select All"].click()
+        waitForBrowserImportSelection(3, in: app)
         app.buttons["browserImport.continue"].click(); app.buttons["browserImport.continue"].click()
         let message = app.staticTexts["browserImport.message"]
         XCTAssertTrue(message.waitForExistence(timeout: 5))
