@@ -38,7 +38,8 @@ struct TabSwitcherView: View {
                     LazyHStack(spacing: TabSwitcherLayout.spacing) {
                         ForEach(selection.tabIDs, id: \.self) { id in
                             if let tab = model.coordinator.tabStore.tab(id: id) {
-                                card(tab, width: layout.cardWidth, selected: selection.selectedTabID == id)
+                                card(tab, width: layout.cardWidth, selected: selection.selectedTabID == id,
+                                     isCurrent: model.coordinator.activeTabID == id)
                                     .id(id)
                             }
                         }
@@ -84,7 +85,7 @@ struct TabSwitcherView: View {
         model.tintsChrome ? model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color : nil
     }
 
-    private func card(_ tab: BrowserTab, width: Double, selected: Bool) -> some View {
+    private func card(_ tab: BrowserTab, width: Double, selected: Bool, isCurrent: Bool) -> some View {
         Button { model.commitTabSwitcher(selecting: tab.id) } label: {
             VStack(alignment: .leading, spacing: 8) {
                 Group {
@@ -117,9 +118,10 @@ struct TabSwitcherView: View {
                     Text(tab.displayTitle).font(.system(size: 12, weight: selected ? .semibold : .regular))
                         .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 0)
+                    // The tick marks the live page; the border follows the candidate.
                     Image(systemName: "checkmark").font(.caption.weight(.semibold))
                         .foregroundStyle(selectionTint ?? .primary)
-                        .opacity(selected ? 1 : 0).accessibilityHidden(true)
+                        .opacity(isCurrent ? 1 : 0).accessibilityHidden(true)
                 }
                 .frame(height: 22)
             }
@@ -144,7 +146,7 @@ struct TabSwitcherView: View {
         .onHover { hoveredID = $0 ? tab.id : (hoveredID == tab.id ? nil : hoveredID) }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: selected)
         .accessibilityLabel(tab.displayTitle)
-        .accessibilityValue("\(selected ? "Selected, " : "")\(tab.currentURL.host ?? tab.currentURL.scheme ?? "Page")")
+        .accessibilityValue("\(isCurrent ? "Current tab, " : "")\(selected ? "Selected, " : "")\(tab.currentURL.host ?? tab.currentURL.scheme ?? "Page")")
         .accessibilityHint("Switch to this tab")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("tabSwitcher.tab.\(tab.id)")
