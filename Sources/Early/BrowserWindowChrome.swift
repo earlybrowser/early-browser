@@ -14,11 +14,68 @@ enum BrowserChromeLayout {
     static let windowControlsSize = CGSize(width: 60, height: 32)
 }
 
+/// A window can be ordered by SwiftUI before asynchronous session restoration
+/// supplies its Space theme. Reveal it after the real content has laid out;
+/// don't display an opaque loading shell or intercept clicks while invisible.
+@MainActor
+final class BrowserWindowStartupPresentation {
+    private weak var window: NSWindow?
+    private var originalAlpha: CGFloat = 1
+    private var originalIgnoresMouseEvents = false
+    private var contentReady = false
+    private var presented = false
+    private var scheduled = false
+    private var onPresent: (() -> Void)?
+
+    func update(window: NSWindow, contentReady: Bool, onPresent: @escaping () -> Void) {
+        if self.window !== window {
+            detach()
+            self.window = window
+            originalAlpha = window.alphaValue
+            originalIgnoresMouseEvents = window.ignoresMouseEvents
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+        }
+        guard !presented else { return }
+        self.contentReady = contentReady
+        self.onPresent = onPresent
+        guard contentReady, !scheduled else { return }
+        scheduled = true
+        // One main-loop handoff lets SwiftUI finish installing the themed
+        // content and native blur. No timer, synchronous I/O or window ordering.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window else { return }
+            self.scheduled = false
+            guard self.contentReady, !self.presented else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            guard self.window === window, self.contentReady, !self.presented else { return }
+            self.presented = true
+            window.alphaValue = self.originalAlpha
+            window.ignoresMouseEvents = self.originalIgnoresMouseEvents
+            let onPresent = self.onPresent
+            self.onPresent = nil
+            onPresent?()
+        }
+    }
+
+    func detach() {
+        if let window, !presented {
+            window.alphaValue = originalAlpha
+            window.ignoresMouseEvents = originalIgnoresMouseEvents
+        }
+        window = nil
+        contentReady = false
+        presented = false
+        scheduled = false
+        onPresent = nil
+    }
+}
+
 struct BrowserWindowLoadingView: View {
     let preferences: BrowserPreferences
 
     var body: some View {
-        Color(nsColor: .windowBackgroundColor)
+        Color.clear
             .overlay(alignment: .topLeading) {
                 // Keep a native host even while hidden: omitting it would leave
                 // AppKit's standard titlebar buttons visible during startup.

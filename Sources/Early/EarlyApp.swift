@@ -19,7 +19,9 @@ struct EarlyApp: App {
         #endif
         self.defaults = defaults
         launchStore = FirstLaunchStore(defaults: defaults)
-        preferences = BrowserPreferences(defaults: defaults)
+        let preferences = BrowserPreferences(defaults: defaults)
+        self.preferences = preferences
+        EarlyAppDelegate.applyAppearance(preferences.appearance)
     }
 
     var body: some Scene {
@@ -46,6 +48,7 @@ private struct BrowserWindowRoot: View {
     let defaults: UserDefaults
     let appDelegate: EarlyAppDelegate
     let windowID: UUID?
+    @State private var hasPresentedContent = false
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
 
@@ -59,6 +62,12 @@ private struct BrowserWindowRoot: View {
                 BrowserWindowLoadingView(preferences: preferences)
             }
         }
+        .transaction { transaction in
+            if !hasPresentedContent {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
         .frame(minWidth: 640, minHeight: 420)
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         // Links from other apps come to an open window rather than a new one.
@@ -68,6 +77,8 @@ private struct BrowserWindowRoot: View {
             appDelegate.openExternalLinks([url])
         }
         .background(WindowRegistration(identifier: windowID.map { "browser.\($0)" } ?? "browser",
+            contentReady: appDelegate.windowModel(windowID) != nil,
+            onPresent: { hasPresentedContent = true },
             onClose: { appDelegate.closeWindow(windowID) }, onFocus: { appDelegate.focusedWindow(windowID) },
             onRegister: { window in appDelegate.windowDidRegister(windowID, window: window) }))
         .task {
@@ -84,6 +95,8 @@ private struct BrowserWindowRoot: View {
 /// Native windows have stable identifiers; Early alone restores snapshots.
 private struct WindowRegistration: NSViewRepresentable {
     let identifier: String
+    let contentReady: Bool
+    let onPresent: () -> Void
     let onClose: () -> Void
     let onFocus: () -> Void
     let onRegister: (NSWindow) -> Void
@@ -91,6 +104,8 @@ private struct WindowRegistration: NSViewRepresentable {
     func makeNSView(context: Context) -> RegistrationView {
         let view = RegistrationView()
         view.identifierValue = identifier
+        view.contentReady = contentReady
+        view.onPresent = onPresent
         view.onClose = onClose
         view.onFocus = onFocus
         view.onRegister = onRegister
@@ -99,25 +114,35 @@ private struct WindowRegistration: NSViewRepresentable {
 
     func updateNSView(_ view: RegistrationView, context: Context) {
         view.identifierValue = identifier
+        view.contentReady = contentReady
+        view.onPresent = onPresent
         view.onClose = onClose
         view.onFocus = onFocus
         view.onRegister = onRegister
         view.register()
     }
 
+    static func dismantleNSView(_ view: RegistrationView, coordinator: ()) {
+        view.startup.detach()
+    }
+
     final class RegistrationView: NSView {
         var identifierValue = "browser"
+        var contentReady = false
+        var onPresent: (() -> Void)?
+        let startup = BrowserWindowStartupPresentation()
         var onClose: (() -> Void)?
         var onFocus: (() -> Void)?
         var onRegister: ((NSWindow) -> Void)?
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); register() }
         func register() {
-            guard let window else { return }
+            guard let window else { startup.detach(); return }
             window.identifier = NSUserInterfaceItemIdentifier(identifierValue)
             window.setAccessibilityIdentifier(identifierValue)
             window.isRestorable = false
             window.isOpaque = false
             window.backgroundColor = .clear
+            startup.update(window: window, contentReady: contentReady, onPresent: { [weak self] in self?.onPresent?() })
             NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
             NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(windowClosing(_:)), name: NSWindow.willCloseNotification, object: window)
