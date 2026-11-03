@@ -370,6 +370,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let controller = configuration.userContentController
         registerHandlers(controller, for: tab.id)
         let view = BrowserWebView(frame: .zero, configuration: configuration)
+        view.prepareInitialPage(for: url ?? tab.currentURL)
         sourcePages.register(view, tab: tab.id, url: url ?? tab.currentURL)
         // WebKit generates the base identity and inherits the opener's suffix
         // in popup configurations. Do not overwrite a supplied configuration.
@@ -542,6 +543,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     /// before Early restarted reads through its bookmark, and one that can't be
     /// read says why instead of showing a blank page.
     func startNavigation(to url: URL, in view: WKWebView) -> WKNavigation? {
+        (view as? BrowserWebView)?.prepareInitialPage(for: url)
         guard url.isFileURL else { return view.load(URLRequest(url: url)) }
         guard let localFiles, let id = identities[ObjectIdentifier(view)], let page = pages[id] else {
             return view.loadFileURL(url, allowingReadAccessTo: url)
