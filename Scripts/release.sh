@@ -44,6 +44,9 @@ repository="https://github.com/earlybrowser/early-browser"
 derived="$output/DerivedData"
 zip="Early-$version.zip"
 
+# Validate the version's notes before building or giving data to the signer.
+release_notes="$(python3 Scripts/release-notes.py "$version" --format appcast)"
+
 if [[ $appcast -eq 1 ]]; then
     : "${SPARKLE_ED_PRIVATE_KEY:?--appcast needs SPARKLE_ED_PRIVATE_KEY}"
     [[ -f "$output/$zip" && -f "$output/BUILD_NUMBER" ]] || { echo "Build $version into $output first." >&2; exit 1; }
@@ -65,7 +68,7 @@ if [[ $appcast -eq 1 ]]; then
       <sparkle:shortVersionString>$version</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <sparkle:fullReleaseNotesLink>$repository/releases/tag/v$version</sparkle:fullReleaseNotesLink>
-      <description><![CDATA[<p>Early $version is ready. See what’s new on GitHub.</p>]]></description>
+      <description sparkle:format="markdown">$release_notes</description>
       <enclosure url="$repository/releases/download/v$version/$zip" type="application/octet-stream" $enclosure/>
     </item>
   </channel>

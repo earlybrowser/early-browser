@@ -38,6 +38,12 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Prepare release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p build/Release
+          python3 Scripts/release-notes.py "$VERSION" > build/Release/notes.md
       - name: Test Swift package
         run: swift test --no-parallel
       # The update key reaches only the step that signs the feed, never the
@@ -53,8 +59,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          sed "s/@VERSION@/$VERSION/g" Packaging/release-notes.md > build/Release/notes.md
-          flags=(--draft --verify-tag --generate-notes --title "Early $VERSION" --notes-file build/Release/notes.md)
+          flags=(--draft --verify-tag --title "Early $VERSION" --notes-file build/Release/notes.md)
           [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
           gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
             "build/Release/Early-$VERSION.zip" build/Release/SHA256SUMS build/Release/appcast.xml
