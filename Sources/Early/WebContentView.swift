@@ -23,11 +23,11 @@ struct BrowserChromeBackground: View {
                 Color(nsColor: .windowBackgroundColor)
             } else {
                 if !reduceTransparency && allowsTransparency { ChromeMaterial(floating: floating) }
-                if colorScheme == .dark, !reduceTransparency && allowsTransparency { Color.black.opacity(0.30) }
+                if colorScheme == .dark, !reduceTransparency && allowsTransparency { Color.black.opacity(0.16) }
                 LinearGradient(colors: [theme.chromeTop(isDark: colorScheme == .dark).color,
                                         theme.chromeBottom(isDark: colorScheme == .dark).color],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
-                    .opacity(reduceTransparency || !allowsTransparency ? 1 : (colorScheme == .dark ? 0.64 : 0.68))
+                    .opacity(reduceTransparency || !allowsTransparency ? 1 : (colorScheme == .dark ? 0.44 : 0.48))
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: theme)

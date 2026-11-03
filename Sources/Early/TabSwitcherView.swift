@@ -62,7 +62,7 @@ struct TabSwitcherView: View {
                 } else if reduceTransparency || !model.preferences.translucentChrome || contrast == .increased {
                     RoundedRectangle(cornerRadius: 20).fill(Color(nsColor: .controlBackgroundColor))
                 } else {
-                    RoundedRectangle(cornerRadius: 20).fill(.thickMaterial)
+                    RoundedRectangle(cornerRadius: 20).fill(.thinMaterial)
                 }
             }
             .overlay {
