@@ -8,6 +8,8 @@
 
 Inspired by the fluid vertical-tab workflows of **Arc** and **Zen Browser**, Early focuses on a clean, distraction-free browsing experience with a collapsible sidebar, an instant command bar, and macOS integration.
 
+![Early in dark mode, showing its translucent sidebar, Favorites, folders, and command bar.](Branding/Screenshots/Early-Browser.png)
+
 ## Install
 
 Early needs a Mac with Apple Silicon and macOS 14 or later.

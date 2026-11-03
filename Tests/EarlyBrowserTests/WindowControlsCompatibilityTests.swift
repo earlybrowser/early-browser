@@ -21,7 +21,10 @@ struct WindowControlsCompatibilityTests {
         defaults.set(autoHides, forKey: "sidebarAutoHides")
         let preferences = BrowserPreferences(defaults: defaults)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyStartupControls-\(UUID())")
-        let model = BrowserWindowModel(startup: .returningSession, session: BrowserSession(),
+        let profile = UUID()
+        let space = BrowserSpace(profileID: profile, name: "Work", color: .purple)
+        let session = BrowserSession(profileID: profile, activeSpaceID: space.id, spaces: [space])
+        let model = BrowserWindowModel(startup: .returningSession, session: session,
             repository: SessionRepository(fileURL: directory.appendingPathComponent("session.sqlite")),
             input: NavigationInput(), isTesting: true, restorationError: nil, defaults: defaults, preferences: preferences)
         model.onSave = { _ in }
@@ -29,7 +32,11 @@ struct WindowControlsCompatibilityTests {
         window.styleMask.insert(.fullSizeContentView)
         let hosting = NSHostingView(rootView: AnyView(BrowserWindowLoadingView(preferences: preferences)))
         window.contentView = hosting
+        let presentation = BrowserWindowStartupPresentation()
+        var presented = false
+        presentation.update(window: window, contentReady: false) { presented = true }
         defer {
+            presentation.detach()
             hosting.rootView = AnyView(EmptyView())
             hosting.layoutSubtreeIfNeeded()
             window.close()
@@ -40,6 +47,8 @@ struct WindowControlsCompatibilityTests {
             try? FileManager.default.removeItem(at: directory)
         }
         hosting.layoutSubtreeIfNeeded()
+        #expect(window.alphaValue == 0)
+        #expect(!presented)
         let buttons = try kinds.map { try #require(window.standardWindowButton($0)) }
         let titlebar = try #require(titlebarContainer(of: window))
         #expect(titlebar.isHidden)
@@ -47,11 +56,24 @@ struct WindowControlsCompatibilityTests {
         let loadingFrames = buttons.map { $0.convert($0.bounds, to: hosting) }
 
         hosting.rootView = AnyView(BrowserWindowView(model: model).transaction { $0.disablesAnimations = true })
+        presentation.update(window: window, contentReady: true) {
+            #expect(model.chromeTheme == .space(.purple))
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
+               !NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast {
+                #expect(hasSidebarMaterial(in: hosting), "Install the native backdrop before revealing restored content")
+            }
+            #expect(WindowControls.ControlsHost.ownsControls(in: window))
+            presented = true
+        }
+        #expect(window.alphaValue == 0)
         hosting.layoutSubtreeIfNeeded()
         // Include the one-turn native ownership reconciliation after SwiftUI
         // replaces the loading host. The window is never brought on screen.
         try await Task.sleep(for: .milliseconds(50))
         hosting.layoutSubtreeIfNeeded()
+        #expect(presented)
+        #expect(window.alphaValue == 1)
+        #expect(!window.ignoresMouseEvents)
         #expect(titlebar.isHidden)
         #expect(WindowControls.ControlsHost.ownsControls(in: window))
         for (index, button) in buttons.enumerated() {
@@ -166,5 +188,11 @@ struct WindowControlsCompatibilityTests {
 
     private func titlebarContainer(of window: NSWindow) -> NSView? {
         window.contentView?.superview?.subviews.first { $0.className == "NSTitlebarContainerView" }
+    }
+
+    private func hasSidebarMaterial(in view: NSView) -> Bool {
+        if let effect = view as? NSVisualEffectView,
+           effect.material == .sidebar, effect.blendingMode == .behindWindow { return true }
+        return view.subviews.contains { hasSidebarMaterial(in: $0) }
     }
 }

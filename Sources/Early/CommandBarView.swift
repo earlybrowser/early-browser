@@ -119,7 +119,7 @@ struct CommandBarView: View {
             } else if reduceTransparency || !model.preferences.translucentChrome || contrast == .increased {
                 RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .controlBackgroundColor))
             } else {
-                RoundedRectangle(cornerRadius: 16).fill(.thickMaterial)
+                RoundedRectangle(cornerRadius: 16).fill(.thinMaterial)
             }
         }
         .overlay {

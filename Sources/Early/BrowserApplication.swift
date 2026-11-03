@@ -162,6 +162,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                    storageDirectory: URL? = nil, isTesting: Bool = false) async -> [UUID] {
         guard workspace == nil else { return [] }
         if loading == nil {
+            self.preferences = preferences
+            self.defaults = defaults
+            applyAppearance()
             loading = Task {
                 var suite: String?
                 #if DEBUG
@@ -191,8 +194,6 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let loaded = await loading?.value, !Task.isCancelled, workspace == nil else { return [] }
         loading = nil
-        self.preferences = preferences
-        self.defaults = defaults
         self.repository = loaded.repository
         self.storageURL = loaded.repository.fileURL
         self.input = loaded.input
@@ -1553,19 +1554,27 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applyAppearance() {
-        switch preferences?.appearance ?? .system {
-        case .light: NSApp.appearance = NSAppearance(named: .aqua)
-        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        // App.init applies the saved choice before any scene is constructed.
+        // Launch callbacks must not reset it while bootstrap is still pending.
+        guard let preferences else { return }
+        Self.applyAppearance(preferences.appearance)
+    }
+
+    static func applyAppearance(_ appearance: BrowserPreferences.Appearance) {
+        let application = NSApplication.shared
+        switch appearance {
+        case .light: application.appearance = NSAppearance(named: .aqua)
+        case .dark: application.appearance = NSAppearance(named: .darkAqua)
         case .system:
             #if DEBUG
             let env = ProcessInfo.processInfo.environment
             if env["EARLY_TEST_DEFAULTS_SUITE"]?.hasPrefix("local.early.tests.") == true,
                let appearance = env["EARLY_TEST_APPEARANCE"], ["light", "dark"].contains(appearance) {
-                NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
+                application.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
                 return
             }
             #endif
-            NSApp.appearance = nil
+            application.appearance = nil
         }
     }
 
