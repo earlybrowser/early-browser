@@ -24,26 +24,6 @@ enum UnhandledPageKey {
 /// media keep WebKit's native menus.
 @MainActor
 final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDelegate {
-    private var preparedInitialPage = false
-    private var startupCover: YouTubeStartupCover?
-
-    func prepareInitialPage(for url: URL) {
-        startupCover?.navigate(to: url)
-        guard !preparedInitialPage else { return }
-        preparedInitialPage = true
-        startupCover = YouTubeStartupCover(webView: self, destination: url)
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        if effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) != .darkAqua { startupCover?.finish() }
-    }
-
-    override func stopLoading() {
-        startupCover?.finish()
-        super.stopLoading()
-    }
-
     /// What a trusted right-click landed on, already validated by the manager.
     struct ContextTarget: Equatable {
         var link: URL?
@@ -65,7 +45,6 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     private let pageKeyEvents = NSHashTable<NSEvent>(options: [.weakMemory, .objectPointerPersonality])
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        startupCover?.finish()
         if extensionCommand?(event) == true { return true }
         return super.performKeyEquivalent(with: event)
     }
@@ -86,23 +65,11 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     }
 
     override func mouseDown(with event: NSEvent) {
-        startupCover?.finish()
         notePersonInput()
         super.mouseDown(with: event)
     }
 
-    override func rightMouseDown(with event: NSEvent) {
-        startupCover?.finish()
-        super.rightMouseDown(with: event)
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        startupCover?.finish()
-        super.scrollWheel(with: event)
-    }
-
     override func keyDown(with event: NSEvent) {
-        startupCover?.finish()
         guard pageKeyEvents.contains(event) else {
             pageKeyEvents.add(event)
             notePersonInput()
