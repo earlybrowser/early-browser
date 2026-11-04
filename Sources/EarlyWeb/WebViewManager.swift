@@ -448,6 +448,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             return
         }
         controllerOwners[identity] = [id]
+        let faviconObserver = FaviconObserver()
+        faviconObserver.owner = self
+        controller.removeScriptMessageHandler(forName: FaviconObserver.name, contentWorld: FaviconObserver.world)
+        controller.add(faviconObserver, contentWorld: FaviconObserver.world, name: FaviconObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == FaviconObserver.script }) {
+            controller.addUserScript(WKUserScript(source: FaviconObserver.script,
+                injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: FaviconObserver.world))
+        }
         let paintObserver = PagePaintObserver()
         paintObserver.owner = self
         controller.removeScriptMessageHandler(forName: PagePaintObserver.name, contentWorld: PagePaintObserver.world)
@@ -505,6 +513,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         // detach bridges still owned by another live page.
         guard controllerOwners[identity]?.isEmpty == true else { return }
         controllerOwners[identity] = nil
+        controller.removeScriptMessageHandler(forName: FaviconObserver.name, contentWorld: FaviconObserver.world)
         controller.removeScriptMessageHandler(forName: PagePaintObserver.name, contentWorld: PagePaintObserver.world)
         controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
         controller.removeScriptMessageHandler(forName: PageContextMenuObserver.name, contentWorld: PageContextMenuObserver.world)

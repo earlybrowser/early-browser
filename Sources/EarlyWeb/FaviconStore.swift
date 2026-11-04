@@ -8,16 +8,38 @@ import Observation
 import UniformTypeIdentifiers
 
 /// Website artwork is separate from session metadata and never creates a web view.
-/// An origin shares one small icon; pins use their original origin, not a detour.
+/// An origin shares one small icon per appearance; pins use their original origin.
 @MainActor @Observable
 public final class FaviconStore {
-    public private(set) var images: [String: NSImage] = [:]
-    public private(set) var colors: [String: FaviconColor] = [:]
-    @ObservationIgnored private var requests: [String: Request] = [:]
-    @ObservationIgnored private var order: [String] = []
-    @ObservationIgnored private var pending: [String] = []
-    @ObservationIgnored private var running: Set<String> = []
-    @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
+    public enum Appearance: String, CaseIterable, Sendable {
+        case light, dark
+
+        @MainActor static var current: Self {
+            NSApplication.shared.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light
+        }
+    }
+
+    private struct Key: Hashable, Sendable {
+        let origin: String
+        let appearance: Appearance
+        var cacheIdentifier: String { origin + "#favicon-" + appearance.rawValue }
+    }
+
+    public private(set) var appearance: Appearance
+    private var cachedImages: [Key: NSImage] = [:]
+    private var cachedColors: [Key: FaviconColor] = [:]
+    public var images: [String: NSImage] {
+        Dictionary(uniqueKeysWithValues: cachedImages.filter { $0.key.appearance == appearance }.map { ($0.key.origin, $0.value) })
+    }
+    public var colors: [String: FaviconColor] {
+        Dictionary(uniqueKeysWithValues: cachedColors.filter { $0.key.appearance == appearance }.map { ($0.key.origin, $0.value) })
+    }
+    @ObservationIgnored private var requests: [Key: Request] = [:]
+    @ObservationIgnored private var order: [Key] = []
+    @ObservationIgnored private var pending: [Key] = []
+    @ObservationIgnored private var running: Set<Key> = []
+    @ObservationIgnored private var tasks: [Key: Task<Void, Never>] = [:]
+    @ObservationIgnored private var appearanceObservation: NSKeyValueObservation?
     @ObservationIgnored private var stopped = false
     @ObservationIgnored private let load: @Sendable (String, [URL], Bool) async -> Data?
 
@@ -30,10 +52,28 @@ public final class FaviconStore {
     public convenience init(profileID: UUID, ephemeral: Bool = false) {
         let directory = ephemeral ? nil : Self.cacheDirectory(for: profileID)
         let loader = FaviconLoader(directory: directory)
-        self.init { origin, urls, cached in await loader.load(origin: origin, candidates: urls, preferCache: cached) }
+        self.init { key, urls, cached in await loader.load(cacheKey: key, candidates: urls, preferCache: cached) }
     }
 
-    init(load: @escaping @Sendable (String, [URL], Bool) async -> Data?) { self.load = load }
+    init(appearance: Appearance? = nil, load: @escaping @Sendable (String, [URL], Bool) async -> Data?) {
+        self.appearance = appearance ?? .current
+        self.load = load
+        if appearance == nil {
+            appearanceObservation = NSApplication.shared.observe(\.effectiveAppearance) { [weak self] _, _ in
+                Task { @MainActor [weak self] in self?.setAppearance(.current) }
+            }
+        }
+    }
+
+    /// Restored pins can switch artwork without opening a page. Live pages
+    /// separately report their newly matching declared icons through WebKit.
+    func setAppearance(_ value: Appearance) {
+        guard !stopped, value != appearance else { return }
+        appearance = value
+        for origin in Set(requests.keys.map(\.origin)) {
+            if let url = URL(string: origin) { request(url) }
+        }
+    }
 
     nonisolated static func cacheDirectory(for profileID: UUID) -> URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
@@ -53,21 +93,27 @@ public final class FaviconStore {
     /// their icons).
     public func forget(keeping pageURLs: [URL]) {
         let kept = Set(pageURLs.compactMap(Self.origin))
-        for (origin, task) in tasks where !kept.contains(origin) { task.cancel() }
-        tasks = tasks.filter { kept.contains($0.key) }
-        pending.removeAll { !kept.contains($0) }
-        requests = requests.filter { kept.contains($0.key) }
-        running = running.filter { kept.contains($0) }
-        images = images.filter { kept.contains($0.key) }
-        colors = colors.filter { kept.contains($0.key) }
-        order.removeAll { !kept.contains($0) }
+        for (key, task) in tasks where !kept.contains(key.origin) { task.cancel() }
+        tasks = tasks.filter { kept.contains($0.key.origin) }
+        pending.removeAll { !kept.contains($0.origin) }
+        requests = requests.filter { kept.contains($0.key.origin) }
+        running = running.filter { kept.contains($0.origin) }
+        cachedImages = cachedImages.filter { kept.contains($0.key.origin) }
+        cachedColors = cachedColors.filter { kept.contains($0.key.origin) }
+        order.removeAll { !kept.contains($0.origin) }
     }
 
     /// Removes this profile's cached icons saved since `date` (nil: all),
     /// except those of the sites of `pageURLs`.
     public nonisolated static func removeCachedIcons(for profileID: UUID, since date: Date?, keeping pageURLs: [URL]) async {
         guard let directory = cacheDirectory(for: profileID) else { return }
-        let kept = Set(pageURLs.compactMap(origin).map { FaviconLoader.fileName(for: $0) })
+        let kept = Set(pageURLs.compactMap(origin).flatMap { origin in
+            // Include the old, unclassified file for website-data cleanup;
+            // new loads never reuse it as an arbitrary appearance variant.
+            [FaviconLoader.fileName(for: origin)] + Appearance.allCases.map {
+                FaviconLoader.fileName(for: Key(origin: origin, appearance: $0).cacheIdentifier)
+            }
+        })
         await Task.detached(priority: .utility) {
             let files = (try? FileManager.default.contentsOfDirectory(at: directory,
                 includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
@@ -80,6 +126,7 @@ public final class FaviconStore {
 
     public func shutdown() async {
         stopped = true
+        appearanceObservation = nil
         let outstanding = Array(tasks.values)
         outstanding.forEach { $0.cancel() }
         pending.removeAll()
@@ -87,64 +134,67 @@ public final class FaviconStore {
         for task in outstanding { await task.value }
         tasks.removeAll()
         running.removeAll()
-        images.removeAll()
-        colors.removeAll()
+        cachedImages.removeAll()
+        cachedColors.removeAll()
         order.removeAll()
     }
 
-    public func image(for url: URL) -> NSImage? {
-        Self.origin(url).flatMap { images[$0] }
+    public func image(for url: URL, appearance: Appearance? = nil) -> NSImage? {
+        Self.origin(url).flatMap { cachedImages[Key(origin: $0, appearance: appearance ?? self.appearance)] }
     }
 
     public func color(for url: URL) -> FaviconColor? {
-        Self.origin(url).flatMap { colors[$0] }
+        Self.origin(url).flatMap { cachedColors[Key(origin: $0, appearance: appearance)] }
     }
 
-    /// Called by visible rows and once after a live page finishes navigating.
+    /// Called by visible rows and when a live document's icon selection changes.
     /// Restored/closed pins only read the cache or request the site's icon file.
-    public func request(_ pageURL: URL, discovered: [String] = []) {
+    public func request(_ pageURL: URL, discovered: [String]? = nil, appearance: Appearance? = nil) {
         guard !stopped, let origin = Self.origin(pageURL) else { return }
-        let candidates = Self.candidates(pageURL: pageURL, discovered: discovered)
-        let isDiscovered = candidates.count > 1 || candidates.first != URL(string: origin + "/favicon.ico")
-        if let previous = requests[origin] {
-            guard isDiscovered, previous.candidates != candidates else { return }
+        let key = Key(origin: origin, appearance: appearance ?? self.appearance)
+        let candidates = Self.candidates(pageURL: pageURL, discovered: discovered ?? [])
+        let isDiscovered = discovered != nil
+        if let previous = requests[key] {
+            guard isDiscovered, !previous.discovered || previous.candidates != candidates else { return }
         }
-        if requests[origin] == nil {
+        if requests[key] == nil {
             // Bound both decoded artwork and negative-cache bookkeeping.
             if order.count >= 256, let oldest = order.first(where: { !running.contains($0) && !pending.contains($0) }) {
                 order.removeAll { $0 == oldest }
                 requests.removeValue(forKey: oldest)
-                images.removeValue(forKey: oldest)
-                colors.removeValue(forKey: oldest)
+                cachedImages.removeValue(forKey: oldest)
+                cachedColors.removeValue(forKey: oldest)
             }
             guard order.count < 256 else { return }
-            order.append(origin)
+            order.append(key)
         }
-        requests[origin] = Request(candidates: candidates, discovered: isDiscovered)
-        if !pending.contains(origin) { pending.append(origin) }
+        requests[key] = Request(candidates: candidates, discovered: isDiscovered)
+        if !pending.contains(key) { pending.append(key) }
         drain()
     }
 
     private func drain() {
         guard !stopped else { return }
-        while running.count < 4, let index = pending.firstIndex(where: { !running.contains($0) }) {
-            let origin = pending.remove(at: index)
-            guard let request = requests[origin] else { continue }
-            running.insert(origin)
+        while running.count < 4,
+              let index = pending.firstIndex(where: { $0.appearance == appearance && !running.contains($0) })
+                ?? pending.firstIndex(where: { !running.contains($0) }) {
+            let key = pending.remove(at: index)
+            guard let request = requests[key] else { continue }
+            running.insert(key)
             let load = load
-            tasks[origin] = Task { [weak self] in
-                let data = await load(origin, request.candidates, !request.discovered)
+            tasks[key] = Task { [weak self] in
+                let data = await load(key.cacheIdentifier, request.candidates, !request.discovered)
                 let color = await Task.detached(priority: .utility) {
                     data.flatMap { FaviconColor.extract(from: $0) }
                 }.value
                 guard let self else { return }
-                if !Task.isCancelled, self.requests[origin]?.token == request.token,
+                if !Task.isCancelled, self.requests[key]?.token == request.token,
                    let data, let image = NSImage(data: data) {
-                    self.images[origin] = image
-                    self.colors[origin] = color
+                    self.cachedImages[key] = image
+                    self.cachedColors[key] = color
                 }
-                self.running.remove(origin)
-                self.tasks.removeValue(forKey: origin)
+                self.running.remove(key)
+                self.tasks.removeValue(forKey: key)
                 self.drain()
             }
         }
@@ -198,8 +248,8 @@ actor FaviconLoader {
 
     deinit { session.invalidateAndCancel() }
 
-    func load(origin: String, candidates: [URL], preferCache: Bool) async -> Data? {
-        let cached = read(origin)
+    func load(cacheKey: String, candidates: [URL], preferCache: Bool) async -> Data? {
+        let cached = read(cacheKey)
         if preferCache, let cached { return cached }
         for url in candidates {
             guard !Task.isCancelled else { return nil }
@@ -211,7 +261,7 @@ actor FaviconLoader {
                                                                        redirects: Self.allowsRedirect)
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { continue }
                 guard !Task.isCancelled, let png = Self.thumbnail(data) else { continue }
-                write(png, origin: origin)
+                write(png, origin: cacheKey)
                 return png
             } catch { continue }
         }

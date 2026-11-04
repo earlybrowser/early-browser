@@ -290,20 +290,7 @@ extension WebViewManager {
         checkReaderAvailability(id)
         detectPageLanguage(id)
         checkPendingLogin(id)
-        guard let url = webView.url else { return }
-        let generation = page.navigationGeneration
-        // Read only the loaded document, in an isolated JS world. No injected
-        // observers, external discovery service, or off-screen page loads.
-        webView.evaluateJavaScript("""
-            Array.from(document.querySelectorAll('link[rel]'))
-                .filter(link => link.rel.toLowerCase().split(/\\s+/).includes('icon'))
-                .slice(0, 8).map(link => link.href)
-            """, in: nil, in: .defaultClient) { [weak self, weak page] result in
-                guard let self, let page, self.pages[id] === page,
-                      page.navigationGeneration == generation, page.view.url == url else { return }
-                let links = (try? result.get()) as? [String] ?? []
-                self.favicons.request(url, discovered: links)
-            }
+        refreshFavicon(in: webView)
     }
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         failed(webView, navigation: navigation, error)

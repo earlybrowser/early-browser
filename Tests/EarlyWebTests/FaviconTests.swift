@@ -84,14 +84,14 @@ private let iconPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAA
         #expect(configuration.httpCookieStorage == nil)
         #expect(configuration.urlCredentialStorage == nil)
         let candidates = ["https://fixture.invalid/missing", "https://fixture.invalid/favicon.ico"].map { URL(string: $0)! }
-        let data = try #require(await loader.load(origin: "https://fixture.invalid", candidates: candidates, preferCache: true))
+        let data = try #require(await loader.load(cacheKey: "https://fixture.invalid", candidates: candidates, preferCache: true))
         #expect(FaviconLoader.thumbnail(data) != nil)
         // New loader / process state can restore the cached icon without a request.
         let restored = FaviconLoader(directory: directory, configuration: configuration)
-        #expect(await restored.load(origin: "https://fixture.invalid", candidates: [], preferCache: true) == data)
+        #expect(await restored.load(cacheKey: "https://fixture.invalid", candidates: [], preferCache: true) == data)
         let otherProfile = FaviconLoader(directory: directory.appendingPathComponent("other"), configuration: configuration)
-        #expect(await otherProfile.load(origin: "https://fixture.invalid", candidates: [], preferCache: true) == nil)
-        #expect(await loader.load(origin: "https://large.invalid", candidates: [URL(string: "https://fixture.invalid/oversized")!], preferCache: false) == nil)
+        #expect(await otherProfile.load(cacheKey: "https://fixture.invalid", candidates: [], preferCache: true) == nil)
+        #expect(await loader.load(cacheKey: "https://large.invalid", candidates: [URL(string: "https://fixture.invalid/oversized")!], preferCache: false) == nil)
     }
 
     @Test @MainActor func duplicateRequestsAndLateFallbackDoNotReplaceDiscovery() async throws {
