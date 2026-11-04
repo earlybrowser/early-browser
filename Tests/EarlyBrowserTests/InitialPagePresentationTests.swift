@@ -161,7 +161,7 @@ struct InitialPagePresentationTests {
             let profile = UUID()
             manager = WebViewManager(profileID: profile, ephemeral: true,
                                      faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false)
-            tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Fixture", currentURL: URL(string: "https://fixture.invalid/")!)
+            tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Fixture", currentURL: server.url)
             view = manager.prepare(tab).view
             window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -171,10 +171,7 @@ struct InitialPagePresentationTests {
         }
 
         func start() async throws {
-            view.loadSimulatedRequest(URLRequest(url: tab.currentURL), responseHTML: """
-                <!doctype html><style>html { background: white; } img { display:none }</style>
-                <body><img src="\(server.url)"></body>
-                """)
+            manager.load(tab.currentURL, in: tab)
             try await InitialPagePresentationTests.waitUntil {
                 view.isLoading && view.url == tab.currentURL && !manager.pages[tab.id]!.awaitsNavigationCommit
                     && view.underPageBackgroundColor.usingColorSpace(.sRGB)?.redComponent == 1
@@ -184,14 +181,17 @@ struct InitialPagePresentationTests {
     }
 }
 
-/// A tiny loopback image whose response is held until the test completes it.
+/// Stream an empty HTML body, then hold EOF until the test completes it. This
+/// avoids version-dependent painting and loading of hidden image subresources.
 private final class PaintHTTPServer: @unchecked Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "early.tests.paint.http")
     private var connections: [NWConnection] = []
-    private let body = Data(base64Encoded: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")!
+    private let prefix = Data(("<!doctype html><html><head><style>html{background:white}</style></head><body><!--"
+        + String(repeating: " ", count: 8192) + "-->").utf8)
+    private let suffix = Data("</body></html>".utf8)
     private var port: UInt16 = 0
-    var url: URL { URL(string: "http://127.0.0.1:\(port)/hold.gif")! }
+    var url: URL { URL(string: "http://127.0.0.1:\(port)/page")! }
     init() throws {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
@@ -204,8 +204,8 @@ private final class PaintHTTPServer: @unchecked Sendable {
             connection.start(queue: self.queue)
             connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] _, _, _, _ in
                 guard let self else { return }
-                var data = Data("HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: \(self.body.count)\r\nConnection: close\r\n\r\n".utf8)
-                data.append(self.body.prefix(16))
+                var data = Data("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(self.prefix.count + self.suffix.count)\r\nConnection: close\r\n\r\n".utf8)
+                data.append(self.prefix)
                 connection.send(content: data, completion: .contentProcessed { _ in })
             }
         }
@@ -219,7 +219,7 @@ private final class PaintHTTPServer: @unchecked Sendable {
     func finish() {
         queue.async {
             for connection in self.connections {
-                connection.send(content: Data(self.body.dropFirst(16)), completion: .contentProcessed { _ in connection.cancel() })
+                connection.send(content: self.suffix, completion: .contentProcessed { _ in connection.cancel() })
             }
         }
     }

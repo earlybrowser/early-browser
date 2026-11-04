@@ -1114,6 +1114,8 @@ final class EarlyUITests: XCTestCase {
             XCTAssertTrue(app.menuItems["Move to Space"].waitForExistence(timeout: 3))
             app.menuItems["Move to Space"].hover()
             visibleMenuAction(name)
+            let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: spaceDot(app, named: name))
+            XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
         }
         move(app.buttons[tabID], to: "Work")
         XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
