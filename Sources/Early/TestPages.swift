@@ -24,15 +24,19 @@ final class TestPages: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         guard let url = task.request.url else { return }
         if url.path == "/initial-paint" {
+            let isLight = url.query == "color=light"
+            let color = isLight ? "#ffffff" : "#0f0f0f"
+            let textColor = isLight ? "black" : "white"
+            let name = isLight ? "light" : "dark"
             respond(to: task, url: url, html: """
             <!doctype html><title>Initial paint fixture</title>
             <style>html{background:white}iframe{display:none}</style>
             <iframe src="early-test://fixture/slow"></iframe>
             <script>
               setTimeout(() => {
-                document.documentElement.style.background='#0f0f0f';
-                document.body.style.color='white';
-                document.body.insertAdjacentHTML('beforeend','<h1>Paint ready</h1>');
+                document.documentElement.style.background='\(color)';
+                document.body.style.color='\(textColor)';
+                document.body.insertAdjacentHTML('beforeend','<h1>Paint ready \(name)</h1>');
               },10000);
             </script>
             """)

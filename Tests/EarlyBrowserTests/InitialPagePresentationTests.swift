@@ -4,56 +4,72 @@ import AppKit
 import EarlyCore
 @testable import EarlyWeb
 @testable import EarlyBrowser
-import Network
+import JavaScriptCore
 import Testing
 import WebKit
 
 @Suite(.serialized) @MainActor
 struct InitialPagePresentationTests {
+    @Test(arguments: [false, true])
+    func paintObserverOnlyNotifiesOnceAfterContentOrItsUnsupportedFallback(supportsPaint: Bool) throws {
+        let context = try #require(JSContext())
+        context.evaluateScript("""
+            globalThis.messages = [];
+            globalThis.listeners = {};
+            globalThis.document = { addEventListener: (name, callback) => listeners[name] = callback };
+            globalThis.addEventListener = document.addEventListener;
+            globalThis.window = { webkit: { messageHandlers: {
+                earlyInitialPaint: { postMessage: token => messages.push(token) }
+            } } };
+            globalThis.PerformanceObserver = class {
+                static supportedEntryTypes = \(supportsPaint ? "['paint']" : "[]");
+                constructor(callback) { globalThis.deliver = entries => callback({ getEntries: () => entries }); }
+                observe(options) { globalThis.options = options; }
+                disconnect() { globalThis.disconnected = true; }
+            };
+            """)
+        context.evaluateScript(PagePaintObserver.script)
+        try #require(context.exception == nil, "\(String(describing: context.exception))")
+        #expect(context.evaluateScript("__earlyInitialPaint.ready")?.toBool() == false)
+        #expect(context.evaluateScript("messages.length")?.toInt32() == 0)
+        if supportsPaint {
+            #expect(context.evaluateScript("options.type === 'paint' && options.buffered === true")?.toBool() == true)
+            context.evaluateScript("deliver([{name: 'first-paint'}])")
+            #expect(context.evaluateScript("messages.length")?.toInt32() == 0, "A blank background paint must not reveal the page")
+            context.evaluateScript("deliver([{name: 'first-contentful-paint'}]); deliver([{name: 'first-contentful-paint'}]);")
+            #expect(context.evaluateScript("disconnected")?.toBool() == true)
+        } else {
+            context.evaluateScript("listeners.DOMContentLoaded(); listeners.DOMContentLoaded();")
+        }
+        try #require(context.exception == nil, "\(String(describing: context.exception))")
+        #expect(context.evaluateScript("__earlyInitialPaint.ready")?.toBool() == true)
+        #expect(context.evaluateScript("messages.length === 1 && messages[0] === __earlyInitialPaint.token")?.toBool() == true)
+    }
+
     @Test(arguments: ["#0f0f0f", "#ffffff"])
-    func blankCanvasWaitsForContentAndRevealsBeforeLoadingFinishes(color: String) async throws {
-        let fixture = try Fixture()
+    func onlyCurrentDocumentReadinessRevealsTheCoveredPageBeforeLoadingFinishes(color: String) async throws {
+        let fixture = Fixture()
         defer { fixture.cleanup() }
-        // Snapshotting an unshown window does not guarantee paint-timing delivery.
-        fixture.window.orderFrontRegardless()
         try await fixture.start()
         let view = fixture.view
-        _ = try await view.takeSnapshot(configuration: nil)
         #expect(view.alphaValue == 1 && fixture.host.hidesInitialPage)
         #expect(fixture.host.subviews.last !== view)
         #expect(fixture.host.subviews.last?.frame == view.frame)
-        #expect(try await view.evaluateJavaScript("document.visibilityState") as? String == "visible")
+        #expect(fixture.host.subviews.last?.alphaValue == 1, "The loading cover must completely hide the blank canvas")
         #expect(fixture.presentation.isReady == false)
         #expect(try await view.evaluateJavaScript("typeof globalThis.__earlyInitialPaint") as? String == "undefined")
-        // An old isolated document's queued notification is insufficient.
-        _ = try await view.evaluateJavaScript("window.webkit.messageHandlers.earlyInitialPaint.postMessage('old-document'); true",
-                                             in: nil, contentWorld: PagePaintObserver.world)
-        _ = try await view.takeSnapshot(configuration: nil)
+        // Exercise the real isolated-world bridge without requiring the package
+        // runner's unshown window to receive compositor paint-timing events.
+        // Native UI tests verify actual first paint in a running application.
+        try await fixture.signalReadiness(token: "old-document")
+        #expect(!fixture.presentation.isReady)
+        try await fixture.signalReadiness(ready: false)
         #expect(!fixture.presentation.isReady)
 
-        _ = try await view.evaluateJavaScript("""
-            document.documentElement.style.backgroundColor = '\(color)';
-            document.body.innerHTML += '<h1>First content</h1>';
-            """)
-        // Let parsing finish without finishing the load: the async script stays pending.
-        fixture.server.finish(keepingLoadOpen: true)
-        _ = try await view.takeSnapshot(configuration: nil)
-        do {
-            try await Self.waitUntil { fixture.presentation.isReady }
-        } catch {
-            let state = try? await view.evaluateJavaScript("""
-                JSON.stringify({
-                    document: document.readyState,
-                    visibility: document.visibilityState,
-                    supported: PerformanceObserver.supportedEntryTypes,
-                    paints: performance.getEntriesByType('paint').map(entry => entry.name),
-                    observer: globalThis.__earlyInitialPaint,
-                    content: document.body.textContent
-                })
-                """, in: nil, contentWorld: PagePaintObserver.world)
-            print("Initial-paint timeout: loading=\(view.isLoading), ready=\(fixture.presentation.isReady), visible=\(fixture.window.isVisible), occlusion=\(fixture.window.occlusionState.rawValue), state=\(String(describing: state))")
-            throw error
-        }
+        _ = try await view.callAsyncJavaScript("document.documentElement.style.backgroundColor = color;",
+                                             arguments: ["color": color], in: nil, contentWorld: .page)
+        try await fixture.signalReadiness()
+        try await Self.waitUntil { fixture.presentation.isReady }
         #expect(view.alphaValue == 1 && view.isLoading && !fixture.host.hidesInitialPage)
         #expect(try await view.evaluateJavaScript("document.documentElement.style.backgroundColor") as? String
                 == (color == "#ffffff" ? "rgb(255, 255, 255)" : "rgb(15, 15, 15)"))
@@ -67,10 +83,10 @@ struct InitialPagePresentationTests {
     }
 
     @Test func completedEmptyDocumentUsesRenderCompletionWithoutContentfulPaint() async throws {
-        let fixture = try Fixture()
+        let fixture = Fixture()
         defer { fixture.cleanup() }
         try await fixture.start()
-        fixture.server.finish()
+        fixture.pages.finish()
         try await Self.waitUntil { !fixture.view.isLoading && fixture.presentation.isReady }
         #expect(fixture.view.alphaValue == 1)
         #expect(try await fixture.view.evaluateJavaScript("globalThis.__earlyInitialPaint.ready", in: nil, contentWorld: PagePaintObserver.world) as? Bool == false)
@@ -78,7 +94,7 @@ struct InitialPagePresentationTests {
 
     @Test(arguments: ["stop", "error", "process-ended"])
     func interruptedInitialLoadsAlwaysReveal(action: String) async throws {
-        let fixture = try Fixture()
+        let fixture = Fixture()
         defer { fixture.cleanup() }
         try await fixture.start()
         switch action {
@@ -94,7 +110,7 @@ struct InitialPagePresentationTests {
     }
 
     @Test func hostAppearanceAndDetachmentPreserveNativeViewProperties() async throws {
-        let fixture = try Fixture()
+        let fixture = Fixture()
         defer { fixture.cleanup() }
         try await fixture.start()
         let dark = try #require(fixture.host.layer?.backgroundColor.flatMap(NSColor.init(cgColor:))?.usingColorSpace(.sRGB))
@@ -118,7 +134,7 @@ struct InitialPagePresentationTests {
     }
 
     @Test func anUnshownBackgroundPageDoesNotForceRendering() async throws {
-        let fixture = try Fixture()
+        let fixture = Fixture()
         defer { fixture.cleanup() }
         fixture.host.display(nil)
         fixture.view.loadSimulatedRequest(URLRequest(url: fixture.tab.currentURL), responseHTML: "<html></html>")
@@ -131,7 +147,7 @@ struct InitialPagePresentationTests {
 
     @Test(arguments: [false, true])
     func presentationRestoresPageFocusOnlyWhenTheLoadingHostStillOwnsIt(focusedElsewhere: Bool) async throws {
-        let fixture = try Fixture()
+        let fixture = Fixture()
         defer { fixture.cleanup() }
         try await fixture.start()
         fixture.host.canFocus = true
@@ -145,7 +161,7 @@ struct InitialPagePresentationTests {
     }
 
     @Test func aCompletedPageCanWaitForItsFirstUsableViewport() async throws {
-        let fixture = try Fixture()
+        let fixture = Fixture()
         defer { fixture.cleanup() }
         fixture.host.display(nil)
         fixture.view.frame = .zero
@@ -172,7 +188,7 @@ struct InitialPagePresentationTests {
     }
 
     @MainActor private final class Fixture {
-        let server: PaintHTTPServer
+        let pages = PresentationPages()
         let manager: WebViewManager
         let tab: BrowserTab
         let view: WKWebView
@@ -180,13 +196,15 @@ struct InitialPagePresentationTests {
         let window: NSWindow
         var presentation: InitialPagePresentation { view.initialPagePresentation! }
 
-        init() throws {
+        init() {
             _ = NSApplication.shared
-            server = try PaintHTTPServer()
             let profile = UUID()
             manager = WebViewManager(profileID: profile, ephemeral: true,
-                                     faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false)
-            tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Fixture", currentURL: server.url)
+                                     faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false) { [pages] in
+                $0.setURLSchemeHandler(pages, forURLScheme: "early-presentation")
+            }
+            tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Fixture",
+                             currentURL: URL(string: "early-presentation://fixture/page")!)
             view = manager.prepare(tab).view
             window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -199,76 +217,54 @@ struct InitialPagePresentationTests {
             manager.load(tab.currentURL, in: tab)
             try await InitialPagePresentationTests.waitUntil {
                 view.isLoading && view.url == tab.currentURL && !manager.pages[tab.id]!.awaitsNavigationCommit
-                    && view.underPageBackgroundColor.usingColorSpace(.sRGB)?.redComponent == 1
+            }
+            // Document readiness is independent of native background-color
+            // propagation and the WindowServer visibility of the test process.
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+            while try await view.evaluateJavaScript("document.body?.dataset.presentationFixture === 'ready'") as? Bool != true {
+                try #require(ContinuousClock.now < deadline)
+                try await Task.sleep(for: .milliseconds(20))
             }
         }
-        func cleanup() { host.invalidate(); manager.discardAll(); window.close(); server.stop() }
+
+        func signalReadiness(token: String? = nil, ready: Bool = true) async throws {
+            _ = try await view.callAsyncJavaScript("""
+                const state = globalThis.__earlyInitialPaint;
+                state.ready = ready;
+                window.webkit.messageHandlers.earlyInitialPaint.postMessage(token ?? state.token);
+                """, arguments: ["token": token as Any? ?? NSNull(), "ready": ready],
+                in: nil, contentWorld: PagePaintObserver.world)
+            // Drain the bridge's document-validation evaluation before checking
+            // rejection. This does not force rendering or synthesize user input.
+            _ = try await view.evaluateJavaScript("0", in: nil, contentWorld: PagePaintObserver.world)
+        }
+        func cleanup() { host.invalidate(); manager.discardAll(); window.close() }
     }
 }
 
-/// Hold the document and a same-origin async script independently, so tests can
-/// finish parsing without relying on hidden images to keep the load active.
-private final class PaintHTTPServer: @unchecked Sendable {
-    private let listener: NWListener
-    private let queue = DispatchQueue(label: "early.tests.paint.http")
-    private var connections: [NWConnection] = []
-    private var documentConnections: [NWConnection] = []
-    private var scriptConnections: [NWConnection] = []
-    private var scriptFinished = false
-    private let prefix = Data(("<!doctype html><html><head><style>html{background:white}</style><script async src='/hold.js'></script></head><body><!--"
-        + String(repeating: " ", count: 8192) + "-->").utf8)
-    private let suffix = Data("</body></html>".utf8)
-    private var port: UInt16 = 0
-    var url: URL { URL(string: "http://127.0.0.1:\(port)/page")! }
-    init() throws {
-        let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-        listener = try NWListener(using: parameters)
-        let ready = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { return }
-            self.connections.append(connection)
-            connection.start(queue: self.queue)
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] request, _, _, _ in
-                guard let self, let request else { return }
-                if String(decoding: request, as: UTF8.self).hasPrefix("GET /hold.js ") {
-                    if self.scriptFinished {
-                        self.finishScript(connection)
-                    } else {
-                        self.scriptConnections.append(connection)
-                    }
-                    return
-                }
-                self.documentConnections.append(connection)
-                var data = Data("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(self.prefix.count + self.suffix.count)\r\nConnection: close\r\n\r\n".utf8)
-                data.append(self.prefix)
-                connection.send(content: data, completion: .contentProcessed { _ in })
-            }
-        }
-        listener.start(queue: queue)
-        guard ready.wait(timeout: .now() + 5) == .success, let boundPort = listener.port else {
-            listener.cancel()
-            throw URLError(.cannotConnectToHost)
-        }
-        port = boundPort.rawValue
+/// Serve an empty document and explicitly hold its completion. No sockets,
+/// rendering heuristics, pending subresources or visible test windows required.
+@MainActor private final class PresentationPages: NSObject, WKURLSchemeHandler {
+    private var pending: [ObjectIdentifier: any WKURLSchemeTask] = [:]
+
+    func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
+        guard let url = task.request.url else { return }
+        let data = Data("""
+            <!doctype html><html><head><style>html{background:white}</style></head>
+            <body data-presentation-fixture="ready"></body></html>
+            """.utf8)
+        pending[ObjectIdentifier(task)] = task
+        task.didReceive(URLResponse(url: url, mimeType: "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
+        task.didReceive(data)
     }
-    func finish(keepingLoadOpen: Bool = false) {
-        queue.async {
-            for connection in self.documentConnections {
-                connection.send(content: self.suffix, completion: .contentProcessed { _ in connection.cancel() })
-            }
-            self.documentConnections = []
-            if !keepingLoadOpen {
-                self.scriptFinished = true
-                for connection in self.scriptConnections { self.finishScript(connection) }
-                self.scriptConnections = []
-            }
-        }
+
+    func finish() {
+        let tasks = Array(pending.values)
+        pending.removeAll()
+        tasks.forEach { $0.didFinish() }
     }
-    private func finishScript(_ connection: NWConnection) {
-        let response = Data("HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: 1\r\nConnection: close\r\n\r\n;".utf8)
-        connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+
+    func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
+        pending.removeValue(forKey: ObjectIdentifier(task))
     }
-    func stop() { queue.sync { connections.forEach { $0.cancel() }; connections = [] }; listener.cancel() }
 }

@@ -2326,29 +2326,46 @@ final class EarlyUITests: XCTestCase {
         app.typeText(address + "\n")
     }
 
-    /// CI only: the page initially paints nothing over its white canvas, then
-    /// produces dark content while a hidden subframe keeps loading pending.
+    /// CI only: exercise real first paint in an onscreen application. Package
+    /// tests cover the readiness bridge without requiring compositor events.
     func testInitialBlankCanvasStaysDarkUntilContentPaints() throws {
         let app = launchFreshApp(appearance: "dark")
-        navigate(app, to: "early-test://fixture/initial-paint")
-        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.textFields["commandBar.query"])
-        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
-        let window = app.windows["browser"]
-        let ready = app.webViews.staticTexts["Paint ready"]
-        XCTAssertFalse(ready.exists, "The screenshot must sample the initial blank stage")
-        func sampleBackground() throws -> CGFloat {
-            let shot = window.screenshot()
-            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: shot.pngRepresentation))
-            let pixel = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide * 3 / 4, y: bitmap.pixelsHigh * 3 / 5)?.usingColorSpace(.sRGB))
-            return max(pixel.redComponent, pixel.greenComponent, pixel.blueComponent)
+        for color in ["dark", "light"] {
+            // Each variant needs a new WKWebView: later navigations intentionally
+            // keep WebKit's native presentation once the initial page is shown.
+            navigate(app, to: "early-test://fixture/initial-paint?color=\(color)", newTab: color == "light")
+            let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.textFields["commandBar.query"])
+            XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+            let window = app.windows["browser"]
+            let state = app.staticTexts["test.initialPage"]
+            func expectPresentation(_ expected: String) {
+                let predicate = NSPredicate(format: "value == %@", expected)
+                XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: state)], timeout: 5),
+                               .completed, "Presentation: \(state.debugDescription)")
+            }
+            expectPresentation("loading true · ready false · covered true · visible true")
+            let ready = app.webViews.staticTexts["Paint ready \(color)"]
+            XCTAssertFalse(ready.exists, "The screenshot must sample the initial blank stage")
+            func sampleBackground() throws -> CGFloat {
+                let shot = window.screenshot()
+                let bitmap = try XCTUnwrap(NSBitmapImageRep(data: shot.pngRepresentation))
+                let pixel = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide * 3 / 4, y: bitmap.pixelsHigh * 3 / 5)?.usingColorSpace(.sRGB))
+                return max(pixel.redComponent, pixel.greenComponent, pixel.blueComponent)
+            }
+            XCTAssertLessThan(try sampleBackground(), 0.1, "The empty document must use the darker loading background")
+            XCTAssertTrue(ready.waitForExistence(timeout: 20), app.debugDescription)
+            // A still-pending load excludes the didFinish/snapshot fallback.
+            expectPresentation("loading true · ready true · covered false · visible true")
+            if color == "light" {
+                XCTAssertGreaterThan(try sampleBackground(), 0.9, "Preserve the actual white page after content paints")
+            } else {
+                XCTAssertLessThan(try sampleBackground(), 0.5)
+            }
+            let attachment = XCTAttachment(screenshot: window.screenshot())
+            attachment.name = "Initial \(color) page presented after contentful paint"
+            attachment.lifetime = .keepAlways
+            add(attachment)
         }
-        XCTAssertLessThan(try sampleBackground(), 0.1, "The empty document must use the darker loading background")
-        XCTAssertTrue(ready.waitForExistence(timeout: 20), app.debugDescription)
-        XCTAssertLessThan(try sampleBackground(), 0.5)
-        let attachment = XCTAttachment(screenshot: window.screenshot())
-        attachment.name = "Initial page presented after contentful paint"
-        attachment.lifetime = .keepAlways
-        add(attachment)
     }
 
     /// A control that just appeared can still be fading in, and isn't

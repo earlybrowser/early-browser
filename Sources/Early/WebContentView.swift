@@ -109,6 +109,29 @@ struct TestFrontWindowState: NSViewRepresentable {
     }
 }
 
+/// Read-only presentation state, queried directly so UI tests do not depend on
+/// a SwiftUI refresh to observe WebKit loading or the native cover's removal.
+struct TestInitialPageState: NSViewRepresentable {
+    let page: WKWebView?
+
+    func makeNSView(context: Context) -> StateView { StateView() }
+    func updateNSView(_ view: StateView, context: Context) { view.page = page }
+
+    final class StateView: NSView {
+        weak var page: WKWebView?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+        override func accessibilityIdentifier() -> String { "test.initialPage" }
+        override func accessibilityValue() -> Any? {
+            guard let page, let host = page.superview as? WebContentView.HostView,
+                  let presentation = page.initialPagePresentation else { return "no page" }
+            let visible = page.window?.occlusionState.contains(.visible) == true
+            return "loading \(page.isLoading) · ready \(presentation.isReady) · covered \(host.hidesInitialPage) · visible \(visible)"
+        }
+    }
+}
+
 /// Read-only test seam: fullscreen state must not be inferred from window width
 /// (a maximized window can have the same width). Not installed in normal runs.
 struct TestWindowState: NSViewRepresentable {
@@ -1239,9 +1262,8 @@ struct WebContentView: NSViewRepresentable {
                 }
             }
             if !ready {
-                // Zero alpha makes WebKit's document hidden and suppresses the
-                // paint event we need to reveal it. Cover the native surface
-                // without changing its visibility or transition opacity.
+                // Cover the blank canvas without changing WebKit's native
+                // visibility or transition opacity while waiting for paint.
                 hidesInitialPage = true
                 initialPageCover.wantsLayer = true
                 initialPageCover.frame = hosted.frame
