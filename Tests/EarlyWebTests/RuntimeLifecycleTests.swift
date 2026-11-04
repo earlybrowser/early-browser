@@ -49,11 +49,20 @@ struct RuntimeLifecycleTests {
         manager.setPresentation(visibleTabIDs: [first.id], focusedTabID: first.id)
         manager.load(first.currentURL, in: first)
         #expect(manager.lifecycle(for: first.id).state == .loading)
+        let firstPage = try #require(manager.pages[first.id])
+        let firstProgressCycle = firstPage.loadProgress.generation
         manager.load(second.currentURL, in: second)
         #expect(manager.lifecycle(for: second.id).state == .loading)
         let firstView = try #require(manager.existingView(for: first.id))
         let secondView = try #require(manager.existingView(for: second.id))
-        try await waitUntil { manager.lifecycle(for: first.id).state == .active && manager.lifecycle(for: second.id).state == .background }
+        try await waitUntil {
+            manager.lifecycle(for: first.id).state == .active && manager.lifecycle(for: second.id).state == .background
+                && firstPage.loadProgress.phase == .completed && manager.pages[second.id]?.loadProgress.phase == .completed
+        }
+        #expect(manager.pages[first.id]?.loadProgress.generation == firstProgressCycle,
+                "The API request and provisional callback must share one visible progress cycle")
+        #expect(manager.pages[first.id]?.loadProgress.phase == .completed)
+        #expect(manager.pages[second.id]?.loadProgress.phase == .completed)
 
         for _ in 0..<5 {
             manager.setPresentation(visibleTabIDs: [second.id], focusedTabID: second.id)
@@ -82,12 +91,28 @@ struct RuntimeLifecycleTests {
         manager.webViewWebContentProcessDidTerminate(page.view)
         #expect(manager.lifecycle(for: tab.id).state == .failed)
         #expect(page.failure != nil && !page.isLoading)
+        #expect(page.loadProgress.phase == .interrupted)
         manager.activate(tab)
         #expect(manager.lifecycle(for: tab.id).state == .failed && manager.creationCount == 1)
         manager.reload(tab.id)
         #expect(manager.lifecycle(for: tab.id).state == .loading && page.failure == nil)
         try await waitUntil { manager.lifecycle(for: tab.id).state == .active }
         #expect(manager.pages[tab.id] === page && manager.creationCount == 1)
+    }
+
+    @Test func sameDocumentRequestsDoNotLeaveTheProgressIndicatorRunning() async throws {
+        let profile = UUID(), manager = manager(profile: profile)
+        defer { manager.discardAll() }
+        let tab = tab(profile: profile)
+        manager.load(tab.currentURL, in: tab)
+        let page = try #require(manager.pages[tab.id])
+        try await waitUntil { page.loadProgress.phase == .completed }
+        let previous = page.loadProgress.generation
+        let fragment = URL(string: tab.currentURL.absoluteString + "#section")!
+        manager.load(fragment, in: tab)
+        try await waitUntil { !page.view.isLoading && page.view.url == fragment && !page.loadProgress.isLoading }
+        #expect(!page.loadProgress.isLoading && page.loadProgress.generation != previous)
+        #expect(manager.creationCount == 1 && manager.pages[tab.id] === page)
     }
 
     @Test func disposalRejectsOldDelegatesMessagesAndQueuedRefreshesAfterRecreation() async throws {

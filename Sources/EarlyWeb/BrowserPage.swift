@@ -23,6 +23,7 @@ public final class BrowserPage {
     var mediaFrames: [String: WKFrameInfo] = [:]
     var muteRevision = 0
     public var progress = 0.0
+    public internal(set) var loadProgress = PageLoadProgress()
     public var canGoBack = false
     public var canGoForward = false
     public var failure: String?
