@@ -200,6 +200,7 @@ struct InitialPagePresentationTests {
             _ = NSApplication.shared
             let profile = UUID()
             manager = WebViewManager(profileID: profile, ephemeral: true,
+                                     input: NavigationInput(allowedSchemes: ["http", "https", "early-presentation"]),
                                      faviconStore: FaviconStore { _, _, _ in nil }, observesMemoryPressure: false) { [pages] in
                 $0.setURLSchemeHandler(pages, forURLScheme: "early-presentation")
             }
