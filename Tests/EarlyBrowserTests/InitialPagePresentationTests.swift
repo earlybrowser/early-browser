@@ -19,7 +19,10 @@ struct InitialPagePresentationTests {
         try await fixture.start()
         let view = fixture.view
         _ = try await view.takeSnapshot(configuration: nil)
-        #expect(view.alphaValue == 0)
+        #expect(view.alphaValue == 1 && fixture.host.hidesInitialPage)
+        #expect(fixture.host.subviews.last !== view)
+        #expect(fixture.host.subviews.last?.frame == view.frame)
+        #expect(try await view.evaluateJavaScript("document.visibilityState") as? String == "visible")
         #expect(fixture.presentation.isReady == false)
         #expect(try await view.evaluateJavaScript("typeof globalThis.__earlyInitialPaint") as? String == "undefined")
         // An old isolated document's queued notification is insufficient.
@@ -45,13 +48,13 @@ struct InitialPagePresentationTests {
                     supported: PerformanceObserver.supportedEntryTypes,
                     paints: performance.getEntriesByType('paint').map(entry => entry.name),
                     observer: globalThis.__earlyInitialPaint,
-                    content: document.body.innerHTML
+                    content: document.body.textContent
                 })
                 """, in: nil, contentWorld: PagePaintObserver.world)
             print("Initial-paint timeout: loading=\(view.isLoading), ready=\(fixture.presentation.isReady), visible=\(fixture.window.isVisible), occlusion=\(fixture.window.occlusionState.rawValue), state=\(String(describing: state))")
             throw error
         }
-        #expect(view.alphaValue == 1 && view.isLoading)
+        #expect(view.alphaValue == 1 && view.isLoading && !fixture.host.hidesInitialPage)
         #expect(try await view.evaluateJavaScript("document.documentElement.style.backgroundColor") as? String
                 == (color == "#ffffff" ? "rgb(255, 255, 255)" : "rgb(15, 15, 15)"))
         #expect(try await view.evaluateJavaScript("globalThis.__earlyInitialPaint.ready", in: nil, contentWorld: PagePaintObserver.world) as? Bool == true)
@@ -99,14 +102,17 @@ struct InitialPagePresentationTests {
         fixture.host.appearance = NSAppearance(named: .aqua)
         let light = try #require(fixture.host.layer?.backgroundColor.flatMap(NSColor.init(cgColor:))?.usingColorSpace(.sRGB))
         #expect(light.redComponent > 0.5)
-        fixture.host.frame.size = NSSize(width: 700, height: 500)
-        #expect(fixture.view.frame == fixture.host.bounds && fixture.view.alphaValue == 0)
-        #expect(fixture.host.display(nil))
-        #expect(fixture.view.alphaValue == 1)
-        #expect(fixture.host.display(fixture.view))
-        #expect(fixture.view.alphaValue == 0)
-        fixture.presentation.reveal()
         fixture.view.alphaValue = 0.7
+        fixture.host.frame.size = NSSize(width: 700, height: 500)
+        #expect(fixture.view.frame == fixture.host.bounds && fixture.view.alphaValue == 0.7)
+        #expect(fixture.host.hidesInitialPage)
+        #expect(fixture.host.subviews.last?.frame == fixture.view.frame)
+        #expect(fixture.host.display(nil))
+        #expect(fixture.view.alphaValue == 0.7 && !fixture.host.hidesInitialPage)
+        #expect(fixture.host.display(fixture.view))
+        #expect(fixture.view.alphaValue == 0.7 && fixture.host.hidesInitialPage)
+        fixture.presentation.reveal()
+        #expect(!fixture.host.hidesInitialPage)
         fixture.host.frame.size.width += 10
         #expect(fixture.view.alphaValue == 0.7, "Do not interfere with native transitions after initial presentation")
     }

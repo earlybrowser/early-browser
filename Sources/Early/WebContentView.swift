@@ -1125,8 +1125,13 @@ struct WebContentView: NSViewRepresentable {
         private weak var resizingView: WKWebView?
         private var backgroundObservation: NSKeyValueObservation?
         private var presentationObservation: NSKeyValueObservation?
-        private var originalAlpha: CGFloat = 1
-        private var hidesInitialPage = false
+        private let initialPageCover = InitialPageCover()
+        private(set) var hidesInitialPage = false
+
+        private final class InitialPageCover: NSView {
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+            override func isAccessibilityElement() -> Bool { false }
+        }
         var pageFocusTarget: NSView {
             hosted?.initialPagePresentation?.isReady == false ? self : (hosted ?? self)
         }
@@ -1234,10 +1239,18 @@ struct WebContentView: NSViewRepresentable {
                 }
             }
             if !ready {
-                if !hidesInitialPage { originalAlpha = hosted.alphaValue; hidesInitialPage = true }
-                hosted.alphaValue = 0
+                // Zero alpha makes WebKit's document hidden and suppresses the
+                // paint event we need to reveal it. Cover the native surface
+                // without changing its visibility or transition opacity.
+                hidesInitialPage = true
+                initialPageCover.wantsLayer = true
+                initialPageCover.frame = hosted.frame
+                initialPageCover.layer?.backgroundColor = layer?.backgroundColor
+                if initialPageCover.superview !== self {
+                    addSubview(initialPageCover, positioned: .above, relativeTo: hosted)
+                }
             } else if hidesInitialPage {
-                hosted.alphaValue = originalAlpha
+                initialPageCover.removeFromSuperview()
                 hidesInitialPage = false
                 if canFocus, window?.firstResponder === self { window?.makeFirstResponder(hosted) }
             }
@@ -1367,10 +1380,10 @@ struct WebContentView: NSViewRepresentable {
                 if let observer = inspectorFrameObserver { NotificationCenter.default.removeObserver(observer) }
                 inspectorFrameObserver = nil
                 if hosted.superview === self {
-                    if hidesInitialPage { hosted.alphaValue = originalAlpha }
                     hosted.removeFromSuperview()
                 }
             }
+            initialPageCover.removeFromSuperview()
             hidesInitialPage = false
             inspector = nil
             hosted = nil
@@ -1385,7 +1398,6 @@ struct WebContentView: NSViewRepresentable {
             if let view {
                 Self.owners.setObject(self, forKey: view)
                 view.removeFromSuperview()
-                originalAlpha = view.alphaValue
                 view.autoresizingMask = []
                 // Size before attachment: WebKit must not start drawing at the
                 // previous Space's viewport and immediately resize afterward.
