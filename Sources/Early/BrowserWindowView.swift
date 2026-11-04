@@ -500,6 +500,7 @@ struct BrowserWindowView: View {
                 HStack(spacing: 0) {
                     TestWindowState().frame(width: 1, height: 1)
                     TestFrontWindowState(application: model.application).frame(width: 1, height: 1)
+                    TestInitialPageState(page: model.activePage?.view).frame(width: 1, height: 1)
                     // State assertions must not depend on sidebar visibility.
                     TestRuntimeState(value: testRuntimeValue).frame(width: 1, height: 1)
                 }

@@ -35,7 +35,8 @@ struct BrowserContentSurface: ViewModifier {
     private var borderColor: Color {
         border == .focused
             ? theme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
-            : Color.primary.opacity(contrast == .increased ? 0.30 : 0.08)
+            : contrast == .increased ? Color.primary.opacity(0.30)
+            : colorScheme == .dark ? Color.black.opacity(0.16) : Color.primary.opacity(0.08)
     }
 
     func body(content: Content) -> some View {
@@ -158,10 +159,9 @@ struct SplitContentView: View {
         // pane routing work unchanged; leaving it reinstalls the page.
         let hosted = page?.isReaderShown == true ? model.webViews.readerView(for: id) ?? page?.view : page?.view
         return ZStack {
-            // Match the hosted document, not the browser appearance: a dark site
-            // in light chrome must not flash a white island during attachment,
-            // and its rounded corners must not show another page's color.
-            Color(nsColor: hosted?.underPageBackgroundColor ?? .textBackgroundColor)
+            // The native host owns the loading and document backgrounds. A
+            // second fill using WebKit's interim white can fringe rounded edges.
+            if hosted == nil { Color(nsColor: .textBackgroundColor) }
             WebContentView(view: hosted,
                 focusRequest: model.contentFocusRequest,
                 canFocus: focused && model.coordinator.commandBar == nil && model.tabSwitcher == nil

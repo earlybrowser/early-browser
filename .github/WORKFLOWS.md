@@ -26,6 +26,17 @@ runs package tests, builds the Apple Silicon Release app with
 release containing the ZIP, `SHA256SUMS` and `appcast.xml`. Version and build number
 are passed to the packaged build; tagging does not edit `Config/Early.xcconfig`.
 
+Write each version's highlights once in `Packaging/ReleaseNotes/<version>.md`
+before tagging (for example, `0.1.8.md` for `v0.1.8`). Use Markdown headings,
+bullets, emphasis, and links with full URLs. The release stops before testing or
+building if that file is missing or empty. `Scripts/release-notes.py` uses the
+same highlights for the GitHub draft and Sparkle's embedded Markdown notes;
+GitHub also gets the common installation instructions from
+`Packaging/install-notes.md`. Sparkle includes a full-notes link to the GitHub
+release, and the completed feed is signed after its notes are embedded. Editing
+the GitHub draft alone does not change the already-generated Sparkle notes.
+The package CI job also runs the release-note script tests.
+
 Before tagging, merge the intended version/configuration changes and confirm the
 package job and all four UI shards passed for that exact `main` commit. The
 release job itself does not rerun the UI shards. Review the resulting draft and

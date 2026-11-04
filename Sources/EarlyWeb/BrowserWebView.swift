@@ -24,6 +24,13 @@ enum UnhandledPageKey {
 /// media keep WebKit's native menus.
 @MainActor
 final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDelegate {
+    let initialPresentation = InitialPagePresentation()
+
+    override func stopLoading() {
+        initialPresentation.reveal()
+        super.stopLoading()
+    }
+
     /// What a trusted right-click landed on, already validated by the manager.
     struct ContextTarget: Equatable {
         var link: URL?
