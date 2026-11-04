@@ -513,8 +513,16 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         controller.removeScriptMessageHandler(forName: PasswordFormObserver.name, contentWorld: PasswordFormObserver.world)
     }
 
-    func beginLoading(_ id: UUID) {
+    enum LoadStart { case request, provisional(WKNavigation?) }
+
+    func beginLoading(_ id: UUID, start: LoadStart = .request) {
         guard let page = pages[id] else { return }
+        switch start {
+        case .request:
+            page.loadProgress.request()
+        case .provisional(let navigation):
+            page.loadProgress.started(navigation.map(ObjectIdentifier.init), expected: page.activeNavigation)
+        }
         page.failure = nil
         page.certificateFailure = nil
         page.navigationNotice = nil
@@ -545,6 +553,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.earlyRequested = url
         beginLoading(tab.id)
         page.activeNavigation = startNavigation(to: url, in: page.view).map(ObjectIdentifier.init)
+        if page.activeNavigation == nil { page.loadProgress.interrupt() }
     }
 
     /// Local documents receive read access to the chosen file only, which is
@@ -598,9 +607,11 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         if needsRequest {
             page.activeNavigation = startNavigation(to: page.requestedURL, in: page.view).map(ObjectIdentifier.init)
         } else { page.activeNavigation = page.view.reload().map(ObjectIdentifier.init) }
+        if page.activeNavigation == nil { page.loadProgress.interrupt() }
     }
 
     public func stop(_ id: UUID) {
+        pages[id]?.loadProgress.interrupt()
         pages[id]?.view.stopLoading()
         transition(id, .stopLoading)
         refresh(id)
@@ -651,6 +662,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let navigation = move(page.view)
         page.activeNavigation = navigation.map(ObjectIdentifier.init)
         if navigation == nil {
+            page.loadProgress.interrupt()
             transition(id, .stopLoading)
             refresh(id)
         }
@@ -794,6 +806,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             page.requestedURL = url
             beginLoading(id)
             page.activeNavigation = startNavigation(to: url, in: view).map(ObjectIdentifier.init)
+            if page.activeNavigation == nil { page.loadProgress.interrupt() }
         }
         return true
     }
@@ -834,6 +847,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         let view = page.view
         page.isLoading = view.isLoading
         page.progress = view.estimatedProgress
+        page.loadProgress.advance(view.estimatedProgress)
+        if !view.isLoading {
+            page.loadProgress.settleRequest(atRequestedURL: view.url == page.requestedURL)
+        }
         page.canGoBack = view.canGoBack
         page.canGoForward = view.canGoForward
         let fullscreen = view.fullscreenState != .notInFullscreen

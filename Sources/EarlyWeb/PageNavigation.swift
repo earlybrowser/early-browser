@@ -151,6 +151,7 @@ extension WebViewManager {
     /// Reload must reload the page still on screen, not repeat a download.
     func keepCurrentDocument(_ id: UUID) {
         guard let page = pages[id] else { return }
+        page.loadProgress.interrupt()
         page.pendingDocumentMIMEType = nil
         guard let current = page.view.url.flatMap({ try? input.validate($0) }) else { return }
         page.requestedURL = current
@@ -158,11 +159,17 @@ extension WebViewManager {
     }
 
     public func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        if navigationAction.targetFrame?.isMainFrame != false, let id = tabID(for: webView) {
+            pages[id]?.loadProgress.interrupt()
+        }
         adoptDownload(download, from: webView)
         closeBlankPageAfterDownload(webView)
     }
 
     public func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        if navigationResponse.isForMainFrame, let id = tabID(for: webView) {
+            pages[id]?.loadProgress.interrupt()
+        }
         adoptDownload(download, from: webView)
         closeBlankPageAfterDownload(webView)
     }
@@ -232,7 +239,7 @@ extension WebViewManager {
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
-        beginLoading(id)
+        beginLoading(id, start: .provisional(navigation))
         pages[id]?.activeNavigation = navigation.map(ObjectIdentifier.init)
         refresh(id)
     }
@@ -271,6 +278,7 @@ extension WebViewManager {
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
+        page.loadProgress.finish(navigation.map(ObjectIdentifier.init))
         webView.initialPagePresentation?.finishedLoading(in: webView)
         page.navigationNotice = nil
         page.policyCancellations.removeAll()
@@ -325,15 +333,17 @@ extension WebViewManager {
             let cancelled = page.policyCancellations.remove(at: match)
             recordNavigation(.init(tabID: id, event: "expected-policy-cancellation", url: failingURL ?? cancelled.url,
                 isMainFrame: cancelled.isMainFrame, error: nsError))
-            if cancelled.isMainFrame { refresh(id) }
+            if cancelled.isMainFrame { page.loadProgress.interrupt(); refresh(id) }
             return
         }
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            page.loadProgress.interrupt()
             recordNavigation(.init(tabID: id, event: "cancelled", url: failingURL, isMainFrame: true, error: nsError))
             refresh(id)
             return
         }
         recordNavigation(.init(tabID: id, event: "failure", url: failingURL ?? page.requestedURL, isMainFrame: true, error: nsError))
+        page.loadProgress.interrupt()
         if Self.isCertificateError(nsError) {
             page.certificateFailure = .init(url: failingURL ?? page.requestedURL, trust: Self.peerTrust(nsError))
         }
@@ -343,6 +353,7 @@ extension WebViewManager {
     }
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
+        page.loadProgress.interrupt()
         webView.initialPagePresentation?.processEnded()
         cancelRecovery(id)
         snapshots.invalidate(tabID: id)
@@ -386,6 +397,7 @@ extension WebViewManager {
             // Reload the last validated address as a GET; never replay POST
             // bodies, dialogs, or claim that dead form/JavaScript state survived.
             page.activeNavigation = startNavigation(to: page.requestedURL, in: page.view).map(ObjectIdentifier.init)
+            if page.activeNavigation == nil { page.loadProgress.interrupt() }
         }
     }
 

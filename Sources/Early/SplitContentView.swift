@@ -194,14 +194,9 @@ struct SplitContentView: View {
         // area around them, keep Early's own light or dark appearance.
         .environment(\.colorScheme, model.isPrivate ? ApplicationAppearance.shared.colorScheme : colorScheme)
         .overlay(alignment: .topLeading) {
-            if let page, page.isLoading {
-                GeometryReader { geometry in
-                    Rectangle().fill(Color.accentColor).frame(width: geometry.size.width * min(max(page.progress, 0), 1))
-                }
-                .frame(height: 2).allowsHitTesting(false)
-                .accessibilityLabel("Page loading")
-                .accessibilityValue("\(Int(min(max(page.progress, 0), 1) * 100)) percent")
-                .accessibilityIdentifier("browser.loading")
+            if let page {
+                PageLoadingIndicator(progress: page.loadProgress)
+                    .id(page.instanceID)
             }
         }
         .overlay(alignment: .top) {
