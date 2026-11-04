@@ -35,7 +35,22 @@ struct InitialPagePresentationTests {
         // Let parsing finish without finishing the load: the async script stays pending.
         fixture.server.finish(keepingLoadOpen: true)
         _ = try await view.takeSnapshot(configuration: nil)
-        try await Self.waitUntil { fixture.presentation.isReady }
+        do {
+            try await Self.waitUntil { fixture.presentation.isReady }
+        } catch {
+            let state = try? await view.evaluateJavaScript("""
+                JSON.stringify({
+                    document: document.readyState,
+                    visibility: document.visibilityState,
+                    supported: PerformanceObserver.supportedEntryTypes,
+                    paints: performance.getEntriesByType('paint').map(entry => entry.name),
+                    observer: globalThis.__earlyInitialPaint,
+                    content: document.body.innerHTML
+                })
+                """, in: nil, contentWorld: PagePaintObserver.world)
+            print("Initial-paint timeout: loading=\(view.isLoading), ready=\(fixture.presentation.isReady), visible=\(fixture.window.isVisible), occlusion=\(fixture.window.occlusionState.rawValue), state=\(String(describing: state))")
+            throw error
+        }
         #expect(view.alphaValue == 1 && view.isLoading)
         #expect(try await view.evaluateJavaScript("document.documentElement.style.backgroundColor") as? String
                 == (color == "#ffffff" ? "rgb(255, 255, 255)" : "rgb(15, 15, 15)"))
@@ -142,10 +157,10 @@ struct InitialPagePresentationTests {
         override var acceptsFirstResponder: Bool { true }
     }
 
-    private static func waitUntil(_ predicate: () -> Bool) async throws {
+    private static func waitUntil(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !predicate() {
-            try #require(ContinuousClock.now < deadline)
+            try #require(ContinuousClock.now < deadline, sourceLocation: sourceLocation)
             try await Task.sleep(for: .milliseconds(20))
         }
     }
