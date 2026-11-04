@@ -14,6 +14,8 @@ struct InitialPagePresentationTests {
     func blankCanvasWaitsForContentAndRevealsBeforeLoadingFinishes(color: String) async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
+        // Snapshotting an unshown window does not guarantee paint-timing delivery.
+        fixture.window.orderFrontRegardless()
         try await fixture.start()
         let view = fixture.view
         _ = try await view.takeSnapshot(configuration: nil)
@@ -30,6 +32,8 @@ struct InitialPagePresentationTests {
             document.documentElement.style.backgroundColor = '\(color)';
             document.body.innerHTML += '<h1>First content</h1>';
             """)
+        // Let parsing finish without finishing the load: the async script stays pending.
+        fixture.server.finish(keepingLoadOpen: true)
         _ = try await view.takeSnapshot(configuration: nil)
         try await Self.waitUntil { fixture.presentation.isReady }
         #expect(view.alphaValue == 1 && view.isLoading)
@@ -181,13 +185,16 @@ struct InitialPagePresentationTests {
     }
 }
 
-/// Stream an empty HTML body, then hold EOF until the test completes it. This
-/// avoids version-dependent painting and loading of hidden image subresources.
+/// Hold the document and a same-origin async script independently, so tests can
+/// finish parsing without relying on hidden images to keep the load active.
 private final class PaintHTTPServer: @unchecked Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "early.tests.paint.http")
     private var connections: [NWConnection] = []
-    private let prefix = Data(("<!doctype html><html><head><style>html{background:white}</style></head><body><!--"
+    private var documentConnections: [NWConnection] = []
+    private var scriptConnections: [NWConnection] = []
+    private var scriptFinished = false
+    private let prefix = Data(("<!doctype html><html><head><style>html{background:white}</style><script async src='/hold.js'></script></head><body><!--"
         + String(repeating: " ", count: 8192) + "-->").utf8)
     private let suffix = Data("</body></html>".utf8)
     private var port: UInt16 = 0
@@ -202,8 +209,17 @@ private final class PaintHTTPServer: @unchecked Sendable {
             guard let self else { return }
             self.connections.append(connection)
             connection.start(queue: self.queue)
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] _, _, _, _ in
-                guard let self else { return }
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] request, _, _, _ in
+                guard let self, let request else { return }
+                if String(decoding: request, as: UTF8.self).hasPrefix("GET /hold.js ") {
+                    if self.scriptFinished {
+                        self.finishScript(connection)
+                    } else {
+                        self.scriptConnections.append(connection)
+                    }
+                    return
+                }
+                self.documentConnections.append(connection)
                 var data = Data("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(self.prefix.count + self.suffix.count)\r\nConnection: close\r\n\r\n".utf8)
                 data.append(self.prefix)
                 connection.send(content: data, completion: .contentProcessed { _ in })
@@ -216,12 +232,22 @@ private final class PaintHTTPServer: @unchecked Sendable {
         }
         port = boundPort.rawValue
     }
-    func finish() {
+    func finish(keepingLoadOpen: Bool = false) {
         queue.async {
-            for connection in self.connections {
+            for connection in self.documentConnections {
                 connection.send(content: self.suffix, completion: .contentProcessed { _ in connection.cancel() })
             }
+            self.documentConnections = []
+            if !keepingLoadOpen {
+                self.scriptFinished = true
+                for connection in self.scriptConnections { self.finishScript(connection) }
+                self.scriptConnections = []
+            }
         }
+    }
+    private func finishScript(_ connection: NWConnection) {
+        let response = Data("HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: 1\r\nConnection: close\r\n\r\n;".utf8)
+        connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
     }
     func stop() { queue.sync { connections.forEach { $0.cancel() }; connections = [] }; listener.cancel() }
 }
