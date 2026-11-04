@@ -100,6 +100,7 @@ public final class BrowserPage {
     var reportedURL: URL?
     var reportedTitle: String?
     var navigationGeneration = UUID()
+    var faviconRefresh: UUID?
     var activeNavigation: ObjectIdentifier?
     var policyCancellations: [NavigationPolicyCancellation] = []
     init(view: WKWebView, url: URL) { self.view = view; requestedURL = url }
