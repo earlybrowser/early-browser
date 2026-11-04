@@ -271,6 +271,7 @@ extension WebViewManager {
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
+        webView.initialPagePresentation?.finishedLoading(in: webView)
         page.navigationNotice = nil
         page.policyCancellations.removeAll()
         transition(id, .finishLoading)
@@ -311,6 +312,7 @@ extension WebViewManager {
             recordNavigation(.init(tabID: id, event: "stale-navigation-error", url: failingURL, isMainFrame: true, error: nsError))
             return
         }
+        view.initialPagePresentation?.reveal()
         // WebKit reports intentional policy cancellation with its legacy error
         // domain/code (WebKitErrors.h). Suppress only our matching decision, not
         // every policy error, and never match an unrelated NSError by code alone.
@@ -341,6 +343,7 @@ extension WebViewManager {
     }
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
+        webView.initialPagePresentation?.processEnded()
         cancelRecovery(id)
         snapshots.invalidate(tabID: id)
         page.navigationGeneration = UUID()

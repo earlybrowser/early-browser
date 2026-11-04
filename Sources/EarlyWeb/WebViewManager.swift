@@ -448,6 +448,14 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             return
         }
         controllerOwners[identity] = [id]
+        let paintObserver = PagePaintObserver()
+        paintObserver.owner = self
+        controller.removeScriptMessageHandler(forName: PagePaintObserver.name, contentWorld: PagePaintObserver.world)
+        controller.add(paintObserver, contentWorld: PagePaintObserver.world, name: PagePaintObserver.name)
+        if !controller.userScripts.contains(where: { $0.source == PagePaintObserver.script }) {
+            controller.addUserScript(WKUserScript(source: PagePaintObserver.script,
+                injectionTime: .atDocumentStart, forMainFrameOnly: true, in: PagePaintObserver.world))
+        }
         let mediaObserver = MediaActivityObserver()
         mediaObserver.owner = self
         controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
@@ -497,6 +505,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         // detach bridges still owned by another live page.
         guard controllerOwners[identity]?.isEmpty == true else { return }
         controllerOwners[identity] = nil
+        controller.removeScriptMessageHandler(forName: PagePaintObserver.name, contentWorld: PagePaintObserver.world)
         controller.removeScriptMessageHandler(forName: MediaActivityObserver.name, contentWorld: .defaultClient)
         controller.removeScriptMessageHandler(forName: PageContextMenuObserver.name, contentWorld: PageContextMenuObserver.world)
         controller.removeScriptMessageHandler(forName: PageInteractionObserver.name, contentWorld: .defaultClient)
@@ -515,6 +524,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         page.progress = 0
         page.awaitsNavigationCommit = true
         page.navigationGeneration = UUID()
+        page.view.initialPagePresentation?.begin()
         snapshots.invalidate(tabID: id)
         retentionPolicy.recordUse(of: id)
         transition(id, .startLoading)

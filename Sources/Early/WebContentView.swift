@@ -1109,7 +1109,7 @@ struct WebContentView: NSViewRepresentable {
             // WebKit temporarily owns/reparents an element-fullscreen view.
             // Do not steal its focus back into the browser window.
             if let view = host.hosted, view.fullscreenState != .notInFullscreen { return }
-            host.window?.makeFirstResponder(host.hosted ?? host)
+            host.window?.makeFirstResponder(host.pageFocusTarget)
         }
     }
 
@@ -1124,6 +1124,12 @@ struct WebContentView: NSViewRepresentable {
         private var resizeRequested = false
         private weak var resizingView: WKWebView?
         private var backgroundObservation: NSKeyValueObservation?
+        private var presentationObservation: NSKeyValueObservation?
+        private var originalAlpha: CGFloat = 1
+        private var hidesInitialPage = false
+        var pageFocusTarget: NSView {
+            hosted?.initialPagePresentation?.isReady == false ? self : (hosted ?? self)
+        }
         var onInteraction: (() -> Void)?
         var onPress: ((CGPoint) -> Void)?
         private var interactionMonitor: Any?
@@ -1208,8 +1214,40 @@ struct WebContentView: NSViewRepresentable {
             let area = dockedInspector.map { hosted.frame.union($0.frame) } ?? hosted.frame
             if hasViewport, area != bounds { hosted.frame = bounds }
             fitInspector()
-            layer?.backgroundColor = hosted.underPageBackgroundColor.cgColor
+            updatePagePresentation()
             CATransaction.commit()
+        }
+
+        private func updatePagePresentation() {
+            guard let hosted, hosted.superview === self else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            let ready = hosted.initialPagePresentation?.isReady != false
+            if ready {
+                layer?.backgroundColor = hosted.underPageBackgroundColor.cgColor
+            } else {
+                effectiveAppearance.performAsCurrentDrawingAppearance {
+                    let background = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                        ? NSColor.controlBackgroundColor.blended(withFraction: 0.5, of: .black) ?? .black
+                        : NSColor.controlBackgroundColor
+                    layer?.backgroundColor = background.cgColor
+                }
+            }
+            if !ready {
+                if !hidesInitialPage { originalAlpha = hosted.alphaValue; hidesInitialPage = true }
+                hosted.alphaValue = 0
+            } else if hidesInitialPage {
+                hosted.alphaValue = originalAlpha
+                hidesInitialPage = false
+                if canFocus, window?.firstResponder === self { window?.makeFirstResponder(hosted) }
+            }
+            CATransaction.commit()
+            if !ready, hasViewport { hosted.initialPagePresentation?.prepareForDisplay(in: hosted) }
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            updatePagePresentation()
         }
 
         private var hasViewport: Bool {
@@ -1244,12 +1282,14 @@ struct WebContentView: NSViewRepresentable {
             super.viewDidMoveToWindow()
             stopInteractionMonitor()
             guard window != nil, !invalidated else { return }
+            updatePagePresentation()
             interactionMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
                 guard let self, let window = self.window, event.window === window,
                       window.attachedSheet == nil, self.hosted != nil else { return event }
                 let interacts: Bool
                 if event.type == .keyDown {
                     interacts = self.containsPageView(window.firstResponder as? NSView)
+                        || (window.firstResponder === self && self.hosted?.initialPagePresentation?.isReady == false)
                 } else {
                     // Bounds alone also include SwiftUI overlays (command bar,
                     // pane controls, notices). They must not focus the page
@@ -1257,9 +1297,10 @@ struct WebContentView: NSViewRepresentable {
                     let content = window.contentView
                     let point = content?.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
                     let hit = content?.hitTest(point)
-                    interacts = self.containsPageView(hit)
+                    interacts = self.containsPageView(hit) || (hit === self && self.hosted?.initialPagePresentation?.isReady == false)
                 }
                 if interacts {
+                    self.hosted?.initialPagePresentation?.reveal()
                     self.onInteraction?()
                     if event.type != .keyDown, let content = window.contentView {
                         let local = content.convert(event.locationInWindow, from: nil)
@@ -1316,6 +1357,7 @@ struct WebContentView: NSViewRepresentable {
         private func releaseHostedView() {
             finishLiveResize()
             backgroundObservation = nil
+            presentationObservation = nil
             if let hosted {
                 if Self.owners.object(forKey: hosted) === self { Self.owners.removeObject(forKey: hosted) }
                 if let inspector = dockedInspector {
@@ -1324,8 +1366,12 @@ struct WebContentView: NSViewRepresentable {
                 }
                 if let observer = inspectorFrameObserver { NotificationCenter.default.removeObserver(observer) }
                 inspectorFrameObserver = nil
-                if hosted.superview === self { hosted.removeFromSuperview() }
+                if hosted.superview === self {
+                    if hidesInitialPage { hosted.alphaValue = originalAlpha }
+                    hosted.removeFromSuperview()
+                }
             }
+            hidesInitialPage = false
             inspector = nil
             hosted = nil
             layer?.backgroundColor = nil
@@ -1339,6 +1385,7 @@ struct WebContentView: NSViewRepresentable {
             if let view {
                 Self.owners.setObject(self, forKey: view)
                 view.removeFromSuperview()
+                originalAlpha = view.alphaValue
                 view.autoresizingMask = []
                 // Size before attachment: WebKit must not start drawing at the
                 // previous Space's viewport and immediately resize afterward.
@@ -1347,6 +1394,12 @@ struct WebContentView: NSViewRepresentable {
                 if hasViewport { view.frame = bounds }
                 layer?.backgroundColor = view.underPageBackgroundColor.cgColor
                 addSubview(view)
+                if let presentation = view.initialPagePresentation {
+                    presentationObservation = presentation.observe(\.isReady) { [weak self] _, _ in
+                        MainActor.assumeIsolated { self?.updatePagePresentation() }
+                    }
+                    updatePagePresentation()
+                }
                 if let parked = Self.parkedInspectors.object(forKey: view) {
                     Self.parkedInspectors.removeObject(forKey: view)
                     addSubview(parked)
