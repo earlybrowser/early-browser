@@ -399,15 +399,15 @@ struct ProfileApplicationTests {
         await fixture.cleanup()
     }
 
-    @Test(arguments: ["Permissions", "LocalFiles", "Extensions", "Extensions/Files", "History", "Passwords"])
+    @Test(arguments: ["Permissions", "LocalFiles", "Extensions", "Extensions/Files", "History", "Passwords", "PasswordRecovery"])
     func failedProfileFileCleanupRemainsPendingAndRetriesAfterRestart(folder: String) async throws {
         let fixture = Fixture()
         _ = await fixture.start()
         let app = fixture.application
         await app.retryWebsiteDataCleanup()
         let work = try #require(app.createProfile(name: "Work", color: .blue))
-        let directory = fixture.directory.appendingPathComponent(folder == "Passwords" ? EarlyAppDelegate.passwordsFolder : folder)
-        let suffix = folder == "LocalFiles" ? ".plist" : folder == "Extensions/Files" ? "" : folder == "History" ? ".sqlite" : folder == "Passwords" ? ".vault" : ".json"
+        let directory = fixture.directory.appendingPathComponent(folder == "Passwords" || folder == "PasswordRecovery" ? EarlyAppDelegate.passwordsFolder : folder)
+        let suffix = folder == "LocalFiles" ? ".plist" : folder == "Extensions/Files" ? "" : folder == "History" ? ".sqlite" : folder == "Passwords" ? ".vault" : folder == "PasswordRecovery" ? ".unreadable-1700000000.vault" : ".json"
         let file = directory.appendingPathComponent(work.uuidString + suffix)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data("Synthetic profile data".utf8).write(to: file)
@@ -415,7 +415,7 @@ struct ProfileApplicationTests {
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
 
         await app.deleteProfile(work)
-        #expect(!app.profiles.contains { $0.id == work })
+        #expect(!app.profiles.contains { $0.id == work }, "\(app.profileError ?? "No cleanup error reported")")
         #expect(FileManager.default.fileExists(atPath: file.path))
         #expect(fixture.defaults.stringArray(forKey: "pendingProfileCleanup")?.contains(work.uuidString) == true)
         #expect(app.profileError != nil, "A failed cleanup must be reported")

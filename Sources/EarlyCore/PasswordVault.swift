@@ -235,6 +235,8 @@ public final class PasswordVault {
     @ObservationIgnored private var mutationRevision: UInt64 = 0
     /// The encrypted-file boundary also lets tests suspend or fail real writes.
     @ObservationIgnored var writeFile: @Sendable (Data, URL) throws -> Void = PasswordVault.writeEncryptedFile
+    /// Recovery must preserve the old file before an empty vault can be used.
+    @ObservationIgnored var moveRecoveryFile: (URL, URL) throws -> Void = FileManager.default.moveItem(at:to:)
     /// Opened with an earlier build's key: re-encrypted with the current one,
     /// then the old key goes.
     @ObservationIgnored private var movesFromLegacyKey = false
@@ -331,14 +333,19 @@ public final class PasswordVault {
         }
     }
 
-    /// Passwords that can never be opened move aside (kept, not deleted) and
-    /// an empty vault starts in their place.
+    /// Passwords that can never be opened move aside (kept, not deleted).
+    /// Only after preservation succeeds can an empty vault take their place.
     public func resetUnreadable() {
         guard case .unavailable(_, true) = state else { return }
-        if let fileURL, FileManager.default.fileExists(atPath: fileURL.path) {
+        if let fileURL {
             let stamp = Int(now().timeIntervalSince1970)
-            let aside = fileURL.deletingPathExtension().appendingPathExtension("unreadable-\(stamp).vault")
-            try? FileManager.default.moveItem(at: fileURL, to: aside)
+            let aside = fileURL.deletingPathExtension().appendingPathExtension("unreadable-\(stamp)-\(UUID().uuidString).vault")
+            do {
+                try moveRecoveryFile(fileURL, aside)
+            } catch {
+                state = .unavailable("Your saved passwords couldn’t be preserved, so they weren’t reset. \(error.localizedDescription)", canReset: true)
+                return
+            }
         }
         generation += 1
         requestedRevision = 0
@@ -599,8 +606,8 @@ public final class PasswordVault {
 
     public func exportCSV() -> String { PasswordCSV.export(logins) }
 
-    /// Deleting a profile: its file and key go, and no open or save still
-    /// under way can write or restore anything afterwards.
+    /// Deleting a profile: its vault, recovery files and owned keys go, and
+    /// no open or save still under way can restore anything afterwards.
     public func removeAll() async throws {
         if let removing { return try await removing.value }
         generation += 1
@@ -635,12 +642,35 @@ public final class PasswordVault {
 
     public nonisolated static func remove(fileURL: URL?, key: (any PasswordVaultKey)?) async throws {
         try await Task.detached(priority: .utility) {
+            let recoveryFiles = try fileURL.map { try Self.recoveryFiles(for: $0) } ?? []
             try ProfileDataCleanup.removeItem(at: fileURL)
+            for recovery in recoveryFiles { try ProfileDataCleanup.removeItem(at: recovery) }
             // Retry keys even when an earlier attempt already removed the file.
             // Shared key implementations deliberately keep other profiles' keys.
             try key?.remove()
             try key?.removeLegacy()
         }.value
+    }
+
+    /// Both the original timestamp-only format and the unique recovery names
+    /// belong to the exact vault stem. Similar names and other profiles stay.
+    private nonisolated static func recoveryFiles(for file: URL) throws -> [URL] {
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(at: file.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+        } catch CocoaError.fileReadNoSuchFile, CocoaError.fileNoSuchFile {
+            return []
+        }
+        let prefix = file.deletingPathExtension().lastPathComponent + ".unreadable-"
+        return files.filter { candidate in
+            let name = candidate.lastPathComponent
+            guard name.hasPrefix(prefix), name.hasSuffix(".vault") else { return false }
+            let suffix = name.dropFirst(prefix.count).dropLast(".vault".count)
+            if Int(suffix) != nil { return true }
+            guard suffix.count > 37, suffix[suffix.index(suffix.endIndex, offsetBy: -37)] == "-",
+                  UUID(uuidString: String(suffix.suffix(36))) != nil else { return false }
+            return Int(suffix.dropLast(37)) != nil
+        }
     }
 
     /// Includes edits arriving during the wait, not just the write that happened
