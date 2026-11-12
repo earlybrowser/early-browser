@@ -606,8 +606,8 @@ public final class PasswordVault {
 
     public func exportCSV() -> String { PasswordCSV.export(logins) }
 
-    /// Deleting a profile: its file and key go, and no open or save still
-    /// under way can write or restore anything afterwards.
+    /// Deleting a profile: its vault, recovery files and owned keys go, and
+    /// no open or save still under way can restore anything afterwards.
     public func removeAll() async throws {
         if let removing { return try await removing.value }
         generation += 1
@@ -642,12 +642,35 @@ public final class PasswordVault {
 
     public nonisolated static func remove(fileURL: URL?, key: (any PasswordVaultKey)?) async throws {
         try await Task.detached(priority: .utility) {
+            let recoveryFiles = try fileURL.map { try Self.recoveryFiles(for: $0) } ?? []
             try ProfileDataCleanup.removeItem(at: fileURL)
+            for recovery in recoveryFiles { try ProfileDataCleanup.removeItem(at: recovery) }
             // Retry keys even when an earlier attempt already removed the file.
             // Shared key implementations deliberately keep other profiles' keys.
             try key?.remove()
             try key?.removeLegacy()
         }.value
+    }
+
+    /// Both the original timestamp-only format and the unique recovery names
+    /// belong to the exact vault stem. Similar names and other profiles stay.
+    private nonisolated static func recoveryFiles(for file: URL) throws -> [URL] {
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(at: file.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+        } catch CocoaError.fileReadNoSuchFile, CocoaError.fileNoSuchFile {
+            return []
+        }
+        let prefix = file.deletingPathExtension().lastPathComponent + ".unreadable-"
+        return files.filter { candidate in
+            let name = candidate.lastPathComponent
+            guard name.hasPrefix(prefix), name.hasSuffix(".vault") else { return false }
+            let suffix = name.dropFirst(prefix.count).dropLast(".vault".count)
+            if Int(suffix) != nil { return true }
+            guard suffix.count > 37, suffix[suffix.index(suffix.endIndex, offsetBy: -37)] == "-",
+                  UUID(uuidString: String(suffix.suffix(36))) != nil else { return false }
+            return Int(suffix.dropLast(37)) != nil
+        }
     }
 
     /// Includes edits arriving during the wait, not just the write that happened

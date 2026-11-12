@@ -1408,8 +1408,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         await attempt("Passwords") {
             if let vault = passwordVaults[id] {
                 try await vault.removeAll()
-                // Also remove any orphaned file if this was an in-memory vault.
-                try ProfileDataCleanup.removeItem(at: passwordsFile(for: id))
+                // Also remove orphaned vault/recovery files if this was an in-memory vault.
+                try await PasswordVault.remove(fileURL: passwordsFile(for: id), key: nil)
             } else { try await PasswordVault.remove(fileURL: passwordsFile(for: id), key: passwordKey(for: id)) }
             passwordVaults[id] = nil
         }
