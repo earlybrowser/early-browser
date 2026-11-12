@@ -235,6 +235,8 @@ public final class PasswordVault {
     @ObservationIgnored private var mutationRevision: UInt64 = 0
     /// The encrypted-file boundary also lets tests suspend or fail real writes.
     @ObservationIgnored var writeFile: @Sendable (Data, URL) throws -> Void = PasswordVault.writeEncryptedFile
+    /// Recovery must preserve the old file before an empty vault can be used.
+    @ObservationIgnored var moveRecoveryFile: (URL, URL) throws -> Void = FileManager.default.moveItem(at:to:)
     /// Opened with an earlier build's key: re-encrypted with the current one,
     /// then the old key goes.
     @ObservationIgnored private var movesFromLegacyKey = false
@@ -331,14 +333,19 @@ public final class PasswordVault {
         }
     }
 
-    /// Passwords that can never be opened move aside (kept, not deleted) and
-    /// an empty vault starts in their place.
+    /// Passwords that can never be opened move aside (kept, not deleted).
+    /// Only after preservation succeeds can an empty vault take their place.
     public func resetUnreadable() {
         guard case .unavailable(_, true) = state else { return }
-        if let fileURL, FileManager.default.fileExists(atPath: fileURL.path) {
+        if let fileURL {
             let stamp = Int(now().timeIntervalSince1970)
-            let aside = fileURL.deletingPathExtension().appendingPathExtension("unreadable-\(stamp).vault")
-            try? FileManager.default.moveItem(at: fileURL, to: aside)
+            let aside = fileURL.deletingPathExtension().appendingPathExtension("unreadable-\(stamp)-\(UUID().uuidString).vault")
+            do {
+                try moveRecoveryFile(fileURL, aside)
+            } catch {
+                state = .unavailable("Your saved passwords couldn’t be preserved, so they weren’t reset. \(error.localizedDescription)", canReset: true)
+                return
+            }
         }
         generation += 1
         requestedRevision = 0
