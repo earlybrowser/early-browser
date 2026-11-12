@@ -13,7 +13,10 @@ import UniformTypeIdentifiers
 @MainActor @Observable
 final class PasswordsLock {
     private(set) var isUnlocked = false
-    @ObservationIgnored var authenticate: @MainActor (String) async -> Bool = PasswordsLock.deviceOwner
+    /// Tests can supply replies without opening a system authentication prompt.
+    @ObservationIgnored var authenticate: (@MainActor (String) async -> Bool)?
+    @ObservationIgnored private var authenticationID: UUID?
+    @ObservationIgnored private var authenticationContext: LAContext?
     @ObservationIgnored private var relock: Task<Void, Never>?
     @ObservationIgnored private var observer: NSObjectProtocol?
     /// Touch ID and Keychain prompts are other apps' windows: Early is
@@ -25,7 +28,7 @@ final class PasswordsLock {
         observer = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
                                                           object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.prompts == 0 else { return }
+                guard let self, self.prompts == 0, self.authenticationID == nil else { return }
                 self.lock()
             }
         }
@@ -42,7 +45,7 @@ final class PasswordsLock {
     @discardableResult
     func unlock() async -> Bool {
         if isUnlocked { touch(); return true }
-        guard await prompting({ await authenticate("show your saved passwords") }) else { return false }
+        guard await authenticateCurrentRequest("show your saved passwords") else { return false }
         isUnlocked = true
         touch()
         return true
@@ -50,7 +53,7 @@ final class PasswordsLock {
 
     /// Asks again even while unlocked, before passwords leave Early.
     func confirm(_ reason: String) async -> Bool {
-        guard await prompting({ await authenticate(reason) }) else { return false }
+        guard await authenticateCurrentRequest(reason) else { return false }
         touch()
         return true
     }
@@ -65,15 +68,37 @@ final class PasswordsLock {
     }
 
     func lock() {
+        invalidateAuthentication()
         relock?.cancel()
         relock = nil
         if isUnlocked { isUnlocked = false }
     }
 
+    private func authenticateCurrentRequest(_ reason: String) async -> Bool {
+        invalidateAuthentication()
+        let request = UUID()
+        authenticationID = request
+        defer {
+            // A late reply must not invalidate its replacement's context.
+            if authenticationID == request { invalidateAuthentication() }
+        }
+        let allowed: Bool
+        if let authenticate { allowed = await authenticate(reason) }
+        else { allowed = await deviceOwner(reason) }
+        return authenticationID == request && !Task.isCancelled && allowed
+    }
+
+    private func invalidateAuthentication() {
+        authenticationID = nil
+        authenticationContext?.invalidate()
+        authenticationContext = nil
+    }
+
     /// Touch ID, or the Mac's login password without it. A Mac without a
     /// login password has nothing to ask for.
-    nonisolated static func deviceOwner(_ reason: String) async -> Bool {
+    private func deviceOwner(_ reason: String) async -> Bool {
         let context = LAContext()
+        authenticationContext = context
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
             return (error as? LAError)?.code == .passcodeNotSet
