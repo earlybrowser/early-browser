@@ -217,11 +217,20 @@ struct HistoryCleanupTests {
     }
 
     @Test func routineRetentionDoesNotAddACheckpointToNormalBrowsing() async throws {
-        let fixture = Fixture(), store = HistoryStore(fileURL: fixture.file, retention: 30)
+        final class Clock: @unchecked Sendable {
+            private let lock = NSLock()
+            private var date: Date
+            init(_ date: Date) { self.date = date }
+            func read() -> Date { lock.withLock { date } }
+            func advance(_ seconds: TimeInterval) { lock.withLock { date += seconds } }
+        }
+        let fixture = Fixture(), clock = Clock(start)
+        let store = HistoryStore(fileURL: fixture.file, retention: 30, now: clock.read)
         defer { Task { await store.close(); try? FileManager.default.removeItem(at: fixture.root) } }
         for index in 0..<200 {
             try await store.record(URL(string: "https://history.invalid/page-\(index)")!, title: "Page", at: start.addingTimeInterval(Double(index)))
         }
+        clock.advance(199)
         #expect(try await store.visits().count == 31)
         #expect(try fixture.walBytes.isEmpty == false)
         #expect(await store.checkpointPending == false)

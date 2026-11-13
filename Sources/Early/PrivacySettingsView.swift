@@ -2,20 +2,84 @@
 
 import AppKit
 import EarlyCore
+import Observation
 import SwiftUI
 import WebKit
+
+/// A fetched list and every removal belong to one profile and one request.
+/// Generic records let controller tests finish requests in any order without
+/// relying on WebKit to manufacture a particular website's stored data.
+@MainActor @Observable final class ProfileWebsiteData<Record> {
+    struct Snapshot {
+        let id: UUID
+        let profile: UUID
+        let records: [Record]
+    }
+    private(set) var profile: UUID?
+    private(set) var snapshot: Snapshot?
+    private(set) var isLoading = false
+    private(set) var isRemoving = false
+    private var generation = UUID()
+
+    func select(_ profile: UUID?) {
+        guard self.profile != profile else { return }
+        invalidate()
+        self.profile = profile
+    }
+
+    func invalidate() {
+        generation = UUID()
+        profile = nil
+        snapshot = nil
+        isLoading = false
+        isRemoving = false
+    }
+
+    func records(for profile: UUID) -> Snapshot? {
+        guard self.profile == profile, snapshot?.profile == profile, !isLoading, !isRemoving else { return nil }
+        return snapshot
+    }
+
+    func load(for profile: UUID?, fetch: @MainActor (UUID) async -> [Record]) async {
+        guard self.profile != profile || !isRemoving else { return }
+        select(profile)
+        guard let profile else { return }
+        let request = UUID()
+        generation = request
+        snapshot = nil
+        isLoading = true
+        isRemoving = false
+        let records = await fetch(profile)
+        guard generation == request, self.profile == profile else { return }
+        isLoading = false
+        guard !Task.isCancelled else { return }
+        snapshot = Snapshot(id: request, profile: profile, records: records)
+    }
+
+    func remove(_ records: [Record], from source: Snapshot,
+                using remove: @MainActor ([Record], UUID) async -> Void, fetch: @MainActor (UUID) async -> [Record]) async {
+        guard let current = self.records(for: source.profile), current.id == source.id, !Task.isCancelled else { return }
+        let request = UUID()
+        generation = request
+        snapshot = nil
+        isRemoving = true
+        await remove(records, source.profile)
+        guard generation == request, profile == source.profile else { return }
+        isRemoving = false
+        guard !Task.isCancelled else { return }
+        await load(for: source.profile, fetch: fetch)
+    }
+}
 
 /// Settings › Privacy, for one profile: the permissions websites were given,
 /// the websites that stored data, and clearing history.
 struct PrivacySettingsSection: View {
     @Bindable var application: EarlyAppDelegate
-    @State private var records: [WKWebsiteDataRecord] = []
-    @State private var loadingData = false
+    @State private var data = ProfileWebsiteData<WKWebsiteDataRecord>()
     @State private var dataSearch = ""
     @State private var confirmingPermissionsReset = false
-    @State private var confirmingDataRemoval = false
+    @State private var dataRemoval: ProfileWebsiteData<WKWebsiteDataRecord>.Snapshot?
     @State private var confirmingHistory = false
-    @State private var dataRevision = 0
 
     private var profileID: UUID? {
         let profiles = application.profiles
@@ -37,7 +101,14 @@ struct PrivacySettingsSection: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .task(id: "\(profileID?.uuidString ?? "") \(dataRevision)") { await loadRecords() }
+        .task(id: profileID) { await data.load(for: profileID, fetch: fetchRecords) }
+        .onChange(of: profileID) {
+            data.select(profileID)
+            dataRemoval = nil
+            confirmingHistory = false
+            confirmingPermissionsReset = false
+        }
+        .onDisappear { data.invalidate(); dataRemoval = nil }
     }
 
     private var profilePicker: some View {
@@ -116,13 +187,10 @@ struct PrivacySettingsSection: View {
 
     // MARK: Website data
 
-    private func loadRecords() async {
-        guard let profileID else { return }
-        loadingData = true
-        records = await application.websiteData(for: profileID).sorted {
+    private func fetchRecords(_ profileID: UUID) async -> [WKWebsiteDataRecord] {
+        await application.websiteData(for: profileID).sorted {
             $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
         }
-        loadingData = false
     }
 
     /// "Cookies, local storage" for a record.
@@ -139,6 +207,9 @@ struct PrivacySettingsSection: View {
     }
 
     private func websiteDataCard(_ profileID: UUID) -> some View {
+        let snapshot = data.records(for: profileID)
+        let records = snapshot?.records ?? []
+        let loadingData = data.profile != profileID || data.isLoading || data.isRemoving
         let query = dataSearch.trimmingCharacters(in: .whitespaces)
         let shown = records.filter { query.isEmpty || $0.displayName.localizedCaseInsensitiveContains(query) }
         return SettingsCard {
@@ -146,8 +217,8 @@ struct PrivacySettingsSection: View {
                 Label("Website data", systemImage: "externaldrive").font(.headline)
                 Spacer()
                 if loadingData { ProgressView().controlSize(.small) }
-                Button("Remove All…") { confirmingDataRemoval = true }
-                    .disabled(records.isEmpty)
+                Button("Remove All…") { dataRemoval = snapshot }
+                    .disabled(records.isEmpty || loadingData)
                     .accessibilityIdentifier("privacy.removeAllData")
             }
             Text("Websites that stored cookies, data or a cache in this profile. Removing a website signs you out of it.")
@@ -171,9 +242,9 @@ struct PrivacySettingsSection: View {
                                 }
                                 Spacer(minLength: 8)
                                 Button("Remove") {
+                                    guard let snapshot else { return }
                                     Task {
-                                        await application.removeWebsiteData([record], profile: profileID)
-                                        dataRevision += 1
+                                        await data.remove([record], from: snapshot, using: application.removeWebsiteData, fetch: fetchRecords)
                                     }
                                 }
                                 .accessibilityIdentifier("privacy.removeData.\(record.displayName)")
@@ -186,15 +257,16 @@ struct PrivacySettingsSection: View {
                 .frame(maxHeight: 260)
             }
         }
-        .confirmationDialog("Remove all website data in this profile?", isPresented: $confirmingDataRemoval) {
+        .confirmationDialog("Remove all website data in this profile?",
+                            isPresented: Binding(get: { dataRemoval != nil }, set: { if !$0 { dataRemoval = nil } }),
+                            presenting: dataRemoval) { source in
             Button("Remove All", role: .destructive) {
                 Task {
-                    await application.removeWebsiteData(records, profile: profileID)
-                    dataRevision += 1
+                    await data.remove(source.records, from: source, using: application.removeWebsiteData, fetch: fetchRecords)
                 }
             }
             Button("Cancel", role: .cancel) {}
-        } message: {
+        } message: { _ in
             Text("You’ll be signed out of websites in this profile. History, passwords and downloaded files aren’t removed.")
         }
     }
@@ -207,17 +279,19 @@ struct PrivacySettingsSection: View {
                 Label("History", systemImage: "clock").font(.headline)
                 Spacer()
                 Button("Clear History…") { confirmingHistory = true }
+                    .disabled(application.historyRemoval(for: profileID).isWorking)
                     .accessibilityIdentifier("privacy.clearHistory")
             }
             Text(ClearHistoryButtons.message)
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HistoryRemovalNotice(removal: application.historyRemoval(for: profileID))
         }
         .confirmationDialog("Clear history and website data?", isPresented: $confirmingHistory) {
             ForEach(HistoryClearRange.allCases) { range in
                 Button("Clear \(range.title)", role: range == .all ? .destructive : nil) {
                     Task {
                         await application.clearHistory(range, profile: profileID)
-                        dataRevision += 1
+                        if self.profileID == profileID { await data.load(for: profileID, fetch: fetchRecords) }
                     }
                 }
             }

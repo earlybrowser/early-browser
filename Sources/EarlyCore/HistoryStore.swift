@@ -49,11 +49,16 @@ public enum HistoryClearRange: String, CaseIterable, Identifiable, Sendable {
 /// actor, never the main actor. Private windows have no store at all.
 public actor HistoryStore {
     public nonisolated let fileURL: URL
+    public nonisolated let pendingWrites = HistoryWriteQueue()
     /// Visits older than this are removed, as in Safari's default.
     public nonisolated let retention: TimeInterval
     /// Used only on this actor, and in `deinit` once nothing else can.
     nonisolated(unsafe) private var db: OpaquePointer?
-    private var insertsSincePrune = 0
+    private let now: @Sendable () -> Date
+    private var nextRetention: Date?
+    private var retentionTask: Task<Void, Never>?
+    private var retentionGeneration: UInt64 = 0
+    private(set) var retentionPassCount = 0
     private var isRemoved = false
     private static let busyTimeout: Int32 = 2000
     private static let checkpointRetryDelays: [Duration] = [.milliseconds(100), .milliseconds(500), .seconds(2)]
@@ -69,20 +74,24 @@ public actor HistoryStore {
     private(set) var searchStatementCount = 0
     private var searchProgress: (@Sendable () -> Void)?
 
-    public init(fileURL: URL, retention: TimeInterval = 365 * 24 * 60 * 60) {
+    public init(fileURL: URL, retention: TimeInterval = 365 * 24 * 60 * 60,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.fileURL = fileURL
         self.retention = retention
+        self.now = now
     }
 
     init(fileURL: URL, retention: TimeInterval = 365 * 24 * 60 * 60,
          searchProgress: @escaping @Sendable () -> Void) {
         self.fileURL = fileURL
         self.retention = retention
+        self.now = { Date() }
         self.searchProgress = searchProgress
     }
 
     deinit {
         checkpointRetryTask?.cancel()
+        retentionTask?.cancel()
         if let db { sqlite3_close(db) }
     }
 
@@ -111,11 +120,6 @@ public actor HistoryStore {
         } catch {
             try? Self.execute(db, "ROLLBACK;")
             throw error
-        }
-        insertsSincePrune += 1
-        if insertsSincePrune >= 200 {
-            insertsSincePrune = 0
-            try deleteVisits(before: date.addingTimeInterval(-retention), cleaningLog: false)
         }
     }
 
@@ -296,6 +300,10 @@ public actor HistoryStore {
     public func close() {
         if !isRemoved { checkpointIfNeeded() }
         cancelCheckpointRetry()
+        retentionGeneration &+= 1
+        retentionTask?.cancel()
+        retentionTask = nil
+        nextRetention = nil
         if let db { sqlite3_close(db) }
         db = nil
     }
@@ -311,6 +319,41 @@ public actor HistoryStore {
     }
 
     // MARK: Deletion maintenance
+
+    /// Opening a store and elapsed time, rather than visit counts, drive expiry.
+    /// The same deadline coalesces reads, writes and the idle timer into one pass.
+    private var retentionInterval: TimeInterval { max(1, min(3600, retention)) }
+
+    private func expireVisits(_ db: OpaquePointer) throws {
+        let date = now()
+        guard nextRetention == nil || date >= nextRetention! else { return }
+        try performDeletion(db, cleaningLog: false) {
+            let cutoff = date.addingTimeInterval(-retention).timeIntervalSince1970
+            try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE visited_at < ?1", [.real(cutoff)])
+            try Self.run(db, "DELETE FROM visits WHERE visited_at < ?1", [.real(cutoff)])
+            try Self.recountTouched(db)
+        }
+        retentionPassCount += 1
+        nextRetention = date.addingTimeInterval(retentionInterval)
+    }
+
+    private func scheduleRetention() {
+        guard retentionTask == nil, db != nil, !isRemoved else { return }
+        let generation = retentionGeneration, interval = retentionInterval
+        retentionTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(interval)) } catch { return }
+            await self?.retentionTimerFired(generation: generation)
+        }
+    }
+
+    private func retentionTimerFired(generation: UInt64) {
+        guard generation == retentionGeneration, let db, !isRemoved else { return }
+        retentionTask = nil
+        // A locked database keeps its deadline due. Later activity or the next
+        // timer retries; the timer must not keep a closed store alive.
+        try? expireVisits(db)
+        scheduleRetention()
+    }
 
     private func performDeletion(_ db: OpaquePointer, cleaningLog: Bool = true, _ body: () throws -> Void) throws {
         // Routine retention keeps its existing cost. Explicit deletion also
@@ -442,6 +485,8 @@ public actor HistoryStore {
                 checkpointIfNeeded()
                 scheduleCheckpointRetry()
             }
+            try expireVisits(db)
+            scheduleRetention()
             return db
         }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -479,13 +524,15 @@ public actor HistoryStore {
         // Finish a cleanup interrupted by closing or crashing while another
         // reader held the log. This runs once per connection, not on each visit.
         requestCheckpoint()
+        try expireVisits(opened)
+        scheduleRetention()
         return opened
     }
 
     /// The pages whose visits were just deleted (collected in `touched`)
     /// keep totals that match their remaining visits, and go without any.
-    /// Only those: recounting every page made each deletion, and the pruning
-    /// every 200 visits, slower the longer the history.
+    /// Only those: recounting every page made deletion and expiry slower the
+    /// longer the history.
     private static func recountTouched(_ db: OpaquePointer) throws {
         try execute(db, """
             DELETE FROM pages WHERE id IN (SELECT id FROM touched) AND NOT EXISTS (SELECT 1 FROM visits WHERE page_id = pages.id);

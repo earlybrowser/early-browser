@@ -2,7 +2,76 @@
 
 import AppKit
 import EarlyCore
+import Observation
 import SwiftUI
+
+/// One profile's deletion status, shared by its windows and Settings. A retry
+/// keeps the original request (including its date) and only retries history;
+/// website data has already been removed by WebKit's completion callback.
+@MainActor @Observable final class HistoryRemoval {
+    private(set) var error: String?
+    private(set) var isWorking = false
+    @ObservationIgnored private var retryOperation: (() async -> Result<Void, Error>)?
+    @ObservationIgnored private var didChange: (() -> Void)?
+    private var websiteDataCleared = false
+
+    @discardableResult func remove(_ deletion: HistoryDeletion, from store: HistoryStore,
+                                  clearWebsiteData: (() async -> Void)? = nil,
+                                  didChange: @escaping () -> Void = {}) async -> Bool {
+        guard !isWorking else { return false }
+        isWorking = true
+        error = nil
+        websiteDataCleared = false
+        self.didChange = didChange
+        retryOperation = { await store.queueDeletion(deletion).value }
+        // Install the barrier before suspending, so every later accepted visit
+        // is ordered after this deletion, even while website cleanup is running.
+        let result = await store.queueDeletion(deletion).value
+        if let clearWebsiteData {
+            await clearWebsiteData()
+            websiteDataCleared = true
+        }
+        return finish(result)
+    }
+
+    @discardableResult func retry() async -> Bool {
+        guard !isWorking, let retryOperation else { return false }
+        isWorking = true
+        error = nil
+        return finish(await retryOperation())
+    }
+
+    private func finish(_ result: Result<Void, Error>) -> Bool {
+        isWorking = false
+        switch result {
+        case .success:
+            error = nil
+            retryOperation = nil
+            didChange?()
+            didChange = nil
+            return true
+        case .failure(let failure):
+            error = (websiteDataCleared ? "Website data was cleared, but history couldn’t be removed. "
+                     : "History couldn’t be removed. ") + failure.localizedDescription
+            return false
+        }
+    }
+}
+
+struct HistoryRemovalNotice: View {
+    let removal: HistoryRemoval
+    var body: some View {
+        if removal.isWorking {
+            ProgressView("Removing history…").controlSize(.small)
+        } else if let error = removal.error {
+            HStack(alignment: .top) {
+                Label(error, systemImage: "exclamationmark.triangle").fixedSize(horizontal: false, vertical: true)
+                Button("Try Again") { Task { await removal.retry() } }
+                    .accessibilityIdentifier("history.retryRemoval")
+            }.font(.callout)
+        }
+    }
+}
 
 /// Show All History: this profile's visits by day, searchable, with deletion.
 /// Opening a visit adds a Today tab; nothing here changes saved pages.
@@ -44,11 +113,13 @@ struct HistoryView: View {
                     .frame(width: 240)
                     .accessibilityIdentifier("history.search")
                 Button("Clear History…") { model.clearHistoryPresented = true }
+                    .disabled(model.historyRemoval.isWorking)
                     .accessibilityIdentifier("history.clear")
                 Button("Done") { model.historyPresented = false }
                     .keyboardShortcut(.cancelAction)
             }
             .padding(14)
+            HistoryRemovalNotice(removal: model.historyRemoval).padding(.horizontal, 14)
             Divider()
             if visits.isEmpty && !loading {
                 ContentUnavailableView(query.isEmpty ? "No History" : "No Results",
@@ -82,9 +153,9 @@ struct HistoryView: View {
                         Button("Open \(chosen.count) Pages in New Tabs") { open(chosen) }
                         Divider()
                     }
-                    Button("Delete") { delete(ids) }
+                    Button("Delete") { delete(ids) }.disabled(model.historyRemoval.isWorking)
                     Button("Delete All Visits to This Page") { deletePages(ids) }
-                        .disabled(chosen.isEmpty)
+                        .disabled(chosen.isEmpty || model.historyRemoval.isWorking)
                 } primaryAction: { ids in
                     open(visits.filter { ids.contains($0.id) })
                 }
@@ -159,22 +230,20 @@ struct HistoryView: View {
     }
 
     private func delete(_ ids: Set<Int64>) {
-        guard let history = model.history, !ids.isEmpty else { return }
+        guard !ids.isEmpty else { return }
         Task {
-            try? await history.deleteVisits(Array(ids))
+            guard await model.deleteHistory(.visits(Array(ids))) else { return }
             selection.subtract(ids)
-            model.refreshRecentPages()
             await load(appending: false)
         }
     }
 
     private func deletePages(_ ids: Set<Int64>) {
-        guard let history = model.history else { return }
         let urls = Array(Set(visits.filter { ids.contains($0.id) }.map(\.url)))
+        guard !urls.isEmpty else { return }
         Task {
-            try? await history.deletePages(urls)
+            guard await model.deleteHistory(.pages(urls)) else { return }
             selection.removeAll()
-            model.refreshRecentPages()
             await load(appending: false)
         }
     }
@@ -192,6 +261,7 @@ struct ClearHistoryButtons: View {
             Button("Clear \(range.title)", role: range == .all ? .destructive : nil) {
                 Task { await model.clearHistory(range) }
             }
+            .disabled(model.historyRemoval.isWorking)
         }
         Button("Cancel", role: .cancel) {}
     }
