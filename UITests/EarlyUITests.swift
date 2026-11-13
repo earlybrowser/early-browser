@@ -710,18 +710,56 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
-    private func visibleMenuAction(_ title: String) {
-        visibleMenuItem(title)?.click()
+    private func visibleMenuAction(_ title: String, file: StaticString = #filePath, line: UInt = #line) {
+        guard let target = visibleMenuTarget(title, file: file, line: line) else { return }
+        let window = XCUIApplication().windows.firstMatch
+        let frame = window.frame
+        guard usableMenuFrame(frame) else {
+            XCTFail("No finite window anchor for menu item: \(title), window: \(frame)", file: file, line: line)
+            return
+        }
+        // XCUIElement.click() resolves and hovers the menu item again. The CI
+        // failure produced an infinite accessibility hit point during that step.
+        // Click the validated menu-frame center from a stable window anchor.
+        let offset = CGVector(dx: target.frame.midX - frame.minX, dy: target.frame.midY - frame.minY)
+        guard offset.dx.isFinite && offset.dy.isFinite else {
+            XCTFail("Invalid menu offset for \(title): \(offset)", file: file, line: line)
+            return
+        }
+        window.coordinate(withNormalizedOffset: .zero).withOffset(offset).click()
     }
 
     /// Menu bar menus expose their items even while closed, so a title the
     /// open menu shares with them must be found among the visible items.
     private func visibleMenuItem(_ title: String) -> XCUIElement? {
+        visibleMenuTarget(title)?.item
+    }
+
+    private func usableMenuFrame(_ frame: CGRect) -> Bool {
+        !frame.isNull && !frame.isInfinite && frame.width > 0 && frame.height > 0
+            && [frame.minX, frame.minY, frame.maxX, frame.maxY, frame.midX, frame.midY].allSatisfy(\.isFinite)
+    }
+
+    private func visibleMenuTarget(_ title: String, file: StaticString = #filePath, line: UInt = #line)
+        -> (item: XCUIElement, frame: CGRect)? {
         let items = XCUIApplication().menuItems.matching(identifier: title)
-        XCTAssertTrue(items.firstMatch.waitForExistence(timeout: 3))
-        let item = items.allElementsBoundByIndex.first { $0.isHittable }
-        XCTAssertNotNil(item, "No visible menu item: \(title)")
-        return item
+        var previous: CGRect?
+        var target: (item: XCUIElement, frame: CGRect)?
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let visible = items.allElementsBoundByIndex.filter { $0.isEnabled && $0.isHittable }
+            guard visible.count == 1, let item = visible.first else { previous = nil; return false }
+            let frame = item.frame
+            guard self.usableMenuFrame(frame) else { previous = nil; return false }
+            defer { previous = frame }
+            guard previous == frame else { return false }
+            target = (item, frame)
+            return true
+        }, object: nil)
+        guard XCTWaiter.wait(for: [ready], timeout: 3) == .completed else {
+            XCTFail("No stable visible menu item: \(title). Candidates: \(items.debugDescription)", file: file, line: line)
+            return nil
+        }
+        return target
     }
 
     private func openSettings(_ app: XCUIApplication, section: String) {
