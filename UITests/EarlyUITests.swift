@@ -1151,7 +1151,10 @@ final class EarlyUITests: XCTestCase {
         saved.click()
         saved.typeText("keep through Space moves")
         func move(_ row: XCUIElement, to name: String) {
+            let contextAction = row.identifier.hasPrefix("folder.") ? "Rename Folder…" : "Rename Tab…"
             row.rightClick()
+            XCTAssertTrue(app.menuItems[contextAction].waitForExistence(timeout: 3),
+                          "The context menu must belong to the row being moved")
             XCTAssertTrue(app.menuItems["Move to Space"].waitForExistence(timeout: 3))
             app.menuItems["Move to Space"].hover()
             visibleMenuAction(name)
@@ -1186,6 +1189,25 @@ final class EarlyUITests: XCTestCase {
         app.buttons[tabID].rightClick()
         app.menuItems["Move to Folder"].hover()
         visibleMenuAction("Collection", activateWithReturn: true)
+
+        // Return completes before the menu fades and the sidebar relocates
+        // the rows. The folder's old center becomes the tab's new center;
+        // clicking it immediately opens the tab menu instead of the folder's.
+        let movedTab = app.buttons[tabID]
+        var previousFrames: [CGRect]?
+        let folderMoveSettled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let menuStillVisible = app.menuItems.matching(identifier: "Move to Folder")
+                .allElementsBoundByIndex.contains { self.usableMenuFrame($0.frame) }
+            guard !menuStillVisible, folder.exists, movedTab.exists,
+                  folder.value as? String == "Expanded" else { previousFrames = nil; return false }
+            let frames = [folder.frame, movedTab.frame]
+            guard frames.allSatisfy(self.isVisibleSidebarFrame), frames[0].maxY <= frames[1].minY,
+                  folder.isHittable, movedTab.isHittable else { previousFrames = nil; return false }
+            defer { previousFrames = frames }
+            return previousFrames == frames
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [folderMoveSettled], timeout: 5), .completed,
+                       "Moving the tab must dismiss its menu and settle it below the expanded folder")
         move(app.buttons[folderID], to: "Work")
         XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
         XCTAssertTrue(app.buttons[folderID].waitForExistence(timeout: 3))
