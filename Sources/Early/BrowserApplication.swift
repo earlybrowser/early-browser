@@ -50,6 +50,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var downloadStores: [UUID: DownloadStore] = [:]
     /// Each profile's browsing history, beside the session file.
     @ObservationIgnored private var historyStores: [UUID: HistoryStore] = [:]
+    @ObservationIgnored private var historyRemovals: [UUID: HistoryRemoval] = [:]
     /// Each profile's per-site permissions; a private session's stay in memory.
     @ObservationIgnored private var sitePermissionStores: [UUID: SitePermissions] = [:]
     /// Each profile's saved passwords, opened when first needed.
@@ -626,15 +627,22 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// Clears a profile's history and website data from the period's start:
     /// through one of its windows (which also clears their icons), or
     /// directly when none is open.
-    func clearHistory(_ range: HistoryClearRange, profile: UUID) async {
+    @discardableResult func clearHistory(_ range: HistoryClearRange, profile: UUID) async -> Bool {
         if let owner = visibleModels.first(where: { $0.coordinator.profileID == profile && !$0.isPrivate }) {
-            await owner.clearHistory(range)
-            return
+            return await owner.clearHistory(range)
         }
-        guard profiles.contains(where: { $0.id == profile }) else { return }
+        guard let history = history(for: profile) else { return false }
         let since = range.start(now: Date())
-        try? await history(for: profile)?.deleteVisits(since: since)
-        await websiteDataStore(for: profile).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: since ?? .distantPast)
+        return await historyRemoval(for: profile).remove(.since(since), from: history, clearWebsiteData: { [self] in
+            await websiteDataStore(for: profile).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: since ?? .distantPast)
+        }, didChange: { [weak self] in self?.didChangeHistory(profileID: profile) })
+    }
+
+    func historyRemoval(for profile: UUID) -> HistoryRemoval {
+        if let removal = historyRemovals[profile] { return removal }
+        let removal = HistoryRemoval()
+        historyRemovals[profile] = removal
+        return removal
     }
 
     /// A profile's open pull requests.
@@ -1020,6 +1028,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             restorationError: persistence?.error, defaults: defaults, sharedPersistence: persistence,
             websiteDataStore: websiteDataStore(for: session.profileID), downloads: downloads(for: session.profileID),
             preferences: preferences, isPrivate: isPrivate, history: history(for: session.profileID),
+            historyRemoval: historyRemoval(for: session.profileID),
             sitePermissions: sitePermissions(for: session.profileID),
             passwords: passwordsProfile.flatMap { passwords(for: $0) }, passwordsProfileID: passwordsProfile,
             extensionHost: extensionHost(for: session.profileID, from: passwordsProfile),
@@ -1116,6 +1125,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let kept = sidebarURLs(profileID: profileID)
         for target in visibleModels where target !== source && target.coordinator.profileID == profileID {
             target.webViews.forgetClearedArtwork(keepingIconsFor: kept)
+            target.historyRevision += 1
+            target.refreshRecentPages()
+        }
+    }
+
+    func didChangeHistory(profileID: UUID, from source: BrowserWindowModel? = nil) {
+        for target in visibleModels where target !== source && target.coordinator.profileID == profileID {
             target.historyRevision += 1
             target.refreshRecentPages()
         }
@@ -1414,9 +1430,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             passwordVaults[id] = nil
         }
         await attempt("History") {
+            historyStores[id]?.pendingWrites.acceptsWrites = false
             if let store = historyStores[id] { try await store.removeFile() }
             else if let file = historyFile(for: id) { try await HistoryStore(fileURL: file).removeFile() }
             historyStores[id] = nil
+            historyRemovals[id] = nil
         }
         if !testing {
             await attempt("Website data") { try await WKWebsiteDataStore.remove(forIdentifier: id) }
@@ -1637,7 +1655,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             if canQuit { canQuit = await persistence.flush() }
             else {
                 self.isTerminating = false
-                sender.reply(toApplicationShouldTerminate: false)
+                self.replyToTermination(false, sender: sender)
                 return
             }
             if !canQuit {
@@ -1649,14 +1667,63 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 canQuit = alert.runModal() == .alertSecondButtonReturn
             }
             if canQuit {
+                canQuit = await self.historySavedBeforeQuitting()
+            }
+            if canQuit {
                 // Stopped transfers cannot resume after quitting; remove their partial files.
                 self.downloadStores.values.forEach { $0.cancelAll() }
                 self.visibleModels.forEach { $0.webViews.discardAll() }
             }
             else { self.isTerminating = false }
-            sender.reply(toApplicationShouldTerminate: canQuit)
+            self.replyToTermination(canQuit, sender: sender)
         }
         return .terminateLater
+    }
+
+    func historySavedBeforeQuitting() async -> Bool {
+        await Self.historySaved(Array(historyStores.values), timeout: historyQuitTimeout, ask: askToQuitWithUnsavedHistory)
+    }
+
+    static func historySaved(_ stores: [HistoryStore], timeout: Duration = .seconds(10),
+                             ask: (String) -> NSApplication.ModalResponse) async -> Bool {
+        stores.forEach { $0.pendingWrites.acceptsWrites = false }
+        while true {
+            let deadline = ContinuousClock.now.advanced(by: timeout)
+            var failures: [HistoryStore] = []
+            var reason: String?
+            for store in stores {
+                if let error = await store.pendingWrites.drain(timeout: ContinuousClock.now.duration(to: deadline)) {
+                    failures.append(store)
+                    if reason == nil { reason = error }
+                }
+            }
+            guard let reason else { return true }
+            switch ask(reason) {
+            case .alertFirstButtonReturn: failures.forEach { $0.retryPendingWrites() }
+            case .alertSecondButtonReturn:
+                stores.forEach { $0.pendingWrites.acceptsWrites = true }
+                return false
+            default: return true
+            }
+        }
+    }
+
+    @ObservationIgnored var historyQuitTimeout: Duration = .seconds(10)
+    @ObservationIgnored var askToQuitWithUnsavedHistory: (String) -> NSApplication.ModalResponse = { reason in
+        let alert = NSAlert()
+        alert.messageText = "Your history couldn’t be saved"
+        alert.informativeText = "\(reason) If you quit now, your latest browsing history may be lost."
+        alert.addButton(withTitle: "Try Again")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Quit Anyway").hasDestructiveAction = true
+        return alert.runModal()
+    }
+
+    /// Controller tests observe the real termination path without exiting the test runner.
+    @ObservationIgnored var terminationReply: ((Bool) -> Void)?
+    private func replyToTermination(_ canQuit: Bool, sender: NSApplication) {
+        if let terminationReply { terminationReply(canQuit) }
+        else { sender.reply(toApplicationShouldTerminate: canQuit) }
     }
 }
 

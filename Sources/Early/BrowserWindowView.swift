@@ -316,6 +316,10 @@ struct BrowserWindowView: View {
                         .padding(12)
                         .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
                     }
+                    if model.historyRemoval.error != nil || model.historyRemoval.isWorking {
+                        HistoryRemovalNotice(removal: model.historyRemoval).padding(12)
+                            .modifier(PageToolSurface(theme: model.chromeTheme, allowsTransparency: model.preferences.translucentChrome))
+                    }
                     if let notice = model.notice {
                         HStack {
                             Text(notice)

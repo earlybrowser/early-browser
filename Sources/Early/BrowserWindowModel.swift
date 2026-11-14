@@ -60,6 +60,7 @@ final class BrowserWindowModel {
     let isPrivate: Bool
     /// This profile's browsing history; nil records nothing.
     let history: HistoryStore?
+    let historyRemoval: HistoryRemoval
     /// This profile's per-site camera, microphone and location choices.
     let sitePermissions: SitePermissions
     /// The saved passwords this window fills from: its profile's, or for a
@@ -76,8 +77,8 @@ final class BrowserWindowModel {
     @ObservationIgnored var siteControlsFrame: CGRect?
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The address last recorded per tab, and the live page it came from.
-    @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID)] = [:]
-    @ObservationIgnored private var historyQueue: Task<Void, Never>?
+    @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID, date: Date)] = [:]
+    @ObservationIgnored private var recentPagesTask: Task<Void, Never>?
     var submissionMessage: String?
     var commandBarIsComposing = false
     var notice: String?
@@ -187,7 +188,7 @@ final class BrowserWindowModel {
          input: NavigationInput, isTesting: Bool, restorationError: String?, defaults: UserDefaults = .standard,
          sharedPersistence: SessionAutosaver? = nil, websiteDataStore: WKWebsiteDataStore? = nil,
          downloads: DownloadStore? = nil, preferences: BrowserPreferences? = nil, isPrivate: Bool = false,
-         history: HistoryStore? = nil, sitePermissions: SitePermissions? = nil,
+         history: HistoryStore? = nil, historyRemoval: HistoryRemoval? = nil, sitePermissions: SitePermissions? = nil,
          passwords: PasswordVault? = nil, passwordsProfileID: UUID? = nil, extensionHost: AnyObject? = nil,
          localFiles: LocalFileBookmarks? = nil, searchProviders: [any CommandSearchProvider] = [],
          configureWebView: ((WKWebViewConfiguration) -> Void)? = nil,
@@ -198,6 +199,7 @@ final class BrowserWindowModel {
         welcomeDefaults = defaults
         showsWelcome = startup == .firstLaunch && !isPrivate && !defaults.bool(forKey: Self.welcomeCompletedKey)
         self.history = isPrivate ? nil : history
+        self.historyRemoval = historyRemoval ?? HistoryRemoval()
         self.sitePermissions = sitePermissions ?? SitePermissions(fileURL: nil)
         self.passwords = passwords
         self.passwordsProfileID = passwords == nil ? nil : passwordsProfileID ?? (isPrivate ? nil : session.profileID)
@@ -900,23 +902,23 @@ final class BrowserWindowModel {
 
     /// A new address in a tab, or the same one in a newly loaded page (a
     /// reopened pin), is a visit; a later title for it only names it. One
-    /// serial queue keeps a title from preceding its visit.
+    /// profile-wide queue keeps a title from preceding its visit or a clear.
     private func recordHistory(_ id: UUID, url: URL?, title: String?) {
-        guard let history, let url, HistoryStore.records(url), let page = webViews.pages[id] else { return }
-        let previous = historyQueue
+        guard let history, history.pendingWrites.acceptsWrites,
+              let url, HistoryStore.records(url), let page = webViews.pages[id] else { return }
         let identity = page.instanceID
         if let last = historyURLs[id], last.url == url, last.page == identity {
             guard let title, !title.isEmpty else { return }
-            historyQueue = Task { await previous?.value; try? await history.updateTitle(url, title: title) }
+            history.queueTitle(url, title: title, visitedAt: last.date)
             refreshRecentPages()
         } else {
             if historyURLs.count > 500 {
                 let open = Set(coordinator.tabStore.tabs.filter(\.isOpen).map(\.id))
                 historyURLs = historyURLs.filter { open.contains($0.key) }
             }
-            historyURLs[id] = (url, identity)
             let date = now()
-            historyQueue = Task { await previous?.value; try? await history.record(url, title: title, at: date) }
+            historyURLs[id] = (url, identity, date)
+            history.queueVisit(url, title: title, at: date)
             refreshRecentPages()
         }
     }
@@ -930,12 +932,13 @@ final class BrowserWindowModel {
     /// Reloads the History menu's pages after the visits already queued.
     func refreshRecentPages() {
         guard let history else { return }
-        let previous = historyQueue
+        recentPagesTask?.cancel()
         let since = Calendar.current.startOfDay(for: now())
-        historyQueue = Task { [weak self] in
-            await previous?.value
+        recentPagesTask = Task { [weak self] in
+            await history.pendingWrites.wait()
+            guard !Task.isCancelled else { return }
             let pages = (try? await history.recentPages(since: since, limit: Self.recentPageLimit)) ?? []
-            guard let self, self.recentPages != pages else { return }
+            guard !Task.isCancelled, let self, self.recentPages != pages else { return }
             self.recentPages = pages
             // Their site icons, from the cache when possible, for the menu.
             for page in pages { self.webViews.favicons.request(page.url) }
@@ -946,22 +949,36 @@ final class BrowserWindowModel {
     var sidebarURLs: [URL] { coordinator.tabStore.tabs.flatMap { [$0.currentURL, $0.pinnedURL].compactMap { $0 } } }
 
     /// Waits for recorded visits to reach the store (tests and clearing).
-    func flushHistory() async { await historyQueue?.value }
+    func flushHistory() async {
+        await history?.pendingWrites.wait()
+        await recentPagesTask?.value
+    }
+
+    private func historyChangeNotification() -> () -> Void {
+        let profile = coordinator.profileID
+        // A failure can be retried from Settings after this window closes.
+        return { [weak self, weak application] in
+            self?.historyRevision += 1
+            self?.refreshRecentPages()
+            application?.didChangeHistory(profileID: profile, from: self)
+        }
+    }
+
+    @discardableResult func deleteHistory(_ deletion: HistoryDeletion) async -> Bool {
+        guard let history else { return false }
+        return await historyRemoval.remove(deletion, from: history, didChange: historyChangeNotification())
+    }
 
     /// Clears this profile's history and website data from the period's start,
     /// with cached icons and thumbnails in every window of the profile.
-    func clearHistory(_ range: HistoryClearRange) async {
+    @discardableResult func clearHistory(_ range: HistoryClearRange) async -> Bool {
+        guard let history else { return false }
         let since = range.start(now: now())
-        await flushHistory()
-        try? await history?.deleteVisits(since: since)
-        // Tabs, pins and Favorites in every window of the profile keep their icons.
-        let kept = application?.sidebarURLs(profileID: coordinator.profileID) ?? sidebarURLs
-        await webViews.clearWebsiteData(since: since, keepingIconsFor: kept)
-        // Open tabs keep their last recorded page: a title arriving later only
-        // names a page that is gone, and does not put it back in History.
-        historyRevision += 1
-        refreshRecentPages()
-        application?.didClearWebsiteData(profileID: coordinator.profileID, from: self)
+        return await historyRemoval.remove(.since(since), from: history, clearWebsiteData: { [self] in
+            let kept = application?.sidebarURLs(profileID: coordinator.profileID) ?? sidebarURLs
+            await webViews.clearWebsiteData(since: since, keepingIconsFor: kept)
+            application?.didClearWebsiteData(profileID: coordinator.profileID, from: self)
+        }, didChange: historyChangeNotification())
     }
 
     /// Closes several Today tabs at once, keeping their pages reopenable.

@@ -710,18 +710,51 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
-    private func visibleMenuAction(_ title: String) {
-        visibleMenuItem(title)?.click()
+    private func visibleMenuAction(_ title: String, identifier: String? = nil,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        guard let target = visibleMenuTarget(title, identifier: identifier, file: file, line: line) else { return }
+        // Keep XCTest's native menu tracking. A click based on the browser
+        // window can dismiss the menu instead of activating its item.
+        target.item.click()
     }
 
     /// Menu bar menus expose their items even while closed, so a title the
     /// open menu shares with them must be found among the visible items.
     private func visibleMenuItem(_ title: String) -> XCUIElement? {
-        let items = XCUIApplication().menuItems.matching(identifier: title)
-        XCTAssertTrue(items.firstMatch.waitForExistence(timeout: 3))
-        let item = items.allElementsBoundByIndex.first { $0.isHittable }
-        XCTAssertNotNil(item, "No visible menu item: \(title)")
-        return item
+        visibleMenuTarget(title)?.item
+    }
+
+    private func usableMenuFrame(_ frame: CGRect) -> Bool {
+        !frame.isNull && !frame.isInfinite && frame.width > 0 && frame.height > 0
+            && [frame.minX, frame.minY, frame.maxX, frame.maxY, frame.midX, frame.midY].allSatisfy(\.isFinite)
+    }
+
+    private func visibleMenuTarget(_ title: String, identifier: String? = nil,
+                                   file: StaticString = #filePath, line: UInt = #line)
+        -> (item: XCUIElement, frame: CGRect)? {
+        let items = XCUIApplication().menuItems.matching(identifier: identifier ?? title)
+        var previous: CGRect?
+        var target: (item: XCUIElement, frame: CGRect)?
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            // Closed menu-bar copies can report hittable despite having zero
+            // bounds. Exclude them before deciding whether the title is unique.
+            let visible = items.allElementsBoundByIndex.compactMap { item -> (item: XCUIElement, frame: CGRect)? in
+                let frame = item.frame
+                guard self.usableMenuFrame(frame), item.isEnabled, item.isHittable else { return nil }
+                return (item, frame)
+            }
+            guard visible.count == 1, let candidate = visible.first else { previous = nil; return false }
+            let frame = candidate.frame
+            defer { previous = frame }
+            guard previous == frame else { return false }
+            target = candidate
+            return true
+        }, object: nil)
+        guard XCTWaiter.wait(for: [ready], timeout: 3) == .completed else {
+            XCTFail("No stable visible menu item: \(title). Candidates: \(items.debugDescription)", file: file, line: line)
+            return nil
+        }
+        return target
     }
 
     private func openSettings(_ app: XCUIApplication, section: String) {
@@ -1109,11 +1142,30 @@ final class EarlyUITests: XCTestCase {
         let saved = app.webViews.textFields["Saved text"]
         saved.click()
         saved.typeText("keep through Space moves")
+        func chooseDestination(_ name: String, from menu: String) {
+            let submenu = app.menuItems[menu]
+            XCTAssertTrue(submenu.waitForExistence(timeout: 3))
+            submenu.hover()
+            // Each destination submenu in this fixture has one enabled item.
+            // Enter it through AppKit's keyboard navigation: XCTest can fail
+            // to compute a mouse hit point even when the child has valid bounds.
+            app.typeKey(.rightArrow, modifierFlags: [])
+            let selected = app.menuItems.matching(identifier: name)
+                .matching(NSPredicate(format: "selected == true AND enabled == true"))
+            let destinationReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let items = selected.allElementsBoundByIndex.filter { self.usableMenuFrame($0.frame) }
+                return items.count == 1
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [destinationReady], timeout: 5), .completed,
+                           "The \(menu) submenu must select \(name) before Return")
+            app.typeKey(.return, modifierFlags: [])
+        }
         func move(_ row: XCUIElement, to name: String) {
+            let contextAction = row.identifier.hasPrefix("folder.") ? "Rename Folder…" : "Rename Tab…"
             row.rightClick()
-            XCTAssertTrue(app.menuItems["Move to Space"].waitForExistence(timeout: 3))
-            app.menuItems["Move to Space"].hover()
-            visibleMenuAction(name)
+            XCTAssertTrue(app.menuItems[contextAction].waitForExistence(timeout: 3),
+                          "The context menu must belong to the row being moved")
+            chooseDestination(name, from: "Move to Space")
             let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: spaceDot(app, named: name))
             XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
         }
@@ -1143,8 +1195,26 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(folder.waitForExistence(timeout: 3))
         let folderID = folder.identifier
         app.buttons[tabID].rightClick()
-        app.menuItems["Move to Folder"].hover()
-        visibleMenuAction("Collection")
+        chooseDestination("Collection", from: "Move to Folder")
+
+        // Return completes before the menu fades and the sidebar relocates
+        // the rows. The folder's old center becomes the tab's new center;
+        // clicking it immediately opens the tab menu instead of the folder's.
+        let movedTab = app.buttons[tabID]
+        var previousFrames: [CGRect]?
+        let folderMoveSettled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let menuStillVisible = app.menuItems.matching(identifier: "Move to Folder")
+                .allElementsBoundByIndex.contains { self.usableMenuFrame($0.frame) }
+            guard !menuStillVisible, folder.exists, movedTab.exists,
+                  folder.value as? String == "Expanded" else { previousFrames = nil; return false }
+            let frames = [folder.frame, movedTab.frame]
+            guard frames.allSatisfy(self.isVisibleSidebarFrame), frames[0].maxY <= frames[1].minY,
+                  folder.isHittable, movedTab.isHittable else { previousFrames = nil; return false }
+            defer { previousFrames = frames }
+            return previousFrames == frames
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [folderMoveSettled], timeout: 5), .completed,
+                       "Moving the tab must dismiss its menu and settle it below the expanded folder")
         move(app.buttons[folderID], to: "Work")
         XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
         XCTAssertTrue(app.buttons[folderID].waitForExistence(timeout: 3))
@@ -2803,7 +2873,9 @@ final class EarlyUITests: XCTestCase {
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
         app.webViews.links["Go to Two"].rightClick()
-        visibleMenuAction("Share")
+        // WebKit can offer both link sharing and selected-text sharing with
+        // the same title. This test specifically invokes the link's picker.
+        visibleMenuAction("Share", identifier: "shareLinkAddress:")
         XCTAssertTrue(app.popovers.firstMatch.waitForExistence(timeout: 5))
         app.typeKey(.escape, modifierFlags: [])
         expectPage(app, "One")
