@@ -710,23 +710,20 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
-    private func visibleMenuAction(_ title: String, file: StaticString = #filePath, line: UInt = #line) {
-        guard let target = visibleMenuTarget(title, file: file, line: line) else { return }
-        let window = XCUIApplication().windows.firstMatch
-        let frame = window.frame
-        guard usableMenuFrame(frame) else {
-            XCTFail("No finite window anchor for menu item: \(title), window: \(frame)", file: file, line: line)
-            return
+    private func visibleMenuAction(_ title: String, identifier: String? = nil, activateWithReturn: Bool = false,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        guard let target = visibleMenuTarget(title, identifier: identifier, file: file, line: line) else { return }
+        if activateWithReturn {
+            // This submenu previously failed inside click()'s extra pointer
+            // resolution. Highlight it once through native menu tracking, then
+            // activate it with Return without resolving another mouse click.
+            target.item.hover()
+            XCUIApplication().typeKey(.return, modifierFlags: [])
+        } else {
+            // Keep XCTest's native menu tracking. A click based on the browser
+            // window can dismiss the menu instead of activating its item.
+            target.item.click()
         }
-        // XCUIElement.click() resolves and hovers the menu item again. The CI
-        // failure produced an infinite accessibility hit point during that step.
-        // Click the validated menu-frame center from a stable window anchor.
-        let offset = CGVector(dx: target.frame.midX - frame.minX, dy: target.frame.midY - frame.minY)
-        guard offset.dx.isFinite && offset.dy.isFinite else {
-            XCTFail("Invalid menu offset for \(title): \(offset)", file: file, line: line)
-            return
-        }
-        window.coordinate(withNormalizedOffset: .zero).withOffset(offset).click()
     }
 
     /// Menu bar menus expose their items even while closed, so a title the
@@ -740,19 +737,25 @@ final class EarlyUITests: XCTestCase {
             && [frame.minX, frame.minY, frame.maxX, frame.maxY, frame.midX, frame.midY].allSatisfy(\.isFinite)
     }
 
-    private func visibleMenuTarget(_ title: String, file: StaticString = #filePath, line: UInt = #line)
+    private func visibleMenuTarget(_ title: String, identifier: String? = nil,
+                                   file: StaticString = #filePath, line: UInt = #line)
         -> (item: XCUIElement, frame: CGRect)? {
-        let items = XCUIApplication().menuItems.matching(identifier: title)
+        let items = XCUIApplication().menuItems.matching(identifier: identifier ?? title)
         var previous: CGRect?
         var target: (item: XCUIElement, frame: CGRect)?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            let visible = items.allElementsBoundByIndex.filter { $0.isEnabled && $0.isHittable }
-            guard visible.count == 1, let item = visible.first else { previous = nil; return false }
-            let frame = item.frame
-            guard self.usableMenuFrame(frame) else { previous = nil; return false }
+            // Closed menu-bar copies can report hittable despite having zero
+            // bounds. Exclude them before deciding whether the title is unique.
+            let visible = items.allElementsBoundByIndex.compactMap { item -> (item: XCUIElement, frame: CGRect)? in
+                let frame = item.frame
+                guard self.usableMenuFrame(frame), item.isEnabled, item.isHittable else { return nil }
+                return (item, frame)
+            }
+            guard visible.count == 1, let candidate = visible.first else { previous = nil; return false }
+            let frame = candidate.frame
             defer { previous = frame }
             guard previous == frame else { return false }
-            target = (item, frame)
+            target = candidate
             return true
         }, object: nil)
         guard XCTWaiter.wait(for: [ready], timeout: 3) == .completed else {
@@ -1182,7 +1185,7 @@ final class EarlyUITests: XCTestCase {
         let folderID = folder.identifier
         app.buttons[tabID].rightClick()
         app.menuItems["Move to Folder"].hover()
-        visibleMenuAction("Collection")
+        visibleMenuAction("Collection", activateWithReturn: true)
         move(app.buttons[folderID], to: "Work")
         XCTAssertTrue(spaceDot(app, named: "Work").isSelected)
         XCTAssertTrue(app.buttons[folderID].waitForExistence(timeout: 3))
@@ -2841,7 +2844,9 @@ final class EarlyUITests: XCTestCase {
         navigate(app, to: "early-test://fixture/one")
         expectPage(app, "One")
         app.webViews.links["Go to Two"].rightClick()
-        visibleMenuAction("Share")
+        // WebKit can offer both link sharing and selected-text sharing with
+        // the same title. This test specifically invokes the link's picker.
+        visibleMenuAction("Share", identifier: "shareLinkAddress:")
         XCTAssertTrue(app.popovers.firstMatch.waitForExistence(timeout: 5))
         app.typeKey(.escape, modifierFlags: [])
         expectPage(app, "One")
