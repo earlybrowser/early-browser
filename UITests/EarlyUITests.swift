@@ -735,13 +735,25 @@ final class EarlyUITests: XCTestCase {
         let items = XCUIApplication().menuItems.matching(identifier: identifier ?? title)
         var previous: CGRect?
         var target: (item: XCUIElement, frame: CGRect)?
+        var observations: [String] = []
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            // Closed menu-bar copies can report hittable despite having zero
-            // bounds. Exclude them before deciding whether the title is unique.
-            let visible = items.allElementsBoundByIndex.compactMap { item -> (item: XCUIElement, frame: CGRect)? in
-                let frame = item.frame
-                guard self.usableMenuFrame(frame), item.isEnabled, item.isHittable else { return nil }
-                return (item, frame)
+            observations = []
+            // Bind to each accessibility element, then read its attributes in
+            // one snapshot. Separate frame/enabled/hittable queries repeatedly
+            // resolved the menu and exhausted the old three-second deadline.
+            let visible = items.allElementsBoundByAccessibilityElement.compactMap { item -> (item: XCUIElement, frame: CGRect)? in
+                do {
+                    let snapshot = try item.snapshot()
+                    let frame = snapshot.frame
+                    observations.append("\(snapshot.title): frame=\(frame), enabled=\(snapshot.isEnabled)")
+                    // Closed menu-bar copies remain in the hierarchy. Exclude
+                    // their empty frames before checking for a unique target.
+                    guard self.usableMenuFrame(frame), snapshot.isEnabled else { return nil }
+                    return (item, frame)
+                } catch {
+                    observations.append("Snapshot failed: \(error)")
+                    return nil
+                }
             }
             guard visible.count == 1, let candidate = visible.first else { previous = nil; return false }
             let frame = candidate.frame
@@ -750,8 +762,10 @@ final class EarlyUITests: XCTestCase {
             target = candidate
             return true
         }, object: nil)
-        guard XCTWaiter.wait(for: [ready], timeout: 3) == .completed else {
-            XCTFail("No stable visible menu item: \(title). Candidates: \(items.debugDescription)", file: file, line: line)
+        // Two observations must fit even when a CI accessibility query is
+        // slow. Successful waits still finish as soon as the frame settles.
+        guard XCTWaiter.wait(for: [ready], timeout: 10) == .completed else {
+            XCTFail("No stable visible menu item: \(title). Last observations: \(observations)", file: file, line: line)
             return nil
         }
         return target

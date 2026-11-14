@@ -61,6 +61,89 @@ struct DownloadStoreTests {
         }
     }
 
+    /// One navigation in a fresh, unshown viewer. Install before starting the
+    /// load so even an early completion/failure is retained for the waiter.
+    private final class NavigationObserver: NSObject, WKNavigationDelegate {
+        enum Failure: Error, CustomStringConvertible {
+            case navigation(URL, phase: String, underlying: NSError)
+            case processTerminated(URL)
+            case timeout(URL, current: URL?, isLoading: Bool)
+
+            var description: String {
+                switch self {
+                case let .navigation(url, phase, error):
+                    "Navigation to \(url) failed during \(phase): \(error.domain) (\(error.code)): \(error.localizedDescription)"
+                case let .processTerminated(url):
+                    "WebContent terminated while loading \(url)"
+                case let .timeout(url, current, isLoading):
+                    "Navigation to \(url) timed out; current URL: \(current?.absoluteString ?? "nil"), loading: \(isLoading)"
+                }
+            }
+        }
+
+        let requestedURL: URL
+        private var outcome: Result<Void, Failure>?
+
+        init(_ url: URL) { requestedURL = url }
+
+        func wait(in view: WKWebView, timeout: Duration = .seconds(15)) async throws {
+            // A new WebContent process can take longer than the ordinary
+            // five-second store waits. Navigation errors fail immediately.
+            let deadline = ContinuousClock.now.advanced(by: timeout)
+            while outcome == nil {
+                guard ContinuousClock.now < deadline else {
+                    throw Failure.timeout(requestedURL, current: view.url, isLoading: view.isLoading)
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try outcome?.get()
+        }
+
+        private func finish(_ result: Result<Void, Failure>) {
+            if outcome == nil { outcome = result }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            finish(.success(()))
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
+            finish(.failure(.navigation(requestedURL, phase: "provisional load", underlying: error as NSError)))
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
+            finish(.failure(.navigation(requestedURL, phase: "committed load", underlying: error as NSError)))
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            finish(.failure(.processTerminated(requestedURL)))
+        }
+    }
+
+    private final class NavigationPage: NSObject, WKURLSchemeHandler {
+        let delay: Duration
+        let failure: URLError?
+        private var completion: Task<Void, Never>?
+
+        init(delay: Duration = .zero, failure: URLError? = nil) {
+            self.delay = delay
+            self.failure = failure
+        }
+
+        func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
+            if let failure { task.didFailWithError(failure); return }
+            completion = Task { @MainActor in
+                do { try await Task.sleep(for: delay) } catch { return }
+                let data = Data("<!doctype html><title>Delayed page</title><p id='loaded'>Loaded</p>".utf8)
+                task.didReceive(URLResponse(url: task.request.url!, mimeType: "text/html", expectedContentLength: data.count, textEncodingName: "utf-8"))
+                task.didReceive(data)
+                task.didFinish()
+            }
+        }
+
+        func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) { completion?.cancel() }
+    }
+
     /// Synchronous on purpose: nothing else on the main thread runs meanwhile.
     private func blockMainThread(for seconds: TimeInterval) {
         Thread.sleep(forTimeInterval: seconds)
@@ -608,6 +691,48 @@ struct DownloadStoreTests {
         #expect(fixture.store.items.isEmpty)
     }
 
+    @Test func savedPageViewerWaitsForSlowNavigationCompletion() async throws {
+        _ = NSApplication.shared
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        // Deliberately exceeds the old five-second property-polling timeout.
+        configuration.setURLSchemeHandler(NavigationPage(delay: .seconds(6)), forURLScheme: "early-saved-page")
+        let viewer = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 300), configuration: configuration)
+        let url = URL(string: "early-saved-page://fixture/slow")!
+        let navigation = NavigationObserver(url)
+        viewer.navigationDelegate = navigation
+        defer { viewer.navigationDelegate = nil; viewer.stopLoading() }
+        _ = try #require(viewer.load(URLRequest(url: url)))
+        try await navigation.wait(in: viewer)
+        #expect(viewer.url == url)
+        #expect(try await viewer.evaluateJavaScript("document.getElementById('loaded').textContent") as? String == "Loaded")
+    }
+
+    @Test func savedPageViewerReportsNavigationFailureInsteadOfTimingOut() async throws {
+        _ = NSApplication.shared
+        let expected = URLError(.cannotConnectToHost)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(NavigationPage(failure: expected), forURLScheme: "early-saved-page")
+        let viewer = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 300), configuration: configuration)
+        let url = URL(string: "early-saved-page://fixture/failure")!
+        let navigation = NavigationObserver(url)
+        viewer.navigationDelegate = navigation
+        defer { viewer.navigationDelegate = nil; viewer.stopLoading() }
+        _ = try #require(viewer.load(URLRequest(url: url)))
+        do {
+            try await navigation.wait(in: viewer)
+            Issue.record("A failed navigation must not be reported as loaded")
+        } catch let failure as NavigationObserver.Failure {
+            guard case let .navigation(failedURL, phase, error) = failure else {
+                Issue.record("Expected the navigation error, received \(failure)")
+                return
+            }
+            #expect(failedURL == url && phase == "provisional load")
+            #expect(error.domain == NSURLErrorDomain && error.code == expected.errorCode)
+        }
+    }
+
     @Test func savedDocumentsAreListedAndPagesSaveAsStaticUTF8HTML() async throws {
         // The refresh only has to be there for saving to strip it; an hour's
         // delay keeps it from leaving the page (and reaching the network)
@@ -640,10 +765,16 @@ struct DownloadStoreTests {
         #expect(html.contains("id=\"photo\"") && html.contains("id=\"bad\""), "The elements stay, without what made them run")
 
         // Opened later, nothing in the saved copy runs.
-        let viewer = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
-        viewer.loadFileURL(destination, allowingReadAccessTo: fixture.directory)
-        try await waitUntil("saved copy") { !viewer.isLoading && viewer.url != nil }
-        try await Task.sleep(for: .milliseconds(200))
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let viewer = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 300), configuration: configuration)
+        let navigation = NavigationObserver(destination)
+        viewer.navigationDelegate = navigation
+        defer { viewer.navigationDelegate = nil; viewer.stopLoading() }
+        _ = try #require(viewer.loadFileURL(destination, allowingReadAccessTo: fixture.directory))
+        try await navigation.wait(in: viewer)
+        #expect(viewer.url == destination)
+        #expect(try await viewer.evaluateJavaScript("document.readyState") as? String == "complete")
         #expect(try await viewer.evaluateJavaScript("window.ran ?? 0") as? Int == 0, "No handler ran in the saved copy")
         let item = try #require(fixture.store.items.first)
         #expect(item.state == .finished && item.filename == "Saved Page.html" && fixture.store.fileExists(item))
