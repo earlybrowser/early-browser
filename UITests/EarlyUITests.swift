@@ -710,20 +710,12 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
-    private func visibleMenuAction(_ title: String, identifier: String? = nil, activateWithReturn: Bool = false,
+    private func visibleMenuAction(_ title: String, identifier: String? = nil,
                                    file: StaticString = #filePath, line: UInt = #line) {
         guard let target = visibleMenuTarget(title, identifier: identifier, file: file, line: line) else { return }
-        if activateWithReturn {
-            // This submenu previously failed inside click()'s extra pointer
-            // resolution. Highlight it once through native menu tracking, then
-            // activate it with Return without resolving another mouse click.
-            target.item.hover()
-            XCUIApplication().typeKey(.return, modifierFlags: [])
-        } else {
-            // Keep XCTest's native menu tracking. A click based on the browser
-            // window can dismiss the menu instead of activating its item.
-            target.item.click()
-        }
+        // Keep XCTest's native menu tracking. A click based on the browser
+        // window can dismiss the menu instead of activating its item.
+        target.item.click()
     }
 
     /// Menu bar menus expose their items even while closed, so a title the
@@ -1150,14 +1142,30 @@ final class EarlyUITests: XCTestCase {
         let saved = app.webViews.textFields["Saved text"]
         saved.click()
         saved.typeText("keep through Space moves")
+        func chooseDestination(_ name: String, from menu: String) {
+            let submenu = app.menuItems[menu]
+            XCTAssertTrue(submenu.waitForExistence(timeout: 3))
+            submenu.hover()
+            // Each destination submenu in this fixture has one enabled item.
+            // Enter it through AppKit's keyboard navigation: XCTest can fail
+            // to compute a mouse hit point even when the child has valid bounds.
+            app.typeKey(.rightArrow, modifierFlags: [])
+            let selected = app.menuItems.matching(identifier: name)
+                .matching(NSPredicate(format: "selected == true AND enabled == true"))
+            let destinationReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let items = selected.allElementsBoundByIndex.filter { self.usableMenuFrame($0.frame) }
+                return items.count == 1
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [destinationReady], timeout: 5), .completed,
+                           "The \(menu) submenu must select \(name) before Return")
+            app.typeKey(.return, modifierFlags: [])
+        }
         func move(_ row: XCUIElement, to name: String) {
             let contextAction = row.identifier.hasPrefix("folder.") ? "Rename Folder…" : "Rename Tab…"
             row.rightClick()
             XCTAssertTrue(app.menuItems[contextAction].waitForExistence(timeout: 3),
                           "The context menu must belong to the row being moved")
-            XCTAssertTrue(app.menuItems["Move to Space"].waitForExistence(timeout: 3))
-            app.menuItems["Move to Space"].hover()
-            visibleMenuAction(name)
+            chooseDestination(name, from: "Move to Space")
             let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: spaceDot(app, named: name))
             XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
         }
@@ -1187,8 +1195,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(folder.waitForExistence(timeout: 3))
         let folderID = folder.identifier
         app.buttons[tabID].rightClick()
-        app.menuItems["Move to Folder"].hover()
-        visibleMenuAction("Collection", activateWithReturn: true)
+        chooseDestination("Collection", from: "Move to Folder")
 
         // Return completes before the menu fades and the sidebar relocates
         // the rows. The folder's old center becomes the tab's new center;
