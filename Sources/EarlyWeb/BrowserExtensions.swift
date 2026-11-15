@@ -131,6 +131,11 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     @ObservationIgnored private var installations: [UUID: Task<InstalledExtension, Error>] = [:]
     @ObservationIgnored private var isRemoving = false
     @ObservationIgnored var copyExtensionFiles: @Sendable (URL, URL) throws -> Void = ExtensionFileTransfer.copy
+    @ObservationIgnored var makeWebExtension: @MainActor (InstalledExtension, URL?) async throws -> WKWebExtension = {
+        try await ExtensionHost.webExtension(for: $0, filesDirectory: $1)
+    }
+    @ObservationIgnored private var loadRequests: [UUID: UUID] = [:]
+    @ObservationIgnored private var loadEpoch = UUID()
 
     public init(catalog: ExtensionCatalog, filesDirectory: URL?, websiteDataStore: WKWebsiteDataStore,
                 storageIdentifier: UUID?, isPrivate: Bool) {
@@ -154,18 +159,57 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     // MARK: Loading
 
+    /// Capture the host lifetime before yielding, including when the private
+    /// session closes before this task gets its first turn on the main actor.
+    @discardableResult public func scheduleLoading() -> Task<Void, Never> {
+        let epoch = loadEpoch
+        return Task { [weak self] in
+            guard let self, self.loadEpoch == epoch else { return }
+            await self.loadEnabled()
+        }
+    }
+
     /// Every extension that's on (in private windows, those allowed there).
     public func loadEnabled() async {
-        for item in catalog.extensions where item.isEnabled && (!isPrivate || item.allowsPrivateWindows) { await load(item.id) }
+        let epoch = loadEpoch
+        guard await catalog.load(), epoch == loadEpoch, !isRemoving else { return }
+        for item in catalog.extensions where item.isEnabled && (!isPrivate || item.allowsPrivateWindows) {
+            guard epoch == loadEpoch else { return }
+            if loadRequests[item.id] == nil { await load(item.id) }
+        }
+    }
+
+    public func retryCatalogSaving() async {
+        let epoch = loadEpoch
+        if !catalog.isReady {
+            guard await catalog.load(retry: true), epoch == loadEpoch else { return }
+            await loadEnabled()
+        } else { catalog.retrySaving() }
     }
 
     @discardableResult
     public func load(_ id: UUID) async -> Bool {
         guard !isRemoving, !catalog.isRemoved else { return false }
-        guard contexts[id] == nil, let item = catalog.installed(id) else { return contexts[id] != nil }
+        if contexts[id] != nil { return true }
+        let request = UUID()
+        loadRequests[id] = request
+        defer { if loadRequests[id] == request { loadRequests[id] = nil } }
+        guard await catalog.load(), loadRequests[id] == request,
+              let item = catalog.installed(id), item.isEnabled, (!isPrivate || item.allowsPrivateWindows),
+              catalog.acceptsChanges, !Task.isCancelled else { return false }
+        let version = catalog.loadVersion(id)
+        func currentItem() -> InstalledExtension? {
+            guard !isRemoving, !catalog.isRemoved, catalog.acceptsChanges, !Task.isCancelled,
+                  loadRequests[id] == request, catalog.loadVersion(id) == version,
+                  let current = catalog.installed(id), current.isEnabled,
+                  !isPrivate || current.allowsPrivateWindows else { return nil }
+            return current
+        }
         do {
-            let webExtension = try await Self.webExtension(for: item, filesDirectory: filesDirectory)
-            guard !isRemoving, !catalog.isRemoved, catalog.installed(id)?.isEnabled == true, contexts[id] == nil else { return false }
+            let webExtension = try await makeWebExtension(item, filesDirectory)
+            // Site/file grants may have changed while WebKit initialized. Use
+            // the current catalog; an unloaded/replaced request cannot publish.
+            guard let item = currentItem(), contexts[id] == nil else { return false }
             let context = WKWebExtensionContext(for: webExtension)
             context.uniqueIdentifier = item.id.uuidString
             let scheme = item.source.isFromApp ? BrowserExtensions.appScheme : BrowserExtensions.fileScheme
@@ -184,7 +228,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             onLoad?(context.baseURL)
             return true
         } catch {
-            problems[id] = error.localizedDescription
+            if currentItem() != nil { problems[id] = error.localizedDescription }
             return false
         }
     }
@@ -245,12 +289,16 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     /// Turns an extension off in this host; the others keep their rules.
     public func unload(_ id: UUID) {
+        loadRequests[id] = nil
+        problems[id] = nil
         guard let context = contexts.removeValue(forKey: id) else { return }
         try? controller.unload(context)
     }
 
     /// Every extension stops, as when its private session ends.
     public func unloadAll() {
+        loadEpoch = UUID()
+        loadRequests.removeAll()
         for id in Array(contexts.keys) { unload(id) }
     }
 
@@ -261,7 +309,10 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     /// access but keeps injecting the extension's scripts into new pages
     /// (macOS 27). Unknown, not denied, lets a click still grant a page.
     public func refreshAccess(_ id: UUID) {
+        guard let current = catalog.installed(id), current.isEnabled,
+              !isPrivate || current.allowsPrivateWindows else { unload(id); return }
         guard let item = catalog.installed(id), let context = contexts[id] else { return }
+        context.hasAccessToPrivateData = item.allowsPrivateWindows
         var wanted = Set<WKWebExtension.MatchPattern>()
         if item.siteAccess == .allSites { wanted.formUnion(context.webExtension.allRequestedMatchPatterns) }
         for site in item.allowedSites {
@@ -278,23 +329,21 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     /// Turning it on or off, or allowing it in private windows, takes effect.
     public func reapply(_ id: UUID) async {
-        guard let item = catalog.installed(id) else { return }
-        let wanted = item.isEnabled && (!isPrivate || item.allowsPrivateWindows)
-        if contexts[id] != nil { unload(id) }
-        if wanted { await load(id) }
+        unload(id)
+        await load(id)
     }
 
     // MARK: Adding and removing
 
     /// A Mac app's Safari Web Extension, loaded from the app in place.
     public func add(_ discovered: DiscoveredExtension) async throws -> InstalledExtension {
-        guard !catalog.isRemoved, !isRemoving else { throw CancellationError() }
+        guard await catalog.load(), catalog.acceptsChanges, !isRemoving else { throw CancellationError() }
         let source = ExtensionSource.app(extensionPath: discovered.extensionURL.path, bundleIdentifier: discovered.bundleIdentifier)
         if catalog.installed(source: source) != nil { throw ExtensionError.alreadyAdded }
         guard let bundle = Bundle(url: discovered.extensionURL) else { throw ExtensionError.missing }
         let webExtension = try await WKWebExtension(appExtensionBundle: bundle)
         try Task.checkCancellation()
-        guard !catalog.isRemoved, !isRemoving else { throw CancellationError() }
+        guard !catalog.isRemoved, catalog.acceptsChanges, !isRemoving else { throw CancellationError() }
         let item = InstalledExtension(source: source, name: webExtension.displayName ?? discovered.appName,
                                       version: webExtension.displayVersion ?? webExtension.version ?? "")
         catalog.add(item)
@@ -306,7 +355,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     /// A folder or ZIP the person chose: checked, then copied into Early's
     /// storage so it keeps working if the original moves.
     public func add(files url: URL) async throws -> InstalledExtension {
-        guard !catalog.isRemoved, !isRemoving else { throw CancellationError() }
+        guard await catalog.load(), catalog.acceptsChanges, !isRemoving else { throw CancellationError() }
         guard let filesDirectory else { throw ExtensionError.missing }
         let id = UUID()
         let copier = copyExtensionFiles
@@ -321,19 +370,19 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
                 }
                 copied = true
                 try Task.checkCancellation()
-                guard !self.catalog.isRemoved, !self.isRemoving else { throw CancellationError() }
+                guard !self.catalog.isRemoved, self.catalog.acceptsChanges, !self.isRemoving else { throw CancellationError() }
                 // WebKit's async validation remains on its required actor, but
                 // it reads our completed copy rather than a selected source.
                 let webExtension = try await WKWebExtension(resourceBaseURL: staged)
                 try Task.checkCancellation()
-                guard !self.catalog.isRemoved, !self.isRemoving else { throw CancellationError() }
+                guard !self.catalog.isRemoved, self.catalog.acceptsChanges, !self.isRemoving else { throw CancellationError() }
                 try await BackgroundFileIO.run {
                     try Task.checkCancellation()
                     try ExtensionFileTransfer.publish(staged, to: destination)
                 }
                 moved = true
                 try Task.checkCancellation()
-                guard !self.catalog.isRemoved, !self.isRemoving else { throw CancellationError() }
+                guard !self.catalog.isRemoved, self.catalog.acceptsChanges, !self.isRemoving else { throw CancellationError() }
                 let item = InstalledExtension(id: id, source: .files(folderName: id.uuidString),
                     name: webExtension.displayName ?? url.deletingPathExtension().lastPathComponent,
                     version: webExtension.displayVersion ?? webExtension.version ?? "")
@@ -362,8 +411,10 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     /// Removes it from the profile, with its data and copied files.
     public func remove(_ id: UUID) async {
-        guard let item = catalog.installed(id) else { return }
+        guard catalog.acceptsChanges, let item = catalog.installed(id) else { return }
         unload(id)
+        // Invalidate every host before waiting for WebKit's data cleanup.
+        catalog.remove(id)
         let types = Set<WKWebExtension.DataType>([.local, .session, .synchronized])
         let own = await controller.dataRecords(ofTypes: types).filter { $0.uniqueIdentifier == item.id.uuidString }
         if !own.isEmpty { await controller.removeData(ofTypes: types, from: own) }
@@ -371,7 +422,6 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             let url = filesDirectory.appending(path: folderName, directoryHint: .isDirectory)
             try? await BackgroundFileIO.run { try FileManager.default.removeItem(at: url) }
         }
-        catalog.remove(id)
     }
 
     // MARK: For the interface
@@ -409,6 +459,8 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     /// What every extension stored, for deleting the profile.
     public func removeAllData() async throws {
         isRemoving = true
+        loadEpoch = UUID()
+        loadRequests.removeAll()
         let pending = Array(installations.values)
         pending.forEach { $0.cancel() }
         for task in pending { _ = try? await task.value }

@@ -106,13 +106,24 @@ extension WebViewManager {
     func decidePermission(_ permissions: [SitePermission], origin: String?, host: String, in view: WKWebView,
                           decide: @escaping @MainActor (Bool) -> Void) {
         guard !permissions.isEmpty, let origin, let store = sitePermissions,
-              let id = tabID(for: view), let page = pages[id], !page.processTerminated else { decide(false); return }
+              let id = tabID(for: view), let page = pages[id], !page.processTerminated,
+              store.acceptsChanges else { decide(false); return }
+        if !store.isReady {
+            let document = page.captureDocumentID
+            Task { [weak self, weak page] in
+                guard await store.load(), let self, let page, self.pages[id] === page,
+                      page.captureDocumentID == document, self.sitePermissions === store else { decide(false); return }
+                self.decidePermission(permissions, origin: origin, host: host, in: view, decide: decide)
+            }
+            return
+        }
         switch store.decision(for: origin, permissions) {
         case .allow: decide(true)
         case .block: decide(false)
         case .ask:
             let asked = permissions.filter { store.decision(for: origin, $0) == .ask }
             let choices = permissions.map { store.decision(for: origin, $0) }
+            let versions = permissions.map { store.version(for: origin, $0) }
             let documentID = page.captureDocumentID
             let alert = NSAlert()
             alert.messageText = "Allow “\(host)” to use \(Self.permissionPhrase(asked))?"
@@ -121,7 +132,8 @@ extension WebViewManager {
             alert.addButton(withTitle: "Don’t Allow")
             presentAlert(alert, in: view) { [weak self, weak page] response, _ in
                 guard let self, let page, self.pages[id] === page, page.captureDocumentID == documentID,
-                      self.sitePermissions === store, let response,
+                      self.sitePermissions === store, store.acceptsChanges, let response,
+                      permissions.map({ store.version(for: origin, $0) }) == versions,
                       permissions.map({ store.decision(for: origin, $0) }) == choices else { decide(false); return }
                 let allowed = response == .alertFirstButtonReturn
                 store.set(allowed ? .allow : .block, for: asked, origin: origin)
@@ -142,38 +154,108 @@ extension WebViewManager {
     /// A download the page started by itself asks first, once per website, as
     /// in Safari, and none starts while many are already running. A refused
     /// one leaves a notice on the page.
-    func decideAutomaticDownload(_ url: URL, in view: WKWebView, id: UUID, decide: @escaping @MainActor (Bool) -> Void) {
+    func decideAutomaticDownload(_ url: URL, in view: WKWebView, id: UUID, request: AnyObject,
+                                 decide: @escaping @MainActor (Bool) -> Void) {
+        guard let page = pages[id], page.view === view, !page.processTerminated,
+              let store = sitePermissions, store.acceptsChanges else { decide(false); return }
+        let document = page.captureDocumentID, navigation = page.navigationGeneration
+        let isCurrent = { [weak self, weak page] in
+            guard let self, let page else { return false }
+            return self.pages[id] === page && page.captureDocumentID == document
+                && page.navigationGeneration == navigation && !page.processTerminated
+                && self.sitePermissions === store && store.isReady && store.acceptsChanges
+        }
+        if !store.isReady {
+            Task { [weak self] in
+                guard await store.load(), isCurrent(), let self else { decide(false); return }
+                self.decideAutomaticDownload(url, in: view, id: id, request: request, decide: decide)
+            }
+            return
+        }
         let site = view.url ?? url
         let host = site.host ?? "This page"
         let origin = SitePermissions.origin(of: site)
+        let choice = origin.map { store.decision(for: $0, .downloads) } ?? .ask
+        let version = origin.map { store.version(for: $0, .downloads) }
+        let unchanged = {
+            isCurrent() && origin.map { store.version(for: $0, .downloads) } == version
+                && (origin.map { store.decision(for: $0, .downloads) } ?? .ask) == choice
+        }
         let refuse = { [weak self] (notice: String) in
-            self?.showNavigationNotice(notice, for: id)
+            if isCurrent() { self?.showNavigationNotice(notice, for: id) }
             decide(false)
         }
-        guard downloads.activeCount < Self.automaticDownloadLimit else {
-            refuse("“\(host)” tried to start another download while many are running, so Early stopped it.")
-            return
-        }
+        let full = "“\(host)” tried to start another download while many are running, so Early stopped it."
+        guard downloads.canReserveAutomaticDownload else { refuse(full); return }
         let blocked = "Early blocked a download from “\(host)” that started without your click. You can allow its downloads in Site Controls."
-        switch origin.map({ sitePermissions?.decision(for: $0, .downloads) ?? .ask }) ?? .ask {
-        case .allow: decide(true)
+        let allow = { [weak self] in
+            guard let self, unchanged() else { decide(false); return }
+            guard let slot = self.downloads.reserveAutomaticDownload() else { refuse(full); return }
+            if let origin { store.set(.allow, for: [.downloads], origin: origin) }
+            let allowedVersion = origin.map { store.version(for: $0, .downloads) }
+            self.authorizeDownload(request, tabID: id, slot: slot) {
+                isCurrent() && origin.map { store.version(for: $0, .downloads) } == allowedVersion
+                    && (origin.map { store.decision(for: $0, .downloads) == .allow } ?? true)
+            }
+            decide(true)
+        }
+        switch choice {
+        case .allow: allow()
         case .block: refuse(blocked)
         case .ask:
-            let answer: @MainActor (Bool?) -> Void = { [weak self] allowed in
-                guard let allowed else { decide(false); return }
-                if let origin { self?.sitePermissions?.set(allowed ? .allow : .block, for: [.downloads], origin: origin) }
-                allowed ? decide(true) : refuse(blocked)
+            var answered = false
+            let answer: @MainActor (Bool?) -> Void = { allowed in
+                guard !answered else { return }
+                answered = true
+                guard let allowed, unchanged() else { decide(false); return }
+                if allowed { allow() }
+                else {
+                    if let origin { store.set(.block, for: [.downloads], origin: origin) }
+                    refuse(blocked)
+                }
             }
-            if let askForDownloads {
-                askForDownloads(host, answer)
-                return
-            }
+            if let askForDownloads { askForDownloads(host, answer); return }
             let alert = NSAlert()
             alert.messageText = "Allow “\(host)” to download files?"
             alert.informativeText = "It started a download without your click. Early remembers your choice for this website. You can change it in Site Controls in the address bar."
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Don’t Allow")
             presentAlert(alert, in: view) { response, _ in answer(response.map { $0 == .alertFirstButtonReturn }) }
+        }
+    }
+
+    /// Retain the policy object through WebKit's matching didBecome callback.
+    /// Each authorization is consumed once; an expired/cancelled one cannot
+    /// fall back to being treated as a user-initiated download.
+    func authorizeDownload(_ request: AnyObject, tabID: UUID, slot: UUID? = nil,
+                           isCurrent: @escaping @MainActor () -> Bool = { true }) {
+        let key = ObjectIdentifier(request), store = downloads
+        if let old = downloadAuthorizations.removeValue(forKey: key) {
+            old.expiry.cancel()
+            if let slot = old.slot { store.releaseAutomaticDownload(slot) }
+        }
+        let expiry = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            if let slot { store.releaseAutomaticDownload(slot) }
+            self?.downloadAuthorizations[key] = nil
+        }
+        downloadAuthorizations[key] = DownloadAuthorization(request: request, tabID: tabID,
+            slot: slot, isCurrent: isCurrent, expiry: expiry)
+    }
+
+    func consumeDownloadAuthorization(_ request: AnyObject) -> Bool {
+        guard let authorization = downloadAuthorizations.removeValue(forKey: ObjectIdentifier(request)) else { return false }
+        authorization.expiry.cancel()
+        guard let slot = authorization.slot else { return true }
+        let hasRoom = downloads.consumeAutomaticDownload(slot)
+        return hasRoom && authorization.isCurrent()
+    }
+
+    func cancelAutomaticDownloadAuthorizations(for id: UUID) {
+        for (key, authorization) in downloadAuthorizations where authorization.tabID == id && authorization.slot != nil {
+            authorization.expiry.cancel()
+            if let slot = authorization.slot { downloads.releaseAutomaticDownload(slot) }
+            downloadAuthorizations[key] = nil
         }
     }
 
@@ -343,4 +425,14 @@ enum AutomaticPictureInPicture {
     case entering([WKFrameInfo?])
     /// In Picture in Picture from this frame; nil is the main frame.
     case entered(WKFrameInfo?)
+}
+
+/// Authorization waiting for WebKit to hand the transfer to the profile store.
+@MainActor
+struct DownloadAuthorization {
+    let request: AnyObject
+    let tabID: UUID
+    let slot: UUID?
+    let isCurrent: @MainActor () -> Bool
+    let expiry: Task<Void, Never>
 }

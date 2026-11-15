@@ -163,8 +163,12 @@ struct PrivateBrowsingTests {
         let saved = app.sitePermissions(for: profile)
         #expect(normal.sitePermissions === saved && saved === app.sitePermissions(for: profile))
         #expect(saved.fileURL == fixture.directory.appending(path: "Permissions/\(profile.uuidString).json"))
+        #expect(await saved.load())
         saved.set(.allow, for: [.camera], origin: "https://meet.example.com")
-        #expect(SitePermissions(fileURL: saved.fileURL).decision(for: "https://meet.example.com", .camera) == .allow)
+        #expect(await saved.flush())
+        let reopened = SitePermissions(fileURL: saved.fileURL)
+        #expect(await reopened.load())
+        #expect(reopened.decision(for: "https://meet.example.com", .camera) == .allow)
         #expect(normal.webViews.sitePermissions === saved)
 
         let first = try #require(app.openPrivateWindow())

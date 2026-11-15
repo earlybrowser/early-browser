@@ -198,6 +198,7 @@ import Testing
         model.webViews.onMetadata?(tab, during, "Arrived while quitting")
         try await wait { reply != nil }
         #expect(reply == false && history.pendingWrites.acceptsWrites)
+        #expect(model.sitePermissions.acceptsChanges, "Cancel after the settings flush must reopen settings admission too")
         model.webViews.onMetadata?(tab, during, "After Cancel")
         gate.release()
         await model.flushHistory()

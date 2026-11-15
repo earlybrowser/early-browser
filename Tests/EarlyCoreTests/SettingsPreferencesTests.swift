@@ -149,14 +149,18 @@ struct SettingsPreferencesTests {
         #expect(coordinator.tabStore.tab(id: id)?.currentURL.path == "/elsewhere")
     }
 
-    @Test func permissionsCanAllBeForgotten() throws {
+    @Test func permissionsCanAllBeForgotten() async throws {
         let file = FileManager.default.temporaryDirectory.appending(path: "EarlyPermissions-\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: file) }
         let permissions = SitePermissions(fileURL: file)
+        #expect(await permissions.load())
         permissions.set(.allow, for: [.camera], origin: "https://meet.example")
         permissions.set(.block, for: [.location], origin: "https://maps.example")
         permissions.removeAll()
         #expect(permissions.decisions.isEmpty)
-        #expect(SitePermissions(fileURL: file).decisions.isEmpty, "Saved too")
+        #expect(await permissions.flush())
+        let reopened = SitePermissions(fileURL: file)
+        #expect(await reopened.load())
+        #expect(reopened.decisions.isEmpty, "Saved too")
     }
 }

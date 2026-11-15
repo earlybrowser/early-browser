@@ -18,11 +18,12 @@ struct SitePermissionsTests {
         #expect(SitePermissions.origin(scheme: "about", host: "", port: 0) == nil)
     }
 
-    @Test func choicesAreSavedPerSiteAndTheStrictestRequestedOneWins() throws {
+    @Test func choicesAreSavedPerSiteAndTheStrictestRequestedOneWins() async throws {
         let file = FileManager.default.temporaryDirectory.appending(path: "EarlyPermissions-\(UUID())/profile.json")
         defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         let meet = "https://meet.example.com", maps = "https://maps.example.com"
         let store = SitePermissions(fileURL: file)
+        #expect(await store.load())
         #expect(store.decision(for: meet, .camera) == .ask && store.decision(for: meet, [.camera, .microphone]) == .ask)
         store.set(.allow, for: [.camera], origin: meet)
         #expect(store.decision(for: meet, [.camera]) == .allow)
@@ -32,23 +33,30 @@ struct SitePermissionsTests {
         store.set(.allow, for: [.location], origin: maps)
         #expect(store.decision(for: maps, .camera) == .ask, "Choices belong to one site")
 
+        #expect(await store.flush())
         let reopened = SitePermissions(fileURL: file)
+        #expect(await reopened.load())
         #expect(reopened.decisions == store.decisions)
         reopened.set(.ask, for: [.location], origin: maps)
         #expect(reopened.decisions[maps] == nil, "Ask is the default and is not stored")
-        #expect(SitePermissions(fileURL: file).decisions[maps] == nil)
+        #expect(await reopened.flush())
+        let checked = SitePermissions(fileURL: file)
+        #expect(await checked.load())
+        #expect(checked.decisions[maps] == nil)
 
-        try reopened.removeFile()
+        try await reopened.removeFile()
         #expect(reopened.decisions.isEmpty && !FileManager.default.fileExists(atPath: file.path))
-        #expect(SitePermissions(fileURL: file).decisions.isEmpty)
+        let empty = SitePermissions(fileURL: file)
+        #expect(await empty.load())
+        #expect(empty.decisions.isEmpty)
         reopened.set(.allow, for: [.camera], origin: meet)
         reopened.retrySaving()
-        try reopened.removeFile() // Missing files are already clean.
+        try await reopened.removeFile() // Missing files are already clean.
         #expect(reopened.decisions.isEmpty && !FileManager.default.fileExists(atPath: file.path),
                 "A late permission callback cannot recreate a deleted profile's file")
     }
 
-    @Test func privateStoresKeepChoicesInMemoryAndUnreadableFilesAreIgnored() throws {
+    @Test func privateStoresStayInMemoryAndUnreadableFilesRequireRetry() async throws {
         let memory = SitePermissions(fileURL: nil)
         memory.set(.allow, for: [.camera], origin: "https://meet.example.com")
         #expect(memory.decision(for: "https://meet.example.com", .camera) == .allow && memory.fileURL == nil)
@@ -56,14 +64,19 @@ struct SitePermissionsTests {
         let file = FileManager.default.temporaryDirectory.appending(path: "EarlyPermissions-\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: file) }
         try Data("not json".utf8).write(to: file)
-        #expect(SitePermissions(fileURL: file).decisions.isEmpty)
+        let unreadable = SitePermissions(fileURL: file)
+        #expect(!(await unreadable.load()) && unreadable.loadError != nil)
+        unreadable.set(.allow, for: [.camera], origin: "https://new.example")
+        let unchanged = try String(contentsOf: file, encoding: .utf8)
+        #expect(unreadable.decisions.isEmpty && unchanged == "not json")
         try Data(#"{"https://a.example":{"camera":"allow","speaker":"allow","microphone":"maybe"}}"#.utf8).write(to: file)
-        #expect(SitePermissions(fileURL: file).decisions == ["https://a.example": [.camera: .allow]], "Unknown entries are skipped")
+        #expect(await unreadable.load(retry: true))
+        #expect(unreadable.loadError == nil && unreadable.decisions == ["https://a.example": [.camera: .allow]], "Unknown entries are skipped")
     }
 
     /// A choice that can't reach the disk says so, still applies, and is
     /// written once Try Again succeeds. It never looks saved when it isn't.
-    @Test func aChoiceThatCantBeSavedIsReportedAndSavedOnRetry() throws {
+    @Test func aChoiceThatCantBeSavedIsReportedAndSavedOnRetry() async throws {
         let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyPermissions-\(UUID())", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer {
@@ -72,20 +85,28 @@ struct SitePermissionsTests {
         }
         let file = folder.appending(path: "profile.json")
         let store = SitePermissions(fileURL: file)
+        #expect(await store.load())
         var applied: [SitePermissionDecision] = []
         store.onChange = { applied.append($0.decision(for: "https://meet.example.com", .camera)) }
         store.set(.allow, for: [.camera], origin: "https://meet.example.com")
+        #expect(await store.flush())
         #expect(store.saveError == nil)
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
         store.set(.block, for: [.camera], origin: "https://meet.example.com")
+        #expect(!(await store.flush()))
         #expect(store.saveError != nil, "The failed write is reported")
         #expect(store.decision(for: "https://meet.example.com", .camera) == .block, "It applies until Early quits")
         #expect(applied == [.allow, .block], "Live pages receive the block even if persistence fails")
-        #expect(SitePermissions(fileURL: file).decision(for: "https://meet.example.com", .camera) == .allow, "Not on disk yet")
+        let old = SitePermissions(fileURL: file)
+        #expect(await old.load())
+        #expect(old.decision(for: "https://meet.example.com", .camera) == .allow, "Not on disk yet")
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         store.retrySaving()
+        #expect(await store.flush())
         #expect(store.saveError == nil)
-        #expect(SitePermissions(fileURL: file).decision(for: "https://meet.example.com", .camera) == .block, "Saved on retry")
+        let saved = SitePermissions(fileURL: file)
+        #expect(await saved.load())
+        #expect(saved.decision(for: "https://meet.example.com", .camera) == .block, "Saved on retry")
     }
 
     @Test func securityFollowsTheSchemeSecureContentAndCertificateFailures() {

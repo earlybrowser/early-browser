@@ -140,8 +140,13 @@ extension EarlyAppDelegate {
     /// Website access applies in place; turning it on or off restarts it.
     func changeExtension(_ id: UUID, in profile: UUID, restart: Bool, _ body: (inout InstalledExtension) -> Void) async {
         extensionCatalog(for: profile).change(id, body)
-        for host in runningExtensionHosts(of: profile) {
-            if restart { await host.reapply(id) } else { host.refreshAccess(id) }
+        let hosts = runningExtensionHosts(of: profile)
+        if restart {
+            // Revoke in every host before any initialization can suspend us.
+            hosts.forEach { $0.unload(id) }
+            for host in hosts { await host.load(id) }
+        } else {
+            hosts.forEach { $0.refreshAccess(id) }
         }
     }
 
@@ -241,12 +246,19 @@ private struct ExtensionsSettingsContent: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if application.profiles.count > 1 { profilePicker }
-            if let host, let error = host.catalog.saveError {
-                SaveFailureNotice(message: error, identifier: "extensions.retrySave") { host.catalog.retrySaving() }
+            if let host, let error = host.catalog.loadError ?? host.catalog.saveError {
+                SaveFailureNotice(message: error, identifier: "extensions.retrySave") { Task { await host.retryCatalogSaving() } }
             }
-            if let host, let profileID {
+            if host?.catalog.isLoading == true {
+                ProgressView("Loading extensions…").controlSize(.small)
+            } else if host?.catalog.isSaving == true {
+                Text("Saving extensions…").font(.caption).foregroundStyle(.secondary)
+            }
+            if let host, host.catalog.isReady, let profileID {
                 installed(host, profile: profileID)
+                    .disabled(!host.catalog.acceptsChanges)
                 available(host)
+                    .disabled(!host.catalog.acceptsChanges)
             }
             HStack(spacing: 12) {
                 Button { NSWorkspace.shared.open(BrowserExtensions.storeURL) } label: {
@@ -254,7 +266,7 @@ private struct ExtensionsSettingsContent: View {
                 }
                 .accessibilityIdentifier("extensions.store")
                 Button("Install from Folder or ZIP…") { chooseFiles() }
-                    .disabled(host == nil || working)
+                    .disabled(host?.catalog.isReady != true || host?.catalog.acceptsChanges != true || working)
                     .accessibilityIdentifier("extensions.installFiles")
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
@@ -566,7 +578,7 @@ struct SiteControlsExtensions: View {
                     Text("Extensions").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
                     if let error = host.catalog.saveError {
                         SaveFailureNotice(message: error, compact: true, identifier: "siteControls.retrySaveExtensions") {
-                            host.catalog.retrySaving()
+                            Task { await host.retryCatalogSaving() }
                         }
                     }
                     ForEach(items) { item in

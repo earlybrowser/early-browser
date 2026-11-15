@@ -86,6 +86,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     @ObservationIgnored private let directoryProvider: () -> URL
     @ObservationIgnored private var tracked: [ObjectIdentifier: DownloadItem] = [:]
     @ObservationIgnored private var reserved: Set<String> = []
+    @ObservationIgnored private var automaticReservations: Set<UUID> = []
 
     /// Private windows' files keep their quarantine, which Gatekeeper needs,
     /// but their addresses never reach LaunchServices' quarantine-event log.
@@ -107,6 +108,28 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     public var directory: URL { directoryProvider() }
     public var hasActiveDownloads: Bool { items.contains { $0.state.isActive } }
     public var activeCount: Int { items.filter { $0.state.isActive }.count }
+
+    /// Shared by every window in the profile. Authorization and WebKit's
+    /// adoption callback are separate turns, so both need to hold a slot.
+    var canReserveAutomaticDownload: Bool {
+        activeCount + automaticReservations.count < WebViewManager.automaticDownloadLimit
+    }
+
+    func reserveAutomaticDownload() -> UUID? {
+        guard canReserveAutomaticDownload else { return nil }
+        let token = UUID()
+        automaticReservations.insert(token)
+        return token
+    }
+
+    func releaseAutomaticDownload(_ token: UUID) { automaticReservations.remove(token) }
+
+    func consumeAutomaticDownload(_ token: UUID) -> Bool {
+        guard automaticReservations.remove(token) != nil else { return false }
+        // A user-initiated transfer may have started meanwhile; it retains its
+        // exemption, while automatic transfers still respect the current cap.
+        return activeCount < WebViewManager.automaticDownloadLimit
+    }
 
     /// Combined progress of active listed downloads, or nil while any size is unknown.
     public var activeProgress: Double? {

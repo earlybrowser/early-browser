@@ -62,6 +62,7 @@ struct ProfileApplicationTests {
             _ = await application.persistence?.flush()
             for id in opened { application.closeWindow(id) }
             application.closeWindow(nil)
+            for profile in application.profiles { _ = await application.sitePermissions(for: profile.id).flush() }
             _ = await application.persistence?.flush()
             defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: directory)
@@ -276,6 +277,7 @@ struct ProfileApplicationTests {
         var stops: [Int: [SitePermission]] = [:]
         var pages: [BrowserPage] = []
         for (index, owner) in owners.enumerated() {
+            #expect(await owner.sitePermissions.load())
             owner.sitePermissions.set(.allow, for: [.camera, .microphone], origin: origin)
             let id = try #require(owner.coordinator.navigate(to: address, target: .newTab(spaceID: owner.coordinator.activeSpaceID)))
             let tab = try #require(owner.coordinator.tabStore.tab(id: id))
@@ -284,6 +286,7 @@ struct ProfileApplicationTests {
             pages.append(page)
             owner.webViews.endCapture = { _, permission in stops[index, default: []].append(permission) }
         }
+        for owner in owners { #expect(await owner.sitePermissions.flush()) }
         #expect(personal.sitePermissions === sibling.sitePermissions)
         #expect(personal.sitePermissions !== privateModel.sitePermissions && privateModel.sitePermissions.fileURL == nil)
         // Settings edits the shared store directly.

@@ -18,9 +18,10 @@ extension WebViewManager {
             cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
             recordNavigation(.init(tabID: id, event: "download-action", url: url, isMainFrame: mainFrame))
             if page.earlyRequested == url || Self.takeDownloadAllowance(of: webView) {
+                authorizeDownload(action, tabID: id)
                 decisionHandler(.download)
             } else {
-                decideAutomaticDownload(url, in: webView, id: id) { decisionHandler($0 ? .download : .cancel) }
+                decideAutomaticDownload(url, in: webView, id: id, request: action) { decisionHandler($0 ? .download : .cancel) }
             }
             return
         }
@@ -125,8 +126,8 @@ extension WebViewManager {
               let page = pages[id], let url = response.response.url else { decisionHandler(policy); return }
         let fromPerson = page.downloadsFromPerson
         page.downloadsFromPerson = false
-        if fromPerson { decisionHandler(.download) }
-        else { decideAutomaticDownload(url, in: webView, id: id) { decisionHandler($0 ? .download : .cancel) } }
+        if fromPerson { authorizeDownload(response, tabID: id); decisionHandler(.download) }
+        else { decideAutomaticDownload(url, in: webView, id: id, request: response) { decisionHandler($0 ? .download : .cancel) } }
     }
 
     /// Same path for the delegate and deterministic response fixtures. Embedded
@@ -159,6 +160,7 @@ extension WebViewManager {
     }
 
     public func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        guard consumeDownloadAuthorization(navigationAction) else { download.cancel { _ in }; return }
         if navigationAction.targetFrame?.isMainFrame != false, let id = tabID(for: webView) {
             pages[id]?.loadProgress.interrupt()
         }
@@ -167,6 +169,7 @@ extension WebViewManager {
     }
 
     public func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        guard consumeDownloadAuthorization(navigationResponse) else { download.cancel { _ in }; return }
         if navigationResponse.isForMainFrame, let id = tabID(for: webView) {
             pages[id]?.loadProgress.interrupt()
         }
@@ -245,6 +248,7 @@ extension WebViewManager {
     }
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
+        cancelAutomaticDownloadAuthorizations(for: id)
         sourcePages.navigate(tab: id, to: webView.url)
         pages[id]?.resetCaptureGrants()
         pages[id]?.playingFrames.removeAll()
@@ -340,6 +344,7 @@ extension WebViewManager {
     }
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard let id = identities[ObjectIdentifier(webView)], let page = pages[id] else { return }
+        cancelAutomaticDownloadAuthorizations(for: id)
         page.loadProgress.interrupt()
         webView.initialPagePresentation?.processEnded()
         cancelRecovery(id)
