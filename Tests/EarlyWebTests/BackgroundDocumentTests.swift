@@ -104,7 +104,7 @@ struct BackgroundExtensionTests {
             try #require(ContinuousClock.now < deadline)
             try await Task.sleep(for: .milliseconds(1))
         }
-        try catalog.removeFile()
+        try await catalog.removeFile()
         var removing = false, removed = false
         let removal = Task {
             removing = true

@@ -142,15 +142,20 @@ struct PrivacySettingsSection: View {
                 Label("Website permissions", systemImage: "hand.raised").font(.headline)
                 Spacer()
                 Button("Reset All…") { confirmingPermissionsReset = true }
-                    .disabled(rows.isEmpty)
+                    .disabled(rows.isEmpty || !permissions.isReady || !permissions.acceptsChanges)
                     .accessibilityIdentifier("privacy.resetPermissions")
             }
             Text("Camera, microphone, location and download choices you made for websites. Downloads are the ones a site starts without your click. Sites ask again once a choice is removed. You can also change them from a site’s controls in the address bar.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if let error = permissions.saveError {
+            if let error = permissions.loadError ?? permissions.saveError {
                 SaveFailureNotice(message: error, compact: true, identifier: "privacy.retrySavePermissions") { permissions.retrySaving() }
             }
-            if rows.isEmpty {
+            if permissions.isLoading {
+                ProgressView("Loading permissions…").controlSize(.small)
+            } else if permissions.isSaving {
+                Text("Saving permissions…").font(.caption).foregroundStyle(.secondary)
+            }
+            if rows.isEmpty && permissions.isReady {
                 Text("No website has a saved permission.").font(.callout).foregroundStyle(.secondary)
             } else {
                 ForEach(rows, id: \.origin) { row in
@@ -165,6 +170,7 @@ struct PrivacySettingsSection: View {
                                 ForEach(SitePermissionDecision.allCases, id: \.self) { Text($0.title).tag($0) }
                             }
                             .fixedSize()
+                            .disabled(!permissions.isReady || !permissions.acceptsChanges)
                             .accessibilityIdentifier("privacy.permission.\(permission.rawValue).\(Self.host(of: row.origin))")
                         }
                         Button {

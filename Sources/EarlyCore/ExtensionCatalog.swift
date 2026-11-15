@@ -92,18 +92,52 @@ public struct InstalledExtension: Codable, Equatable, Identifiable, Sendable {
 /// A profile's extensions, saved beside the session. Their files and data
 /// stay in the profile; extensions never cross profiles.
 @MainActor @Observable
-public final class ExtensionCatalog {
-    public private(set) var extensions: [InstalledExtension] = []
-    /// Why the latest changes couldn't be saved; nil once a save succeeds.
-    /// They still apply until Early quits, and ``retrySaving()`` tries again.
-    public private(set) var saveError: String?
+public final class ExtensionCatalog: SettingsStore {
+    public var extensions: [InstalledExtension] { persistence.value }
+    public var isReady: Bool { persistence.isLoaded && !persistence.isRemoved }
+    public var isLoading: Bool { persistence.isLoading }
+    public var isSaving: Bool { persistence.isSaving }
+    public var isRemoved: Bool { persistence.isRemoved }
+    public var acceptsChanges: Bool {
+        get { persistence.acceptsChanges }
+        set { persistence.acceptsChanges = newValue }
+    }
+    public var loadError: String? {
+        persistence.loadError.map { "Your extensions couldn’t be loaded. Try again before changing them. \($0)" }
+    }
+    public var saveError: String? {
+        persistence.saveError.map { "Your extension changes couldn’t be saved, so they last only until you quit Early. \($0)" }
+    }
     @ObservationIgnored public let fileURL: URL?
-    public private(set) var isRemoved = false
+    @ObservationIgnored public var onLoad: ((ExtensionCatalog) -> Void)?
+    @ObservationIgnored let persistence: SettingsPersistence<[InstalledExtension]>
+    @ObservationIgnored private var loadVersions: [UUID: UUID] = [:]
 
     public init(fileURL: URL?) {
         self.fileURL = fileURL
-        guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return }
-        extensions = (try? JSONDecoder().decode([InstalledExtension].self, from: data)) ?? []
+        persistence = SettingsPersistence(fileURL: fileURL, empty: [], decode: {
+            try JSONDecoder().decode([InstalledExtension].self, from: $0)
+        }, encode: {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try encoder.encode($0)
+        })
+        persistence.onAvailabilityChange = { [weak self] in
+            guard let self, self.isReady else { return }
+            self.onLoad?(self)
+        }
+    }
+
+    @discardableResult public func load(retry: Bool = false) async -> Bool { await persistence.load(retry: retry) }
+    public func flush(timeout: Duration = .seconds(10)) async -> Bool { await persistence.flush(timeout: timeout) }
+    public func retrySaving() { persistence.retrySaving() }
+
+    /// Unloading/re-enabling or replacing an installation invalidates an
+    /// initializer already in flight, even when its ID or choices later match.
+    public func loadVersion(_ id: UUID) -> UUID? {
+        guard installed(id) != nil, isReady else { return nil }
+        if loadVersions[id] == nil { loadVersions[id] = UUID() }
+        return loadVersions[id]
     }
 
     public func installed(_ id: UUID) -> InstalledExtension? { extensions.first { $0.id == id } }
@@ -112,15 +146,20 @@ public final class ExtensionCatalog {
     public func installed(source: ExtensionSource) -> InstalledExtension? { extensions.first { $0.source == source } }
 
     public func add(_ item: InstalledExtension) {
-        guard !isRemoved, installed(item.id) == nil, installed(source: item.source) == nil else { return }
-        extensions.append(item)
-        save()
+        guard persistence.canChange, installed(item.id) == nil, installed(source: item.source) == nil else { return }
+        loadVersions[item.id] = UUID()
+        persistence.mutate { $0.append(item) }
     }
 
     public func update(_ item: InstalledExtension) {
-        guard let index = extensions.firstIndex(where: { $0.id == item.id }), extensions[index] != item else { return }
-        extensions[index] = item
-        save()
+        guard persistence.canChange, let index = extensions.firstIndex(where: { $0.id == item.id }),
+              extensions[index] != item else { return }
+        let previous = extensions[index]
+        if previous.source != item.source || previous.isEnabled != item.isEnabled
+            || previous.allowsPrivateWindows != item.allowsPrivateWindows {
+            loadVersions[item.id] = UUID()
+        }
+        persistence.mutate { $0[index] = item }
     }
 
     /// Changes one extension in place.
@@ -131,33 +170,15 @@ public final class ExtensionCatalog {
     }
 
     public func remove(_ id: UUID) {
-        guard extensions.contains(where: { $0.id == id }) else { return }
-        extensions.removeAll { $0.id == id }
-        save()
+        guard persistence.canChange, extensions.contains(where: { $0.id == id }) else { return }
+        loadVersions[id] = nil
+        persistence.mutate { $0.removeAll { $0.id == id } }
     }
 
-    /// Deleting a profile.
-    public func removeFile() throws {
-        isRemoved = true
-        extensions.removeAll()
-        try ProfileDataCleanup.removeItem(at: fileURL)
-        saveError = nil
-    }
-
-    public func retrySaving() { save() }
-
-    private func save() {
-        guard !isRemoved, let fileURL else { return }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        do {
-            let data = try encoder.encode(extensions)
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: fileURL, options: .atomic)
-            if saveError != nil { saveError = nil }
-        } catch {
-            saveError = "Your extension changes couldn’t be saved, so they last only until you quit Early. \(error.localizedDescription)"
-        }
+    /// Deleting a profile drains writes before erasing the catalog.
+    public func removeFile() async throws {
+        loadVersions.removeAll()
+        try await persistence.removeFile()
     }
 
     /// `example.com` from an address, for allowing one site.

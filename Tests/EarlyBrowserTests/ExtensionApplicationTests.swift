@@ -3,7 +3,7 @@
 import AppKit
 @testable import EarlyBrowser
 import EarlyCore
-import EarlyWeb
+@testable import EarlyWeb
 import Testing
 import WebKit
 
@@ -44,6 +44,7 @@ struct ExtensionApplicationTests {
                     application.runningExtensionHosts(of: profile.id).forEach { $0.unloadAll() }
                 }
             }
+            for profile in application.profiles { _ = await application.extensionCatalog(for: profile.id).flush() }
             _ = await application.persistence?.flush()
             defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: directory)
@@ -101,6 +102,42 @@ struct ExtensionApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test func privateRevocationAppliesBeforeAnotherHostsReloadCompletes() async throws {
+        guard #available(macOS 15.4, *) else { return }
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application, model = try #require(app.model)
+        let host = try #require(model.extensionHost as? ExtensionHost)
+        let folder = try Self.extensionFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let item = try await host.add(files: folder)
+        let privateID = try #require(app.openPrivateWindow(from: model))
+        let privateHost = try #require(app.windowModel(privateID)?.extensionHost as? ExtensionHost)
+        await app.changeExtension(item.id, in: model.coordinator.profileID, restart: true) { $0.allowsPrivateWindows = true }
+        #expect(privateHost.context(item.id) != nil)
+        let replacement = try await WKWebExtension(resourceBaseURL: folder)
+        var continuation: CheckedContinuation<Void, Never>?
+        defer { continuation?.resume() }
+        host.makeWebExtension = { _, _ in
+            await withCheckedContinuation { continuation = $0 }
+            return replacement
+        }
+        let change = Task {
+            await app.changeExtension(item.id, in: model.coordinator.profileID, restart: true) { $0.allowsPrivateWindows = false }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while continuation == nil {
+            try #require(ContinuousClock.now < deadline)
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(privateHost.context(item.id) == nil, "Revocation cannot wait behind the ordinary host's initializer")
+        continuation?.resume()
+        continuation = nil
+        await change.value
+        #expect(host.context(item.id)?.hasAccessToPrivateData == false && privateHost.context(item.id) == nil)
+        await fixture.cleanup()
+    }
+
     @Test func choicesApplyInEveryWindowAndPrivateWindowsNeedPermission() async throws {
         guard #available(macOS 15.4, *) else { return }
         let fixture = Fixture()
@@ -117,6 +154,7 @@ struct ExtensionApplicationTests {
         #expect(item.name == "Early Test" && item.version == "1.0" && !item.allowsPrivateWindows)
         let copied = fixture.directory.appending(path: "Extensions/Files/\(profile.uuidString)/\(item.id.uuidString)")
         #expect(FileManager.default.fileExists(atPath: copied.appending(path: "manifest.json").path), "Its files are copied into the profile")
+        #expect(await host.catalog.flush())
         #expect(FileManager.default.fileExists(atPath: fixture.directory.appending(path: "Extensions/\(profile.uuidString).json").path))
 
         #expect(personal.perform(.newPrivateWindow))
@@ -250,6 +288,7 @@ struct ExtensionApplicationTests {
         _ = try await host.add(files: folder)
         let catalog = fixture.directory.appending(path: "Extensions/\(workID.uuidString).json")
         let files = fixture.directory.appending(path: "Extensions/Files/\(workID.uuidString)")
+        #expect(await host.catalog.flush())
         #expect(FileManager.default.fileExists(atPath: catalog.path) && FileManager.default.fileExists(atPath: files.path))
 
         app.extensionsProfileID = workID

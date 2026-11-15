@@ -69,30 +69,60 @@ public enum SitePermissionDecision: String, Codable, CaseIterable, Sendable {
 /// A profile's per-site permission choices, keyed by origin. Saved beside the
 /// session; a private profile keeps them in memory only.
 @MainActor @Observable
-public final class SitePermissions {
-    public private(set) var decisions: [String: [SitePermission: SitePermissionDecision]] = [:]
-    /// Why the latest choices couldn't be saved; nil once a save succeeds.
-    /// They still apply until Early quits, and ``retrySaving()`` tries again.
-    public private(set) var saveError: String?
+public final class SitePermissions: SettingsStore {
+    public var decisions: [String: [SitePermission: SitePermissionDecision]] { persistence.value }
+    public var isReady: Bool { persistence.isLoaded && !persistence.isRemoved }
+    public var isLoading: Bool { persistence.isLoading }
+    public var isSaving: Bool { persistence.isSaving }
+    public var acceptsChanges: Bool {
+        get { persistence.acceptsChanges }
+        set { persistence.acceptsChanges = newValue }
+    }
+    public var loadError: String? {
+        persistence.loadError.map { "Your website permission choices couldn’t be loaded. Try again before changing them. \($0)" }
+    }
+    public var saveError: String? {
+        persistence.saveError.map { "Your website permission choices couldn’t be saved, so they last only until you quit Early. \($0)" }
+    }
     @ObservationIgnored public let fileURL: URL?
-    /// The application applies choices to every window sharing this store,
-    /// including when a choice cannot yet be saved to disk.
     @ObservationIgnored public var onChange: ((SitePermissions) -> Void)?
-    @ObservationIgnored private var isRemoved = false
+    @ObservationIgnored let persistence: SettingsPersistence<[String: [SitePermission: SitePermissionDecision]]>
+    @ObservationIgnored private var versions: [String: [SitePermission: UUID]] = [:]
+    @ObservationIgnored private var defaultVersion = UUID()
 
     public init(fileURL: URL?) {
         self.fileURL = fileURL
-        guard let fileURL, let data = try? Data(contentsOf: fileURL),
-              let saved = try? JSONDecoder().decode([String: [String: String]].self, from: data) else { return }
-        for (origin, choices) in saved {
-            let parsed = choices.reduce(into: [SitePermission: SitePermissionDecision]()) { result, choice in
-                if let permission = SitePermission(rawValue: choice.key),
-                   let decision = SitePermissionDecision(rawValue: choice.value), decision != .ask {
-                    result[permission] = decision
+        persistence = SettingsPersistence(fileURL: fileURL, empty: [:], decode: { data in
+            let saved = try JSONDecoder().decode([String: [String: String]].self, from: data)
+            return saved.reduce(into: [:]) { result, entry in
+                let choices = entry.value.reduce(into: [SitePermission: SitePermissionDecision]()) { choices, choice in
+                    if let permission = SitePermission(rawValue: choice.key),
+                       let decision = SitePermissionDecision(rawValue: choice.value), decision != .ask {
+                        choices[permission] = decision
+                    }
                 }
+                if !choices.isEmpty { result[entry.key] = choices }
             }
-            if !parsed.isEmpty { decisions[origin] = parsed }
+        }, encode: { decisions in
+            let saved = decisions.mapValues { choices in
+                Dictionary(uniqueKeysWithValues: choices.map { ($0.key.rawValue, $0.value.rawValue) })
+            }
+            return try JSONEncoder().encode(saved)
+        })
+        persistence.onAvailabilityChange = { [weak self] in
+            guard let self else { return }
+            self.defaultVersion = UUID()
+            self.onChange?(self)
         }
+    }
+
+    @discardableResult public func load(retry: Bool = false) async -> Bool { await persistence.load(retry: retry) }
+    public func flush(timeout: Duration = .seconds(10)) async -> Bool { await persistence.flush(timeout: timeout) }
+    public func retrySaving() { persistence.retrySaving() }
+
+    /// A prompt cannot accept an older answer after Block → Ask either.
+    public func version(for origin: String, _ permission: SitePermission) -> UUID {
+        versions[origin]?[permission] ?? defaultVersion
     }
 
     /// `scheme://host[:port]` for web pages; nil for anything else.
@@ -112,7 +142,8 @@ public final class SitePermissions {
     }
 
     public func decision(for origin: String, _ permission: SitePermission) -> SitePermissionDecision {
-        decisions[origin]?[permission] ?? .ask
+        guard isReady else { return .block }
+        return decisions[origin]?[permission] ?? .ask
     }
 
     /// Allowed only when every requested permission is; blocked when any is.
@@ -123,44 +154,31 @@ public final class SitePermissions {
     }
 
     public func set(_ decision: SitePermissionDecision, for permissions: [SitePermission], origin: String) {
-        guard !isRemoved else { return }
+        guard persistence.canChange else { return }
         var choices = decisions[origin] ?? [:]
         for permission in permissions { choices[permission] = decision == .ask ? nil : decision }
         guard decisions[origin] ?? [:] != choices else { return }
-        decisions[origin] = choices.isEmpty ? nil : choices
+        for permission in permissions where decisions[origin]?[permission] != choices[permission] {
+            versions[origin, default: [:]][permission] = UUID()
+        }
+        persistence.mutate { $0[origin] = choices.isEmpty ? nil : choices }
         onChange?(self)
-        save()
     }
 
     /// Every site back to asking.
     public func removeAll() {
-        guard !decisions.isEmpty else { return }
-        decisions.removeAll()
+        guard persistence.canChange, !decisions.isEmpty else { return }
+        versions.removeAll()
+        defaultVersion = UUID()
+        persistence.change([:])
         onChange?(self)
-        save()
     }
 
-    public func removeFile() throws {
-        isRemoved = true
-        decisions.removeAll()
-        try ProfileDataCleanup.removeItem(at: fileURL)
-        saveError = nil
-    }
-
-    public func retrySaving() { save() }
-
-    private func save() {
-        guard !isRemoved, let fileURL else { return }
-        let saved = decisions.mapValues { choices in
-            Dictionary(uniqueKeysWithValues: choices.map { ($0.key.rawValue, $0.value.rawValue) })
-        }
-        do {
-            let data = try JSONEncoder().encode(saved)
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: fileURL, options: [.atomic])
-            if saveError != nil { saveError = nil }
-        } catch {
-            saveError = "Your website permission choices couldn’t be saved, so they last only until you quit Early. \(error.localizedDescription)"
-        }
+    public func removeFile() async throws {
+        defaultVersion = UUID()
+        versions.removeAll()
+        // The persistence owner closes admission and clears memory before its
+        // first await, then waits for old writes before deleting the file.
+        try await persistence.removeFile()
     }
 }

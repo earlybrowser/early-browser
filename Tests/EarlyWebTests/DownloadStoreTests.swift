@@ -551,6 +551,22 @@ struct DownloadStoreTests {
         fixture.store.cancelAll()
     }
 
+    @Test func anAutomaticResponseDownloadConsumesItsReservedSlot() async throws {
+        let contents = Data("automatic response".utf8)
+        let server = try LocalHTTPServer(body: contents, initialChunk: contents.count)
+        let fixture = Fixture(page: "<a id='file' href='\(server.url.absoluteString)'>File</a>")
+        defer { server.stop(); fixture.cleanup() }
+        fixture.manager.sitePermissions = SitePermissions(fileURL: nil)
+        var asked = 0
+        fixture.manager.askForDownloads = { _, reply in asked += 1; reply(true) }
+        fixture.manager.load(URL(string: "early-test://fixture/source")!, in: fixture.tab)
+        try await waitUntil("page") { !fixture.page.isLoading && fixture.page.view.title == "Source" }
+        _ = try await fixture.page.view.evaluateJavaScript("document.getElementById('file').click()")
+        try await waitUntil("response download") { fixture.store.items.first?.state == .finished }
+        #expect(asked == 1 && fixture.store.items.count == 1)
+        #expect(fixture.manager.downloadAuthorizations.isEmpty && fixture.store.canReserveAutomaticDownload)
+    }
+
     @Test func savingOverAFileKeepsItUntilTheNewOneIsCompleteThroughStopAndResume() async throws {
         let body = Data((0..<600_000).map { UInt8($0 % 241) })
         let server = try LocalHTTPServer(body: body, initialChunk: 120_000)

@@ -6,10 +6,11 @@ import Testing
 
 @Suite @MainActor
 struct ExtensionCatalogTests {
-    @Test func extensionsAndTheirChoicesAreSavedPerProfile() throws {
+    @Test func extensionsAndTheirChoicesAreSavedPerProfile() async throws {
         let file = FileManager.default.temporaryDirectory.appending(path: "EarlyExtensions-\(UUID())/profile.json")
         defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         let catalog = ExtensionCatalog(fileURL: file)
+        #expect(await catalog.load())
         let app = InstalledExtension(source: .app(extensionPath: "/Applications/Blocker.app/Contents/PlugIns/B.appex",
                                                   bundleIdentifier: "com.example.blocker"), name: "Blocker", version: "1.0")
         catalog.add(app)
@@ -26,25 +27,30 @@ struct ExtensionCatalogTests {
         catalog.add(files)
         #expect(catalog.installed(source: .files(folderName: "abc"))?.id == files.id)
 
+        #expect(await catalog.flush())
         let reopened = ExtensionCatalog(fileURL: file)
+        #expect(await reopened.load())
         #expect(reopened.extensions == catalog.extensions)
         #expect(reopened.installed(app.id)?.siteAccess == .whenClicked && reopened.installed(app.id)?.allowsPrivateWindows == true)
         #expect(reopened.installed(app.id)?.source.isFromApp == true && reopened.installed(files.id)?.source.isFromApp == false)
         reopened.remove(app.id)
-        #expect(ExtensionCatalog(fileURL: file).extensions.map(\.id) == [files.id])
-        try reopened.removeFile()
+        #expect(await reopened.flush())
+        let checked = ExtensionCatalog(fileURL: file)
+        #expect(await checked.load())
+        #expect(checked.extensions.map(\.id) == [files.id])
+        try await reopened.removeFile()
         #expect(!FileManager.default.fileExists(atPath: file.path))
         reopened.add(app)
         reopened.change(files.id) { $0.isEnabled = true }
         reopened.retrySaving()
-        try reopened.removeFile()
+        try await reopened.removeFile()
         #expect(reopened.extensions.isEmpty && !FileManager.default.fileExists(atPath: file.path),
                 "An installation finishing after profile deletion cannot save its catalog")
     }
 
     /// Turning an extension off when its catalog can't be written says so;
     /// it stays off until Early quits, and is written once Try Again succeeds.
-    @Test func aChangeThatCantBeSavedIsReportedAndSavedOnRetry() throws {
+    @Test func aChangeThatCantBeSavedIsReportedAndSavedOnRetry() async throws {
         let folder = FileManager.default.temporaryDirectory.appending(path: "EarlyExtensions-\(UUID())", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer {
@@ -53,20 +59,28 @@ struct ExtensionCatalogTests {
         }
         let file = folder.appending(path: "profile.json")
         let catalog = ExtensionCatalog(fileURL: file)
+        #expect(await catalog.load())
         let item = InstalledExtension(source: .files(folderName: "abc"), name: "Folder", version: "1")
         catalog.add(item)
+        #expect(await catalog.flush())
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
         catalog.change(item.id) { $0.isEnabled = false }
+        #expect(!(await catalog.flush()))
         #expect(catalog.saveError != nil && catalog.installed(item.id)?.isEnabled == false)
-        #expect(ExtensionCatalog(fileURL: file).installed(item.id)?.isEnabled == true, "Not on disk yet")
+        let old = ExtensionCatalog(fileURL: file)
+        #expect(await old.load())
+        #expect(old.installed(item.id)?.isEnabled == true, "Not on disk yet")
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         catalog.retrySaving()
-        #expect(catalog.saveError == nil && ExtensionCatalog(fileURL: file).installed(item.id)?.isEnabled == false)
+        #expect(await catalog.flush())
+        let saved = ExtensionCatalog(fileURL: file)
+        #expect(await saved.load())
+        #expect(catalog.saveError == nil && saved.installed(item.id)?.isEnabled == false)
     }
 
     /// A catalog from before the local-files switch keeps every extension,
     /// with local files not allowed.
-    @Test func aCatalogFromAnEarlierVersionStillOpens() throws {
+    @Test func aCatalogFromAnEarlierVersionStillOpens() async throws {
         let file = FileManager.default.temporaryDirectory.appending(path: "EarlyExtensions-\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: file) }
         try Data(#"""
@@ -75,6 +89,7 @@ struct ExtensionCatalogTests {
               "added":767000000}]
             """#.utf8).write(to: file)
         let catalog = ExtensionCatalog(fileURL: file)
+        #expect(await catalog.load())
         #expect(catalog.extensions.count == 1 && catalog.extensions.first?.name == "Old")
         #expect(catalog.extensions.first?.allowsLocalFiles == false && catalog.extensions.first?.allowsPrivateWindows == true)
     }

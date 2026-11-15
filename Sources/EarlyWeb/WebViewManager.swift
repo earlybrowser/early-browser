@@ -93,6 +93,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     public var onManagePasswords: ((String?) -> Void)?
     /// Answers "Allow downloads?" for a host instead of Early's sheet (nil: dismissed); tests use it.
     @ObservationIgnored var askForDownloads: ((String, @escaping @MainActor (Bool?) -> Void) -> Void)?
+    @ObservationIgnored var downloadAuthorizations: [ObjectIdentifier: DownloadAuthorization] = [:]
     /// Capture fixtures observe the native stop boundary without using devices.
     @ObservationIgnored var endCapture: (WKWebView, SitePermission) -> Void = { view, permission in
         switch permission {
@@ -526,6 +527,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     func beginLoading(_ id: UUID, start: LoadStart = .request) {
         guard let page = pages[id] else { return }
+        cancelAutomaticDownloadAuthorizations(for: id)
         switch start {
         case .request:
             page.loadProgress.request()
@@ -708,6 +710,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     private func releasePage(tabID: UUID, preservingSnapshot: Bool) {
+        cancelAutomaticDownloadAuthorizations(for: tabID)
         cancelRecovery(tabID)
         hideReader(tabID)
         if preservingSnapshot { snapshots.cancelCapture(tabID: tabID) }

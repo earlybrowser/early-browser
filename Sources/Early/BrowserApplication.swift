@@ -386,6 +386,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard isPrivateProfile(id) || profiles.contains(where: { $0.id == id }) else { return SitePermissions(fileURL: nil) }
         if let store = sitePermissionStores[id] { return store }
         let store = SitePermissions(fileURL: isPrivateProfile(id) ? nil : sitePermissionsFile(for: id))
+        store.acceptsChanges = !isTerminating
         store.onChange = { [weak self] changed in
             for owner in self?.visibleModels ?? [] where owner.sitePermissions === changed {
                 owner.webViews.applySitePermissions()
@@ -479,6 +480,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         guard profiles.contains(where: { $0.id == id }) else { return ExtensionCatalog(fileURL: nil) }
         if let catalog = extensionCatalogs[id] { return catalog }
         let catalog = ExtensionCatalog(fileURL: extensionsFile(for: id))
+        catalog.acceptsChanges = !isTerminating
+        catalog.onLoad = { [weak self] _ in
+            guard #available(macOS 15.4, *), let self else { return }
+            for host in self.runningExtensionHosts(of: id) { host.scheduleLoading() }
+        }
         extensionCatalogs[id] = catalog
         return catalog
     }
@@ -496,7 +502,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                                  storageIdentifier: testing || isPrivate ? nil : owner, isPrivate: isPrivate)
         configureExtensions(host)
         if isPrivate { privateExtensionHosts[owner] = host } else { extensionHosts[owner] = host }
-        Task { await host.loadEnabled() }
+        host.scheduleLoading()
         return host
     }
 
@@ -1391,8 +1397,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             catch { failures.append("\(label): \(error.localizedDescription)") }
         }
         await attempt("Permissions") {
-            if let store = sitePermissionStores[id] { try store.removeFile() }
-            try ProfileDataCleanup.removeItem(at: sitePermissionsFile(for: id))
+            if let store = sitePermissionStores[id] { try await store.removeFile() }
+            let file = sitePermissionsFile(for: id)
+            try await BackgroundFileIO.run { try ProfileDataCleanup.removeItem(at: file) }
             sitePermissionStores[id] = nil
         }
         await attempt("Local files") {
@@ -1401,8 +1408,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             localFileStores[id] = nil
         }
         await attempt("Extensions") {
-            if let catalog = extensionCatalogs[id] { try catalog.removeFile() }
-            try ProfileDataCleanup.removeItem(at: extensionsFile(for: id))
+            if let catalog = extensionCatalogs[id] { try await catalog.removeFile() }
+            let file = extensionsFile(for: id)
+            try await BackgroundFileIO.run { try ProfileDataCleanup.removeItem(at: file) }
             extensionCatalogs[id] = nil
         }
         if #available(macOS 15.4, *) {
@@ -1655,6 +1663,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             if canQuit { canQuit = await persistence.flush() }
             else {
                 self.isTerminating = false
+                self.resumeSettingsAfterCancelledQuit()
                 self.replyToTermination(false, sender: sender)
                 return
             }
@@ -1667,6 +1676,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 canQuit = alert.runModal() == .alertSecondButtonReturn
             }
             if canQuit {
+                canQuit = await self.settingsSavedBeforeQuitting()
+            }
+            if canQuit {
                 canQuit = await self.historySavedBeforeQuitting()
             }
             if canQuit {
@@ -1674,7 +1686,10 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 self.downloadStores.values.forEach { $0.cancelAll() }
                 self.visibleModels.forEach { $0.webViews.discardAll() }
             }
-            else { self.isTerminating = false }
+            else {
+                self.isTerminating = false
+                self.resumeSettingsAfterCancelledQuit()
+            }
             self.replyToTermination(canQuit, sender: sender)
         }
         return .terminateLater
@@ -1682,6 +1697,55 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     func historySavedBeforeQuitting() async -> Bool {
         await Self.historySaved(Array(historyStores.values), timeout: historyQuitTimeout, ask: askToQuitWithUnsavedHistory)
+    }
+
+    private var settingsStores: [any SettingsStore] {
+        Array(sitePermissionStores.values) + extensionCatalogs.values.map { $0 as any SettingsStore }
+    }
+
+    private func resumeSettingsAfterCancelledQuit() {
+        settingsStores.forEach { $0.acceptsChanges = true }
+        if #available(macOS 15.4, *) {
+            for profile in profiles {
+                for host in runningExtensionHosts(of: profile.id) { host.scheduleLoading() }
+            }
+        }
+    }
+
+    func settingsSavedBeforeQuitting() async -> Bool {
+        await Self.settingsSaved(settingsStores, timeout: settingsQuitTimeout, ask: askToQuitWithUnsavedSettings)
+    }
+
+    static func settingsSaved(_ stores: [any SettingsStore], timeout: Duration = .seconds(10),
+                              ask: (String) -> NSApplication.ModalResponse) async -> Bool {
+        stores.forEach { $0.acceptsChanges = false }
+        while true {
+            let deadline = ContinuousClock.now.advanced(by: timeout)
+            var failures: [any SettingsStore] = []
+            for store in stores {
+                if !(await store.flush(timeout: ContinuousClock.now.duration(to: deadline))) { failures.append(store) }
+            }
+            guard let first = failures.first else { return true }
+            let reason = first.loadError ?? first.saveError ?? "Your settings are still being saved."
+            switch ask(reason) {
+            case .alertFirstButtonReturn: failures.forEach { $0.retrySaving() }
+            case .alertSecondButtonReturn:
+                stores.forEach { $0.acceptsChanges = true }
+                return false
+            default: return true
+            }
+        }
+    }
+
+    @ObservationIgnored var settingsQuitTimeout: Duration = .seconds(10)
+    @ObservationIgnored var askToQuitWithUnsavedSettings: (String) -> NSApplication.ModalResponse = { reason in
+        let alert = NSAlert()
+        alert.messageText = "Your settings couldn’t be saved"
+        alert.informativeText = "\(reason) If you quit now, your latest website permission or extension changes may be lost."
+        alert.addButton(withTitle: "Try Again")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Quit Anyway").hasDestructiveAction = true
+        return alert.runModal()
     }
 
     static func historySaved(_ stores: [HistoryStore], timeout: Duration = .seconds(10),
