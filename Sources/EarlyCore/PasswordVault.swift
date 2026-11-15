@@ -363,8 +363,7 @@ public final class PasswordVault {
     /// Logins for a page's origin, most recently used first. An `https` page
     /// also gets the same host's `http` logins; never the other way round.
     public func logins(for origin: String) -> [SavedLogin] {
-        let accepted = Self.matchingOrigins(for: origin)
-        return logins.filter { accepted.contains($0.origin) }.sorted { lhs, rhs in
+        return logins.filter { Self.canFill(savedOrigin: $0.origin, on: origin) }.sorted { lhs, rhs in
             if (lhs.lastUsed ?? .distantPast) != (rhs.lastUsed ?? .distantPast) {
                 return (lhs.lastUsed ?? .distantPast) > (rhs.lastUsed ?? .distantPast)
             }
@@ -372,11 +371,14 @@ public final class PasswordVault {
         }
     }
 
-    nonisolated static func matchingOrigins(for origin: String) -> Set<String> {
-        guard origin.hasPrefix("https://") else { return [origin] }
+    /// Canonical origins only: an exact match, or the existing default-port
+    /// HTTP-to-HTTPS upgrade. Suggestions and explicit selection must agree.
+    public nonisolated static func canFill(savedOrigin: String, on origin: String) -> Bool {
+        if savedOrigin == origin { return true }
+        guard origin.hasPrefix("https://") else { return false }
         let rest = origin.dropFirst("https://".count)
         // An explicit https port has no http counterpart.
-        return rest.contains(":") ? [origin] : [origin, "http://" + rest]
+        return !rest.contains(":") && savedOrigin == "http://" + rest
     }
 
     public func login(id: UUID) -> SavedLogin? { logins.first { $0.id == id } }

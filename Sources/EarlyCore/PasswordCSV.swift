@@ -107,13 +107,20 @@ public enum PasswordCSV {
 
     /// Chrome's columns: name, url, username, password, note.
     public static func export(_ logins: [SavedLogin]) -> String {
+        encodeExport(logins, checkCancellation: {})
+    }
+
+    static func encodeExport(_ logins: [SavedLogin], checkCancellation: () throws -> Void) rethrows -> String {
+        try checkCancellation()
         let sorted = logins.sorted {
             ($0.host, $0.username) < ($1.host, $1.username)
         }
         var lines = ["name,url,username,password,note"]
         for login in sorted {
+            try checkCancellation()
             lines.append([login.host, login.origin + "/", login.username, login.password, login.note].map(field).joined(separator: ","))
         }
+        try checkCancellation()
         return lines.joined(separator: "\n") + "\n"
     }
 
