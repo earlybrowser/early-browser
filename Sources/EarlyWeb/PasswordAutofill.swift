@@ -592,7 +592,8 @@ extension WebViewManager {
         guard let field = focusedPasswordField, let vault = passwords else { return }
         switch item {
         case .login(let id, _):
-            guard field.role != .new, let login = vault.login(id: id), login.origin == field.origin else { return }
+            guard field.role != .new, let login = vault.login(id: id),
+                  PasswordVault.canFill(savedOrigin: login.origin, on: field.origin) else { return }
             Task { @MainActor [weak self] in
                 guard let self, await self.fillPasswordField(field, username: login.username, password: login.password, mode: "login") != nil
                 else { return }

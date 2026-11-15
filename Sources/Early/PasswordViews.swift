@@ -107,6 +107,54 @@ final class PasswordsLock {
     }
 }
 
+/// One explicit export, including authentication and destination selection.
+/// Cancellation keeps the operation alive until its writer has cleaned up or
+/// committed, so a late Cancel can never hide an exported plaintext file.
+@MainActor @Observable
+final class PasswordExport {
+    enum Phase { case idle, authenticating, choosingDestination, writing, cancelling }
+    private(set) var phase: Phase = .idle
+    var notice: PasswordNotice?
+    @ObservationIgnored private var task: Task<Void, Never>?
+    var isRunning: Bool { phase != .idle }
+
+    func start(from vault: PasswordVault, lock: PasswordsLock,
+               isCurrent: @escaping @MainActor () -> Bool,
+               chooseDestination: @escaping @MainActor () async -> URL?,
+               write: @escaping @Sendable ([SavedLogin], URL) async throws -> Void = { try await PasswordCSV.export($0, to: $1) }) {
+        guard !isRunning, lock.isUnlocked, vault.isReady, isCurrent() else { return }
+        phase = .authenticating
+        notice = nil
+        task = Task {
+            defer { task = nil; phase = .idle }
+            guard await lock.confirm("export your saved passwords"),
+                  !Task.isCancelled, lock.isUnlocked, vault.isReady, isCurrent() else { return }
+            phase = .choosingDestination
+            guard let url = await chooseDestination(),
+                  !Task.isCancelled, lock.isUnlocked, vault.isReady, isCurrent() else { return }
+            // Array and SavedLogin have value semantics and are Sendable.
+            // Later edits/deletion cannot change this authorized snapshot.
+            let snapshot = vault.logins
+            phase = .writing
+            do {
+                try await write(snapshot, url)
+                notice = PasswordNotice(title: "Passwords exported",
+                    message: "Saved to “\(url.lastPathComponent)”. Anyone who can open this file can read your passwords. Delete it once you’ve imported it elsewhere.")
+            } catch is CancellationError {
+                notice = PasswordNotice(title: "Export cancelled", message: "The destination file wasn’t changed.")
+            } catch {
+                notice = PasswordNotice(title: "The passwords couldn’t be exported", message: error.localizedDescription)
+            }
+        }
+    }
+
+    func cancel() {
+        guard isRunning else { return }
+        phase = .cancelling
+        task?.cancel()
+    }
+}
+
 /// Settings › Passwords: the profile's saved passwords, behind the lock.
 struct PasswordsSettingsSection: View {
     @Bindable var application: EarlyAppDelegate
@@ -122,6 +170,8 @@ struct PasswordsSettingsSection: View {
     @State private var importTask: Task<Void, Never>?
     @State private var importID: UUID?
     @State private var savingImport = false
+    @State private var export = PasswordExport()
+    @State private var exportPanel: NSSavePanel?
 
     private var profileID: UUID? {
         let profiles = application.profiles
@@ -144,13 +194,17 @@ struct PasswordsSettingsSection: View {
         }
         .onDisappear {
             cancelImport()
+            cancelExport()
             lock.lock()
             revealed = []
         }
         .onChange(of: lock.isUnlocked) { _, unlocked in
-            if !unlocked { revealed = []; editor = nil; cancelImport() }
+            if !unlocked { revealed = []; editor = nil; cancelImport(); cancelExport() }
         }
-        .onChange(of: profileID) { _, _ in cancelImport() }
+        .onChange(of: profileID) { _, _ in cancelImport(); cancelExport() }
+        .onChange(of: export.notice?.id) { _, _ in
+            if let result = export.notice { notice = result }
+        }
         .sheet(item: $editor) { request in
             PasswordEditorSheet(request: request) { login in
                 guard let vault else { return nil }
@@ -308,9 +362,18 @@ struct PasswordsSettingsSection: View {
                 transferCard("Export Passwords", symbol: "square.and.arrow.up",
                              detail: "Save every password in this profile as a CSV file. Anyone who can open it can read them.",
                              button: "Export…", identifier: "passwords.export") { exportPasswords(from: vault) }
-                    .disabled(vault.logins.isEmpty)
+                    .disabled(vault.logins.isEmpty || export.isRunning)
             }
             .fixedSize(horizontal: false, vertical: true)
+            if export.isRunning {
+                HStack {
+                    ProgressView(export.phase == .cancelling ? "Cancelling export…" : "Exporting passwords…").controlSize(.small)
+                    Spacer()
+                    Button("Cancel") { cancelExport() }
+                        .disabled(export.phase == .cancelling)
+                        .accessibilityIdentifier("passwords.cancelExport")
+                }.accessibilityIdentifier("passwords.exportProgress")
+            }
             if importTask != nil {
                 HStack {
                     ProgressView(savingImport ? "Saving passwords…" : "Importing passwords…").controlSize(.small)
@@ -596,24 +659,28 @@ struct PasswordsSettingsSection: View {
     }
 
     private func exportPasswords(from vault: PasswordVault) {
-        Task {
-            guard await lock.confirm("export your saved passwords") else { return }
+        let source = profileID
+        export.start(from: vault, lock: lock, isCurrent: { source == profileID && self.vault === vault }) {
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.commaSeparatedText]
             panel.nameFieldStringValue = "Early Passwords.csv"
             panel.message = "Anyone who can open this file can read your passwords. Delete it once you’ve imported it elsewhere."
             panel.prompt = "Export"
-            let completion: (NSApplication.ModalResponse) -> Void = { response in
-                guard response == .OK, let url = panel.url else { return }
-                do {
-                    try PasswordCSV.write(vault.exportCSV(), to: url)
-                } catch {
-                    notice = PasswordNotice(title: "The passwords couldn’t be exported", message: error.localizedDescription)
+            exportPanel = panel
+            defer { exportPanel = nil }
+            return await withCheckedContinuation { continuation in
+                let completion: (NSApplication.ModalResponse) -> Void = { response in
+                    continuation.resume(returning: response == .OK ? panel.url : nil)
                 }
+                if let window = NSApp.keyWindow { panel.beginSheetModal(for: window, completionHandler: completion) }
+                else { panel.begin(completionHandler: completion) }
             }
-            if let window = NSApp.keyWindow { panel.beginSheetModal(for: window, completionHandler: completion) }
-            else { completion(panel.runModal()) }
         }
+    }
+
+    private func cancelExport() {
+        export.cancel()
+        exportPanel?.cancel(nil)
     }
 }
 

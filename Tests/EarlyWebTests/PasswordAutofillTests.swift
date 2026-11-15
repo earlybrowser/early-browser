@@ -111,6 +111,74 @@ struct PasswordAutofillTests {
         #expect(values == ["grace", "second", "user=grace,pass=second"], "The page's own listeners see the values")
     }
 
+    @Test(arguments: [
+        ("http://example.test", "https://example.test", true),
+        ("http://example.test:80", "https://example.test:443", true),
+        ("https://example.test", "https://example.test", true),
+        ("http://example.test", "http://example.test", true),
+        ("https://example.test:8443", "https://example.test:8443", true),
+        ("https://example.test", "http://example.test", false),
+        ("http://other.test", "https://example.test", false),
+        ("http://example.test", "https://sub.example.test", false),
+        ("http://example.test:8080", "https://example.test", false),
+        ("http://example.test", "https://example.test:8443", false),
+        ("http://example.test:8443", "https://example.test:8443", false)
+    ])
+    func savedOriginEligibilityAgreesWhenOfferingAndChoosing(_ scenario: (String, String, Bool)) async throws {
+        let (saved, target, allowed) = scenario
+        let fixture = makeFixture(["blank": "<title>Blank</title>"])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        let origin = try #require(URL(string: saved).flatMap(SitePermissions.origin(of:)))
+        vault.save(origin: origin, username: "synthetic", password: "synthetic-password")
+        let login = try #require(vault.logins.first)
+        let tab = try await fixture.open("blank"), view = try fixture.page(tab).view
+        // Local HTML with a real HTTP(S) security origin; no server or TLS bypass.
+        view.loadHTMLString(Self.login, baseURL: URL(string: target))
+        try await fixture.waitUntil("local sign-in document") { !view.isLoading && view.title == "Sign in" }
+        let field = try await focus("pass", in: view, fixture)
+        #expect(field.origin == URL(string: target).flatMap(SitePermissions.origin(of:)))
+        let choice = PasswordSuggestion.login(login.id, username: login.username)
+        #expect(manager.passwordSuggestions(for: field).contains(choice) == allowed)
+        #expect(try await fixture.evaluate("[user.value, pass.value]", in: tab) as? [String] == ["", ""],
+                "Offering a login never fills it without an explicit choice")
+        manager.choosePasswordSuggestion(choice)
+        if allowed { try await fixture.waitUntil("chosen login filled") { vault.login(id: login.id)?.lastUsed != nil } }
+        else { try await Task.sleep(for: .milliseconds(150)) }
+        #expect(try await fixture.evaluate("[user.value, pass.value]", in: tab) as? [String]
+                == (allowed ? [login.username, login.password] : ["", ""]))
+        #expect((vault.login(id: login.id)?.lastUsed != nil) == allowed)
+    }
+
+    @Test(arguments: ["field", "document"])
+    func upgradedLoginCannotFillAnOldFieldOrDocument(change: String) async throws {
+        let fixture = makeFixture(["blank": "<title>Blank</title>"])
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, vault = try #require(manager.passwords)
+        vault.save(origin: "http://example.test", username: "synthetic", password: "synthetic-password")
+        let login = try #require(vault.logins.first)
+        let tab = try await fixture.open("blank"), view = try fixture.page(tab).view
+        let window = passwordWindow(for: view)
+        defer { window.close() }
+        view.loadHTMLString(Self.login, baseURL: URL(string: "https://example.test"))
+        try await fixture.waitUntil("first sign-in document") { !view.isLoading && view.title == "Sign in" }
+        let field = try await focus("pass", in: view, fixture)
+        let choice = try #require(manager.passwordPanel.items.first), oldChoose = try #require(manager.passwordPanel.onChoose)
+        #expect(choice == .login(login.id, username: login.username))
+        if change == "document" {
+            view.loadHTMLString(Self.login.replacingOccurrences(of: "Sign in</title>", with: "New document</title>"),
+                                baseURL: URL(string: "https://example.test"))
+            try await fixture.waitUntil("replacement document") { !view.isLoading && view.title == "New document" }
+        }
+        let current = try await focus("user", in: view, fixture)
+        #expect(field.token != current.token)
+        oldChoose(choice)
+        #expect(await manager.fillPasswordField(field, username: login.username, password: login.password, mode: "login") == nil)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(try await fixture.evaluate("[user.value, pass.value]", in: tab) as? [String] == ["", ""])
+        #expect(vault.login(id: login.id)?.lastUsed == nil)
+    }
+
     @Test func onlyFieldsThatLookLikeUserNamesGetSavedAccounts() async throws {
         let fixture = makeFixture([
             // No form: a password field elsewhere doesn't make every text field a user name.

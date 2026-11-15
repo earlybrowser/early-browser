@@ -4,13 +4,41 @@ import Darwin
 import Foundation
 
 extension PasswordCSV {
+    /// The caller captures a value snapshot while its vault is available.
+    /// Sorting, CSV encoding, writing and synchronization all run off-main.
+    public static func export(_ logins: [SavedLogin], to destination: URL) async throws {
+        try await export(logins, to: destination, writeContents: writeChunks)
+    }
+
+    static func export(_ logins: [SavedLogin], to destination: URL,
+                       writeContents: @escaping @Sendable (FileHandle, Data) throws -> Void) async throws {
+        // A caller cancelled before starting must not race creation of the
+        // detached task with registration of its cancellation handler.
+        try Task.checkCancellation()
+        try await BackgroundFileIO.run {
+            let csv = try encodeExport(logins, checkCancellation: { try Task.checkCancellation() })
+            try write(csv, to: destination, writeContents: writeContents)
+        }
+    }
+
     /// Writes a password export to the destination confirmed by the save panel.
     public static func write(_ csv: String, to destination: URL) throws {
-        try write(csv, to: destination) { file, contents in try file.write(contentsOf: contents) }
+        try write(csv, to: destination, writeContents: writeChunks)
+    }
+
+    private static func writeChunks(_ file: FileHandle, _ contents: Data) throws {
+        var offset = 0
+        while offset < contents.count {
+            try Task.checkCancellation()
+            let end = min(contents.count, offset + 256 * 1024)
+            try file.write(contentsOf: contents[offset..<end])
+            offset = end
+        }
     }
 
     /// The writer is injectable so failures after a partial write can be tested.
     static func write(_ csv: String, to destination: URL, writeContents: (FileHandle, Data) throws -> Void) throws {
+        try Task.checkCancellation()
         guard destination.isFileURL else { throw CocoaError(.fileWriteUnsupportedScheme) }
         let scoped = destination.startAccessingSecurityScopedResource()
         defer { if scoped { destination.stopAccessingSecurityScopedResource() } }
@@ -36,6 +64,9 @@ extension PasswordCSV {
             try ownerOnly(descriptor, mode: 0o600)
             try writeContents(file, Data(csv.utf8))
             try file.synchronize()
+            // The final rename is the commit point. Cancellation before it
+            // cleans up plaintext; after it, the export must report success.
+            try Task.checkCancellation()
             // rename replaces the name in one step and keeps the new file's
             // permissions, rather than copying a previous export's metadata.
             try destination.withUnsafeFileSystemRepresentation { path in
