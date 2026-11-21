@@ -114,6 +114,11 @@ struct PasswordAutofillTests {
     @Test(arguments: [
         ("http://example.test", "https://example.test", true),
         ("http://example.test:80", "https://example.test:443", true),
+        ("http://[::1]:80", "https://[::1]:443", true),
+        ("http://[2001:0db8::1]", "https://[2001:db8::1]", true),
+        ("http://[::1]", "https://[::1]:8443", false),
+        ("http://[::1]:8080", "https://[::1]", false),
+        ("https://[::1]:8443", "https://[::1]:8443", true),
         ("https://example.test", "https://example.test", true),
         ("http://example.test", "http://example.test", true),
         ("https://example.test:8443", "https://example.test:8443", true),
@@ -129,7 +134,7 @@ struct PasswordAutofillTests {
         let fixture = makeFixture(["blank": "<title>Blank</title>"])
         defer { fixture.cleanup() }
         let manager = fixture.manager, vault = try #require(manager.passwords)
-        let origin = try #require(URL(string: saved).flatMap(SitePermissions.origin(of:)))
+        let origin = try #require(URL(string: saved).flatMap(PasswordOrigin.from(_:)))
         vault.save(origin: origin, username: "synthetic", password: "synthetic-password")
         let login = try #require(vault.logins.first)
         let tab = try await fixture.open("blank"), view = try fixture.page(tab).view
@@ -137,7 +142,7 @@ struct PasswordAutofillTests {
         view.loadHTMLString(Self.login, baseURL: URL(string: target))
         try await fixture.waitUntil("local sign-in document") { !view.isLoading && view.title == "Sign in" }
         let field = try await focus("pass", in: view, fixture)
-        #expect(field.origin == URL(string: target).flatMap(SitePermissions.origin(of:)))
+        #expect(field.origin == URL(string: target).flatMap(PasswordOrigin.from(_:)))
         let choice = PasswordSuggestion.login(login.id, username: login.username)
         #expect(manager.passwordSuggestions(for: field).contains(choice) == allowed)
         #expect(try await fixture.evaluate("[user.value, pass.value]", in: tab) as? [String] == ["", ""],

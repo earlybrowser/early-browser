@@ -438,6 +438,38 @@ struct ProfileApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test func deletingASharedProfileRetriesVaultCleanupInBothBuildLocations() async throws {
+        let fixture = Fixture(), app = fixture.application, files = FileManager.default
+        _ = await fixture.start()
+        await app.retryWebsiteDataCleanup()
+        let kept = try #require(app.workspace?.defaultProfileID)
+        let deleted = try #require(app.createProfile(name: "Work", color: .blue))
+        let otherFolder = EarlyAppDelegate.passwordsFolder == "Passwords" ? "Passwords/Development" : "Passwords"
+        let other = fixture.directory.appendingPathComponent(otherFolder)
+        var owned: [URL] = [], survivors: [URL] = []
+        for folder in ["Passwords", "Passwords/Development"] {
+            let directory = fixture.directory.appendingPathComponent(folder)
+            try files.createDirectory(at: directory, withIntermediateDirectories: true)
+            for suffix in [".vault", ".unreadable-1700000000.vault", ".unreadable-1700000000-\(UUID()).vault"] {
+                owned.append(directory.appendingPathComponent(deleted.uuidString + suffix))
+                survivors.append(directory.appendingPathComponent(kept.uuidString + suffix))
+            }
+            survivors.append(directory.appendingPathComponent("Key"))
+        }
+        let bytes = Data("test fixture".utf8)
+        for file in owned + survivors { try bytes.write(to: file) }
+        try files.setAttributes([.posixPermissions: 0o500], ofItemAtPath: other.path)
+        defer { try? files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: other.path) }
+        await app.deleteProfile(deleted)
+        #expect(!app.profiles.contains { $0.id == deleted })
+        #expect(app.profileError != nil && fixture.defaults.stringArray(forKey: "pendingProfileCleanup")?.contains(deleted.uuidString) == true)
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: other.path)
+        await app.retryWebsiteDataCleanup()
+        #expect(app.profileError == nil && owned.allSatisfy { !files.fileExists(atPath: $0.path) })
+        for file in survivors { #expect(try Data(contentsOf: file) == bytes) }
+        await fixture.cleanup()
+    }
+
     @Test func restartRetriesFailedKeyCleanupWithoutAVaultFileAndKeepsTheSurvivingProfile() async throws {
         let fixture = Fixture(), app = fixture.application
         let passwords = fixture.directory.appendingPathComponent(EarlyAppDelegate.passwordsFolder)

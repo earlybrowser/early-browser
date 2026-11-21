@@ -76,7 +76,8 @@ import Testing
     private func acceptVisit(_ model: BrowserWindowModel, _ url: URL) throws -> UUID {
         let id = try #require(model.coordinator.navigate(to: url, target: .newTab(spaceID: model.coordinator.activeSpaceID)))
         let tab = try #require(model.coordinator.tabStore.tab(id: id))
-        model.webViews.prepare(tab)
+        let page = model.webViews.prepare(tab)
+        model.webViews.webView(page.view, didCommit: nil)
         model.webViews.onMetadata?(id, url, "Accepted visit")
         return id
     }
@@ -142,10 +143,22 @@ import Testing
         #expect(error.contains("Website data was cleared") == (kind == .window || kind == .closedProfile))
         #expect(model.historyRevision == before, "A failed database deletion must not signal success")
         #expect(try await history.visits().map(\.id) == [visit.id])
+        // The same URL and timestamp can be visited again before Try Again.
+        history.queueVisit(url, title: "After the failed removal", at: visit.visitedAt)
+        await history.pendingWrites.wait()
+        let newVisit = try #require(try await history.visits().first { $0.id != visit.id })
+        let imported = BrowserImportNode(id: "later-import", kind: .history, title: "Imported later",
+                                          url: url, visitedAt: visit.visitedAt.addingTimeInterval(-60))
+        let importing = HistoryStore(fileURL: history.fileURL)
+        #expect(try await importing.importVisits([imported], batchID: UUID()) == 1)
+        await importing.close()
+        let kept = try await history.visits().filter { $0.id != visit.id }.map(\.id)
+        #expect(kept.count == 2 && kept.contains(newVisit.id))
+        #expect(!(await removal.retry()))
         try sql.execute("DROP TRIGGER refuse_delete;")
         #expect(await removal.retry())
         #expect(removal.error == nil && !removal.isWorking)
-        #expect(try await history.visits().isEmpty)
+        #expect(try await history.visits().map(\.id) == kept)
         await fixture.cleanup(model)
     }
 

@@ -102,7 +102,8 @@ struct ExtensionApplicationTests {
         await fixture.cleanup()
     }
 
-    @Test func privateRevocationAppliesBeforeAnotherHostsReloadCompletes() async throws {
+    @Test(arguments: [false, true])
+    func privateRevocationOrSessionClosureDuringAnotherHostsReload(closeSession: Bool) async throws {
         guard #available(macOS 15.4, *) else { return }
         let fixture = Fixture()
         await fixture.start()
@@ -113,8 +114,10 @@ struct ExtensionApplicationTests {
         let item = try await host.add(files: folder)
         let privateID = try #require(app.openPrivateWindow(from: model))
         let privateHost = try #require(app.windowModel(privateID)?.extensionHost as? ExtensionHost)
-        await app.changeExtension(item.id, in: model.coordinator.profileID, restart: true) { $0.allowsPrivateWindows = true }
-        #expect(privateHost.context(item.id) != nil)
+        if !closeSession {
+            await app.changeExtension(item.id, in: model.coordinator.profileID, restart: true) { $0.allowsPrivateWindows = true }
+            #expect(privateHost.context(item.id) != nil)
+        }
         let replacement = try await WKWebExtension(resourceBaseURL: folder)
         var continuation: CheckedContinuation<Void, Never>?
         defer { continuation?.resume() }
@@ -123,7 +126,7 @@ struct ExtensionApplicationTests {
             return replacement
         }
         let change = Task {
-            await app.changeExtension(item.id, in: model.coordinator.profileID, restart: true) { $0.allowsPrivateWindows = false }
+            await app.changeExtension(item.id, in: model.coordinator.profileID, restart: true) { $0.allowsPrivateWindows = closeSession }
         }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while continuation == nil {
@@ -131,10 +134,11 @@ struct ExtensionApplicationTests {
             try await Task.sleep(for: .milliseconds(1))
         }
         #expect(privateHost.context(item.id) == nil, "Revocation cannot wait behind the ordinary host's initializer")
+        if closeSession { app.closeWindow(privateID) }
         continuation?.resume()
         continuation = nil
         await change.value
-        #expect(host.context(item.id)?.hasAccessToPrivateData == false && privateHost.context(item.id) == nil)
+        #expect(host.context(item.id)?.hasAccessToPrivateData == closeSession && privateHost.context(item.id) == nil)
         await fixture.cleanup()
     }
 

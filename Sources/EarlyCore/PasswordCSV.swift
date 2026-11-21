@@ -102,7 +102,7 @@ public enum PasswordCSV {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.lowercased() != "http://sn" else { return nil }
         let address = trimmed.contains("://") ? trimmed : "https://" + trimmed
-        return URL(string: address).flatMap(SitePermissions.origin(of:))
+        return URL(string: address).flatMap(PasswordOrigin.from(_:))
     }
 
     /// Chrome's columns: name, url, username, password, note.

@@ -60,6 +60,10 @@ public actor HistoryStore {
     private var retentionGeneration: UInt64 = 0
     private(set) var retentionPassCount = 0
     private var isRemoved = false
+    // A retry can remove only visits from the original barrier. SQLite's initial
+    // row-ID range also excludes later inserts from another database connection.
+    private var removalRequest: UUID?
+    private var originalVisitIDs: IndexSet?
     private static let busyTimeout: Int32 = 2000
     private static let checkpointRetryDelays: [Duration] = [.milliseconds(100), .milliseconds(500), .seconds(2)]
     private(set) var checkpointPending = false
@@ -104,6 +108,10 @@ public actor HistoryStore {
     }
 
     public func record(_ url: URL, title: String?, at date: Date) throws {
+        try record(url, title: title, at: date, acceptedIn: nil)
+    }
+
+    func record(_ url: URL, title: String?, at date: Date, acceptedIn epoch: UUID?) throws {
         guard Self.records(url) else { return }
         let db = try open()
         let name = Self.clean(title)
@@ -117,6 +125,11 @@ public actor HistoryStore {
             try Self.run(db, "INSERT INTO visits(page_id, visited_at) SELECT id, ?2 FROM pages WHERE url = ?1",
                          [.text(url.absoluteString), .real(date.timeIntervalSince1970)])
             try Self.execute(db, "COMMIT;")
+            if let removalRequest {
+                let id = Int(sqlite3_last_insert_rowid(db))
+                if let epoch, epoch != removalRequest { originalVisitIDs?.insert(id) } // An older queued write was retried.
+                else { originalVisitIDs?.remove(id) } // The new visit might reuse an expired visit's ID.
+            }
         } catch {
             try? Self.execute(db, "ROLLBACK;")
             throw error
@@ -187,44 +200,67 @@ public actor HistoryStore {
     }
 
     public func deleteVisits(_ ids: [Int64]) throws {
-        guard !ids.isEmpty else { return }
-        let db = try open()
-        try performDeletion(db) {
-            for chunk in stride(from: 0, to: ids.count, by: 500).map({ Array(ids[$0..<min($0 + 500, ids.count)]) }) {
-                let marks = chunk.indices.map { "?\($0 + 1)" }.joined(separator: ",")
-                try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE id IN (\(marks))", chunk.map { .integer($0) })
-                try Self.run(db, "DELETE FROM visits WHERE id IN (\(marks))", chunk.map { .integer($0) })
-            }
-            try Self.recountTouched(db)
-        }
+        try delete(.visits(ids))
     }
 
     /// Every visit to these pages.
     public func deletePages(_ urls: [URL]) throws {
-        guard !urls.isEmpty else { return }
+        try delete(.pages(urls))
+    }
+
+    /// Clears visits from `since` to now; nil clears all history.
+    public func deleteVisits(since: Date?) throws {
+        try delete(.since(since))
+    }
+
+    func applyDeletion(_ deletion: HistoryDeletion, request: UUID) throws {
+        let retry = removalRequest == request
+        if !retry { removalRequest = request; originalVisitIDs = nil }
+        try delete(deletion, retry: retry)
+        removalRequest = nil
+        originalVisitIDs = nil
+    }
+
+    private func delete(_ deletion: HistoryDeletion, retry: Bool = false) throws {
+        if case .visits(let ids) = deletion, ids.isEmpty { return }
+        if case .pages(let urls) = deletion, urls.isEmpty { return }
         let db = try open()
+        let original = retry ? originalVisitIDs : nil
         try performDeletion(db) {
-            for url in urls {
-                try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT id FROM pages WHERE url = ?1", [.text(url.absoluteString)])
-                try Self.run(db, "DELETE FROM visits WHERE page_id IN (SELECT id FROM pages WHERE url = ?1)", [.text(url.absoluteString)])
+            if case .since(nil) = deletion, original == nil {
+                try Self.execute(db, "DELETE FROM visits; DELETE FROM pages;")
+                return
+            }
+            func remove(matching predicate: String, _ values: [Value]) throws {
+                guard let original else { return try Self.removeMatchingVisits(db, predicate, values) }
+                for range in original.rangeView {
+                    try Self.removeMatchingVisits(db, predicate + " AND id BETWEEN ? AND ?",
+                        values + [.integer(Int64(range.lowerBound)), .integer(Int64(range.upperBound - 1))])
+                }
+            }
+            switch deletion {
+            case .visits(let ids):
+                for start in stride(from: 0, to: ids.count, by: 500) {
+                    let chunk = ids[start..<min(start + 500, ids.count)]
+                    let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                    try remove(matching: "id IN (\(marks))", chunk.map(Value.integer))
+                }
+            case .pages(let urls):
+                for url in urls {
+                    try remove(matching: "page_id IN (SELECT id FROM pages WHERE url = ?1)", [.text(url.absoluteString)])
+                }
+            case .since(let since?):
+                try remove(matching: "visited_at >= ?1", [.real(since.timeIntervalSince1970)])
+            case .since(nil):
+                try remove(matching: "1", [])
             }
             try Self.recountTouched(db)
         }
     }
 
-    /// Clears visits from `since` to now; nil clears all history.
-    public func deleteVisits(since: Date?) throws {
-        let db = try open()
-        try performDeletion(db) {
-            if let since {
-                try Self.run(db, "INSERT OR IGNORE INTO touched(id) SELECT page_id FROM visits WHERE visited_at >= ?1",
-                             [.real(since.timeIntervalSince1970)])
-                try Self.run(db, "DELETE FROM visits WHERE visited_at >= ?1", [.real(since.timeIntervalSince1970)])
-                try Self.recountTouched(db)
-            } else {
-                try Self.execute(db, "DELETE FROM visits; DELETE FROM pages;")
-            }
-        }
+    private static func removeMatchingVisits(_ db: OpaquePointer, _ condition: String, _ values: [Value]) throws {
+        try run(db, "INSERT OR IGNORE INTO touched SELECT page_id FROM visits WHERE " + condition, values)
+        try run(db, "DELETE FROM visits WHERE " + condition, values)
     }
 
     public func deleteVisits(before date: Date) throws {
@@ -264,6 +300,7 @@ public actor HistoryStore {
         let oldest = now.addingTimeInterval(-retention), latest = now.addingTimeInterval(300)
         let batch = batchID.uuidString
         var seen = Set<String>(), count = 0
+        var reusedVisitIDs = IndexSet()
         try Self.transaction(db) {
             for item in records {
                 try Task.checkCancellation()
@@ -276,6 +313,7 @@ public actor HistoryStore {
                 try page.run([.text(url.absoluteString), .text(Self.clean(item.title)), .real(date.timeIntervalSince1970)])
                 try visit.run([.text(url.absoluteString), .real(date.timeIntervalSince1970)])
                 let id = sqlite3_last_insert_rowid(db)
+                if originalVisitIDs?.contains(Int(id)) == true { reusedVisitIDs.insert(Int(id)) }
                 try source.run([.integer(id), .text(batch), .text(key)])
                 try touched.run([.text(url.absoluteString)])
                 count += 1
@@ -284,6 +322,7 @@ public actor HistoryStore {
             try Self.recountTouched(db)
             try Task.checkCancellation()
         }
+        originalVisitIDs?.subtract(reusedVisitIDs)
         return count
     }
 
@@ -478,9 +517,18 @@ public actor HistoryStore {
         }
     }
 
+    /// If the first removal couldn't open SQLite, take the boundary as soon as
+    /// it becomes readable, before this store can insert any subsequent visits.
+    private func captureRemovalBoundary(_ db: OpaquePointer) throws {
+        guard removalRequest != nil, originalVisitIDs == nil else { return }
+        let last = try Self.query(db, "SELECT COALESCE(MAX(id), 0) FROM visits", []) { $0.integer(0) }.first ?? 0
+        originalVisitIDs = last > 0 ? IndexSet(integersIn: 1...Int(last)) : IndexSet()
+    }
+
     private func open() throws -> OpaquePointer {
         guard !isRemoved else { throw SessionError.database("This profile’s history was deleted.") }
         if let db {
+            try captureRemovalBoundary(db)
             if checkpointPending, checkpointRetryTask == nil, ContinuousClock.now >= nextCheckpointAttempt {
                 checkpointIfNeeded()
                 scheduleCheckpointRetry()
@@ -521,6 +569,7 @@ public actor HistoryStore {
             throw error
         }
         db = opened
+        try captureRemovalBoundary(opened)
         // Finish a cleanup interrupted by closing or crashing while another
         // reader held the log. This runs once per connection, not on each visit.
         requestCheckpoint()

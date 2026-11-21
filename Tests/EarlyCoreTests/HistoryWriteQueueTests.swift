@@ -5,6 +5,31 @@ import Testing
 @testable import EarlyCore
 
 @Suite(.serialized) @MainActor struct HistoryWriteQueueTests {
+    @Test(arguments: [false, true])
+    func aClearRetryPreservesLaterWritesOnEitherSideOfAWriteRetry(replayFirst: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "EarlyHistoryWrites-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blocker = root.appending(path: "blocked")
+        try Data().write(to: blocker)
+        let store = HistoryStore(fileURL: blocker.appending(path: "history.sqlite"))
+        let url = URL(string: "https://history.invalid/again")!, date = Date(), request = UUID()
+        store.queueVisit(url, title: "Old", at: date)
+        if case .success = await store.queueDeletion(.since(nil), request: request).value {
+            Issue.record("The database is unavailable")
+        }
+        store.queueVisit(url, title: "New", at: date)
+        store.queueTitle(url, title: "Latest", visitedAt: date)
+        await store.pendingWrites.wait()
+        try FileManager.default.removeItem(at: blocker)
+        if replayFirst { store.retryPendingWrites(); await store.pendingWrites.wait() }
+        try await store.queueDeletion(.since(nil), request: request).value.get()
+        store.retryPendingWrites()
+        #expect(await store.pendingWrites.drain() == nil)
+        #expect(try await store.visits().map(\.title) == ["Latest"])
+        await store.close()
+    }
+
     @Test func aPartialClearKeepsTheLatestTitleForTheSurvivingVisitOnRetry() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "EarlyHistoryWrites-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

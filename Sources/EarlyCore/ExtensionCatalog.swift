@@ -112,6 +112,7 @@ public final class ExtensionCatalog: SettingsStore {
     @ObservationIgnored public var onLoad: ((ExtensionCatalog) -> Void)?
     @ObservationIgnored let persistence: SettingsPersistence<[InstalledExtension]>
     @ObservationIgnored private var loadVersions: [UUID: UUID] = [:]
+    @ObservationIgnored private var permissionVersions: [UUID: UUID] = [:]
 
     public init(fileURL: URL?) {
         self.fileURL = fileURL
@@ -142,6 +143,11 @@ public final class ExtensionCatalog: SettingsStore {
 
     public func installed(_ id: UUID) -> InstalledExtension? { extensions.first { $0.id == id } }
 
+    /// A permission decision can change and change back while its sheet is open.
+    public func permissionVersion(_ id: UUID) -> UUID? {
+        permissionVersions[id] ?? loadVersion(id)
+    }
+
     /// The extension from this source, if it's already added.
     public func installed(source: ExtensionSource) -> InstalledExtension? { extensions.first { $0.source == source } }
 
@@ -158,6 +164,10 @@ public final class ExtensionCatalog: SettingsStore {
         if previous.source != item.source || previous.isEnabled != item.isEnabled
             || previous.allowsPrivateWindows != item.allowsPrivateWindows {
             loadVersions[item.id] = UUID()
+            permissionVersions[item.id] = nil
+        } else if previous.siteAccess != item.siteAccess || previous.allowedSites != item.allowedSites
+                    || previous.grantedPermissions != item.grantedPermissions || previous.allowsLocalFiles != item.allowsLocalFiles {
+            permissionVersions[item.id] = UUID()
         }
         persistence.mutate { $0[index] = item }
     }
@@ -172,12 +182,14 @@ public final class ExtensionCatalog: SettingsStore {
     public func remove(_ id: UUID) {
         guard persistence.canChange, extensions.contains(where: { $0.id == id }) else { return }
         loadVersions[id] = nil
+        permissionVersions[id] = nil
         persistence.mutate { $0.removeAll { $0.id == id } }
     }
 
     /// Deleting a profile drains writes before erasing the catalog.
     public func removeFile() async throws {
         loadVersions.removeAll()
+        permissionVersions.removeAll()
         try await persistence.removeFile()
     }
 

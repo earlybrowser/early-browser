@@ -735,7 +735,7 @@ struct PasswordEditorSheet: View {
     static func origin(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace) else { return nil }
-        return URL(string: trimmed.contains("://") ? trimmed : "https://" + trimmed).flatMap(SitePermissions.origin(of:))
+        return URL(string: trimmed.contains("://") ? trimmed : "https://" + trimmed).flatMap(PasswordOrigin.from(_:))
     }
 
     private var title: String {

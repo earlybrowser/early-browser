@@ -432,7 +432,7 @@ extension WebViewManager {
         let origin = frame.securityOrigin
         let scheme = origin.protocol.lowercased()
         if passwordTestSchemes.contains(scheme), !origin.host.isEmpty { return "\(scheme)://\(origin.host.lowercased())" }
-        return SitePermissions.origin(scheme: scheme, host: origin.host, port: origin.port)
+        return PasswordOrigin.from(scheme: scheme, host: origin.host, port: origin.port)
     }
 
     func handlePasswordMessage(_ type: String, body: [String: Any], frame: WKFrameInfo, in view: WKWebView) {
@@ -731,12 +731,12 @@ extension WebViewManager {
             completionHandler(.performDefaultHandling, nil)
             return
         }
-        let origin = SitePermissions.origin(scheme: scheme, host: space.host, port: space.port)
+        let origin = PasswordOrigin.from(scheme: scheme, host: space.host, port: space.port)
         // Only the website the tab shows or is loading (through redirects) may
         // ask, as in Chrome: another site's image, script or frame can't put a
         // sign-in sheet over this page. Refused quietly, it loads without one.
         let id = tabID(for: view)
-        let page = (view.url ?? id.flatMap { pages[$0]?.requestedURL }).flatMap(SitePermissions.origin(of:))
+        let page = (view.url ?? id.flatMap { pages[$0]?.requestedURL }).flatMap(PasswordOrigin.from(_:))
         guard let origin, page == origin else {
             completionHandler(.performDefaultHandling, nil)
             return

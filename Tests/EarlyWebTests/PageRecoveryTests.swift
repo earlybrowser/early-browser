@@ -29,11 +29,13 @@ struct PageRecoveryTests {
         defer { manager.discardAll() }
         try await wait { manager.lifecycle(for: tab.id).state == .active }
         let page = try #require(manager.pages[tab.id])
+        let originalDocument = try #require(page.historyDocumentID)
         manager.webViewWebContentProcessDidTerminate(page.view)
-        #expect(page.processTerminated && page.failure != nil)
+        #expect(page.processTerminated && page.failure != nil && page.documentID == nil)
         try await wait { fixture.loads == 2 && manager.lifecycle(for: tab.id).state == .active }
         #expect(manager.pages[tab.id] === page && manager.creationCount == 1)
         #expect(page.failure == nil && !page.processTerminated)
+        #expect(try #require(page.historyDocumentID) != originalDocument)
         manager.webViewWebContentProcessDidTerminate(page.view)
         // Give the queued recovery/refresh tasks a chance to run. A site which
         // crashes repeatedly must stay failed rather than reload indefinitely.

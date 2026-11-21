@@ -56,6 +56,27 @@ import Testing
     }
 
     @Test(arguments: [false, true])
+    func aCancelledRefreshPreservesTheCurrentList(cancelBeforeStart: Bool) async throws {
+        let data = ProfileWebsiteData<String>(), fetches = Fetches(), profile = UUID()
+        await data.load(for: profile) { _ in ["current"] }
+        let snapshot = try #require(data.records(for: profile))
+        var fetched = false
+        let refresh = Task {
+            await data.load(for: profile) { id in
+                fetched = true
+                if cancelBeforeStart { return ["obsolete"] }
+                return await fetches.fetch(id)
+            }
+        }
+        if !cancelBeforeStart { try await wait { !fetches.pending.isEmpty } }
+        refresh.cancel()
+        if !cancelBeforeStart { fetches.finish(0, ["obsolete"]) }
+        await refresh.value
+        #expect(data.records(for: profile)?.id == snapshot.id)
+        #expect(fetched == !cancelBeforeStart)
+    }
+
+    @Test(arguments: [false, true])
     func cancellationAndDisappearanceRejectFetchResults(disappeared: Bool) async throws {
         let data = ProfileWebsiteData<String>(), fetches = Fetches(), profile = UUID()
         let request = Task { await data.load(for: profile, fetch: fetches.fetch) }
