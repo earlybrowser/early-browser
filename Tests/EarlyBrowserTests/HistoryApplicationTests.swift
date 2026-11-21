@@ -20,6 +20,13 @@ import Testing
         init(_ file: URL) throws { try #require(sqlite3_open(file.path, &db) == SQLITE_OK) }
         deinit { sqlite3_close(db) }
         func execute(_ sql: String) throws { try #require(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK) }
+        func titleWrites() throws -> Int {
+            var statement: OpaquePointer?
+            try #require(sqlite3_prepare_v2(db, "SELECT count(*) FROM title_writes", -1, &statement, nil) == SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            try #require(sqlite3_step(statement) == SQLITE_ROW)
+            return Int(sqlite3_column_int64(statement, 0))
+        }
     }
 
     @MainActor private final class Fixture {
@@ -74,6 +81,39 @@ import Testing
         return id
     }
 
+    @Test func aTitleBurstWritesTheFinalTitleAndRefreshesTheMenuOnce() async throws {
+        let fixture = Fixture(), model = try await fixture.start()
+        let history = try #require(model.history)
+        let url = URL(string: "https://history.invalid/title-burst")!
+        let tab = try acceptVisit(model, url)
+        await model.flushHistory()
+        let initialQueries = await history.searchStatementCount
+        let sql = try SQL(history.fileURL)
+        try sql.execute("""
+            CREATE TABLE title_writes(value TEXT);
+            CREATE TRIGGER count_title_writes AFTER UPDATE OF title ON pages
+            BEGIN INSERT INTO title_writes VALUES (new.title); END;
+            """)
+        let gate = Gate()
+        model.waitForRecentTitleRefresh = { await gate.wait() }
+        defer { gate.release() }
+
+        for number in 1...1_000 { model.webViews.onMetadata?(tab, url, "Title \(number)") }
+        model.webViews.onMetadata?(tab, url, " \n\t ")
+        try await wait { gate.continuation != nil || model.recentlyVisited.first?.title == "Title 1000" }
+        #expect(gate.continuation != nil, "The title burst waits for the scheduled menu refresh")
+        #expect(await history.searchStatementCount == initialQueries)
+        gate.release()
+        try await wait { model.recentlyVisited.first?.title == "Title 1000" }
+        await model.flushHistory()
+
+        #expect(try sql.titleWrites() == 1)
+        #expect(await history.searchStatementCount == initialQueries + 1)
+        #expect(model.recentlyVisited.first?.visitCount == 1)
+        #expect(try await history.visits().map(\.title) == ["Title 1000"])
+        await fixture.cleanup(model)
+    }
+
     enum Deletion: CaseIterable { case window, closedProfile, visit, page }
     @Test(arguments: Deletion.allCases)
     func deletionFailureIsVisibleAndTheOriginalRequestCanBeRetried(kind: Deletion) async throws {
@@ -121,6 +161,8 @@ import Testing
         defer { gate.release() }
         let old = URL(string: "https://history.invalid/before-clear")!
         let tab = try acceptVisit(second, old)
+        second.webViews.onMetadata?(tab, old, "Superseded title")
+        second.webViews.onMetadata?(tab, old, "Final title before clear")
         var cleared = false
         let clearing = Task { let result = await first.clearHistory(.all); cleared = true; return result }
         try await wait { first.historyRemoval.isWorking || cleared }
@@ -146,7 +188,9 @@ import Testing
         let blocker = try SQL(history.fileURL)
         try blocker.execute("BEGIN IMMEDIATE;")
         let url = URL(string: "https://history.invalid/before-quit")!
-        _ = try acceptVisit(model, url)
+        let tab = try acceptVisit(model, url)
+        model.webViews.onMetadata?(tab, url, "Superseded title")
+        model.webViews.onMetadata?(tab, url, "Final title before quit")
         if closeWindow { app.closeWindow(nil) }
         var reply: Bool?
         app.terminationReply = { reply = $0 }
@@ -158,7 +202,9 @@ import Testing
         try await wait { reply != nil }
         #expect(reply == true)
         let reopened = HistoryStore(fileURL: history.fileURL)
-        #expect(try await reopened.visits().map(\.url) == [url], "A separate connection sees durable history before quit approval")
+        let saved = try await reopened.visits()
+        #expect(saved.map(\.url) == [url], "A separate connection sees durable history before quit approval")
+        #expect(saved.map(\.title) == ["Final title before quit"])
         await reopened.close()
         await fixture.cleanup(model)
     }

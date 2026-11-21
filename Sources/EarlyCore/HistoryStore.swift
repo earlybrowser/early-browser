@@ -554,6 +554,15 @@ public actor HistoryStore {
         }
     }
 
+    /// Detect a no-op title before it can replace a meaningful queued update.
+    /// Match the cleaning rules without allocating a normalized title on the main actor.
+    static func hasTitle(_ title: String) -> Bool {
+        let whitespace = CharacterSet.whitespaces
+        return title.contains { character in
+            !character.isNewline && character.unicodeScalars.contains { !whitespace.contains($0) }
+        }
+    }
+
     private static func clean(_ title: String?) -> String {
         String((title ?? "").split(whereSeparator: \.isNewline).joined(separator: " ")
             .trimmingCharacters(in: .whitespaces).prefix(512))
