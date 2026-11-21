@@ -30,7 +30,32 @@ public enum HistoryDeletion: Sendable {
         }
     }
 
+    @MainActor private final class TitleBatch {
+        private struct Visit: Hashable {
+            let url: URL
+            let date: Date
+        }
+
+        let timer = Task { try await Task.sleep(for: .milliseconds(100)) }
+        private var titles: [Visit: (title: String, order: Int)] = [:]
+        private var order = 0
+
+        func append(_ url: URL, title: String, date: Date) {
+            titles[Visit(url: url, date: date)] = (title, order)
+            order += 1
+        }
+
+        var writes: [Write] {
+            // Different visits can share a URL. Apply the last updates in
+            // arrival order so the page title still follows the latest update.
+            titles.sorted { $0.value.order < $1.value.order }.map { visit, entry in
+                .title(visit.url, entry.title, visit.date)
+            }
+        }
+    }
+
     private var tail: Task<Void, Never>?
+    private var titleBatch: TitleBatch?
     private var generation: UInt64 = 0
     private var failed: [Write] = []
     public private(set) var failure: String?
@@ -40,21 +65,49 @@ public enum HistoryDeletion: Sendable {
 
     nonisolated init() {}
 
-    func append(_ write: Write, to store: HistoryStore) {
+    fileprivate func append(_ write: Write, to store: HistoryStore) {
         guard acceptsWrites else { return }
-        enqueue {
-            // Preserve order after a failure, including titles arriving later.
-            guard self.failed.isEmpty else { self.failed.append(write); return }
-            do { try await write.apply(to: store) }
-            catch { self.failed.append(write); self.failure = error.localizedDescription }
-        }
+        enqueue { await self.apply(write, to: store) }
     }
 
-    public func wait() async { await tail?.value }
+    fileprivate func appendTitle(_ url: URL, title: String, visitedAt date: Date, to store: HistoryStore) -> Bool {
+        guard acceptsWrites, HistoryStore.records(url), HistoryStore.hasTitle(title) else { return false }
+        if let titleBatch {
+            titleBatch.append(url, title: title, date: date)
+        } else {
+            let batch = TitleBatch()
+            batch.append(url, title: title, date: date)
+            enqueue {
+                _ = await batch.timer.result
+                if self.titleBatch === batch { self.titleBatch = nil }
+                for write in batch.writes { await self.apply(write, to: store) }
+            }
+            titleBatch = batch
+        }
+        return true
+    }
+
+    private func apply(_ write: Write, to store: HistoryStore) async {
+        // Preserve order after a failure, including titles arriving later.
+        guard failed.isEmpty else { failed.append(write); return }
+        do { try await write.apply(to: store) }
+        catch { failed.append(write); failure = error.localizedDescription }
+    }
+
+    private func sealTitles() {
+        titleBatch?.timer.cancel()
+        titleBatch = nil
+    }
+
+    public func wait() async {
+        sealTitles()
+        await tail?.value
+    }
 
     /// A bounded quit wait. Cancelling/timing out the wait does not cancel or
     /// duplicate the SQLite operation; Try Again can finish the same work.
     public func drain(timeout: Duration = .seconds(10)) async -> String? {
+        sealTitles()
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while tail != nil {
             if ContinuousClock.now >= deadline { return "Saving browsing history is taking longer than expected." }
@@ -69,11 +122,7 @@ public enum HistoryDeletion: Sendable {
             let writes = self.failed
             self.failed = []
             self.failure = nil
-            for write in writes {
-                guard self.failed.isEmpty else { self.failed.append(write); continue }
-                do { try await write.apply(to: store) }
-                catch { self.failed.append(write); self.failure = error.localizedDescription }
-            }
+            for write in writes { await self.apply(write, to: store) }
         }
     }
 
@@ -99,6 +148,9 @@ public enum HistoryDeletion: Sendable {
     }
 
     func enqueue(_ operation: @escaping @MainActor () async -> Void) {
+        // A visit, deletion or retry starts a new batch. Close the old one
+        // before accepting any later titles and wake it without delaying the barrier.
+        sealTitles()
         let previous = tail
         generation &+= 1
         let current = generation
@@ -115,8 +167,8 @@ extension HistoryStore {
         pendingWrites.append(.visit(url, title, date), to: self)
     }
 
-    @MainActor public func queueTitle(_ url: URL, title: String, visitedAt date: Date) {
-        pendingWrites.append(.title(url, title, date), to: self)
+    @MainActor @discardableResult public func queueTitle(_ url: URL, title: String, visitedAt date: Date) -> Bool {
+        pendingWrites.appendTitle(url, title: title, visitedAt: date, to: self)
     }
 
     @MainActor public func queueDeletion(_ deletion: HistoryDeletion) -> Task<Result<Void, Error>, Never> {

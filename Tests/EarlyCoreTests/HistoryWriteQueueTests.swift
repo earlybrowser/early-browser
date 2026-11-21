@@ -5,6 +5,30 @@ import Testing
 @testable import EarlyCore
 
 @Suite(.serialized) @MainActor struct HistoryWriteQueueTests {
+    @Test func aPartialClearKeepsTheLatestTitleForTheSurvivingVisitOnRetry() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "EarlyHistoryWrites-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blocker = root.appending(path: "blocked")
+        try Data().write(to: blocker)
+        let store = HistoryStore(fileURL: blocker.appending(path: "history.sqlite"))
+        let url = URL(string: "https://history.invalid/revisited")!
+        let older = Date().addingTimeInterval(-7200), newer = Date()
+        store.queueVisit(url, title: "Older visit", at: older)
+        store.queueVisit(url, title: "Newer visit", at: newer)
+        store.queueTitle(url, title: "First older title", visitedAt: older)
+        store.queueTitle(url, title: "Final older title", visitedAt: older)
+        store.queueTitle(url, title: "Newer title", visitedAt: newer)
+        #expect(await store.pendingWrites.drain() != nil)
+
+        try FileManager.default.removeItem(at: blocker)
+        try await store.queueDeletion(.since(newer)).value.get()
+        store.retryPendingWrites()
+        #expect(await store.pendingWrites.drain() == nil)
+        #expect(try await store.visits().map(\.title) == ["Final older title"])
+        await store.close()
+    }
+
     @Test(arguments: [false, true])
     func clearingFailedWritesPreventsTheirReturnAndPreservesWritesOutsideTheRange(clearAll: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "EarlyHistoryWrites-\(UUID())")

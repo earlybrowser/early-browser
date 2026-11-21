@@ -79,6 +79,10 @@ final class BrowserWindowModel {
     /// The address last recorded per tab, and the live page it came from.
     @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID, date: Date)] = [:]
     @ObservationIgnored private var recentPagesTask: Task<Void, Never>?
+    @ObservationIgnored private var recentTitleRefreshTask: Task<Void, Never>?
+    @ObservationIgnored var waitForRecentTitleRefresh: () async throws -> Void = {
+        try await Task.sleep(for: .milliseconds(100))
+    }
     var submissionMessage: String?
     var commandBarIsComposing = false
     var notice: String?
@@ -908,9 +912,8 @@ final class BrowserWindowModel {
               let url, HistoryStore.records(url), let page = webViews.pages[id] else { return }
         let identity = page.instanceID
         if let last = historyURLs[id], last.url == url, last.page == identity {
-            guard let title, !title.isEmpty else { return }
-            history.queueTitle(url, title: title, visitedAt: last.date)
-            refreshRecentPages()
+            guard let title, history.queueTitle(url, title: title, visitedAt: last.date) else { return }
+            scheduleRecentTitleRefresh()
         } else {
             if historyURLs.count > 500 {
                 let open = Set(coordinator.tabStore.tabs.filter(\.isOpen).map(\.id))
@@ -929,9 +932,23 @@ final class BrowserWindowModel {
         return recentPages.filter { $0.lastVisit >= today }
     }
 
+    /// A fixed window lets the menu catch up even during a continuous burst.
+    private func scheduleRecentTitleRefresh() {
+        guard recentTitleRefreshTask == nil else { return }
+        recentTitleRefreshTask = Task { [weak self, waitForRecentTitleRefresh] in
+            do { try await waitForRecentTitleRefresh() }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.recentTitleRefreshTask = nil
+            self.refreshRecentPages()
+        }
+    }
+
     /// Reloads the History menu's pages after the visits already queued.
     func refreshRecentPages() {
         guard let history else { return }
+        recentTitleRefreshTask?.cancel()
+        recentTitleRefreshTask = nil
         recentPagesTask?.cancel()
         let since = Calendar.current.startOfDay(for: now())
         recentPagesTask = Task { [weak self] in
@@ -950,6 +967,7 @@ final class BrowserWindowModel {
 
     /// Waits for recorded visits to reach the store (tests and clearing).
     func flushHistory() async {
+        if recentTitleRefreshTask != nil { refreshRecentPages() }
         await history?.pendingWrites.wait()
         await recentPagesTask?.value
     }
