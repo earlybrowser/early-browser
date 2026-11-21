@@ -39,6 +39,53 @@ struct HistoryCleanupTests {
         func endReading() throws { try execute("COMMIT;") }
     }
 
+    @Test(arguments: [false, true])
+    func upgradingVisitIDsPreservesImportedHistoryAndCanRetryAfterRollback(forceRollback: Bool) async throws {
+        let fixture = Fixture(), batch = UUID(), url = URL(string: "https://history.invalid/legacy")!
+        try FileManager.default.createDirectory(at: fixture.root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try Data().write(to: fixture.file)
+        let sql = try Connection(fixture.file, readOnly: false)
+        defer { sql.close() }
+        try sql.execute("""
+            PRAGMA foreign_keys=OFF; PRAGMA user_version=1;
+            CREATE TABLE pages (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',
+                visit_count INTEGER NOT NULL DEFAULT 0, last_visit REAL NOT NULL);
+            CREATE TABLE visits (id INTEGER PRIMARY KEY, page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+                visited_at REAL NOT NULL);
+            CREATE INDEX visits_time ON visits(visited_at);
+            CREATE TABLE browser_import_visits (visit_id INTEGER PRIMARY KEY REFERENCES visits(id) ON DELETE CASCADE,
+                batch_id TEXT NOT NULL, source_key TEXT NOT NULL UNIQUE);
+            INSERT INTO pages VALUES (1, '\(url.absoluteString)', 'Legacy', 2, \(start.timeIntervalSince1970));
+            INSERT INTO visits VALUES (17, 1, \(start.timeIntervalSince1970)), (42, 1, \(start.timeIntervalSince1970));
+            INSERT INTO browser_import_visits VALUES (42, '\(batch.uuidString)', 'fixture');
+            CREATE TABLE additions (id INTEGER);
+            CREATE TRIGGER count_additions AFTER INSERT ON visits BEGIN INSERT INTO additions VALUES (new.id); END;
+            """)
+        let store = HistoryStore(fileURL: fixture.file, now: { start })
+        if forceRollback {
+            try sql.execute("INSERT INTO browser_import_visits VALUES (99, 'fixture', 'missing-parent')")
+            await #expect(throws: SessionError.self) { try await store.visits() }
+            #expect(try sql.integer("PRAGMA user_version") == 1)
+            #expect(try sql.integer("SELECT count(*) FROM visits") == 2)
+            #expect(try sql.integer("SELECT count(*) FROM sqlite_schema WHERE name='visits_new'") == 0)
+            try sql.execute("DELETE FROM browser_import_visits WHERE visit_id=99")
+        }
+        #expect(try await store.visits().map(\.id) == [42, 17])
+        try await store.undoBrowserImport(batch)
+        #expect(try await store.visits().map(\.id) == [17])
+        #expect(try sql.integer("SELECT count(*) FROM browser_import_visits") == 0)
+        await store.close()
+
+        // The previous release can reopen the shared file and reset its version.
+        try sql.execute("PRAGMA user_version=1")
+        try await store.record(url, title: "Returned", at: start)
+        #expect(try await store.visits().map(\.id) == [43, 17])
+        #expect(try sql.integer("SELECT id FROM additions") == 43)
+        #expect(try sql.integer("PRAGMA user_version") == 2)
+        await store.close()
+    }
+
     enum Deletion: CaseIterable { case visits, pages, since, all, before, undoImport }
 
     @Test(arguments: Deletion.allCases)

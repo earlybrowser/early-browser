@@ -162,6 +162,32 @@ import Testing
         await fixture.cleanup(model)
     }
 
+    @Test(arguments: [false, true])
+    func anotherConnectionCanReplaceTheLastVisitBeforeAClearIsRetried(blockedOnOpen: Bool) async throws {
+        let fixture = Fixture(), model = try await fixture.start()
+        let history = try #require(model.history)
+        let url = URL(string: "https://history.invalid/revisited")!, date = Date()
+        try await history.record(url, title: "Original", at: date)
+        let original = try #require(try await history.visits().first)
+        let sql = try SQL(history.fileURL)
+        if blockedOnOpen {
+            await history.close()
+            try sql.execute("BEGIN IMMEDIATE")
+        } else {
+            try sql.execute("CREATE TRIGGER refuse_delete BEFORE DELETE ON visits BEGIN SELECT RAISE(ABORT, 'Synthetic deletion failure'); END;")
+        }
+        #expect(!(await model.clearHistory(.all)))
+        try sql.execute(blockedOnOpen ? "COMMIT" : "DROP TRIGGER refuse_delete")
+
+        let other = HistoryStore(fileURL: history.fileURL)
+        try await other.deleteVisits([original.id])
+        try await other.record(url, title: "Returned", at: date)
+        await other.close()
+        #expect(await model.historyRemoval.retry())
+        #expect(try await history.visits().map(\.title) == ["Returned"])
+        await fixture.cleanup(model)
+    }
+
     @Test func clearingOneWindowOrdersTheOtherWindowsAcceptedVisitsAndKeepsNewBrowsing() async throws {
         let fixture = Fixture(), first = try await fixture.start()
         let second = try #require(fixture.app.openNewWindow(from: first).flatMap { fixture.app.windowModel($0) })

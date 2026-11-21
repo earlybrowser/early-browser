@@ -60,10 +60,21 @@ public actor HistoryStore {
     private var retentionGeneration: UInt64 = 0
     private(set) var retentionPassCount = 0
     private var isRemoved = false
-    // A retry can remove only visits from the original barrier. SQLite's initial
-    // row-ID range also excludes later inserts from another database connection.
+    // Visit IDs increase across all writers. Older queued writes can still reach
+    // SQLite after the clear failed, so add their committed ranges to the retry.
+    private struct RemovalBoundary {
+        var ranges: [ClosedRange<Int64>]
+
+        init(through id: Int64) { ranges = [Int64.min...id] }
+
+        mutating func includeReplayedVisit(_ id: Int64) {
+            let last = ranges.count - 1
+            if ranges[last].upperBound == id - 1 { ranges[last] = ranges[last].lowerBound...id }
+            else { ranges.append(id...id) }
+        }
+    }
     private var removalRequest: UUID?
-    private var originalVisitIDs: IndexSet?
+    private var removalBoundary: RemovalBoundary?
     private static let busyTimeout: Int32 = 2000
     private static let checkpointRetryDelays: [Duration] = [.milliseconds(100), .milliseconds(500), .seconds(2)]
     private(set) var checkpointPending = false
@@ -125,10 +136,8 @@ public actor HistoryStore {
             try Self.run(db, "INSERT INTO visits(page_id, visited_at) SELECT id, ?2 FROM pages WHERE url = ?1",
                          [.text(url.absoluteString), .real(date.timeIntervalSince1970)])
             try Self.execute(db, "COMMIT;")
-            if let removalRequest {
-                let id = Int(sqlite3_last_insert_rowid(db))
-                if let epoch, epoch != removalRequest { originalVisitIDs?.insert(id) } // An older queued write was retried.
-                else { originalVisitIDs?.remove(id) } // The new visit might reuse an expired visit's ID.
+            if let removalRequest, let epoch, epoch != removalRequest {
+                removalBoundary?.includeReplayedVisit(sqlite3_last_insert_rowid(db))
             }
         } catch {
             try? Self.execute(db, "ROLLBACK;")
@@ -214,28 +223,34 @@ public actor HistoryStore {
     }
 
     func applyDeletion(_ deletion: HistoryDeletion, request: UUID) throws {
-        let retry = removalRequest == request
-        if !retry { removalRequest = request; originalVisitIDs = nil }
-        try delete(deletion, retry: retry)
+        if removalRequest != request { removalRequest = request; removalBoundary = nil }
+        try delete(deletion, usingRemovalBoundary: true)
         removalRequest = nil
-        originalVisitIDs = nil
+        removalBoundary = nil
     }
 
-    private func delete(_ deletion: HistoryDeletion, retry: Bool = false) throws {
+    private func delete(_ deletion: HistoryDeletion, usingRemovalBoundary: Bool = false) throws {
         if case .visits(let ids) = deletion, ids.isEmpty { return }
         if case .pages(let urls) = deletion, urls.isEmpty { return }
         let db = try open()
-        let original = retry ? originalVisitIDs : nil
+        let original = usingRemovalBoundary ? removalBoundary : nil
         try performDeletion(db) {
-            if case .since(nil) = deletion, original == nil {
-                try Self.execute(db, "DELETE FROM visits; DELETE FROM pages;")
-                return
+            if case .since(nil) = deletion {
+                // Keep the full-table clear when no later visit needs to survive.
+                let hasLaterVisits = try original.map { boundary in
+                    try !Self.query(db, "SELECT 1 FROM visits WHERE id > ? LIMIT 1",
+                                    [.integer(boundary.ranges[0].upperBound)]) { _ in true }.isEmpty
+                } ?? false
+                if !hasLaterVisits {
+                    try Self.execute(db, "DELETE FROM visits; DELETE FROM pages;")
+                    return
+                }
             }
             func remove(matching predicate: String, _ values: [Value]) throws {
                 guard let original else { return try Self.removeMatchingVisits(db, predicate, values) }
-                for range in original.rangeView {
+                for range in original.ranges {
                     try Self.removeMatchingVisits(db, predicate + " AND id BETWEEN ? AND ?",
-                        values + [.integer(Int64(range.lowerBound)), .integer(Int64(range.upperBound - 1))])
+                        values + [.integer(range.lowerBound), .integer(range.upperBound)])
                 }
             }
             switch deletion {
@@ -300,7 +315,6 @@ public actor HistoryStore {
         let oldest = now.addingTimeInterval(-retention), latest = now.addingTimeInterval(300)
         let batch = batchID.uuidString
         var seen = Set<String>(), count = 0
-        var reusedVisitIDs = IndexSet()
         try Self.transaction(db) {
             for item in records {
                 try Task.checkCancellation()
@@ -313,7 +327,6 @@ public actor HistoryStore {
                 try page.run([.text(url.absoluteString), .text(Self.clean(item.title)), .real(date.timeIntervalSince1970)])
                 try visit.run([.text(url.absoluteString), .real(date.timeIntervalSince1970)])
                 let id = sqlite3_last_insert_rowid(db)
-                if originalVisitIDs?.contains(Int(id)) == true { reusedVisitIDs.insert(Int(id)) }
                 try source.run([.integer(id), .text(batch), .text(key)])
                 try touched.run([.text(url.absoluteString)])
                 count += 1
@@ -322,7 +335,6 @@ public actor HistoryStore {
             try Self.recountTouched(db)
             try Task.checkCancellation()
         }
-        originalVisitIDs?.subtract(reusedVisitIDs)
         return count
     }
 
@@ -399,11 +411,15 @@ public actor HistoryStore {
         // zeros freed table pages so checkpointing does not copy deleted values
         // out of the WAL and back into the database's free space.
         guard cleaningLog else { return try Self.transaction(db, body) }
-        let previous = try Self.query(db, "PRAGMA secure_delete", []) { $0.integer(0) }.first ?? 0
-        try Self.execute(db, "PRAGMA secure_delete=ON;")
-        defer { try? Self.execute(db, "PRAGMA secure_delete=\(previous);") }
-        try Self.transaction(db, body)
+        try Self.withSecureDelete(db) { try Self.transaction(db, body) }
         requestCheckpoint()
+    }
+
+    private static func withSecureDelete(_ db: OpaquePointer, _ body: () throws -> Void) throws {
+        let previous = try query(db, "PRAGMA secure_delete", []) { $0.integer(0) }.first ?? 0
+        try execute(db, "PRAGMA secure_delete=ON;")
+        defer { try? execute(db, "PRAGMA secure_delete=\(previous);") }
+        try body()
     }
 
     private func requestCheckpoint() {
@@ -519,10 +535,14 @@ public actor HistoryStore {
 
     /// If the first removal couldn't open SQLite, take the boundary as soon as
     /// it becomes readable, before this store can insert any subsequent visits.
-    private func captureRemovalBoundary(_ db: OpaquePointer) throws {
-        guard removalRequest != nil, originalVisitIDs == nil else { return }
+    private func captureRemovalBoundary(_ db: OpaquePointer, beforeSetup: Bool = false) throws {
+        guard removalRequest != nil, removalBoundary == nil else { return }
+        if beforeSetup, try Self.query(db, "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='visits'", [], { _ in true }).isEmpty {
+            removalBoundary = RemovalBoundary(through: 0)
+            return
+        }
         let last = try Self.query(db, "SELECT COALESCE(MAX(id), 0) FROM visits", []) { $0.integer(0) }.first ?? 0
-        originalVisitIDs = last > 0 ? IndexSet(integersIn: 1...Int(last)) : IndexSet()
+        removalBoundary = RemovalBoundary(through: last)
     }
 
     private func open() throws -> OpaquePointer {
@@ -548,34 +568,76 @@ public actor HistoryStore {
         }
         sqlite3_busy_timeout(opened, Self.busyTimeout)
         do {
-            try Self.execute(opened, """
-                PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-                CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE,
-                    title TEXT NOT NULL DEFAULT '', visit_count INTEGER NOT NULL DEFAULT 0, last_visit REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY,
-                    page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE, visited_at REAL NOT NULL);
-                CREATE INDEX IF NOT EXISTS visits_time ON visits(visited_at);
-                CREATE INDEX IF NOT EXISTS visits_page ON visits(page_id);
-                CREATE INDEX IF NOT EXISTS pages_recent ON pages(last_visit);
-                CREATE TABLE IF NOT EXISTS browser_import_visits (
-                    visit_id INTEGER PRIMARY KEY REFERENCES visits(id) ON DELETE CASCADE,
-                    batch_id TEXT NOT NULL, source_key TEXT NOT NULL UNIQUE);
-                CREATE INDEX IF NOT EXISTS browser_import_batch ON browser_import_visits(batch_id);
-                PRAGMA user_version=1;
-                CREATE TEMP TABLE IF NOT EXISTS touched (id INTEGER PRIMARY KEY);
-                """)
+            // A WAL reader can see the original visits while another connection
+            // holds the write lock needed for database setup or deletion.
+            try captureRemovalBoundary(opened, beforeSetup: true)
+            try Self.prepareSchema(opened)
         } catch {
             sqlite3_close(opened)
             throw error
         }
         db = opened
-        try captureRemovalBoundary(opened)
         // Finish a cleanup interrupted by closing or crashing while another
         // reader held the log. This runs once per connection, not on each visit.
         requestCheckpoint()
         try expireVisits(opened)
         scheduleRetention()
         return opened
+    }
+
+    private static let visitColumns = """
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE, visited_at REAL NOT NULL
+        """
+
+    private static func prepareSchema(_ db: OpaquePointer) throws {
+        try execute(db, "PRAGMA journal_mode=WAL;")
+        let version = try query(db, "PRAGMA user_version", []) { $0.integer(0) }.first ?? 0
+        guard version <= 2 else { throw SessionError.database("This history file needs a newer version of Early.") }
+        if version < 2 {
+            // Rebuilding the parent table must preserve imported visit references.
+            try execute(db, "PRAGMA foreign_keys=OFF;")
+            try transaction(db) {
+                // Older builds set user_version to 1 on open even after migration.
+                let legacy = try query(db, """
+                    SELECT 1 FROM sqlite_schema WHERE type='table' AND name='visits'
+                        AND instr(upper(sql), 'AUTOINCREMENT')=0
+                    """, []) { $0.integer(0) }
+                if !legacy.isEmpty { try migrateVisitIDs(db) }
+                try execute(db, """
+                    CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL DEFAULT '', visit_count INTEGER NOT NULL DEFAULT 0, last_visit REAL NOT NULL);
+                    CREATE TABLE IF NOT EXISTS visits (\(visitColumns));
+                    CREATE INDEX IF NOT EXISTS visits_time ON visits(visited_at);
+                    CREATE INDEX IF NOT EXISTS visits_page ON visits(page_id);
+                    CREATE INDEX IF NOT EXISTS pages_recent ON pages(last_visit);
+                    CREATE TABLE IF NOT EXISTS browser_import_visits (
+                        visit_id INTEGER PRIMARY KEY REFERENCES visits(id) ON DELETE CASCADE,
+                        batch_id TEXT NOT NULL, source_key TEXT NOT NULL UNIQUE);
+                    CREATE INDEX IF NOT EXISTS browser_import_batch ON browser_import_visits(batch_id);
+                    PRAGMA user_version=2;
+                    """)
+            }
+        }
+        try execute(db, "PRAGMA foreign_keys=ON; CREATE TEMP TABLE touched (id INTEGER PRIMARY KEY);")
+    }
+
+    private static func migrateVisitIDs(_ db: OpaquePointer) throws {
+        let objects = try query(db, """
+            SELECT sql FROM sqlite_schema WHERE tbl_name='visits' AND type IN ('index','trigger') AND sql IS NOT NULL
+            ORDER BY rowid
+            """, []) { $0.text(0) }
+        try withSecureDelete(db) {
+            try execute(db, """
+                CREATE TABLE visits_new (\(visitColumns));
+                INSERT INTO visits_new(id, page_id, visited_at) SELECT id, page_id, visited_at FROM visits;
+                DROP TABLE visits;
+                ALTER TABLE visits_new RENAME TO visits;
+                """)
+        }
+        for sql in objects { try execute(db, sql) }
+        let violations = try query(db, "SELECT 1 FROM pragma_foreign_key_check LIMIT 1", []) { $0.integer(0) }
+        guard violations.isEmpty else { throw SessionError.database("History contains an invalid visit reference.") }
     }
 
     /// The pages whose visits were just deleted (collected in `touched`)
