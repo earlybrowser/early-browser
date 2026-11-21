@@ -77,7 +77,7 @@ final class BrowserWindowModel {
     @ObservationIgnored var siteControlsFrame: CGRect?
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The address last recorded per tab, and the live page it came from.
-    @ObservationIgnored private var historyURLs: [UUID: (url: URL, page: UUID, date: Date)] = [:]
+    @ObservationIgnored private var historyURLs: [UUID: (url: URL, document: UUID, date: Date)] = [:]
     @ObservationIgnored private var recentPagesTask: Task<Void, Never>?
     @ObservationIgnored private var recentTitleRefreshTask: Task<Void, Never>?
     @ObservationIgnored var waitForRecentTitleRefresh: () async throws -> Void = {
@@ -904,14 +904,12 @@ final class BrowserWindowModel {
         save()
     }
 
-    /// A new address in a tab, or the same one in a newly loaded page (a
-    /// reopened pin), is a visit; a later title for it only names it. One
-    /// profile-wide queue keeps a title from preceding its visit or a clear.
+    /// A committed document or a new address within it starts a visit.
+    /// Later titles belong to that visit, including after a history clear.
     private func recordHistory(_ id: UUID, url: URL?, title: String?) {
         guard let history, history.pendingWrites.acceptsWrites,
-              let url, HistoryStore.records(url), let page = webViews.pages[id] else { return }
-        let identity = page.instanceID
-        if let last = historyURLs[id], last.url == url, last.page == identity {
+              let url, HistoryStore.records(url), let document = webViews.pages[id]?.historyDocumentID else { return }
+        if let last = historyURLs[id], last.url == url, last.document == document {
             guard let title, history.queueTitle(url, title: title, visitedAt: last.date) else { return }
             scheduleRecentTitleRefresh()
         } else {
@@ -920,7 +918,7 @@ final class BrowserWindowModel {
                 historyURLs = historyURLs.filter { open.contains($0.key) }
             }
             let date = now()
-            historyURLs[id] = (url, identity, date)
+            historyURLs[id] = (url, document, date)
             history.queueVisit(url, title: title, at: date)
             refreshRecentPages()
         }

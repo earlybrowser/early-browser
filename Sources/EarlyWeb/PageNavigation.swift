@@ -250,7 +250,7 @@ extension WebViewManager {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
         cancelAutomaticDownloadAuthorizations(for: id)
         sourcePages.navigate(tab: id, to: webView.url)
-        pages[id]?.resetCaptureGrants()
+        pages[id]?.resetCaptureGrants(for: UUID())
         pages[id]?.playingFrames.removeAll()
         pages[id]?.mediaFrames.removeAll()
         pages[id]?.isPlayingMedia = false
@@ -274,6 +274,7 @@ extension WebViewManager {
         pages[id]?.isReaderAvailable = false
         resetTranslationForNewDocument(id)
         if let url = webView.url.flatMap({ try? input.validate($0) }) { pages[id]?.requestedURL = url }
+        refresh(id)
     }
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
         guard let id = identities[ObjectIdentifier(webView)] else { return }
@@ -352,7 +353,7 @@ extension WebViewManager {
         page.navigationGeneration = UUID()
         page.failure = "The web content process stopped. Reload to reopen this page."
         page.processTerminated = true
-        page.resetCaptureGrants()
+        page.resetCaptureGrants(for: nil)
         page.isLoading = false
         page.isPlayingMedia = false
         page.playingFrames.removeAll()

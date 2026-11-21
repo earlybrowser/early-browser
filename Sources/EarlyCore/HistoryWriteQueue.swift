@@ -13,9 +13,9 @@ public enum HistoryDeletion: Sendable {
     enum Write {
         case visit(URL, String?, Date), title(URL, String, Date)
 
-        func apply(to store: HistoryStore) async throws {
+        func apply(to store: HistoryStore, epoch: UUID) async throws {
             switch self {
-            case let .visit(url, title, date): try await store.record(url, title: title, at: date)
+            case let .visit(url, title, date): try await store.record(url, title: title, at: date, acceptedIn: epoch)
             case let .title(url, title, _): try await store.updateTitle(url, title: title)
             }
         }
@@ -57,7 +57,8 @@ public enum HistoryDeletion: Sendable {
     private var tail: Task<Void, Never>?
     private var titleBatch: TitleBatch?
     private var generation: UInt64 = 0
-    private var failed: [Write] = []
+    private var acceptanceEpoch = UUID()
+    private var failed: [(write: Write, epoch: UUID)] = []
     public private(set) var failure: String?
     /// Quit seals acceptance before draining; Cancel reopens it. Private
     /// windows never have a queue, and deleted profiles are sealed permanently.
@@ -67,7 +68,8 @@ public enum HistoryDeletion: Sendable {
 
     fileprivate func append(_ write: Write, to store: HistoryStore) {
         guard acceptsWrites else { return }
-        enqueue { await self.apply(write, to: store) }
+        let epoch = acceptanceEpoch
+        enqueue { await self.apply(write, to: store, epoch: epoch) }
     }
 
     fileprivate func appendTitle(_ url: URL, title: String, visitedAt date: Date, to store: HistoryStore) -> Bool {
@@ -76,22 +78,23 @@ public enum HistoryDeletion: Sendable {
             titleBatch.append(url, title: title, date: date)
         } else {
             let batch = TitleBatch()
+            let epoch = acceptanceEpoch
             batch.append(url, title: title, date: date)
             enqueue {
                 _ = await batch.timer.result
                 if self.titleBatch === batch { self.titleBatch = nil }
-                for write in batch.writes { await self.apply(write, to: store) }
+                for write in batch.writes { await self.apply(write, to: store, epoch: epoch) }
             }
             titleBatch = batch
         }
         return true
     }
 
-    private func apply(_ write: Write, to store: HistoryStore) async {
+    private func apply(_ write: Write, to store: HistoryStore, epoch: UUID) async {
         // Preserve order after a failure, including titles arriving later.
-        guard failed.isEmpty else { failed.append(write); return }
-        do { try await write.apply(to: store) }
-        catch { failed.append(write); failure = error.localizedDescription }
+        guard failed.isEmpty else { failed.append((write, epoch)); return }
+        do { try await write.apply(to: store, epoch: epoch) }
+        catch { failed.append((write, epoch)); failure = error.localizedDescription }
     }
 
     private func sealTitles() {
@@ -122,23 +125,20 @@ public enum HistoryDeletion: Sendable {
             let writes = self.failed
             self.failed = []
             self.failure = nil
-            for write in writes { await self.apply(write, to: store) }
+            for entry in writes { await self.apply(entry.write, to: store, epoch: entry.epoch) }
         }
     }
 
-    func delete(_ deletion: HistoryDeletion, from store: HistoryStore) -> Task<Result<Void, Error>, Never> {
+    func delete(_ deletion: HistoryDeletion, request: UUID, from store: HistoryStore) -> Task<Result<Void, Error>, Never> {
+        acceptanceEpoch = request
         let previous = tail
         let task = Task { () -> Result<Void, Error> in
             await previous?.value
             do {
-                switch deletion {
-                case .visits(let ids): try await store.deleteVisits(ids)
-                case .pages(let urls): try await store.deletePages(urls)
-                case .since(let date): try await store.deleteVisits(since: date)
-                }
+                try await store.applyDeletion(deletion, request: request)
                 // Writes that failed before this barrier must not return on a
                 // later quit retry after the user successfully cleared them.
-                self.failed.removeAll { $0.isRemoved(by: deletion) }
+                self.failed.removeAll { $0.epoch != request && $0.write.isRemoved(by: deletion) }
                 if self.failed.isEmpty { self.failure = nil }
                 return .success(())
             } catch { return .failure(error) }
@@ -171,8 +171,8 @@ extension HistoryStore {
         pendingWrites.appendTitle(url, title: title, visitedAt: date, to: self)
     }
 
-    @MainActor public func queueDeletion(_ deletion: HistoryDeletion) -> Task<Result<Void, Error>, Never> {
-        pendingWrites.delete(deletion, from: self)
+    @MainActor public func queueDeletion(_ deletion: HistoryDeletion, request: UUID = UUID()) -> Task<Result<Void, Error>, Never> {
+        pendingWrites.delete(deletion, request: request, from: self)
     }
 
     @MainActor public func retryPendingWrites() { pendingWrites.retry(in: self) }

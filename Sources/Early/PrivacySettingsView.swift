@@ -41,12 +41,11 @@ import WebKit
     }
 
     func load(for profile: UUID?, fetch: @MainActor (UUID) async -> [Record]) async {
-        guard self.profile != profile || !isRemoving else { return }
+        guard !Task.isCancelled, self.profile != profile || !isRemoving else { return }
         select(profile)
         guard let profile else { return }
         let request = UUID()
         generation = request
-        snapshot = nil
         isLoading = true
         isRemoving = false
         let records = await fetch(profile)

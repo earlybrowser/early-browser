@@ -553,21 +553,21 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     public func webExtensionController(_ controller: WKWebExtensionController, promptForPermissions permissions: Set<WKWebExtension.Permission>,
                                        in tab: (any WKWebExtensionTab)?, for extensionContext: WKWebExtensionContext)
         async -> (Set<WKWebExtension.Permission>, Date?) {
-        guard let id = id(of: extensionContext) else { return ([], nil) }
         let names = permissions.map(\.rawValue).sorted().joined(separator: ", ")
-        guard await askForAccess?(name(of: extensionContext), "use more of Early: \(names)") == true else { return ([], nil) }
-        catalog.change(id) { item in item.grantedPermissions = Array(Set(item.grantedPermissions).union(permissions.map(\.rawValue))).sorted() }
-        return (permissions, nil)
+        let allowed = await approveAccess(for: extensionContext, request: "use more of Early: \(names)") { item in
+            item.grantedPermissions = Array(Set(item.grantedPermissions).union(permissions.map(\.rawValue))).sorted()
+        }
+        return (allowed ? permissions : [], nil)
     }
 
     public func webExtensionController(_ controller: WKWebExtensionController, promptForPermissionToAccess urls: Set<URL>,
                                        in tab: (any WKWebExtensionTab)?, for extensionContext: WKWebExtensionContext) async -> (Set<URL>, Date?) {
         let sites = Set(urls.compactMap(ExtensionCatalog.site(of:)))
-        guard let id = id(of: extensionContext), !sites.isEmpty,
-              await askForAccess?(name(of: extensionContext), "read and change \(sites.sorted().joined(separator: ", "))") == true
-        else { return ([], nil) }
-        catalog.change(id) { item in item.allowedSites = Array(Set(item.allowedSites).union(sites)).sorted() }
-        return (urls, nil)
+        guard !sites.isEmpty else { return ([], nil) }
+        let allowed = await approveAccess(for: extensionContext, request: "read and change \(sites.sorted().joined(separator: ", "))") { item in
+            item.allowedSites = Array(Set(item.allowedSites).union(sites)).sorted()
+        }
+        return (allowed ? urls : [], nil)
     }
 
     public func webExtensionController(_ controller: WKWebExtensionController, promptForPermissionMatchPatterns matchPatterns: Set<WKWebExtension.MatchPattern>,
@@ -575,14 +575,25 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         async -> (Set<WKWebExtension.MatchPattern>, Date?) {
         let all = matchPatterns.contains { $0.matchesAllURLs || $0.matchesAllHosts }
         let hosts = matchPatterns.compactMap(\.host).filter { !$0.isEmpty && $0 != "*" }.sorted()
-        guard let id = id(of: extensionContext),
-              await askForAccess?(name(of: extensionContext),
-                                  all ? "read and change every website" : "read and change \(hosts.joined(separator: ", "))") == true
-        else { return ([], nil) }
-        catalog.change(id) { item in
+        let request = all ? "read and change every website" : "read and change \(hosts.joined(separator: ", "))"
+        let allowed = await approveAccess(for: extensionContext, request: request) { item in
             if all { item.siteAccess = .allSites } else { item.allowedSites = Array(Set(item.allowedSites).union(hosts)).sorted() }
         }
-        return (matchPatterns, nil)
+        return (allowed ? matchPatterns : [], nil)
+    }
+
+    private func approveAccess(for context: WKWebExtensionContext, request: String,
+                               change: (inout InstalledExtension) -> Void) async -> Bool {
+        guard let id = id(of: context) else { return false }
+        func currentVersion() -> UUID? {
+            guard contexts[id] === context, !isRemoving, catalog.isReady, catalog.acceptsChanges, !Task.isCancelled,
+                  let item = catalog.installed(id), item.isEnabled, !isPrivate || item.allowsPrivateWindows else { return nil }
+            return catalog.permissionVersion(id)
+        }
+        guard let version = currentVersion(), await askForAccess?(name(of: context), request) == true,
+              currentVersion() == version else { return false }
+        catalog.change(id, change)
+        return true
     }
 
     public func webExtensionController(_ controller: WKWebExtensionController, didUpdate action: WKWebExtension.Action,

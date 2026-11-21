@@ -210,6 +210,18 @@ public final class PasswordVault {
             logins = try container.decodeIfPresent([SavedLogin].self, forKey: .logins) ?? []
             neverSaved = try container.decodeIfPresent([String].self, forKey: .neverSaved) ?? []
             drafts = try container.decodeIfPresent([SavedLogin].self, forKey: .drafts) ?? []
+            func restoreOrigin(_ login: inout SavedLogin) {
+                if let candidates = PasswordOrigin.storedIPv6Origins(login.origin), candidates.count == 1 {
+                    login.origin = candidates[0]
+                }
+            }
+            for index in logins.indices { restoreOrigin(&logins[index]) }
+            for index in drafts.indices { restoreOrigin(&drafts[index]) }
+            let restoredRules = neverSaved.flatMap { origin in
+                guard let candidates = PasswordOrigin.storedIPv6Origins(origin), !candidates.isEmpty else { return [origin] }
+                return candidates
+            }
+            neverSaved = Set(restoredRules).sorted()
         }
     }
 
@@ -377,8 +389,9 @@ public final class PasswordVault {
         if savedOrigin == origin { return true }
         guard origin.hasPrefix("https://") else { return false }
         let rest = origin.dropFirst("https://".count)
-        // An explicit https port has no http counterpart.
-        return !rest.contains(":") && savedOrigin == "http://" + rest
+        // In a canonical IPv6 origin a port, if present, follows the closing bracket.
+        let defaultPort = rest.first == "[" ? rest.last == "]" : !rest.contains(":")
+        return defaultPort && savedOrigin == "http://" + rest
     }
 
     public func login(id: UUID) -> SavedLogin? { logins.first { $0.id == id } }

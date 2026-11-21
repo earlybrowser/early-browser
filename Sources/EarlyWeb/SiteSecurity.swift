@@ -58,10 +58,10 @@ extension WebViewManager {
               !permissions.isEmpty, permissions.allSatisfy({ $0 == .camera || $0 == .microphone }) else {
             decide(false); return
         }
-        let documentID = page.captureDocumentID
+        let documentID = page.documentID
         let isCurrent = { [weak self, weak page] in
             guard let self, let page else { return false }
-            return self.pages[id] === page && page.captureDocumentID == documentID && self.sitePermissions === store
+            return self.pages[id] === page && page.documentID == documentID && self.sitePermissions === store
         }
         captureFrameToken(in: view, frame: frame) { [weak self, weak page] token in
             guard let self, let token, isCurrent() else { decide(false); return }
@@ -109,10 +109,10 @@ extension WebViewManager {
               let id = tabID(for: view), let page = pages[id], !page.processTerminated,
               store.acceptsChanges else { decide(false); return }
         if !store.isReady {
-            let document = page.captureDocumentID
+            let document = page.documentID
             Task { [weak self, weak page] in
                 guard await store.load(), let self, let page, self.pages[id] === page,
-                      page.captureDocumentID == document, self.sitePermissions === store else { decide(false); return }
+                      page.documentID == document, self.sitePermissions === store else { decide(false); return }
                 self.decidePermission(permissions, origin: origin, host: host, in: view, decide: decide)
             }
             return
@@ -124,14 +124,14 @@ extension WebViewManager {
             let asked = permissions.filter { store.decision(for: origin, $0) == .ask }
             let choices = permissions.map { store.decision(for: origin, $0) }
             let versions = permissions.map { store.version(for: origin, $0) }
-            let documentID = page.captureDocumentID
+            let documentID = page.documentID
             let alert = NSAlert()
             alert.messageText = "Allow “\(host)” to use \(Self.permissionPhrase(asked))?"
             alert.informativeText = "Early remembers your choice for this website. You can change it in Site Controls in the address bar."
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Don’t Allow")
             presentAlert(alert, in: view) { [weak self, weak page] response, _ in
-                guard let self, let page, self.pages[id] === page, page.captureDocumentID == documentID,
+                guard let self, let page, self.pages[id] === page, page.documentID == documentID,
                       self.sitePermissions === store, store.acceptsChanges, let response,
                       permissions.map({ store.version(for: origin, $0) }) == versions,
                       permissions.map({ store.decision(for: origin, $0) }) == choices else { decide(false); return }
@@ -158,10 +158,10 @@ extension WebViewManager {
                                  decide: @escaping @MainActor (Bool) -> Void) {
         guard let page = pages[id], page.view === view, !page.processTerminated,
               let store = sitePermissions, store.acceptsChanges else { decide(false); return }
-        let document = page.captureDocumentID, navigation = page.navigationGeneration
+        let document = page.documentID, navigation = page.navigationGeneration
         let isCurrent = { [weak self, weak page] in
             guard let self, let page else { return false }
-            return self.pages[id] === page && page.captureDocumentID == document
+            return self.pages[id] === page && page.documentID == document
                 && page.navigationGeneration == navigation && !page.processTerminated
                 && self.sitePermissions === store && store.isReady && store.acceptsChanges
         }

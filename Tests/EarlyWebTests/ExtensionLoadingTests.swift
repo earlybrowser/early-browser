@@ -68,6 +68,39 @@ struct ExtensionLoadingTests {
         #expect(!granted.contains(context.permissionStatus(for: WKWebExtension.Permission(rawValue: "bookmarks"))))
     }
 
+    enum PromptChange: CaseIterable { case unchanged, disable, replaceContext, changeAccessBack, seal }
+
+    @Test(arguments: PromptChange.allCases)
+    func optionalSiteApprovalBelongsToTheContextAndCurrentPermissionChoices(change: PromptChange) async throws {
+        guard #available(macOS 15.4, *) else { return }
+        let (host, item, _, folder) = try await fixture()
+        let gate = Gate()
+        defer { gate.release(); host.unloadAll(); try? FileManager.default.removeItem(at: folder) }
+        try #require(await host.load(item.id))
+        let context = try #require(host.context(item.id))
+        host.askForAccess = { _, _ in await gate.wait(); return true }
+        let site = URL(string: "https://fixture.example")!
+        let permission = Task {
+            await host.webExtensionController(host.controller, promptForPermissionToAccess: [site], in: nil, for: context)
+        }
+        try await wait { gate.entered }
+        switch change {
+        case .unchanged: break
+        case .disable: host.catalog.change(item.id) { $0.isEnabled = false }
+        case .replaceContext:
+            host.unload(item.id)
+            try #require(await host.load(item.id))
+        case .changeAccessBack:
+            host.catalog.change(item.id) { $0.allowsLocalFiles.toggle() }
+            host.catalog.change(item.id) { $0.allowsLocalFiles.toggle() }
+        case .seal: host.catalog.acceptsChanges = false
+        }
+        gate.release()
+        let (granted, _) = await permission.value
+        #expect(granted == (change == .unchanged ? [site] : []))
+        #expect(host.catalog.installed(item.id)?.allowedSites.contains("fixture.example") == (change == .unchanged))
+    }
+
     enum Invalidation: CaseIterable { case disable, privateAccess, unload, unloadAll, remove, replace, disableEnable, cancellation }
 
     @Test(arguments: Invalidation.allCases)

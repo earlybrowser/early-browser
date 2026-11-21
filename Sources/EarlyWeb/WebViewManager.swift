@@ -734,7 +734,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
         automaticPictureInPictureTabs[tabID] = nil
         unregisterHandlers(page.view.configuration.userContentController, for: tabID)
         page.mediaFrames.removeAll()
-        page.resetCaptureGrants()
+        page.resetCaptureGrants(for: nil)
         page.playingFrames.removeAll()
         page.isPlayingMedia = false
         page.isLoading = false
@@ -891,7 +891,10 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
             if !page.isReaderShown { checkReaderAvailability(id) }
         }
         let title = view.title
-        if url != page.reportedURL || title != page.reportedTitle {
+        let document = page.historyDocumentID
+        let newDocument = document != nil && document != page.reportedDocumentID
+        if url != page.reportedURL || title != page.reportedTitle || newDocument {
+            page.reportedDocumentID = document
             page.reportedURL = url
             page.reportedTitle = title
             onMetadata?(id, url, title)

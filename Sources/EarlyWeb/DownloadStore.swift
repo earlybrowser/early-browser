@@ -109,10 +109,15 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     public var hasActiveDownloads: Bool { items.contains { $0.state.isActive } }
     public var activeCount: Int { items.filter { $0.state.isActive }.count }
 
+    /// Copy Image uses a transfer without adding a row to the Downloads list.
+    private var activeTransferCount: Int {
+        activeCount + tracked.values.filter { !$0.listed && $0.state.isActive }.count
+    }
+
     /// Shared by every window in the profile. Authorization and WebKit's
     /// adoption callback are separate turns, so both need to hold a slot.
     var canReserveAutomaticDownload: Bool {
-        activeCount + automaticReservations.count < WebViewManager.automaticDownloadLimit
+        activeTransferCount + automaticReservations.count < WebViewManager.automaticDownloadLimit
     }
 
     func reserveAutomaticDownload() -> UUID? {
@@ -128,7 +133,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         guard automaticReservations.remove(token) != nil else { return false }
         // A user-initiated transfer may have started meanwhile; it retains its
         // exemption, while automatic transfers still respect the current cap.
-        return activeCount < WebViewManager.automaticDownloadLimit
+        return activeTransferCount < WebViewManager.automaticDownloadLimit
     }
 
     /// Combined progress of active listed downloads, or nil while any size is unknown.

@@ -551,6 +551,24 @@ struct DownloadStoreTests {
         fixture.store.cancelAll()
     }
 
+    @Test func anUnlistedImageTransferCountsAtReservationAndAdoption() async throws {
+        let server = try LocalHTTPServer(body: Data(repeating: 1, count: 400_000), initialChunk: 50_000)
+        let fixture = Fixture(), store = fixture.store
+        defer { store.cancelAll(); server.stop(); fixture.cleanup() }
+        for _ in 1..<WebViewManager.automaticDownloadLimit {
+            _ = progressItem(in: store, completed: 0, expected: 100)
+        }
+        let slot = try #require(store.reserveAutomaticDownload())
+        try #require(fixture.manager.startDownload(server.url, from: fixture.tab.id, listed: false))
+        try await waitUntil("copy transfer adopted") { fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download) }
+        #expect(store.activeCount == WebViewManager.automaticDownloadLimit - 1)
+        #expect(!store.consumeAutomaticDownload(slot))
+        #expect(!store.canReserveAutomaticDownload)
+        server.finishTransfers()
+        try await waitUntil("copy transfer ended") { !fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download) }
+        #expect(store.canReserveAutomaticDownload)
+    }
+
     @Test func anAutomaticResponseDownloadConsumesItsReservedSlot() async throws {
         let contents = Data("automatic response".utf8)
         let server = try LocalHTTPServer(body: contents, initialChunk: contents.count)

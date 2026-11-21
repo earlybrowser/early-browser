@@ -11,7 +11,7 @@ import SwiftUI
 @MainActor @Observable final class HistoryRemoval {
     private(set) var error: String?
     private(set) var isWorking = false
-    @ObservationIgnored private var retryOperation: (() async -> Result<Void, Error>)?
+    @ObservationIgnored private var retryOperation: (() -> Task<Result<Void, Error>, Never>)?
     @ObservationIgnored private var didChange: (() -> Void)?
     private var websiteDataCleared = false
 
@@ -23,10 +23,12 @@ import SwiftUI
         error = nil
         websiteDataCleared = false
         self.didChange = didChange
-        retryOperation = { await store.queueDeletion(deletion).value }
+        let request = UUID()
+        let perform = { store.queueDeletion(deletion, request: request) }
+        retryOperation = perform
         // Install the barrier before suspending, so every later accepted visit
         // is ordered after this deletion, even while website cleanup is running.
-        let result = await store.queueDeletion(deletion).value
+        let result = await perform().value
         if let clearWebsiteData {
             await clearWebsiteData()
             websiteDataCleared = true
@@ -38,7 +40,7 @@ import SwiftUI
         guard !isWorking, let retryOperation else { return false }
         isWorking = true
         error = nil
-        return finish(await retryOperation())
+        return finish(await retryOperation().value)
     }
 
     private func finish(_ result: Result<Void, Error>) -> Bool {

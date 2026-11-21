@@ -415,16 +415,18 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return store
     }
 
-    private func passwordsFile(for id: UUID) -> URL? {
-        storageURL?.deletingLastPathComponent().appending(path: "\(Self.passwordsFolder)/\(id.uuidString).vault", directoryHint: .notDirectory)
+    private func passwordsFile(for id: UUID, in folder: String = EarlyAppDelegate.passwordsFolder) -> URL? {
+        storageURL?.deletingLastPathComponent().appending(path: "\(folder)/\(id.uuidString).vault", directoryHint: .notDirectory)
     }
 
     /// Development builds share a release's data folder but keep their own
     /// passwords, under their own key, so they never re-encrypt a release's.
+    private static let releasePasswordsFolder = "Passwords"
+    private static let developmentPasswordsFolder = "Passwords/Development"
     #if DEBUG
-    static let passwordsFolder = "Passwords/Development"
+    static let passwordsFolder = developmentPasswordsFolder
     #else
-    static let passwordsFolder = "Passwords"
+    static let passwordsFolder = releasePasswordsFolder
     #endif
 
     /// A profile's saved passwords. Private sessions have none of their own.
@@ -1436,6 +1438,12 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                 try await PasswordVault.remove(fileURL: passwordsFile(for: id), key: nil)
             } else { try await PasswordVault.remove(fileURL: passwordsFile(for: id), key: passwordKey(for: id)) }
             passwordVaults[id] = nil
+        }
+        // Both builds use the same profile catalog. Each retains its shared key.
+        for folder in [Self.releasePasswordsFolder, Self.developmentPasswordsFolder] where folder != Self.passwordsFolder {
+            await attempt("Passwords") {
+                try await PasswordVault.remove(fileURL: passwordsFile(for: id, in: folder), key: nil)
+            }
         }
         await attempt("History") {
             historyStores[id]?.pendingWrites.acceptsWrites = false

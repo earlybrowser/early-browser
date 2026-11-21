@@ -139,12 +139,17 @@ extension EarlyAppDelegate {
     /// One choice changes, in the profile's windows and its private windows.
     /// Website access applies in place; turning it on or off restarts it.
     func changeExtension(_ id: UUID, in profile: UUID, restart: Bool, _ body: (inout InstalledExtension) -> Void) async {
-        extensionCatalog(for: profile).change(id, body)
+        let catalog = extensionCatalog(for: profile)
+        catalog.change(id, body)
         let hosts = runningExtensionHosts(of: profile)
         if restart {
             // Revoke in every host before any initialization can suspend us.
             hosts.forEach { $0.unload(id) }
-            for host in hosts { await host.load(id) }
+            let version = catalog.loadVersion(id)
+            for host in hosts {
+                guard catalog.loadVersion(id) == version else { return }
+                if runningExtensionHosts(of: profile).contains(where: { $0 === host }) { await host.load(id) }
+            }
         } else {
             hosts.forEach { $0.refreshAccess(id) }
         }

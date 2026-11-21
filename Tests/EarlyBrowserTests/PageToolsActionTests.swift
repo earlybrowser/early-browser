@@ -394,6 +394,33 @@ struct PageToolsActionTests {
         #expect(model.recentlyVisited.isEmpty && remaining.isEmpty)
     }
 
+    @Test func submittingTheSameAddressAfterAClearRecordsTheNewDocumentOnce() async throws {
+        let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
+            .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))
+        defer { Task { try? await history.removeFile() } }
+        let fixture = Fixture(history: history), model = fixture.model
+        defer { fixture.cleanup() }
+        let url = URL(string: "early-test://fixture/one")!
+        try #require(model.openLocations([url]))
+        let tab = try #require(model.coordinator.focusedTabID), page = try #require(model.webViews.pages[tab])
+        try await fixture.waitForLoad(tab)
+        await model.flushHistory()
+        #expect(try await history.visits().map(\.url) == [url])
+        let previous = try #require(page.historyDocumentID)
+        try #require(await model.clearHistory(.all))
+        try #require(model.perform(.presentCommandBar(.navigateCurrentTab)))
+        model.updateQuery(url.absoluteString)
+        try #require(model.perform(.submit()))
+        try await fixture.waitUntil("new document at the same address") {
+            page.historyDocumentID != nil && page.historyDocumentID != previous && !page.view.isLoading && page.view.title == "Page One"
+        }
+        _ = try await page.view.evaluateJavaScript("document.title = 'Revisited'")
+        try await fixture.waitUntil("new title") { model.activeTab?.title == "Revisited" }
+        await model.flushHistory()
+        #expect(try await history.visits().map(\.title) == ["Revisited"])
+        #expect(model.recentlyVisited.first?.visitCount == 1)
+    }
+
     @Test func visitsAreRecordedAndTheCommandBarOffersHistoryButNotOpenTabsTwice() async throws {
         let history = HistoryStore(fileURL: FileManager.default.temporaryDirectory
             .appending(path: "EarlyHistory-\(UUID().uuidString)/history.sqlite"))

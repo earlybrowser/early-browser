@@ -79,17 +79,17 @@ public final class BrowserPage {
     var recentUsername: RecentUsername?
     public internal(set) var cameraCapture = WKMediaCaptureState.none
     public internal(set) var microphoneCapture = WKMediaCaptureState.none
-    /// Capture grants belong to a document, not its latest URL (History API
-    /// changes do not end capture). Keys identify isolated frame documents.
-    var captureDocumentID = UUID()
+    /// The main document keeps its identity across History API route changes.
+    private(set) var documentID: UUID?
+    /// Keys identify isolated frame documents within the main document.
     var captureGrants: [String: CaptureGrant] = [:]
     struct CaptureGrant {
         let origin: String
         var permissions: Set<SitePermission>
     }
 
-    func resetCaptureGrants() {
-        captureDocumentID = UUID()
+    func resetCaptureGrants(for document: UUID?) {
+        documentID = document
         captureGrants.removeAll()
     }
 
@@ -99,6 +99,11 @@ public final class BrowserPage {
     var observations: [NSKeyValueObservation] = []
     var reportedURL: URL?
     var reportedTitle: String?
+    var reportedDocumentID: UUID?
+    /// The committed document eligible to contribute a history visit or title.
+    public var historyDocumentID: UUID? {
+        !awaitsNavigationCommit && failure == nil && !processTerminated ? documentID : nil
+    }
     var navigationGeneration = UUID()
     var faviconRefresh: UUID?
     var activeNavigation: ObjectIdentifier?

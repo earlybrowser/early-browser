@@ -175,6 +175,31 @@ struct PasswordVaultTests {
         #expect(reopened.neverSaved == ["https://never.example"])
     }
 
+    @Test func legacyIPv6LoginsRecoverOnlyWhenTheirHostAndPortAreUnambiguous() async throws {
+        let url = file(), key = MemoryVaultKey()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let old = PasswordVault(fileURL: url, key: key)
+        try #require(await old.load())
+        old.save(origin: "http://::1", username: "loopback", password: "fixture")
+        old.save(origin: "https://::1:12345", username: "port", password: "fixture")
+        old.save(origin: "http://::1:123", username: "ambiguous", password: "fixture")
+        old.neverSave("https://::1:123")
+        old.neverSave("https://[::1]:123")
+        try #require(await old.flush())
+
+        let vault = PasswordVault(fileURL: url, key: key)
+        try #require(await vault.load())
+        #expect(vault.logins(for: "https://[::1]").map(\.username) == ["loopback"])
+        #expect(vault.logins(for: "https://[::1]:12345").map(\.username) == ["port"])
+        #expect(vault.logins.contains { $0.username == "ambiguous" })
+        #expect(vault.neverSaved.count == 2)
+        for origin in ["https://[::1:123]", "https://[::1]:123"] {
+            let canonical = try #require(URL(string: origin).flatMap(PasswordOrigin.from(_:)))
+            #expect(vault.logins(for: canonical).isEmpty)
+            #expect(vault.isNeverSaved(canonical))
+        }
+    }
+
     @Test func passwordsThatCantBeOpenedAreNeverOverwritten() async throws {
         let url = file()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
