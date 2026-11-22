@@ -11,6 +11,9 @@ It uses macOS 26 runners and Xcode 26.6. One job runs
 `swift test --no-parallel`; four separate jobs run native UI tests. Xcode discovers
 the enabled UI tests, and the sorted identifiers are interleaved across the four
 shards. Each shard executes serially to avoid competing mouse/keyboard input.
+The Actions log shows each test starting and finishing. XCTest gives each test
+five minutes before recording a timeout. The `ui-results-N` artifact for shard
+`N` contains the full `ui.log` trace and the Xcode result bundle.
 
 The workflow has read-only repository permissions and disables persisted checkout
 credentials. New commits cancel obsolete test runs for the same ref. Logs,

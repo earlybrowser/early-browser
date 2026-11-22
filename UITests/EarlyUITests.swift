@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
-import Translation
 import XCTest
 
 @MainActor
@@ -11,11 +10,11 @@ final class EarlyUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launchFreshApp(appearance: String = "dark") -> XCUIApplication {
+    private func launchFreshApp(appearance: String = "dark", arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["EARLY_TEST_DEFAULTS_SUITE"] = "local.early.tests.\(UUID().uuidString)"
         app.launchEnvironment["EARLY_TEST_APPEARANCE"] = appearance
-        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
+        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments
         // Typed text stays as typed whatever the Mac's keyboard settings: CI's
         // automatic capitalization once turned "keep" into "Keep" mid-test.
         for setting in ["NSAutomaticCapitalizationEnabled", "NSAutomaticSpellingCorrectionEnabled", "NSAutomaticTextReplacementEnabled",
@@ -334,7 +333,7 @@ final class EarlyUITests: XCTestCase {
         app.buttons[firstID].rightClick()
         // The Tab menu has a Split View submenu too; use the open context menu's.
         visibleMenuItem("Split View")?.hover()
-        visibleMenuAction("Place on Left")
+        activateFirstSubmenuItem("Place on Left", in: app)
         let divider = app.descendants(matching: .any).matching(identifier: "split.divider").firstMatch
         XCTAssertTrue(divider.waitForExistence(timeout: 5))
         let left = app.descendants(matching: .any).matching(identifier: "browser.pane.\(firstID.dropFirst(4))").firstMatch
@@ -355,7 +354,7 @@ final class EarlyUITests: XCTestCase {
             XCTAssertTrue(app.menuItems["Swap Sides"].waitForExistence(timeout: 3))
             XCTAssertTrue(app.menuItems["Exit Split View"].exists)
             XCTAssertFalse(app.menuItems["Place on Left"].exists || app.menuItems["Place on Right"].exists)
-            visibleMenuAction("Swap Sides")
+            activateFirstSubmenuItem("Swap Sides", in: app)
             let swapped = NSPredicate { _, _ in reversed ? left.frame.midX > right.frame.midX : left.frame.midX < right.frame.midX }
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: swapped, object: nil)], timeout: 5), .completed)
             XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
@@ -723,6 +722,23 @@ final class EarlyUITests: XCTestCase {
     /// open menu shares with them must be found among the visible items.
     private func visibleMenuItem(_ title: String) -> XCUIElement? {
         visibleMenuTarget(title)?.item
+    }
+
+    /// Right Arrow selects the first enabled item of the highlighted submenu.
+    /// A mouse click can dismiss a nested AppKit menu while crossing to its child.
+    private func activateFirstSubmenuItem(_ title: String, in app: XCUIApplication,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        app.typeKey(.rightArrow, modifierFlags: [])
+        let selected = app.menuItems.matching(identifier: title)
+            .matching(NSPredicate(format: "selected == true AND enabled == true"))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            selected.allElementsBoundByIndex.filter { self.usableMenuFrame($0.frame) }.count == 1
+        }, object: nil)
+        guard XCTWaiter.wait(for: [ready], timeout: 5) == .completed else {
+            XCTFail("Expected the open submenu to select \(title) before Return", file: file, line: line)
+            return
+        }
+        app.typeKey(.return, modifierFlags: [])
     }
 
     private func usableMenuFrame(_ frame: CGRect) -> Bool {
@@ -1161,19 +1177,7 @@ final class EarlyUITests: XCTestCase {
             let submenu = app.menuItems[menu]
             XCTAssertTrue(submenu.waitForExistence(timeout: 3))
             submenu.hover()
-            // Each destination submenu in this fixture has one enabled item.
-            // Enter it through AppKit's keyboard navigation: XCTest can fail
-            // to compute a mouse hit point even when the child has valid bounds.
-            app.typeKey(.rightArrow, modifierFlags: [])
-            let selected = app.menuItems.matching(identifier: name)
-                .matching(NSPredicate(format: "selected == true AND enabled == true"))
-            let destinationReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                let items = selected.allElementsBoundByIndex.filter { self.usableMenuFrame($0.frame) }
-                return items.count == 1
-            }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [destinationReady], timeout: 5), .completed,
-                           "The \(menu) submenu must select \(name) before Return")
-            app.typeKey(.return, modifierFlags: [])
+            activateFirstSubmenuItem(name, in: app)
         }
         func move(_ row: XCUIElement, to name: String) {
             let contextAction = row.identifier.hasPrefix("folder.") ? "Rename Folder…" : "Rename Tab…"
@@ -2718,16 +2722,11 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
-    func testSystemTranslationRestoresTheArticleOrDismissesTheLanguageDownload() async throws {
+    func testSystemTranslationRestoresTheArticleOrDismissesTheLanguageDownload() throws {
         guard #available(macOS 15.0, *) else { throw XCTSkip("System translation requires macOS 15.") }
-        let preferred = Locale.Language(identifier: Locale.preferredLanguages.first ?? "en")
-        let target = Locale.Language(identifier: preferred.languageCode?.identifier ?? "en")
-        let source = Locale.Language(identifier: "fr")
-        let availability = await LanguageAvailability().status(from: source, to: target)
-        guard source.languageCode != target.languageCode, availability != .unsupported else {
-            throw XCTSkip("This Mac does not offer translation for the French fixture into its preferred language.")
-        }
-        let app = launchFreshApp()
+        // Early checks availability when it inspects the French page. The UI
+        // runner has a separate sandbox and cannot query the translation service.
+        let app = launchFreshApp(arguments: ["-AppleLanguages", "(en)"])
         defer { app.terminate() }
         navigate(app, to: "early-test://fixture/article?lang=fr")
         expectPage(app, "Article")
@@ -2736,7 +2735,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertTrue(french.waitForExistence(timeout: 5))
         app.buttons["address.siteControls"].click()
         let translate = app.buttons["siteControls.translate"]
-        XCTAssertTrue(translate.waitForExistence(timeout: 15))
+        XCTAssertTrue(translate.waitForExistence(timeout: 15), "Expected Early to offer French-to-English translation.\n\(app.debugDescription)")
         translate.click()
 
         let translated = app.descendants(matching: .any).matching(NSPredicate(
@@ -2745,7 +2744,8 @@ final class EarlyUITests: XCTestCase {
         let reply = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             translated.exists || modals.contains { $0.exists }
         }, object: nil)
-        await fulfillment(of: [reply], timeout: 30)
+        XCTAssertEqual(XCTWaiter.wait(for: [reply], timeout: 30), .completed,
+                       "Expected translated text or the system language-download prompt.\n\(app.debugDescription)")
         if translated.exists {
             XCTAssertFalse(french.exists)
             let original = app.buttons["translation.original"]
