@@ -25,10 +25,38 @@ enum UnhandledPageKey {
 @MainActor
 final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDelegate {
     let initialPresentation = InitialPagePresentation()
+    private var fileDrop: (urls: [URL], expires: ContinuousClock.Instant)?
 
     override func stopLoading() {
+        clearFileDrop()
         initialPresentation.reveal()
         super.stopLoading()
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        noteFileDrop(from: sender.draggingPasteboard)
+        // Let WebKit deliver the drop to the document first, including uploads.
+        let accepted = super.performDragOperation(sender)
+        if !accepted { clearFileDrop() }
+        return accepted
+    }
+
+    func noteFileDrop(from pasteboard: NSPasteboard, now: ContinuousClock.Instant = .now) {
+        let files = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        fileDrop = files.isEmpty ? nil : (files, now.advanced(by: .seconds(5)))
+    }
+
+    func clearFileDrop() { fileDrop = nil }
+
+    /// WebKit reports unhandled file drops as ordinary navigation actions.
+    /// Take the actual native file URL once, only on the view that received it.
+    func takeDroppedFile(matching url: URL, now: ContinuousClock.Instant = .now) -> URL? {
+        guard let fileDrop else { return nil }
+        guard now < fileDrop.expires else { clearFileDrop(); return nil }
+        let path = url.standardizedFileURL.path
+        guard let file = fileDrop.urls.first(where: { $0.standardizedFileURL.path == path }) else { return nil }
+        clearFileDrop()
+        return file
     }
 
     /// What a trusted right-click landed on, already validated by the manager.

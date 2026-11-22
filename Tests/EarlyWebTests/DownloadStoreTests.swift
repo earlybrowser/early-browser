@@ -694,7 +694,10 @@ struct DownloadStoreTests {
         let server = try LocalHTTPServer(body: Data(repeating: 19, count: 400_000), initialChunk: 80_000)
         let fixture = Fixture()
         defer { server.stop(); fixture.cleanup() }
-        #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id))
+        var results: [(DownloadItem.State, String?, Data?)] = []
+        #expect(fixture.manager.startDownload(server.url, from: fixture.tab.id) {
+            results.append(($0.state, $0.failureReason, $0.resumeData))
+        })
         try await waitUntil("transfer started") {
             fixture.store.items.first.map { $0.state == .downloading && $0.completedBytes >= 80_000 } == true
         }
@@ -702,8 +705,39 @@ struct DownloadStoreTests {
         server.finishTransfers(sendingRemaining: false)
         try await waitUntil("network failure") { item.state == .failed }
         #expect(item.failureReason != nil && !fixture.store.hasActiveDownloads)
+        #expect(results.count == 1)
+        let result = try #require(results.first)
+        #expect(result.0 == .failed && result.1 == item.failureReason && result.2 == item.resumeData)
+        #expect(item.canResume)
         #expect(!fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download))
         #expect(fixture.manager.pages[fixture.tab.id] === fixture.page, "A failed transfer must keep its source page")
+    }
+
+    @Test(arguments: [false, true])
+    func failingToCopyAnImageReportsTheFailureAndCleansUp(interruptTransfer: Bool) async throws {
+        let server = try LocalHTTPServer(body: Data(repeating: 1, count: 400_000), initialChunk: 80_000)
+        let fixture = Fixture()
+        defer { server.stop(); fixture.cleanup() }
+        let view = try #require(fixture.page.view as? BrowserWebView)
+        let temporary = FileManager.default.temporaryDirectory
+        func imageFolders() throws -> Set<String> {
+            Set(try FileManager.default.contentsOfDirectory(atPath: temporary.path).filter { $0.hasPrefix("Early-Image-") })
+        }
+        let existing = try imageFolders()
+        var notices: [String] = []
+        fixture.manager.onNotice = { notices.append($0) }
+        fixture.manager.performContextAction(.copyImage(server.url), in: view)
+        let folder = try #require(try imageFolders().subtracting(existing).first)
+        let destination = temporary.appending(path: folder).appending(path: WebViewManager.imageName(for: server.url))
+        try await waitUntil("copy transfer wrote a partial file") {
+            fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download)
+                && FileManager.default.fileExists(atPath: destination.path)
+        }
+        server.finishTransfers(sendingRemaining: !interruptTransfer)
+        try await waitUntil("copy transfer settled") { !fixture.manager.hasProtection(tabID: fixture.tab.id, reason: .download) }
+        #expect(notices == ["The image could not be copied."])
+        #expect(fixture.store.items.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))
     }
 
     @Test func cancellingAStoppedTransferDeletesOnlyItsPartialFile() async throws {
@@ -819,8 +853,9 @@ struct DownloadStoreTests {
     @Test func cancellingBeforeADestinationCreatesNoFileAndClearingKeepsFinishedFiles() async throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }
+        var states: [DownloadItem.State] = []
         fixture.manager.onDownloadStarted = { [store = fixture.store] item in store.cancel(item) }
-        #expect(fixture.manager.startDownload(hello, from: fixture.tab.id))
+        #expect(fixture.manager.startDownload(hello, from: fixture.tab.id) { states.append($0.state) })
         try await waitUntil("cancelled") { fixture.store.items.first?.state == .cancelled }
         try await Task.sleep(for: .milliseconds(100))
         let cancelled = try #require(fixture.store.items.first)
@@ -829,12 +864,13 @@ struct DownloadStoreTests {
         #expect(((try? FileManager.default.contentsOfDirectory(atPath: fixture.directory.path)) ?? []).isEmpty)
 
         fixture.manager.onDownloadStarted = nil
-        #expect(fixture.manager.startDownload(hello, from: fixture.tab.id))
+        #expect(fixture.manager.startDownload(hello, from: fixture.tab.id) { states.append($0.state) })
         try await waitUntil("finished") { fixture.store.items.first?.state == .finished }
         let finished = try #require(fixture.store.items.first)
         #expect(fixture.store.fileExists(finished))
         fixture.store.clearInactive()
         #expect(fixture.store.items.isEmpty)
+        #expect(states == [.cancelled, .finished])
         #expect(FileManager.default.fileExists(atPath: try #require(finished.destination).path), "Clearing never deletes files")
     }
 

@@ -177,19 +177,21 @@ extension WebViewManager {
 
     private func performDocumentSave(pageID: UUID?, to destination: URL, source: URL?, failure: String,
                                      operation: @escaping @Sendable () async throws -> Void) {
+        let downloads = downloads
+        guard !downloads.isRetired else { return }
         let token = UUID()
         let task = Task { @MainActor [weak self] in
+            defer { self?.documentWrites[token] = nil }
+            guard !downloads.isRetired else { return }
             do {
                 try Task.checkCancellation()
                 try await operation()
-                guard let self else { return }
-                self.documentWrites[token] = nil
-                guard !Task.isCancelled else { return }
-                self.downloads.recordSavedFile(at: destination, source: source)
+                // A successful write already renamed the file. Its profile
+                // owns the result even if the page or window closed meanwhile.
+                guard !downloads.isRetired else { return }
+                downloads.recordSavedFile(at: destination, source: source)
             } catch {
-                guard let self else { return }
-                self.documentWrites[token] = nil
-                if !(error is CancellationError) { self.onNotice?(failure) }
+                if !downloads.isRetired && !Task.isCancelled && !(error is CancellationError) { self?.onNotice?(failure) }
             }
         }
         documentWrites[token] = PendingDocumentWrite(pageID: pageID, task: task)
@@ -363,7 +365,7 @@ extension WebViewManager {
         let started = startDownload(url, from: id, to: destination, listed: false) { [weak self] item in
             defer { try? FileManager.default.removeItem(at: folder) }
             guard item.state == .finished, let image = NSImage(contentsOf: destination) else {
-                if item.state == .failed { self?.onNotice?("The image could not be copied.") }
+                if item.state == .failed || item.state == .finished { self?.onNotice?("The image could not be copied.") }
                 return
             }
             NSPasteboard.general.clearContents()

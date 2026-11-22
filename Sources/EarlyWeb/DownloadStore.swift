@@ -87,6 +87,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     @ObservationIgnored private var tracked: [ObjectIdentifier: DownloadItem] = [:]
     @ObservationIgnored private var reserved: Set<String> = []
     @ObservationIgnored private var automaticReservations: Set<UUID> = []
+    @ObservationIgnored private(set) var isRetired = false
 
     /// Private windows' files keep their quarantine, which Gatekeeper needs,
     /// but their addresses never reach LaunchServices' quarantine-event log.
@@ -117,7 +118,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     /// Shared by every window in the profile. Authorization and WebKit's
     /// adoption callback are separate turns, so both need to hold a slot.
     var canReserveAutomaticDownload: Bool {
-        activeTransferCount + automaticReservations.count < WebViewManager.automaticDownloadLimit
+        !isRetired && activeTransferCount + automaticReservations.count < WebViewManager.automaticDownloadLimit
     }
 
     func reserveAutomaticDownload() -> UUID? {
@@ -153,6 +154,11 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     @discardableResult
     func adopt(_ download: WKDownload, source: URL?, origin: URL?, destination: URL? = nil, listed: Bool = true) -> DownloadItem {
         let item = DownloadItem(source: source, origin: origin, requestedDestination: destination, listed: listed)
+        guard !isRetired else {
+            item.state = .cancelled
+            download.cancel { _ in }
+            return item
+        }
         attach(download, to: item)
         if listed {
             items.insert(item, at: 0)
@@ -224,7 +230,7 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
     /// Continues a stopped or interrupted transfer into its original file.
     @discardableResult
     public func resume(_ item: DownloadItem) -> Bool {
-        guard item.canResume, let resumeData = item.resumeData else { return false }
+        guard !isRetired, item.canResume, let resumeData = item.resumeData else { return false }
         let configuration = WKWebViewConfiguration()
         if let store = dataStoreProvider?() { configuration.websiteDataStore = store }
         let host = WKWebView(frame: .zero, configuration: configuration)
@@ -282,6 +288,14 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         for item in Array(tracked.values) + items where item.state.isActive || item.state == .paused || item.canResume {
             cancel(item)
         }
+    }
+
+    /// The owning profile was removed or its last private window closed.
+    public func retire() {
+        isRetired = true
+        dataStoreProvider = nil
+        automaticReservations.removeAll()
+        cancelAll()
     }
 
     /// Removes finished, failed and cancelled rows. Files are never deleted;
@@ -419,21 +433,21 @@ public final class DownloadStore: NSObject, WKDownloadDelegate {
         guard let item = tracked.removeValue(forKey: ObjectIdentifier(download)) else { return }
         let nsError = error as NSError
         synchronizeProgress(item)
-        releaseTransfer(item)
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled && resumeData == nil {
             item.state = .cancelled
         } else {
-            item.state = .failed
             item.failureReason = nsError.localizedDescription
-            if let resumeData {
-                // An interrupted transfer keeps its partial file for Resume.
-                item.resumeData = resumeData
-                return
-            }
+            item.resumeData = resumeData
+            item.state = .failed
         }
-        // Remove our partial file, but never a destination WebKit refused
-        // because another process had already created it.
-        discardPartialFile(of: item)
+        if resumeData == nil || !item.listed {
+            // Remove our partial file, but never a destination WebKit refused
+            // because another process had already created it. Unlisted
+            // transfers have no Resume action and don't keep partial files.
+            discardPartialFile(of: item)
+            item.resumeData = nil
+        }
+        releaseTransfer(item)
     }
 
     // MARK: Helpers

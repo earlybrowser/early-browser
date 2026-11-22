@@ -104,10 +104,10 @@ public enum BackgroundFileIO {
             defer { try? output.close() }
             try write(output)
             try output.synchronize()
-            try Task.checkCancellation()
             if let mode = try? files.attributesOfItem(atPath: destination.path)[.posixPermissions] {
                 try files.setAttributes([.posixPermissions: mode], ofItemAtPath: staged.path)
             }
+            try Task.checkCancellation()
             guard Darwin.rename(staged.path, destination.path) == 0 else { throw fileError() }
         }
     }

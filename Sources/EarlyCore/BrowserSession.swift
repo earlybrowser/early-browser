@@ -131,16 +131,17 @@ public struct BrowserSession: Codable, Equatable, Sendable {
     /// A copied page is a new Today tab, even when opened from a saved pin.
     /// Saved tabs start unloaded; no other window's live navigation is copied.
     public func openingWindow(at url: URL, title: String? = nil) -> BrowserSession {
-        let saved = tabs.filter { $0.pinnedURL != nil }.map { tab in
-            var copy = tab
-            copy.currentURL = tab.pinnedURL!
-            copy.title = tab.pinnedTitle ?? tab.title
-            copy.isOpen = false
-            return copy
+        openingWindow(at: [url], firstTitle: title)
+    }
+
+    public func openingWindow(at urls: [URL], firstTitle: String? = nil) -> BrowserSession {
+        var window = savedItemsOnly
+        let pages = urls.enumerated().map { index, url in
+            BrowserTab(spaceID: activeSpaceID, profileID: profileID,
+                       title: (index == 0 ? firstTitle : nil) ?? url.host ?? url.absoluteString, currentURL: url)
         }
-        let page = BrowserTab(spaceID: activeSpaceID, profileID: profileID,
-                              title: title ?? url.host ?? url.absoluteString, currentURL: url)
-        return BrowserSession(profileID: profileID, activeSpaceID: activeSpaceID,
-                              tabs: saved + [page], selectionBySpace: [activeSpaceID: page.id], folders: folders, spaces: spaces)
+        window.tabs.append(contentsOf: pages)
+        window.selectionBySpace[activeSpaceID] = pages.first?.id
+        return window
     }
 }

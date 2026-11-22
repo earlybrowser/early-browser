@@ -218,7 +218,7 @@ struct ExtensionApplicationTests {
     }
 
     @Test(arguments: [false, true])
-    func extensionWindowRequestsNeverChangePrivacyMode(isPrivate: Bool) async throws {
+    func extensionWindowRequestsPreserveTabOrderAndProfileBoundaries(isPrivate: Bool) async throws {
         guard #available(macOS 15.4, *) else { return }
         let fixture = Fixture()
         await fixture.start()
@@ -248,33 +248,52 @@ struct ExtensionApplicationTests {
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        func request(private requested: Bool) async throws -> [String: Any] {
+        func request(_ properties: [String: Any]) async throws -> [String: Any] {
             let result = try await view.callAsyncJavaScript("""
                 try {
-                    const created = await browser.windows.create({incognito: requested, url: 'early-test://fixture/window'});
-                    return {incognito: created.incognito};
+                    const created = await browser.windows.create(properties);
+                    const tabs = await browser.tabs.query({windowId: created.id});
+                    return {incognito: created.incognito, tabIds: tabs.map(tab => tab.id)};
                 } catch (error) { return {error: error.message}; }
-                """, arguments: ["requested": requested], contentWorld: .page)
+                """, arguments: ["properties": properties], contentWorld: .page)
             return try #require(result as? [String: Any])
         }
 
         // A regular extension must not open an ordinary window for a private
         // request, nor may a private extension silently change a regular request.
         let count = fixture.opened.count
-        let denied = try await request(private: !isPrivate)
+        let urls = ["first", "second", "third"].map { "early-test://fixture/\($0)" }
+        let denied = try await request(["incognito": !isPrivate, "url": urls])
         #expect((denied["error"] as? String)?.contains("privacy mode") == true)
         #expect(fixture.opened.count == count, "Rejected requests must not create any window")
 
-        let allowed = try await request(private: isPrivate)
+        let localDenied = try await request(["incognito": isPrivate, "url": urls + ["file:///unused/local.html"]])
+        #expect((localDenied["error"] as? String)?.contains("allowed to open files") == true)
+        #expect(fixture.opened.count == count)
+
+        let invalid = try await request(["incognito": isPrivate, "url": urls + ["ftp://fixture/unsupported"]])
+        #expect(invalid["error"] != nil)
+        #expect(fixture.opened.count == count)
+
+        let allowed = try await request(["incognito": isPrivate, "url": urls])
         #expect(allowed["incognito"] as? Bool == isPrivate)
         #expect(fixture.opened.count == count + 1)
         let created = try #require(app.windowModel(fixture.opened.last))
+        let createdTabs = created.coordinator.tabStore.tabs.filter(\.isOpen)
+        #expect(createdTabs.map { $0.currentURL.absoluteString } == urls)
+        #expect(created.coordinator.activeTabID == createdTabs.first?.id)
         #expect(created.isPrivate == isPrivate)
         #expect(created.webViews.websiteDataStore === source.webViews.websiteDataStore)
         if isPrivate {
             #expect(!created.webViews.websiteDataStore.isPersistent)
             #expect(created.webViews.websiteDataStore !== regular.webViews.websiteDataStore)
         }
+        let tabIDs = try #require(allowed["tabIds"] as? [Int])
+        #expect(tabIDs.count == urls.count)
+        let move = try await request(["incognito": isPrivate, "tabId": try #require(tabIDs.first)])
+        #expect((move["error"] as? String)?.contains("cannot move existing tabs") == true)
+        #expect(fixture.opened.count == count + 1)
+        #expect(created.coordinator.tabStore.tabs.filter(\.isOpen).map(\.id) == createdTabs.map(\.id))
         await fixture.cleanup()
     }
 

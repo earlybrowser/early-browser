@@ -45,6 +45,13 @@ struct LocalDocumentPolicyTests {
         return result
     }
 
+    private func fileDecision(_ manager: WebViewManager, _ page: BrowserPage, _ file: URL,
+                              type: WKNavigationType = .other, mainFrame: Bool? = true) -> WKNavigationActionPolicy? {
+        var result: WKNavigationActionPolicy?
+        manager.decideLocalNavigation(to: file, type: type, in: page.view, targetIsMainFrame: mainFrame) { result = $0 }
+        return result
+    }
+
     @Test func localFileAddressesAreValidOnlyWhenAllowedAndHostless() throws {
         let file = URL(filePath: "/Users/example/Documents/page.html")
         #expect(try input.validate(file) == file)
@@ -54,19 +61,47 @@ struct LocalDocumentPolicyTests {
         #expect(throws: NavigationInputError.invalidAddress) { try input.validate(URL(string: "file:///")!) }
     }
 
-    @Test func webContentCannotOpenLocalFilesButDropsOpenANewTab() {
+    @Test func unprovenNavigationDoesNotOpenLocalFiles() {
         let (manager, _, page) = fixture()
         defer { manager.discardAll() }
         let file = URL(filePath: "/Users/example/Documents/notes.pdf")
         var opened: [[URL]] = []
         manager.onOpenFiles = { opened.append($0) }
-        #expect(decision(manager, page, Action(file, type: .linkActivated)) == .cancel)
-        #expect(decision(manager, page, Action(file, type: .formSubmitted)) == .cancel)
-        #expect(opened.isEmpty, "A web page's link or form never opens a local file")
-        #expect(decision(manager, page, Action(file, type: .other)) == .cancel)
-        #expect(opened == [[file]], "An unhandled drop opens the file as a new tab instead of replacing the page")
+        for type: WKNavigationType in [.linkActivated, .formSubmitted, .other] {
+            #expect(fileDecision(manager, page, file, type: type) == .cancel)
+        }
+        #expect(opened.isEmpty)
         #expect(page.navigationNotice == nil && page.failure == nil)
         #expect(manager.contextLinkURL(href: file.absoluteString, in: page.view) == nil)
+    }
+
+    @Test func anUnhandledDropOpensOnlyTheMatchingFileOnce() throws {
+        let (manager, _, page) = fixture()
+        defer { manager.discardAll() }
+        let view = try #require(page.view as? BrowserWebView)
+        let file = URL(filePath: "/Users/example/Documents/notes.pdf")
+        let other = URL(filePath: "/Users/example/Documents/other.pdf")
+        let pasteboard = NSPasteboard(name: .init("EarlyFileDrop-\(UUID())"))
+        defer { pasteboard.releaseGlobally() }
+        try #require(pasteboard.writeObjects([file as NSURL]))
+        var opened: [[URL]] = []
+        manager.onOpenFiles = { opened.append($0) }
+
+        view.noteFileDrop(from: pasteboard, now: .now.advanced(by: .seconds(-10)))
+        #expect(fileDecision(manager, page, file) == .cancel)
+        #expect(opened.isEmpty, "An expired drop can no longer open a file")
+
+        view.noteFileDrop(from: pasteboard)
+        #expect(fileDecision(manager, page, other) == .cancel)
+        #expect(decision(manager, page, Action(file)) == .cancel)
+        #expect(fileDecision(manager, page, file, mainFrame: false) == .cancel)
+        #expect(fileDecision(manager, page, file, type: .linkActivated) == .cancel)
+        #expect(opened.isEmpty)
+
+        #expect(fileDecision(manager, page, file) == .cancel)
+        #expect(opened == [[file]], "The file opens in a different tab")
+        #expect(fileDecision(manager, page, file) == .cancel)
+        #expect(opened == [[file]])
     }
 
     @Test func earlysOwnLocalLoadAndHistoryAreAllowed() {
