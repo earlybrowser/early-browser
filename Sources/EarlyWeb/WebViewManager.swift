@@ -610,6 +610,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     public func reload(_ id: UUID) {
         guard let page = pages[id] else { return }
+        favicons.retryFailedIcons(for: page.requestedURL)
         cancelRecovery(id)
         page.automaticRecoveryAttempted = false
         page.processTerminated = false

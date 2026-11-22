@@ -11,13 +11,6 @@ extension WebViewManager {
     public func clearWebsiteData(since date: Date?, keepingIconsFor pages: [URL]) async {
         await websiteDataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
                                           modifiedSince: date ?? .distantPast)
-        if !ephemeral { await FaviconStore.removeCachedIcons(for: profileID, since: date, keeping: pages) }
-        forgetClearedArtwork(keepingIconsFor: pages)
-    }
-
-    /// Another window of the profile cleared the shared data. Tab thumbnails
-    /// belong to open tabs only, so they stay.
-    public func forgetClearedArtwork(keepingIconsFor pages: [URL]) {
-        favicons.forget(keeping: pages)
+        await favicons.clear(since: date, keeping: pages)
     }
 }

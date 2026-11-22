@@ -63,7 +63,7 @@ struct FaviconAppearanceTests {
         let loader = FaviconLoader(directory: directory)
         let restored = FaviconStore(appearance: .light) { key, urls, cached in
             // No network access: both variants must be restored from their own files.
-            await loader.load(cacheKey: key, candidates: [], preferCache: cached)
+            await loader.load(cacheKey: key, candidates: [], preferCache: cached).data
         }
         restored.request(url)
         try await waitForFavicon { restored.image(for: url) != nil }

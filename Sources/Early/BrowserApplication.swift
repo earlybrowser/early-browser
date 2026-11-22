@@ -116,7 +116,6 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     @ObservationIgnored private var pendingRestoredWindows: Set<UUID> = []
     @ObservationIgnored private var profileCleanupTask: Task<Void, Never>?
     @ObservationIgnored private var profileCleanupError: String?
-    @ObservationIgnored private var profileCleanupIcons: [UUID: [FaviconStore]] = [:]
     private var primaryWindowIsOpen = false
     /// Whether the window in front shows a page, for ⌘W's title. SwiftUI
     /// doesn't observe the key window, and a menu that read it itself kept
@@ -643,6 +642,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let since = range.start(now: Date())
         return await historyRemoval(for: profile).remove(.since(since), from: history, clearWebsiteData: { [self] in
             await websiteDataStore(for: profile).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: since ?? .distantPast)
+            await FaviconStore.removeCachedIcons(for: profile, since: since, keeping: sidebarURLs(profileID: profile), ephemeral: testing)
         }, didChange: { [weak self] in self?.didChangeHistory(profileID: profile) })
     }
 
@@ -1122,17 +1122,18 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         return await persistence.flush()
     }
 
-    /// Every tab, pin and Favorite address in the profile's open windows.
+    /// Every tab, pin and Favorite address in the profile's sidebar.
     func sidebarURLs(profileID: UUID) -> [URL] {
-        visibleModels.filter { $0.coordinator.profileID == profileID }.flatMap(\.sidebarURLs)
+        let models = visibleModels.filter { $0.coordinator.profileID == profileID }
+        if !models.isEmpty { return models.flatMap(\.sidebarURLs) }
+        guard let session = workspace?.session(for: profileID) else { return [] }
+        let tabs = session.tabs + session.additionalWindows.flatMap(\.tabs)
+        return tabs.flatMap { [$0.currentURL, $0.pinnedURL].compactMap { $0 } }
     }
 
-    /// One window cleared the profile's shared website data; the others drop
-    /// icons of sites no longer in the sidebar and reload History.
+    /// Other windows refresh History after the shared website data is cleared.
     func didClearWebsiteData(profileID: UUID, from source: BrowserWindowModel) {
-        let kept = sidebarURLs(profileID: profileID)
         for target in visibleModels where target !== source && target.coordinator.profileID == profileID {
-            target.webViews.forgetClearedArtwork(keepingIconsFor: kept)
             target.historyRevision += 1
             target.refreshRecentPages()
         }
@@ -1291,8 +1292,6 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         // its windows, credentials, extension data and permissions be removed.
         workspace = draft
         profileError = nil
-        let icons = visibleModels.filter { $0.coordinator.profileID == id }.map { $0.webViews.favicons }
-        profileCleanupIcons[id] = icons
         let closing = windows.filter { $0.model.coordinator.profileID == id }.map(\.id)
         for windowID in closing {
             nativeWindow(id: windowID)?.close()
@@ -1456,9 +1455,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             await attempt("Website data") { try await WKWebsiteDataStore.remove(forIdentifier: id) }
         }
         await attempt("Website icons") {
-            for store in profileCleanupIcons[id] ?? [] { await store.shutdown() }
-            if !testing { try await FaviconStore.removeCache(for: id) }
-            profileCleanupIcons[id] = nil
+            try await FaviconStore.removeCache(for: id, ephemeral: testing)
         }
         if !failures.isEmpty { throw ProfileCleanupFailure(failures: failures) }
     }
