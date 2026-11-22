@@ -55,7 +55,8 @@ final class EarlyUITests: XCTestCase {
     }
 
     private func chooseFile(_ file: URL, selectingAllFiles: Bool = false, in app: XCUIApplication) {
-        let panel = app.windows["open-panel"]
+        // Open File uses a sheet and Import uses a window. Both share this identifier.
+        let panel = app.descendants(matching: .any).matching(identifier: "open-panel").firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         app.typeKey("g", modifierFlags: [.command, .shift])
         // A complete file path selects it regardless of the panel's view mode
