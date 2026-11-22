@@ -210,6 +210,76 @@ struct PageToolsActionTests {
         #expect(model.translationTitle(for: id) == nil && !model.canPerform(.toggleTranslation))
     }
 
+    enum BeforeSession: CaseIterable { case unchanged, cancelledTask, showOriginal, replaceRequest, anotherTab, navigation, provisional, route, reopen }
+
+    @Test(arguments: BeforeSession.allCases)
+    func delayedTranslationSessionBelongsToItsOriginalRequest(change: BeforeSession) async throws {
+        let fixture = Fixture(), model = fixture.model
+        defer { fixture.cleanup() }
+        let address = URL(string: "early-test://fixture/article?lang=fr")!
+        model.webViews.onPageLanguage = nil // Supply the language-pair availability locally.
+        try #require(model.openLocations([address]))
+        let id = try #require(model.coordinator.focusedTabID)
+        try await fixture.waitForLoad(id)
+        let page = try #require(model.webViews.pages[id])
+        try await fixture.waitUntil("French article") { page.language == "fr" }
+        let document = try #require(page.historyDocumentID)
+        model.translationOffers[id] = TranslationOffer(tabID: id, source: "fr", target: "en")
+        model.toggleTranslation(id)
+        let request = try #require(model.translationRequest)
+        var replacement: TranslationRequest?
+        switch change {
+        case .unchanged, .cancelledTask: break
+        case .showOriginal: model.toggleTranslation(id)
+        case .replaceRequest:
+            model.toggleTranslation(id)
+            model.toggleTranslation(id)
+            replacement = try #require(model.translationRequest)
+            #expect(replacement?.id != request.id)
+        case .anotherTab:
+            try #require(model.openLocations([address]))
+            let other = try #require(model.coordinator.focusedTabID)
+            try #require(other != id)
+            try await fixture.waitUntil("other French article") { model.webViews.pages[other]?.language == "fr" }
+            model.translationOffers[other] = TranslationOffer(tabID: other, source: "fr", target: "en")
+            model.toggleTranslation(other)
+            replacement = try #require(model.translationRequest)
+        case .navigation, .provisional:
+            model.webViews.reload(id)
+            if change == .navigation {
+                try await fixture.waitUntil("reloaded French article") {
+                    page.historyDocumentID != nil && page.historyDocumentID != document && page.language == "fr"
+                }
+            }
+        case .route:
+            let generation = page.navigationGeneration
+            _ = try await page.view.evaluateJavaScript("history.pushState({}, '', '#part')")
+            try await fixture.waitUntil("new route") { page.navigationGeneration != generation }
+            #expect(page.historyDocumentID == document)
+        case .reopen:
+            model.closeTab(id)
+            model.reopenClosedTab(id)
+            try await fixture.waitForLoad(id)
+            try await fixture.waitUntil("reopened French article") { model.webViews.pages[id]?.language == "fr" }
+            #expect(model.webViews.pages[id]?.instanceID != page.instanceID)
+        }
+        if change != .unchanged && change != .cancelledTask { #expect(model.translationRequest == replacement) }
+        var calls = 0
+        let delivery = Task {
+            if change == .cancelledTask { withUnsafeCurrentTask { $0?.cancel() } }
+            await model.runTranslation(request) { texts in calls += 1; return texts.map { "[old] " + $0 } }
+        }
+        await delivery.value
+        #expect((calls > 0) == (change == .unchanged))
+        #expect(model.translationRequest == replacement)
+        if let replacement {
+            await model.runTranslation(replacement) { texts in texts.map { "[current] " + $0 } }
+            let current = try #require(model.webViews.pages[replacement.offer.tabID])
+            #expect(current.translation == .translated)
+            #expect(try await current.view.evaluateJavaScript("document.body.innerText.includes('[current]')") as? Bool == true)
+        }
+    }
+
     @Test func backAndForwardListsJumpWithinTheFocusedTabAndAClickStillNavigates() async throws {
         let fixture = Fixture()
         defer { fixture.cleanup() }

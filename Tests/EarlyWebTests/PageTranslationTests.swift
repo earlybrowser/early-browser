@@ -116,11 +116,19 @@ struct PageTranslationTests {
             }
         }
         try await fixture.waitUntil("first run waiting") { releaseFirst != nil }
+        let page = try fixture.page(tab)
+        let oldRun = try #require(page.translationRun)
         manager.showOriginal(tab.id)
         let second = await manager.translatePage(tab.id) { texts in texts.map { "[new] " + $0 } }
         #expect(second && manager.pages[tab.id]?.translation == .translated)
         releaseFirst?.resume()
         #expect(await first.value == false, "The earlier run stops")
+        // WebKit commands already issued for the old run can also arrive late.
+        _ = try await page.view.callAsyncJavaScript(WebViewManager.translationRestore,
+            arguments: ["runID": oldRun.uuidString], in: nil, contentWorld: WebViewManager.translationWorld)
+        _ = try await page.view.callAsyncJavaScript(WebViewManager.translationApply,
+            arguments: ["runID": oldRun.uuidString, "start": 0, "texts": ["[old]"]],
+            in: nil, contentWorld: WebViewManager.translationWorld)
         let text = try await fixture.evaluate("document.getElementById('one').textContent", in: tab) as? String ?? ""
         #expect(text.contains("[new]") && !text.contains("[old]"), "\(text)")
         #expect(manager.pages[tab.id]?.translation == .translated)
@@ -142,6 +150,137 @@ struct PageTranslationTests {
         #expect(manager.pages[tab.id]?.translation == .translated, "Still translated")
         let after = try await fixture.evaluate("document.getElementById('one').textContent", in: tab) as? String ?? ""
         #expect(after.contains("[new]"), "\(after)")
+    }
+
+    @Test func cancellingTheSystemTaskRestoresAPartialTranslationAndKeepsSiteEdits() async throws {
+        let paragraphs = (0...WebViewManager.translationBatchSize).map { "<p>Article \($0)</p>" }.joined()
+        let fixture = PageToolFixture(pages: ["article": "<html lang='fr'><body>\(paragraphs)</body></html>"])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("article"), page = try fixture.page(tab)
+        try await fixture.waitUntil("language detected") { page.language != nil }
+        var lastBatch: CheckedContinuation<Void, Never>?
+        defer { lastBatch?.resume() }
+        let task = Task {
+            await fixture.manager.translatePage(tab.id) { texts in
+                if texts.count == 1 { await withCheckedContinuation { lastBatch = $0 } }
+                return texts.map { "[en] " + $0 }
+            }
+        }
+        try await fixture.waitUntil("last batch suspended") { lastBatch != nil }
+        #expect(try await fixture.evaluate("document.querySelector('p').textContent", in: tab) as? String == "[en] Article 0")
+        _ = try await fixture.evaluate("document.querySelector('p').firstChild.data = 'Updated'", in: tab)
+        task.cancel()
+        lastBatch?.resume()
+        lastBatch = nil
+        #expect(await task.value == false && page.translation == .original)
+        #expect(try await fixture.evaluate("document.querySelector('p').textContent", in: tab) as? String == "Updated")
+        #expect(try await fixture.evaluate("document.body.textContent.includes('[en]')", in: tab) as? Bool == false)
+    }
+
+    @Test(arguments: [false, true])
+    func siteEditsSurviveApplyingRestoringAndCollectingAgain(recollect: Bool) async throws {
+        let html = """
+            <html lang="fr"><body><p id="before">Avant</p><p id="after">Après</p>
+            <p id="replaced">Remplacé</p><p id="detached">Détaché</p><p id="stable">  Stable  </p>
+            <div id="moved">Déplacé</div><section id="destination"></section></body></html>
+            """
+        let fixture = PageToolFixture(pages: ["page": html])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("page"), page = try fixture.page(tab)
+        try await fixture.waitUntil("language detected") { page.language != nil }
+        let result = await fixture.manager.translatePage(tab.id) { texts in
+            _ = try await fixture.evaluate("""
+                before.firstChild.data = 'Édition avant';
+                replaced.replaceChildren(document.createTextNode('Nouveau'));
+                window.removedText = detached.firstChild;
+                detached.replaceChildren();
+                destination.append(moved.firstChild);
+                """, in: tab)
+            return texts.map { "[en] " + $0 }
+        }
+        #expect(result)
+        let read = "[before.textContent, after.textContent, replaced.textContent, removedText.data, stable.textContent]"
+        #expect(try await fixture.evaluate(read, in: tab) as? [String] ==
+                ["Édition avant", "[en] Après", "Nouveau", "Détaché", "  [en] Stable  "])
+        #expect(try await fixture.evaluate("destination.textContent", in: tab) as? String == "Déplacé")
+        _ = try await fixture.evaluate("after.firstChild.data = 'Site updated'; detached.append(removedText);", in: tab)
+        if recollect {
+            let texts = try await page.view.callAsyncJavaScript(WebViewManager.translationCollect,
+                arguments: ["runID": "recollection", "maxNodes": 100, "maxCharacters": 1_000, "maxVisited": 500],
+                in: nil, contentWorld: WebViewManager.translationWorld)
+            #expect(texts as? [String] == ["Édition avant", "Site updated", "Nouveau", "Détaché", "Stable", "Déplacé"])
+        } else { fixture.manager.showOriginal(tab.id) }
+        #expect(try await fixture.evaluate(read, in: tab) as? [String] ==
+                ["Édition avant", "Site updated", "Nouveau", "Détaché", "  Stable  "])
+    }
+
+    @Test(arguments: [false, true])
+    func hiddenContentLeavesTheNodeAndCharacterQuotasForRenderedText(manyNodes: Bool) async throws {
+        let pageHTML = """
+            <html lang="fr"><style>.away { display: none }</style><body>
+            <section id="bulk" \(manyNodes ? "class='away'" : "hidden")></section>
+            <div class="away"><p>CSS hidden</p></div><div style="opacity:0"><p>Transparent</p></div>
+            <div style="content-visibility:hidden"><p>Skipped content</p></div>
+            <div style="visibility:hidden">Invisible<span style="visibility:visible">Visible override</span></div>
+            <details><summary>Summary</summary>Closed details</details>
+            <section contenteditable="true">Editable</section><pre>Code</pre><div translate="no">Keep</div>
+            <div id="host"><span slot="shown">Slotted</span><span slot="away">Hidden slot</span><b>Unassigned</b></div>
+            <main style="display:contents">Visible article</main>
+            <script>
+            if (\(manyNodes)) {
+                for (let i = 0; i < 3100; i++) bulk.append(document.createTextNode('Secret'));
+            } else { bulk.textContent = 'X'.repeat(100000); }
+            host.attachShadow({mode:'open'}).innerHTML =
+                '<p>Shadow text</p><slot name="shown">Fallback</slot><div hidden><slot name="away"></slot></div><slot name="missing">Shown fallback</slot>';
+            </script></body></html>
+            """
+        let fixture = PageToolFixture(pages: ["page": pageHTML])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("page"), page = try fixture.page(tab)
+        try await fixture.waitUntil("language detected") { page.language != nil }
+        var sent: [String] = []
+        #expect(await fixture.manager.translatePage(tab.id) { texts in sent += texts; return texts.map { "[en] " + $0 } })
+        #expect(sent == ["Visible override", "Summary", "Shadow text", "Slotted", "Shown fallback", "Visible article"])
+        #expect(try await fixture.evaluate("document.querySelector('main').textContent", in: tab) as? String == "[en] Visible article")
+    }
+
+    @Test func translationTraversalStopsAtItsWorkLimitAndSkipsHiddenSubtrees() async throws {
+        let pageHTML = """
+            <div hidden id="hiddenTree"></div><div id="emptyTree"></div><main>Visible article</main>
+            <script>
+            hiddenTree.innerHTML = '<i></i>'.repeat(1000);
+            emptyTree.innerHTML = '<i></i>'.repeat(80);
+            </script>
+            """
+        let fixture = PageToolFixture(pages: ["page": pageHTML])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("page"), page = try fixture.page(tab)
+        func collect(budget: Int) async throws -> [String]? {
+            try await page.view.callAsyncJavaScript(WebViewManager.translationCollect,
+                arguments: ["runID": "quota", "maxNodes": 10, "maxCharacters": 100, "maxVisited": budget],
+                in: nil, contentWorld: WebViewManager.translationWorld) as? [String]
+        }
+        #expect(try await collect(budget: 40) == [])
+        #expect(try await collect(budget: 110) == ["Visible article"])
+
+        _ = try await fixture.evaluate("""
+            for (let i = 0; i < 40; i++) document.querySelector('main').append(document.createTextNode('More text'));
+            """, in: tab)
+        let counts = try await page.view.callAsyncJavaScript("""
+            const original = window.getComputedStyle, article = document.querySelector('main');
+            let articleReads = 0, hiddenChildReads = 0;
+            window.getComputedStyle = function(element) {
+                if (element === article) articleReads++;
+                if (element.parentElement?.id === 'hiddenTree') hiddenChildReads++;
+                return original.call(window, element);
+            };
+            try {
+                const texts = (() => { \(WebViewManager.translationCollect) })();
+                return [texts.length, articleReads, hiddenChildReads];
+            } finally { window.getComputedStyle = original; }
+            """, arguments: ["runID": "style-count", "maxNodes": 100, "maxCharacters": 1_000, "maxVisited": 200],
+            in: nil, contentWorld: WebViewManager.translationWorld)
+        #expect(counts as? [Int] == [41, 1, 0])
     }
 
     @Test func thePageMenuOffersTranslateOnlyWithATitleFromTheWindow() async throws {

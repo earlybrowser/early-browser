@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import Translation
 import XCTest
 
 @MainActor
@@ -2715,6 +2716,53 @@ final class EarlyUITests: XCTestCase {
         expectPage(app, "Article")
         // Reader is a view of the same tab: no new tab or page view.
         expectRuntime(app, tabs: 1, views: 1, created: 1)
+    }
+
+    func testSystemTranslationRestoresTheArticleOrDismissesTheLanguageDownload() async throws {
+        guard #available(macOS 15.0, *) else { throw XCTSkip("System translation requires macOS 15.") }
+        let preferred = Locale.Language(identifier: Locale.preferredLanguages.first ?? "en")
+        let target = Locale.Language(identifier: preferred.languageCode?.identifier ?? "en")
+        let source = Locale.Language(identifier: "fr")
+        let availability = await LanguageAvailability().status(from: source, to: target)
+        guard source.languageCode != target.languageCode, availability != .unsupported else {
+            throw XCTSkip("This Mac does not offer translation for the French fixture into its preferred language.")
+        }
+        let app = launchFreshApp()
+        defer { app.terminate() }
+        navigate(app, to: "early-test://fixture/article?lang=fr")
+        expectPage(app, "Article")
+        let french = app.webViews.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "Le navigateur reste calme", "Le navigateur reste calme")).firstMatch
+        XCTAssertTrue(french.waitForExistence(timeout: 5))
+        app.buttons["address.siteControls"].click()
+        let translate = app.buttons["siteControls.translate"]
+        XCTAssertTrue(translate.waitForExistence(timeout: 15))
+        translate.click()
+
+        let translated = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == %@ AND label BEGINSWITH %@", "translation.badge", "Translated")).firstMatch
+        let modals = [app.sheets.firstMatch, app.alerts.firstMatch, app.dialogs.firstMatch]
+        let reply = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            translated.exists || modals.contains { $0.exists }
+        }, object: nil)
+        await fulfillment(of: [reply], timeout: 30)
+        if translated.exists {
+            XCTAssertFalse(french.exists)
+            let original = app.buttons["translation.original"]
+            XCTAssertTrue(original.waitForExistence(timeout: 5))
+            original.click()
+            XCTAssertTrue(original.waitForNonExistence(timeout: 5))
+        } else if let prompt = modals.first(where: { $0.exists }) {
+            // A runner without both models can exercise the real cancellation
+            // path without accepting a download.
+            let cancel = prompt.buttons["Cancel"]
+            if cancel.exists { cancel.click() } else { app.typeKey(.escape, modifierFlags: []) }
+            XCTAssertTrue(prompt.waitForNonExistence(timeout: 10))
+        } else { XCTFail("The system translation ended without a result or a language prompt."); return }
+        XCTAssertTrue(french.waitForExistence(timeout: 10))
+        navigate(app, to: "early-test://fixture/two")
+        expectPage(app, "Two")
+        XCTAssertFalse(app.descendants(matching: .any)["translation.badge"].exists)
     }
 
     func testBackListJumpsToAnEarlierPageAndClearRemovesTodayTabs() {

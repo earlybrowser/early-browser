@@ -21,17 +21,29 @@ public enum PageTranslationPhase: Equatable, Sendable {
 /// Translation; tests supply a stand-in. Page text goes nowhere else.
 public typealias PageTextTranslator = @MainActor ([String]) async throws -> [String]
 
+/// The live page and navigation that requested an on-device translation session.
+public struct PageTranslationTarget: Equatable, Sendable {
+    fileprivate let page: UUID
+    fileprivate let document: UUID
+    fileprivate let navigation: UUID
+}
+
 /// Translation replaces the text of the page's own text nodes from an isolated
 /// world, keeping each node's surrounding whitespace, and can restore it.
 @MainActor
 extension WebViewManager {
     static let translationWorld = WKContentWorld.world(name: "Early.Translate")
     static let translationBatchSize = 40
-    static let translationLimits = (nodes: 3000, characters: 100_000)
+    static let translationLimits = (nodes: 3000, characters: 100_000, visited: 30_000)
 
     public func canTranslate(_ id: UUID) -> Bool {
-        guard let page = pages[id], page.view.url != nil, !page.isReaderShown else { return false }
-        return page.language != nil
+        translationTarget(for: id) != nil
+    }
+
+    public func translationTarget(for id: UUID) -> PageTranslationTarget? {
+        guard let page = pages[id], let document = page.currentDocumentID, page.view.url != nil,
+              page.language != nil, !page.isReaderShown else { return nil }
+        return PageTranslationTarget(page: page.instanceID, document: document, navigation: page.navigationGeneration)
     }
 
     /// The page's language from its own visible text, with its `lang`
@@ -67,7 +79,7 @@ extension WebViewManager {
     /// leaving the page stops it; a failure restores the original text.
     @discardableResult
     public func translatePage(_ id: UUID, using translate: PageTextTranslator) async -> Bool {
-        guard canTranslate(id), let page = pages[id], !page.translation.isActive else { return false }
+        guard !Task.isCancelled, canTranslate(id), let page = pages[id], !page.translation.isActive else { return false }
         let generation = page.navigationGeneration
         // Translate, Show Original, Translate again: the first run's batches
         // and errors must never reach the second's text.
@@ -75,13 +87,19 @@ extension WebViewManager {
         page.translationRun = run
         page.translation = .translating(completed: 0, total: 0)
         func current() -> Bool {
-            pages[id] === page && page.navigationGeneration == generation && page.translationRun == run && page.translation.isActive
+            !Task.isCancelled && pages[id] === page && page.navigationGeneration == generation
+                && page.translationRun == run && page.translation.isActive
+        }
+        defer {
+            if pages[id] === page, page.translationRun == run, case .translating = page.translation { showOriginal(id) }
         }
         let collected = try? await page.view.callAsyncJavaScript(Self.translationCollect,
-            arguments: ["maxNodes": Self.translationLimits.nodes, "maxCharacters": Self.translationLimits.characters],
+            arguments: ["runID": run.uuidString, "maxNodes": Self.translationLimits.nodes, "maxCharacters": Self.translationLimits.characters,
+                        "maxVisited": Self.translationLimits.visited],
             in: nil, contentWorld: Self.translationWorld)
         guard current() else { return false }
         guard let texts = collected as? [String], !texts.isEmpty else {
+            page.translationRun = nil
             page.translation = .failed("This page has no text to translate.")
             return false
         }
@@ -94,7 +112,7 @@ extension WebViewManager {
                 guard current() else { return false }
                 guard translated.count == batch.count else { throw TranslationMismatch() }
                 _ = try await page.view.callAsyncJavaScript(Self.translationApply,
-                    arguments: ["start": start, "texts": translated], in: nil, contentWorld: Self.translationWorld)
+                    arguments: ["runID": run.uuidString, "start": start, "texts": translated], in: nil, contentWorld: Self.translationWorld)
                 guard current() else { return false }
                 start += batch.count
                 page.translation = .translating(completed: start, total: texts.count)
@@ -102,10 +120,10 @@ extension WebViewManager {
         } catch {
             guard current() else { return false }
             restoreOriginalText(page)
+            page.translationRun = nil
             page.translation = .failed(error is TranslationMismatch ? "The translation was incomplete." : error.localizedDescription)
             return false
         }
-        page.translationRun = nil
         page.translation = .translated
         return true
     }
@@ -119,7 +137,8 @@ extension WebViewManager {
     }
 
     private func restoreOriginalText(_ page: BrowserPage) {
-        page.view.callAsyncJavaScript(Self.translationRestore, arguments: [:], in: nil, in: Self.translationWorld) { _ in }
+        guard let run = page.translationRun else { return }
+        page.view.callAsyncJavaScript(Self.translationRestore, arguments: ["runID": run.uuidString], in: nil, in: Self.translationWorld) { _ in }
     }
 
     /// A new document starts untranslated, with its language detected again.
@@ -136,55 +155,91 @@ extension WebViewManager {
     private struct TranslationMismatch: Error {}
 
     static let translationCollect = #"""
-    const skipped = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION',
-        'CODE', 'PRE', 'KBD', 'SAMP', 'VAR', 'SVG', 'MATH', 'IFRAME', 'OBJECT', 'EMBED', 'CANVAS', 'AUDIO', 'VIDEO']);
-    const state = window.__earlyTranslation || (window.__earlyTranslation = { nodes: [], originals: [] });
-    // Always start from the original text.
-    state.nodes.forEach((node, index) => { if (node.isConnected) node.data = state.originals[index]; });
-    state.nodes = [];
-    state.originals = [];
-    let characters = 0, full = false;
-    const visit = root => {
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
-            acceptNode(node) {
-                if (node.nodeType !== Node.ELEMENT_NODE) return NodeFilter.FILTER_ACCEPT;
-                if (skipped.has(node.tagName) || node.getAttribute('translate') === 'no'
-                    || node.classList.contains('notranslate') || node.isContentEditable) return NodeFilter.FILTER_REJECT;
-                return node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
-            }
-        });
-        for (let node = walker.nextNode(); node && !full; node = walker.nextNode()) {
-            if (node.nodeType === Node.ELEMENT_NODE) { visit(node.shadowRoot); continue; }
-            const text = node.data.trim();
-            if (!text || !/\p{L}/u.test(text)) continue;
-            if (state.nodes.length >= maxNodes || characters + text.length > maxCharacters) { full = true; break; }
-            state.nodes.push(node);
-            state.originals.push(node.data);
-            characters += text.length;
+    window.__earlyTranslation?.restore();
+    const entries = [], texts = [];
+    window.__earlyTranslation = { runID, entries, restore() {
+        for (const entry of entries) {
+            if (entry && entry.written !== null && entry.node.isConnected && entry.node.parentNode === entry.parent
+                && entry.node.ownerDocument === document
+                && entry.node.data === entry.written) entry.node.data = entry.original;
         }
-    };
-    if (document.body) visit(document.body);
-    return state.nodes.map(node => node.data.trim());
+        entries.length = 0;
+    }};
+    const skipped = new Set(['head', 'script', 'style', 'noscript', 'template', 'textarea', 'input', 'select', 'option',
+        'code', 'pre', 'kbd', 'samp', 'var', 'svg', 'math', 'iframe', 'object', 'embed', 'canvas', 'audio', 'video']);
+    let visited = 0, characters = 0;
+    function* slotChildren(slot) {
+        const host = slot.getRootNode().host;
+        if (!host || host.childNodes.length <= maxVisited - visited) {
+            const assigned = slot.assignedNodes();
+            yield* (assigned.length ? assigned : slot.childNodes);
+            return;
+        }
+        // Avoid materializing an oversized assignment list. Charge the light
+        // children we inspect to the same traversal budget.
+        let found = false;
+        for (const child of host.childNodes) {
+            if (++visited >= maxVisited) return;
+            if (child.assignedSlot === slot) { found = true; yield child; }
+        }
+        if (!found) yield* slot.childNodes;
+    }
+    const stack = [{ children: document.childNodes.values(), visible: true }];
+    while (stack.length && visited < maxVisited && entries.length < maxNodes && characters < maxCharacters) {
+        const level = stack[stack.length - 1], next = level.children.next();
+        if (next.done) { stack.pop(); continue; }
+        const node = next.value;
+        visited++;
+        if (level.summaryOnly) {
+            if (node.localName !== 'summary') continue;
+            stack.pop(); // Only the first direct summary is rendered in closed details.
+        }
+        if (node.nodeType === Node.TEXT_NODE) {
+            if (!level.visible || node.length > maxCharacters) continue;
+            const original = node.data, text = original.trim();
+            if (text.length <= maxCharacters - characters && /\p{L}/u.test(text)) {
+                entries.push({ node, parent: node.parentNode, original, written: null });
+                texts.push(text);
+                characters += text.length;
+            }
+            continue;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE || skipped.has(node.localName) || node.hasAttribute('hidden')
+            || node.getAttribute('translate')?.toLowerCase() === 'no' || node.classList.contains('notranslate')
+            || node.isContentEditable) continue;
+        const style = getComputedStyle(node);
+        if (style.display === 'none' || style.contentVisibility === 'hidden' || style.opacity === '0') continue;
+        // Descendants can override inherited visibility. Their own styles decide.
+        const visible = style.visibility !== 'hidden' && style.visibility !== 'collapse';
+        const root = node.shadowRoot || node;
+        const children = node.localName === 'slot' ? slotChildren(node)
+            : (visible ? root.childNodes : root.children)[Symbol.iterator]();
+        stack.push({ children, visible, summaryOnly: node.localName === 'details' && !node.open });
+    }
+    return texts;
     """#
 
     static let translationApply = #"""
     const state = window.__earlyTranslation;
-    if (!state) return 0;
+    if (state?.runID !== runID) return 0;
+    const entries = state.entries;
     texts.forEach((text, offset) => {
-        const node = state.nodes[start + offset], original = state.originals[start + offset];
-        if (!node || !node.isConnected || typeof text !== 'string') return;
-        node.data = original.match(/^\s*/)[0] + text + original.match(/\s*$/)[0];
+        const index = start + offset, entry = entries[index];
+        if (!entry || typeof text !== 'string') return;
+        const { node, original } = entry;
+        if (!node.isConnected || node.parentNode !== entry.parent || node.ownerDocument !== document || node.data !== original) {
+            entries[index] = null;
+            return;
+        }
+        entry.written = original.match(/^\s*/)[0] + text + original.match(/\s*$/)[0];
+        node.data = entry.written;
     });
     return texts.length;
     """#
 
     static let translationRestore = #"""
     const state = window.__earlyTranslation;
-    if (state) {
-        state.nodes.forEach((node, index) => { if (node.isConnected) node.data = state.originals[index]; });
-        state.nodes = [];
-        state.originals = [];
-    }
+    if (state?.runID === runID) state.restore();
     return true;
     """#
 }
