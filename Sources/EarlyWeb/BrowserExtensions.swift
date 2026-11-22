@@ -121,7 +121,7 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     @ObservationIgnored public private(set) weak var focusedWindow: ExtensionWindow?
     /// Opens a tab for an extension; the app decides where.
     @ObservationIgnored public var openTab: ((URL, ExtensionWindow?, _ active: Bool) -> ExtensionTab?)?
-    @ObservationIgnored public var openWindow: ((URL?) -> ExtensionWindow?)?
+    @ObservationIgnored public var openWindow: (([URL]) throws -> ExtensionWindow?)?
     /// Shows an extension's popup; false when it can't be shown now.
     @ObservationIgnored public var presentPopup: ((WKWebExtension.Action) -> Bool)?
     /// An extension loaded (or loaded again): tabs showing its pages reload.
@@ -245,13 +245,16 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     }
 
     public enum ExtensionError: LocalizedError {
-        case missing, alreadyAdded, windowPrivacyMismatch, localFiles
+        case missing, alreadyAdded, windowPrivacyMismatch, localFiles, existingWindowTabs, invalidWindowURL, windowUnavailable
         public var errorDescription: String? {
             switch self {
             case .missing: "Its files are missing. If it came with an app, the app may have moved or been deleted."
             case .alreadyAdded: "This extension is already added."
             case .windowPrivacyMismatch: "Extensions cannot create a window in a different privacy mode. Open the appropriate window in Early first."
             case .localFiles: "This extension isn’t allowed to open files on this Mac. You can allow it in Settings › Extensions."
+            case .existingWindowTabs: "Extensions cannot move existing tabs into a new window."
+            case .invalidWindowURL: "A tab address requested for this window is unsupported or invalid."
+            case .windowUnavailable: "Early couldn’t open a window for this extension."
             }
         }
     }
@@ -538,10 +541,12 @@ public final class ExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         // Each host owns one regular or private session. Never silently replace
         // the requested mode with the host's mode, or cross their data stores.
         guard configuration.shouldBePrivate == isPrivate else { throw ExtensionError.windowPrivacyMismatch }
+        guard configuration.tabs.isEmpty else { throw ExtensionError.existingWindowTabs }
         guard !configuration.tabURLs.contains(where: \.isFileURL) || allowsLocalFiles(extensionContext) else {
             throw ExtensionError.localFiles
         }
-        return openWindow?(configuration.tabURLs.first)
+        guard let window = try openWindow?(configuration.tabURLs) else { throw ExtensionError.windowUnavailable }
+        return window
     }
 
     public func webExtensionController(_ controller: WKWebExtensionController,

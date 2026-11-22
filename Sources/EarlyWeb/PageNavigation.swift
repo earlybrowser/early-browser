@@ -26,7 +26,8 @@ extension WebViewManager {
             return
         }
         if url.isFileURL {
-            decideLocalNavigation(to: url, action: action, in: webView, mainFrame: mainFrame, decisionHandler: decisionHandler)
+            decideLocalNavigation(to: url, type: action.navigationType, in: webView,
+                                  targetIsMainFrame: action.targetFrame?.isMainFrame, decisionHandler: decisionHandler)
             return
         }
         if (try? input.validate(url)) != nil {
@@ -99,23 +100,26 @@ extension WebViewManager {
     /// Local documents load only from Early's own requests (Open File, drops,
     /// restoration, reload), from another local page, or through history. A
     /// web page can never open a local file.
-    func decideLocalNavigation(to url: URL, action: WKNavigationAction, in webView: WKWebView, mainFrame: Bool,
-                                       decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+    func decideLocalNavigation(to url: URL, type: WKNavigationType, in webView: WKWebView, targetIsMainFrame: Bool?,
+                               decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         guard (try? input.validate(url)) != nil, let id = identities[ObjectIdentifier(webView)], let page = pages[id] else {
             decisionHandler(.cancel)
             return
         }
+        let mainFrame = targetIsMainFrame ?? true
         let fromLocalPage = webView.url?.isFileURL == true
-        if page.requestedURL == url || fromLocalPage || action.navigationType == .backForward || action.navigationType == .reload {
+        if page.requestedURL == url || fromLocalPage || type == .backForward || type == .reload {
             if mainFrame { page.requestedURL = url }
             decisionHandler(.allow)
             return
         }
         decisionHandler(.cancel)
         cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
-        // A file dropped on a page that does not accept it opens as a new tab,
-        // leaving a pinned or saved page in place.
-        if mainFrame, action.navigationType == .other { onOpenFiles?([url]) }
+        // Open an unhandled native drop in a new tab, leaving the page in place.
+        if targetIsMainFrame == true, type == .other,
+           let file = (webView as? BrowserWebView)?.takeDroppedFile(matching: url) {
+            onOpenFiles?([file])
+        }
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
@@ -197,6 +201,10 @@ extension WebViewManager {
         let origin = id.flatMap { pages[$0]?.view.url }
         let item = downloads.adopt(download, source: download.originalRequest?.url, origin: origin,
                                    destination: destination, listed: listed)
+        guard item.state.isActive else {
+            settled?(item)
+            return item
+        }
         if let id, let token = protect(tabID: id, reason: .download) {
             item.onSettled.append { [weak self] _ in self?.releaseProtection(tabID: id, token: token) }
         }
@@ -209,7 +217,7 @@ extension WebViewManager {
     @discardableResult
     public func startDownload(_ url: URL, from tabID: UUID, to destination: URL? = nil, listed: Bool = true,
                               settled: ((DownloadItem) -> Void)? = nil) -> Bool {
-        guard let page = pages[tabID], isDownloadable(url) else { return false }
+        guard !downloads.isRetired, let page = pages[tabID], isDownloadable(url) else { return false }
         // Adopt inside WebKit's callback. WebKit can ask for a destination right
         // after it, and a delegate set from an awaited continuation may be too
         // late: the download would then be dropped while it shows "Starting…".

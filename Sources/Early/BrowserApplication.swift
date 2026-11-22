@@ -265,7 +265,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// A fresh window shares saved organization/store identity, never another
     /// window's Today tabs, split membership, live views, or command-bar state.
     @discardableResult
-    func openNewWindow(from source: BrowserWindowModel? = nil) -> UUID? {
+    func openNewWindow(from source: BrowserWindowModel? = nil, opening urls: [URL] = []) -> UUID? {
         guard canOpenWindow, let workspace else { return nil }
         let template: BrowserSession
         // New Window from a private window opens an ordinary one.
@@ -276,7 +276,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             guard let session = workspace.session(for: workspace.activeProfileID) else { return nil }
             template = session
         }
-        let id = addWindow(session: template.savedItemsOnly)
+        let id = addWindow(session: template.openingWindow(at: urls))
         self.workspace?.activeProfileID = template.profileID
         saveAll()
         presentWindow?(id)
@@ -287,12 +287,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
     /// no history, and nothing in it is saved, restored or kept on disk.
     /// It fills passwords saved in the profile it was opened from.
     @discardableResult
-    func openPrivateWindow(from source: BrowserWindowModel? = nil) -> UUID? {
+    func openPrivateWindow(from source: BrowserWindowModel? = nil, opening urls: [URL] = []) -> UUID? {
         guard canOpenWindow else { return nil }
         let profile = privateProfileID ?? UUID()
         privateProfileID = profile
         let passwordsFrom = source?.passwordsProfileID ?? workspace?.activeProfileID
-        let id = addWindow(session: .privateWindow(profileID: profile), passwordsFrom: passwordsFrom)
+        let session = BrowserSession.privateWindow(profileID: profile).openingWindow(at: urls)
+        let id = addWindow(session: session, passwordsFrom: passwordsFrom)
         presentWindow?(id)
         return id
     }
@@ -343,7 +344,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         privateExtensionHosts.removeAll()
         sitePermissionStores.removeValue(forKey: profile)
         localFileStores.removeValue(forKey: profile)
-        downloadStores.removeValue(forKey: profile)?.cancelAll()
+        downloadStores.removeValue(forKey: profile)?.retire()
     }
 
     private func websiteDataStore(for id: UUID) -> WKWebsiteDataStore {
@@ -532,11 +533,11 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             if let owner = (window?.owner as? BrowserWindowModel) ?? self.extensionModels(of: host).first {
                 return owner.openExtensionTab(url, active: active)
             }
-            return self.openExtensionWindow(for: host, url: url)?.activeTab
+            return (try? self.openExtensionWindow(for: host, urls: [url]))?.activeTab
         }
-        host.openWindow = { [weak self, weak host] url in
+        host.openWindow = { [weak self, weak host] urls in
             guard let self, let host else { return nil }
-            return self.openExtensionWindow(for: host, url: url)
+            return try self.openExtensionWindow(for: host, urls: urls)
         }
         host.presentPopup = { [weak self, weak host] action in
             guard let self, let host,
@@ -557,23 +558,27 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
 
     /// A window an extension asked for, in the host's profile (or private session).
     @available(macOS 15.4, *)
-    private func openExtensionWindow(for host: ExtensionHost, url: URL?) -> ExtensionWindow? {
+    private func openExtensionWindow(for host: ExtensionHost, urls: [URL]) throws -> ExtensionWindow? {
+        // Validate the entire request before publishing a window or any tabs.
+        guard let urls = try? urls.map({ try input.validate($0) }) else { throw ExtensionHost.ExtensionError.invalidWindowURL }
         let source = extensionModels(of: host).first
         var id: UUID?
         if host.isPrivate {
             guard let source else { return nil }
-            id = openPrivateWindow(from: source)
+            id = openPrivateWindow(from: source, opening: urls)
         } else if let source {
-            id = openNewWindow(from: source)
+            id = openNewWindow(from: source, opening: urls)
         } else if canOpenWindow, let profile = extensionHosts.first(where: { $0.value === host })?.key,
                   let session = workspace?.session(for: profile) {
-            let window = addWindow(session: session.savedItemsOnly)
+            let window = addWindow(session: session.openingWindow(at: urls))
             saveAll()
             presentWindow?(window)
             id = window
         }
         guard let id, let model = windowModel(id) else { return nil }
-        if let url { _ = model.openExtensionTab(url, active: true) }
+        for tab in model.coordinator.tabStore.tabs where tab.isOpen && tab.id != model.coordinator.activeTabID {
+            model.webViews.load(tab.currentURL, in: tab)
+        }
         return model.extensionWindow as? ExtensionWindow
     }
 
@@ -585,7 +590,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             owner.openExtensionTab(url, active: true)
             owner.extensionFocusWindow()
         } else {
-            _ = openExtensionWindow(for: host, url: url)
+            _ = try? openExtensionWindow(for: host, urls: [url])
         }
     }
 
@@ -1292,6 +1297,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         // its windows, credentials, extension data and permissions be removed.
         workspace = draft
         profileError = nil
+        downloadStores.removeValue(forKey: id)?.retire()
         let closing = windows.filter { $0.model.coordinator.profileID == id }.map(\.id)
         for windowID in closing {
             nativeWindow(id: windowID)?.close()
@@ -1302,7 +1308,6 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             closeWindow(nil)
         }
         dataStores.removeValue(forKey: id)
-        downloadStores.removeValue(forKey: id)?.cancelAll()
         pullRequestFeeds.removeValue(forKey: id)?.stop()
         if extensionsProfileID == id { extensionsProfileID = nil }
         if passwordsProfileID == id { passwordsProfileID = nil }

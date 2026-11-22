@@ -70,6 +70,47 @@ struct BackgroundDocumentTests {
         #expect(notice == "Could not save" && manager.downloads.items.isEmpty)
         #expect(try String(contentsOf: file, encoding: .utf8) == "kept")
     }
+
+    @Test(arguments: [false, true])
+    func aCommittedSaveBelongsToItsProfileAfterTheSourceCloses(retiringProfile: Bool) async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyCommittedDocument-\(UUID()).html")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("original".utf8).write(to: file)
+        let gate = Gate(), downloads = DownloadStore(), profile = UUID()
+        defer { Task { await gate.releaseAll() } }
+        let source = URL(string: "https://example.com/saved-page")!
+        let tab = BrowserTab(spaceID: UUID(), profileID: profile, title: "Saved page", currentURL: source)
+        var manager: WebViewManager? = WebViewManager(profileID: profile, ephemeral: true,
+            websiteDataStore: .nonPersistent(), downloads: downloads, observesMemoryPressure: false)
+        manager?.documentWriter = { data, destination in
+            try await BackgroundFileIO.write(data, to: destination)
+            await gate.wait()
+        }
+        _ = manager?.prepare(tab)
+        manager?.write(.success(Data("replacement".utf8)), to: file, source: source, failure: "Could not save", pageID: tab.id)
+        let write = try #require(manager?.documentWrites.values.first?.task)
+        try await waitUntil { await gate.started == 1 }
+        #expect(try String(contentsOf: file, encoding: .utf8) == "replacement")
+        #expect(downloads.items.isEmpty)
+
+        manager?.discard(tabID: tab.id)
+        #expect(write.isCancelled)
+        weak let formerManager = manager
+        manager = nil
+        #expect(formerManager == nil)
+        if retiringProfile { downloads.retire() }
+        await gate.releaseAll()
+        await write.value
+
+        #expect(try String(contentsOf: file, encoding: .utf8) == "replacement")
+        if retiringProfile {
+            #expect(downloads.items.isEmpty && downloads.finishedRevision == 0)
+        } else {
+            #expect(downloads.items.count == 1 && downloads.finishedRevision == 1)
+            let saved = try #require(downloads.items.first)
+            #expect(saved.state == .finished && saved.wasSaved && saved.destination == file && saved.sourceURL == source)
+        }
+    }
 }
 
 @Suite(.serialized) @MainActor

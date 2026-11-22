@@ -527,6 +527,7 @@ public final class WebViewManager: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     func beginLoading(_ id: UUID, start: LoadStart = .request) {
         guard let page = pages[id] else { return }
+        (page.view as? BrowserWebView)?.clearFileDrop()
         cancelAutomaticDownloadAuthorizations(for: id)
         switch start {
         case .request:
