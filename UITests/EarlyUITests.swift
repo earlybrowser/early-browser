@@ -2730,9 +2730,14 @@ final class EarlyUITests: XCTestCase {
         defer { app.terminate() }
         navigate(app, to: "early-test://fixture/article?lang=fr")
         expectPage(app, "Article")
+        // WebKit also exposes heading levels as numeric static-text values.
+        // Equality can check the complete original paragraph against either AX attribute.
+        let paragraph = "Le navigateur reste calme pour que la page puisse parler. Les espaces rassemblent les onglets "
+            + "d'un projet, les pages épinglées restent à leur place et la barre latérale se replie quand "
+            + "on veut toute la fenêtre. La lecture devrait être pareille : un texte simple et des marges stables."
         let french = app.webViews.staticTexts.matching(NSPredicate(
-            format: "label CONTAINS %@ OR value CONTAINS %@", "Le navigateur reste calme", "Le navigateur reste calme")).firstMatch
-        XCTAssertTrue(french.waitForExistence(timeout: 5))
+            format: "label == %@ OR value == %@", paragraph, paragraph)).firstMatch
+        XCTAssertTrue(french.waitForExistence(timeout: 5), "Expected the original French paragraph in the article.")
         app.buttons["address.siteControls"].click()
         let translate = app.buttons["siteControls.translate"]
         XCTAssertTrue(translate.waitForExistence(timeout: 15), "Expected Early to offer French-to-English translation.\n\(app.debugDescription)")
@@ -2747,7 +2752,7 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [reply], timeout: 30), .completed,
                        "Expected translated text or the system language-download prompt.\n\(app.debugDescription)")
         if translated.exists {
-            XCTAssertFalse(french.exists)
+            XCTAssertTrue(french.waitForNonExistence(timeout: 5), "The translated article still contains the original paragraph.")
             let original = app.buttons["translation.original"]
             XCTAssertTrue(original.waitForExistence(timeout: 5))
             original.click()
