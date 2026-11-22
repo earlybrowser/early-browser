@@ -132,7 +132,40 @@ extension WebViewManager {
             'DETAILS', 'DIALOG', 'DIV', 'DL', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2',
             'H3', 'H4', 'H5', 'H6', 'HEADER', 'HTML', 'LABEL', 'LEGEND', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE',
             'SECTION', 'SUMMARY', 'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL']);
-        let query = '', ranges = [], index = -1, capped = false, dirty = true, observer = null, sheet = null;
+        // The DOM Standard allows these HTML elements and custom elements to host a shadow root.
+        const shadowHostNames = new Set(['ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'BODY', 'DIV', 'FOOTER', 'H1', 'H2',
+            'H3', 'H4', 'H5', 'H6', 'HEADER', 'MAIN', 'NAV', 'P', 'SECTION', 'SPAN']);
+        let query = '', ranges = [], index = -1, capped = false, dirty = true, sheet = null;
+        let hiddenRanges = [], hiddenOverflow = false;
+        let roots = new Set(), potentialHosts = [];
+        const invalidate = () => { dirty = true; };
+        const observer = new MutationObserver(invalidate);
+        const stylesheetLoaded = event => { if (event.target.localName === 'link') invalidate(); };
+
+        const observe = nextRoots => {
+            observer.disconnect();
+            for (const root of roots) {
+                if (nextRoots.has(root)) continue;
+                root.removeEventListener('load', stylesheetLoaded, true);
+                if (sheet && root.adoptedStyleSheets.includes(sheet)) {
+                    root.adoptedStyleSheets = root.adoptedStyleSheets.filter(candidate => candidate !== sheet);
+                }
+            }
+            for (const root of nextRoots) {
+                // Any attribute can participate in a CSS selector that changes visibility.
+                observer.observe(root, { childList: true, characterData: true, attributes: true, subtree: true });
+                root.addEventListener('load', stylesheetLoaded, true);
+            }
+            roots = nextRoots;
+            if (roots.size) {
+                window.addEventListener('resize', invalidate);
+                window.addEventListener('pagehide', leave);
+            } else {
+                window.removeEventListener('resize', invalidate);
+                window.removeEventListener('pagehide', leave);
+                potentialHosts = [];
+            }
+        };
 
         const blockOf = node => {
             let element = node.parentElement;
@@ -142,27 +175,40 @@ extension WebViewManager {
         // All visible text as one string, with an unmatchable separator between
         // blocks so a match can span inline tags but not two paragraphs.
         const collect = () => {
-            const segments = [];
-            let text = '', lastBlock;
-            const visit = root => {
-                const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
-                    acceptNode(node) {
-                        if (node.nodeType !== Node.ELEMENT_NODE) return NodeFilter.FILTER_ACCEPT;
-                        if (skipped.has(node.tagName)) return NodeFilter.FILTER_REJECT;
-                        return node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
-                    }
-                });
-                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-                    if (node.nodeType === Node.ELEMENT_NODE) { visit(node.shadowRoot); continue; }
-                    if (!node.data) continue;
-                    const block = blockOf(node);
-                    if (text.length && block !== lastBlock) text += '\u0000';
-                    lastBlock = block;
-                    segments.push({ node, start: text.length });
-                    text += node.data;
+            const segments = [], walkers = [], searchedRoots = new Set([document]);
+            let text = '', lastBlock, newRoot = false;
+            potentialHosts = [];
+            const walk = root => document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+                acceptNode: node => skipped.has(node.tagName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+            });
+            const visitHost = element => {
+                const root = element.shadowRoot;
+                if (root) {
+                    walkers.push(walk(root));
+                    searchedRoots.add(root);
+                    newRoot = true;
+                } else if (element instanceof HTMLElement
+                    && (shadowHostNames.has(element.tagName) || element.localName.includes('-'))) {
+                    potentialHosts.push(element);
                 }
             };
-            if (document.body) visit(document.body);
+            if (document.body) {
+                walkers.push(walk(document.body));
+                visitHost(document.body);
+            }
+            while (walkers.length) {
+                const node = walkers[walkers.length - 1].nextNode();
+                if (!node) { walkers.pop(); newRoot = true; continue; }
+                if (node.nodeType === Node.ELEMENT_NODE) { visitHost(node); continue; }
+                if (!node.length) continue;
+                const block = blockOf(node);
+                if (text.length && (newRoot || block !== lastBlock)) text += '\u0000';
+                newRoot = false;
+                lastBlock = block;
+                segments.push({ node, start: text.length });
+                text += node.data;
+            }
+            observe(searchedRoots);
             return { text, segments };
         };
         const pattern = value => {
@@ -180,11 +226,16 @@ extension WebViewManager {
             return [segments[low].node, offset - segments[low].start];
         };
         const visible = range => {
-            const element = range.startContainer.parentElement;
-            if (!element) return false;
-            if (typeof element.checkVisibility === 'function'
-                && !element.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })) return false;
-            return range.getClientRects().length > 0;
+            const start = range.startContainer, end = range.endContainer;
+            const rendered = node => {
+                const element = node.parentElement || node.getRootNode().host;
+                if (!element || !node.isConnected) return false;
+                if (element.checkVisibility?.({ visibilityProperty: true, checkVisibilityCSS: true }) !== false) return true;
+                // display:contents has no box of its own but can render text.
+                const style = getComputedStyle(element);
+                return style.display === 'contents' && style.visibility === 'visible';
+            };
+            return !range.collapsed && rendered(start) && (end === start || rendered(end)) && range.getClientRects().length > 0;
         };
         const unpaint = () => {
             try {
@@ -195,10 +246,12 @@ extension WebViewManager {
         const search = limit => {
             unpaint();
             ranges = [];
+            hiddenRanges = [];
+            hiddenOverflow = false;
             capped = false;
             dirty = false;
             const expression = pattern(query);
-            if (!expression) return;
+            if (!expression) { observe(new Set()); return; }
             const { text, segments } = collect();
             for (let match = expression.exec(text); match; match = expression.exec(text)) {
                 if (!match[0].length) { expression.lastIndex++; continue; }
@@ -209,13 +262,13 @@ extension WebViewManager {
                     range.setStart(startNode, startOffset);
                     range.setEnd(endNode, endOffset);
                 } catch (_) { continue; }
-                if (!visible(range)) continue;
+                if (!visible(range)) {
+                    if (hiddenRanges.length < limit) hiddenRanges.push(range);
+                    else hiddenOverflow = true;
+                    continue;
+                }
                 if (ranges.length >= limit) { capped = true; break; }
                 ranges.push(range);
-            }
-            if (!observer) {
-                observer = new MutationObserver(() => { dirty = true; });
-                observer.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
             }
         };
         const firstInView = () => {
@@ -223,14 +276,15 @@ extension WebViewManager {
             return found < 0 ? 0 : found;
         };
         const paint = () => {
+            if (!ranges.length) return;
             try {
                 if (!sheet) {
                     sheet = new CSSStyleSheet();
                     sheet.replaceSync('::highlight(early-find){background-color:rgba(255,212,0,.45);color:inherit}'
                         + '::highlight(early-find-current){background-color:#ff9500;color:#000}');
                 }
-                if (!document.adoptedStyleSheets.includes(sheet)) {
-                    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+                for (const root of roots) {
+                    if (!root.adoptedStyleSheets.includes(sheet)) root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
                 }
                 CSS.highlights.set('early-find', new Highlight(...ranges));
                 if (index >= 0) {
@@ -251,7 +305,7 @@ extension WebViewManager {
         };
         const reveal = () => {
             const range = ranges[index];
-            const element = range && range.startContainer.parentElement;
+            const element = range && (range.startContainer.parentElement || range.startContainer.getRootNode().host);
             if (!element) return;
             const outside = rect => rect.top < 0 || rect.bottom > innerHeight || rect.left < 0 || rect.right > innerWidth;
             if (!outside(range.getBoundingClientRect())) return;
@@ -260,6 +314,60 @@ extension WebViewManager {
             if (outside(rect)) window.scrollBy(0, rect.top - innerHeight / 2);
         };
         const answer = () => { paint(); reveal(); return { count: ranges.length, index, capped }; };
+
+        // Positions in different trees cannot be compared directly. A shadow
+        // range sorts at the start of its host when viewed from the outer tree.
+        function* startPositions(range) {
+            for (let position = range; position;) {
+                const root = position.startContainer.getRootNode();
+                yield [root, position];
+                if (!root.host?.isConnected) return;
+                position = document.createRange();
+                position.setStart(root.host, 0);
+            }
+        }
+        const positionAfterSearch = (previous, ordinal, delta) => {
+            if (!previous) return -1;
+            const anchors = new Map(startPositions(previous));
+            for (const [next, range] of ranges.entries()) {
+                for (const [root, position] of startPositions(range)) {
+                    const anchor = anchors.get(root);
+                    if (!anchor) continue;
+                    const order = position.compareBoundaryPoints(Range.START_TO_START, anchor);
+                    if (order > 0) return delta > 0 ? next - 1 : next;
+                    if (order === 0) return next;
+                    break;
+                }
+            }
+            const next = previous.startContainer.isConnected ? ranges.length : Math.min(ordinal, ranges.length);
+            return delta > 0 ? next - 1 : next;
+        };
+        const needsSearch = () => dirty || observer.takeRecords().length > 0
+            // Attaching an open root to an existing host emits no mutation record.
+            || potentialHosts.some(host => host.shadowRoot)
+            // In-place CSSOM changes can affect visibility without touching the DOM.
+            || hiddenOverflow || hiddenRanges.some(visible) || ranges.some(range => !visible(range));
+        const clear = selectCurrent => {
+            const current = ranges[index];
+            unpaint();
+            observe(new Set());
+            if (selectCurrent && current && visible(current)) {
+                const text = current.toString();
+                const match = pattern(query)?.exec(text);
+                const selection = window.getSelection();
+                if (selection && match?.index === 0 && match[0].length === text.length) {
+                    selection.removeAllRanges();
+                    selection.addRange(current.cloneRange());
+                }
+            }
+            ranges = [];
+            hiddenRanges = [];
+            hiddenOverflow = false;
+            index = -1;
+            query = '';
+            dirty = true;
+        };
+        const leave = () => clear(false);
 
         return {
             update(value, delta, limit) {
@@ -270,41 +378,17 @@ extension WebViewManager {
             },
             step(value, delta, limit) {
                 if (value !== query) { query = value; search(limit); index = -1; }
-                else if (dirty) {
-                    // Keep the place in a changed page: resume at the old match.
-                    const previous = ranges[index];
+                else if (needsSearch()) {
+                    const previous = ranges[index], ordinal = index;
                     search(limit);
-                    index = -1;
-                    if (previous && ranges.length) {
-                        let next = ranges.findIndex(range => {
-                            try { return range.compareBoundaryPoints(Range.START_TO_START, previous) >= 0; }
-                            catch (_) { return false; }
-                        });
-                        if (next < 0) next = ranges.length;
-                        let same = false;
-                        try { same = !!ranges[next] && ranges[next].compareBoundaryPoints(Range.START_TO_START, previous) === 0; }
-                        catch (_) {}
-                        index = same ? next : (delta > 0 ? next - 1 : next);
-                    }
+                    index = positionAfterSearch(previous, ordinal, delta);
                 }
                 if (!ranges.length) { index = -1; return answer(); }
                 if (index < 0 && delta < 0) index = ranges.length;
                 index = ((index + delta) % ranges.length + ranges.length) % ranges.length;
                 return answer();
             },
-            clear(selectCurrent) {
-                const current = ranges[index];
-                unpaint();
-                if (observer) { observer.disconnect(); observer = null; }
-                if (selectCurrent && current) {
-                    const selection = window.getSelection();
-                    if (selection) { selection.removeAllRanges(); selection.addRange(current.cloneRange()); }
-                }
-                ranges = [];
-                index = -1;
-                query = '';
-                dirty = true;
-            }
+            clear
         };
     })();
     """#

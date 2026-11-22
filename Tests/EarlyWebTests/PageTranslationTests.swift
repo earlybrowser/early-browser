@@ -37,6 +37,69 @@ struct PageTranslationTests {
         #expect(WebViewManager.dominantLanguage(text: "", hint: "not a language") == nil)
     }
 
+    @Test func languageSamplingReadsAVisiblePrefixWithoutReadingWholeTextNodes() async throws {
+        let fixture = PageToolFixture(pages: ["article": """
+            <!doctype html><html lang="en"><body>
+            <div class="advert" style="display:none"></div><main></main>
+            <script>
+            document.querySelector('.advert').textContent = 'The advertising caption is written in English. '.repeat(20000);
+            document.querySelector('main').textContent = 'La lecture doit rester simple et le navigateur doit rester discret. '.repeat(20000);
+            </script>
+            </body></html>
+            """])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("article")
+        let page = try fixture.page(tab)
+        try await fixture.waitUntil("detected French") { page.language == "fr" }
+        let sample = try #require(try await page.view.callAsyncJavaScript("""
+            const substringData = CharacterData.prototype.substringData;
+            let units = 0;
+            const longNodeReads = [];
+            CharacterData.prototype.substringData = function(offset, length) {
+                units += length;
+                if (this.length > 100000) longNodeReads.push(length);
+                return substringData.call(this, offset, length);
+            };
+            try {
+                const sample = (() => { \(WebViewManager.languageSample) })();
+                return { ...sample, units, longNodeReads };
+            } finally { CharacterData.prototype.substringData = substringData; }
+            """, arguments: WebViewManager.languageSampleArguments, in: nil, contentWorld: WebViewManager.translationWorld) as? [String: Any])
+        let text = try #require(sample["text"] as? String)
+        #expect(text.hasPrefix("La lecture doit rester simple"))
+        #expect(text.utf16.count <= 2_000 && sample["longNodeReads"] as? [Int] == [2_000])
+        #expect((sample["units"] as? Int ?? .max) <= 8_000)
+    }
+
+    @Test func languageSamplingStopsAtItsVisitBudgetAndKeepsTheLanguageHint() async throws {
+        let fixture = PageToolFixture(pages: ["deep": """
+            <!doctype html><html lang="de-DE"><body><main></main><script>
+            let parent = document.querySelector('main');
+            for (let n = 0; n < 300; n++) parent = parent.appendChild(document.createElement('span'));
+            parent.textContent = 'This English passage appears after the cutoff. '.repeat(10);
+            </script></body></html>
+            """])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("deep")
+        let page = try fixture.page(tab)
+        let budget = 64
+        let arguments = WebViewManager.languageSampleArguments.merging(["maxVisited": budget]) { _, new in new }
+        let sample = try #require(try await page.view.callAsyncJavaScript("""
+            const originalStyle = window.getComputedStyle;
+            let reads = 0;
+            window.getComputedStyle = element => { reads++; return originalStyle(element); };
+            try {
+                const sample = (() => { \(WebViewManager.languageSample) })();
+                return { ...sample, reads };
+            } finally { window.getComputedStyle = originalStyle; }
+            """, arguments: arguments, in: nil, contentWorld: WebViewManager.translationWorld) as? [String: Any])
+        let text = try #require(sample["text"] as? String)
+        let hint = try #require(sample["lang"] as? String)
+        #expect(text.isEmpty && hint == "de-DE")
+        #expect((sample["reads"] as? Int).map { $0 > 0 && $0 <= budget } == true)
+        #expect(WebViewManager.dominantLanguage(text: text, hint: hint) == "de")
+    }
+
     @Test func translationReplacesOnlyReadableTextAndShowOriginalRestoresItExactly() async throws {
         let fixture = PageToolFixture(pages: ["french": Self.french])
         defer { fixture.cleanup() }

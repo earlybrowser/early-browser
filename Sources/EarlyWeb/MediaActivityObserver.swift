@@ -119,12 +119,36 @@ final class MediaActivityObserver: NSObject, WKScriptMessageHandlerWithReply {
             if (e.target instanceof HTMLMediaElement) { track(e.target); update(); }
         }, true);
         new MutationObserver(records => {
-            for (const record of records) for (const node of record.addedNodes) scan(node);
+            const added = new Set();
+            for (const record of records) for (const node of record.addedNodes) {
+                if (node.nodeType === Node.ELEMENT_NODE) added.add(node);
+            }
+            // A batch can contain the same node or both a node and its ancestors.
+            // Cache ancestor lookups so a deep shared path is examined only once.
+            const covered = new Map();
+            for (const node of added) {
+                const path = [];
+                let parent = node.parentElement;
+                while (parent && !added.has(parent) && !covered.has(parent)) {
+                    path.push(parent);
+                    parent = parent.parentElement;
+                }
+                const hasAddedAncestor = parent !== null && (added.has(parent) || covered.get(parent));
+                for (const element of path) covered.set(element, hasAddedAncestor);
+                // Keep this in the mutation checkpoint, including detached players
+                // that can still be playing. A muted tab cannot wait for a timer.
+                if (!hasAddedAncestor) scan(node);
+            }
             update();
         }).observe(document, {subtree: true, childList: true});
-        document.addEventListener('DOMContentLoaded', () => { scan(document); update(); }, {once: true});
         window.addEventListener('pagehide', () => { hidden = true; send(false, true); });
-        window.addEventListener('pageshow', () => { hidden = false; last = null; scan(document); update(); });
+        window.addEventListener('pageshow', () => {
+            const restored = hidden;
+            hidden = false;
+            last = null;
+            if (restored) scan(document);
+            update();
+        });
         // Only the native owner in the isolated world can set tab mute state.
         globalThis.__earlyMediaControl = {applyState, get documentToken() { return hidden ? null : token; }};
         scan(document);

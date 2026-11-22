@@ -2664,21 +2664,30 @@ final class EarlyUITests: XCTestCase {
 
     func testFindBarCountsMatchesAndEscapeReturnsToThePage() {
         let app = launchFreshApp()
-        navigate(app, to: "early-test://fixture/one")
-        expectPage(app, "One")
+        navigate(app, to: "early-test://fixture/find")
+        expectPage(app, "Find")
         app.typeKey("f", modifierFlags: .command)
         let field = app.textFields["find.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.click()
-        app.typeText("page one")
-        let counted = app.staticTexts.matching(NSPredicate(format: "identifier == 'find.status' AND (label == %@ OR value == %@)",
-                                                           "1 of 1", "1 of 1")).firstMatch
-        XCTAssertTrue(counted.waitForExistence(timeout: 5), app.staticTexts["find.status"].debugDescription)
+        app.typeText("needle")
+        func expectCount(_ count: String) {
+            let counted = app.staticTexts.matching(NSPredicate(format: "identifier == 'find.status' AND (label == %@ OR value == %@)",
+                                                               count, count)).firstMatch
+            XCTAssertTrue(counted.waitForExistence(timeout: 5), app.staticTexts["find.status"].debugDescription)
+        }
+        expectCount("No matches")
+        app.webViews.buttons["Reveal matches"].click()
+        app.buttons["find.next"].click()
+        expectCount("1 of 2")
+        app.buttons["find.next"].click()
+        expectCount("2 of 2")
+        field.click()
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(field.waitForNonExistence(timeout: 5))
         // Closing never navigates, opens tabs or leaves the page unfocusable.
         expectRuntime(app, tabs: 1, views: 1, created: 1)
-        expectPage(app, "One")
+        expectPage(app, "Find")
     }
 
     func testHoveringALinkPreviewsItsAddressWithoutTakingTheClick() {
