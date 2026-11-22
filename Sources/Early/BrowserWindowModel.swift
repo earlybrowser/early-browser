@@ -114,7 +114,7 @@ final class BrowserWindowModel {
     /// Tabs whose language Apple's Translation can turn into the user's.
     var translationOffers: [UUID: TranslationOffer] = [:]
     /// The translation waiting for (or running in) the window's session.
-    var translationRequest: TranslationRequest?
+    var pendingTranslation: TranslationRequest?
     /// Command-F focuses the focused pane's find field, even if already open.
     var findFocusRequest = 0
     /// Early's download icon flying from the clicked page point to the button.

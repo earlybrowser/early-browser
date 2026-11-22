@@ -25,6 +25,7 @@ struct TranslationOffer: Equatable {
 struct TranslationRequest: Equatable, Identifiable {
     let id = UUID()
     let offer: TranslationOffer
+    let target: PageTranslationTarget
 }
 
 @MainActor
@@ -42,6 +43,7 @@ extension BrowserWindowModel {
 
     func updateTranslationOffer(_ id: UUID, language: String?) {
         translationOffers[id] = nil
+        if pendingTranslation?.offer.tabID == id, translationRequest == nil { pendingTranslation = nil }
         let target = Self.translationTarget
         guard let language, Self.needsTranslation(from: language, to: target) else { return }
         guard #available(macOS 15.0, *) else { return }
@@ -51,6 +53,14 @@ extension BrowserWindowModel {
             guard let self, self.webViews.pages[id]?.language == language, status != .unsupported else { return }
             self.translationOffers[id] = TranslationOffer(tabID: id, source: language, target: target)
         }
+    }
+
+    /// The host and its menus observe the same request. Closing the tab or
+    /// starting a navigation withdraws it even before the system replies.
+    var translationRequest: TranslationRequest? {
+        guard let request = pendingTranslation,
+              webViews.translationTarget(for: request.offer.tabID) == request.target else { return nil }
+        return request
     }
 
     /// The menu title for this tab, or nil when Translate would not work.
@@ -64,20 +74,25 @@ extension BrowserWindowModel {
     func toggleTranslation(_ id: UUID) {
         guard let page = webViews.pages[id] else { return }
         if page.translation.isActive || translationRequest?.offer.tabID == id {
-            if translationRequest?.offer.tabID == id { translationRequest = nil }
+            if pendingTranslation?.offer.tabID == id { pendingTranslation = nil }
             webViews.showOriginal(id)
             return
         }
-        guard let offer = translationOffers[id], webViews.canTranslate(id) else { return }
+        guard let offer = translationOffers[id], let target = webViews.translationTarget(for: id) else { return }
+        if let previous = translationRequest { webViews.showOriginal(previous.offer.tabID) }
         webViews.showOriginal(id) // Clears an earlier failure.
-        translationRequest = TranslationRequest(offer: offer)
+        pendingTranslation = TranslationRequest(offer: offer, target: target)
     }
 
-    @available(macOS 15.0, *)
-    func runTranslation(_ request: TranslationRequest, session: TranslationSession) async {
-        defer { if translationRequest?.id == request.id { translationRequest = nil } }
-        let translator = SessionTranslator(session: session)
-        await webViews.translatePage(request.offer.tabID) { texts in try await translator.translate(texts) }
+    func runTranslation(_ request: TranslationRequest, using translate: PageTextTranslator) async {
+        guard pendingTranslation?.id == request.id, webViews.pages[request.offer.tabID]?.translation.isActive != true else { return }
+        defer { finishTranslationRequest(request) }
+        guard translationRequest == request, !Task.isCancelled else { return }
+        await webViews.translatePage(request.offer.tabID, using: translate)
+    }
+
+    fileprivate func finishTranslationRequest(_ request: TranslationRequest) {
+        if pendingTranslation?.id == request.id { pendingTranslation = nil }
     }
 }
 
@@ -105,29 +120,20 @@ private struct SessionTranslator: @unchecked Sendable {
 @available(macOS 15.0, *)
 struct PageTranslationHost: View {
     @Bindable var model: BrowserWindowModel
-    @State private var configuration: TranslationSession.Configuration?
-    @State private var running: TranslationRequest?
 
     var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .accessibilityHidden(true)
-            .onChange(of: model.translationRequest) { _, request in start(request) }
-            .translationTask(configuration) { session in
-                guard let running else { return }
-                await model.runTranslation(running, session: session)
-            }
-    }
-
-    private func start(_ request: TranslationRequest?) {
-        guard let request else { return }
-        running = request
-        let source = Locale.Language(identifier: request.offer.source)
-        let target = Locale.Language(identifier: request.offer.target)
-        if configuration?.source == source && configuration?.target == target {
-            configuration?.invalidate()
-        } else {
-            configuration = TranslationSession.Configuration(source: source, target: target)
+        if let request = model.translationRequest {
+            Color.clear
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+                .translationTask(source: Locale.Language(identifier: request.offer.source),
+                                 target: Locale.Language(identifier: request.offer.target)) { session in
+                    let translator = SessionTranslator(session: session)
+                    await model.runTranslation(request) { try await translator.translate($0) }
+                }
+                // Even two requests for the same language pair own separate system tasks.
+                .onDisappear { model.finishTranslationRequest(request) }
+                .id(request.id)
         }
     }
 }

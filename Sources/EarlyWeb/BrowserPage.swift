@@ -65,7 +65,7 @@ public final class BrowserPage {
     /// The page's language (BCP 47), detected from its text after loading.
     public internal(set) var language: String?
     public internal(set) var translation = PageTranslationPhase.original
-    /// The running translation; an older one, or its error, changes nothing.
+    /// The run that owns the collected text, including while showing its translation.
     var translationRun: UUID?
     /// The connection's trust, from WebKit's public secure-content state.
     public internal(set) var security = PageSecurity.none
@@ -100,10 +100,11 @@ public final class BrowserPage {
     var reportedURL: URL?
     var reportedTitle: String?
     var reportedDocumentID: UUID?
-    /// The committed document eligible to contribute a history visit or title.
-    public var historyDocumentID: UUID? {
+    /// The current committed document, while its metadata and text can be used.
+    var currentDocumentID: UUID? {
         !awaitsNavigationCommit && failure == nil && !processTerminated ? documentID : nil
     }
+    public var historyDocumentID: UUID? { currentDocumentID }
     var navigationGeneration = UUID()
     var faviconRefresh: UUID?
     var activeNavigation: ObjectIdentifier?

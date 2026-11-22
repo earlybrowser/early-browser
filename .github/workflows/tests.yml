@@ -82,12 +82,14 @@ jobs:
           )
 
           # Build and discover the complete suite without executing test methods.
+          echo "::group::Build and discover UI tests"
           xcodebuild "${xcode_args[@]}" \
             -enumerate-tests \
             -test-enumeration-style flat \
             -test-enumeration-format json \
             -test-enumeration-output-path build/TestResults/discovered-tests.json \
             test 2>&1 | tee build/TestResults/discovery.log
+          echo "::endgroup::"
 
           # Interleave the sorted test IDs so every enabled test runs exactly once.
           jq -er --argjson shard "$UI_SHARD" --argjson count "$UI_SHARD_COUNT" '
@@ -109,9 +111,14 @@ jobs:
           printf '%s\n' "${test_args[@]}"
 
           # UI automation stays serial on each Mac to avoid input/focus conflicts.
+          # Let XCTest record a hung case and continue before the job times out.
+          # Stream case results to Actions and retain the full trace in ui.log.
           xcodebuild "${xcode_args[@]}" "${test_args[@]}" \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 300 \
             -resultBundlePath "build/TestResults/UI-$UI_SHARD.xcresult" \
-            test-without-building 2>&1 | tee build/TestResults/ui.log
+            test-without-building 2>&1 | tee build/TestResults/ui.log | awk '
+              /^Test (Case|Suite) |^[[:space:]]*Executed |^Testing |^Failing tests:|: error: |^error:|^xcodebuild:|^\*\* TEST/ { print; fflush() }
+            '
       - name: Upload UI results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
