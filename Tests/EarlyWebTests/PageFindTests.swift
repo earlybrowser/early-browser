@@ -3,6 +3,7 @@
 @testable import EarlyWeb
 import Foundation
 import Testing
+import WebKit
 
 /// Find in page against real WebKit documents in unshown views.
 @Suite(.serialized) @MainActor
@@ -109,5 +110,156 @@ struct PageFindTests {
         state = try await waitForAnswer(fixture, tab.id, "many")
         #expect(state.matchCount == PageFindState.matchLimit && state.isCapped)
         #expect(state.query == "word")
+    }
+
+    @Test func visibilityChangesRefreshZeroAndExistingMatchesWithoutRetyping() async throws {
+        let fixture = PageToolFixture(pages: ["visibility": """
+            <!doctype html><style>.concealed, [data-hide] { display:none }</style>
+            <p id="first" hidden>needle</p>
+            <p id="second" class="concealed">needle</p>
+            <p id="third" style="visibility:hidden">needle</p>
+            """])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("visibility")
+        let manager = fixture.manager
+        manager.showFind(tab.id)
+        manager.updateFind(tab.id, query: "needle")
+        #expect(try await waitForAnswer(fixture, tab.id, "initially hidden").matchCount == 0)
+
+        _ = try await fixture.evaluate("document.querySelector('#first').hidden = false", in: tab)
+        #expect(manager.findNext(tab.id))
+        var state = try await waitForAnswer(fixture, tab.id, "revealed")
+        #expect(state.matchCount == 1 && state.currentIndex == 0)
+
+        _ = try await fixture.evaluate("""
+            document.querySelector('#second').className = '';
+            document.querySelector('#third').style.visibility = 'visible';
+            """, in: tab)
+        #expect(manager.findNext(tab.id))
+        state = try await waitForAnswer(fixture, tab.id, "class and style")
+        #expect(state.matchCount == 3 && state.currentIndex == 1)
+
+        _ = try await fixture.evaluate("document.querySelector('#second').setAttribute('data-hide', '')", in: tab)
+        #expect(manager.findNext(tab.id, backwards: true))
+        state = try await waitForAnswer(fixture, tab.id, "previous after hiding current")
+        #expect(state.matchCount == 2 && state.currentIndex == 0)
+
+        _ = try await fixture.evaluate("document.querySelector('#second').removeAttribute('data-hide')", in: tab)
+        #expect(manager.findNext(tab.id))
+        state = try await waitForAnswer(fixture, tab.id, "revealed again")
+        #expect(state.matchCount == 3 && state.currentIndex == 1)
+
+        // An in-place CSSOM change has no mutation record. Existing ranges
+        // still need to be checked before stepping.
+        _ = try await fixture.evaluate("document.styleSheets[0].insertRule('#second {display:none}')", in: tab)
+        #expect(manager.findNext(tab.id))
+        state = try await waitForAnswer(fixture, tab.id, "CSSOM hid current")
+        #expect(state.matchCount == 2 && state.currentIndex == 1)
+
+        _ = try await fixture.evaluate("document.styleSheets[0].deleteRule(0)", in: tab)
+        #expect(manager.findNext(tab.id, backwards: true))
+        state = try await waitForAnswer(fixture, tab.id, "CSSOM revealed previous")
+        #expect(state.matchCount == 3 && state.currentIndex == 1)
+    }
+
+    @Test func shadowTreeEditsRefreshHighlightsAndKeepDocumentOrder() async throws {
+        let fixture = PageToolFixture(pages: ["shadow": """
+            <!doctype html><p id="before">needle</p><div id="host"></div><p id="after">needle</p>
+            <script>
+            const root = document.querySelector('#host').attachShadow({mode:'open'});
+            root.innerHTML = '<style>.concealed {visibility:hidden}</style><p id="inside">needle</p><div id="late"></div>';
+            </script>
+            """])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("shadow")
+        let manager = fixture.manager, view = try fixture.page(tab).view
+        manager.showFind(tab.id)
+        manager.updateFind(tab.id, query: "needle")
+        #expect(try await waitForAnswer(fixture, tab.id, "shadow search").matchCount == 3)
+        #expect(manager.findNext(tab.id))
+        #expect(try await waitForAnswer(fixture, tab.id, "selected shadow match").currentIndex == 1)
+        let painted = try await view.callAsyncJavaScript("""
+            const root = document.querySelector('#host').shadowRoot;
+            const active = [...CSS.highlights.get('early-find-current')][0];
+            return [active.startContainer.getRootNode() === root,
+                    root.adoptedStyleSheets.some(sheet => sheet.cssRules[0].selectorText === '::highlight(early-find)')];
+            """, arguments: [:], in: nil, contentWorld: WebViewManager.findWorld)
+        #expect(painted as? [Bool] == [true, true])
+
+        _ = try await fixture.evaluate("root.querySelector('#inside').className = 'concealed'", in: tab)
+        #expect(manager.findNext(tab.id))
+        var state = try await waitForAnswer(fixture, tab.id, "step out of hidden shadow match")
+        #expect(state.matchCount == 2 && state.currentIndex == 1)
+
+        _ = try await fixture.evaluate("""
+            root.querySelector('#inside').className = '';
+            root.querySelector('#inside').firstChild.data = 'changed';
+            root.querySelector('#late').attachShadow({mode:'open'}).append('needle');
+            """, in: tab)
+        #expect(manager.findNext(tab.id, backwards: true))
+        state = try await waitForAnswer(fixture, tab.id, "nested match")
+        #expect(state.matchCount == 3 && state.currentIndex == 1)
+        _ = try await fixture.evaluate("root.querySelector('#late').shadowRoot.firstChild.remove()", in: tab)
+        #expect(manager.findNext(tab.id))
+        state = try await waitForAnswer(fixture, tab.id, "removed shadow text")
+        #expect(state.matchCount == 2 && state.currentIndex == 1)
+
+        // Attaching a root alone must also be noticed when the other matches stay visible.
+        _ = try await fixture.evaluate("root.querySelector('#inside').attachShadow({mode:'open'}).textContent = 'needle'", in: tab)
+        #expect(manager.findNext(tab.id, backwards: true))
+        state = try await waitForAnswer(fixture, tab.id, "attached root")
+        #expect(state.matchCount == 3 && state.currentIndex == 1)
+        manager.hideFind(tab.id)
+        let cleaned = try await view.callAsyncJavaScript("""
+            const root = document.querySelector('#host').shadowRoot;
+            return [CSS.highlights.has('early-find'), CSS.highlights.has('early-find-current'),
+                    document.adoptedStyleSheets.length > 0, root.adoptedStyleSheets.length > 0];
+            """, arguments: [:], in: nil, contentWorld: WebViewManager.findWorld)
+        #expect(cleaned as? [Bool] == [false, false, false, false])
+    }
+
+    @Test func findCoalescesMutationsAndReleasesItsObserverWhenThePageLeaves() async throws {
+        let fixture = PageToolFixture(pages: ["visibility": "<p hidden>needle</p><p>needle</p>"])
+        defer { fixture.cleanup() }
+        let tab = try await fixture.open("visibility")
+        let view = try fixture.page(tab).view
+        let result = try await view.callAsyncJavaScript("""
+            const observe = MutationObserver.prototype.observe;
+            const disconnect = MutationObserver.prototype.disconnect;
+            const observing = new Set();
+            MutationObserver.prototype.observe = function(...args) {
+                observing.add(this);
+                return observe.apply(this, args);
+            };
+            MutationObserver.prototype.disconnect = function() {
+                observing.delete(this);
+                return disconnect.call(this);
+            };
+            const createWalker = document.createTreeWalker;
+            let scans = 0;
+            document.createTreeWalker = function(...args) {
+                scans++;
+                return createWalker.apply(this, args);
+            };
+            try {
+                \(WebViewManager.findLibrary)
+                const find = window.__earlyFind, paragraph = document.querySelector('p');
+                const before = find.update('needle', 0, 1000);
+                for (let n = 0; n < 5; n++) {
+                    paragraph.hidden = !paragraph.hidden;
+                    await Promise.resolve();
+                }
+                const coalesced = scans === 1;
+                const after = find.step('needle', -1, 1000);
+                const refreshed = scans === 2 && after.count === 2;
+                window.dispatchEvent(new Event('pagehide'));
+                return [before.count === 1, coalesced, refreshed, observing.size === 0, !CSS.highlights.has('early-find')];
+            } finally {
+                MutationObserver.prototype.observe = observe;
+                MutationObserver.prototype.disconnect = disconnect;
+                document.createTreeWalker = createWalker;
+            }
+            """, arguments: [:], in: nil, contentWorld: WebViewManager.findWorld)
+        #expect(result as? [Bool] == [true, true, true, true, true])
     }
 }

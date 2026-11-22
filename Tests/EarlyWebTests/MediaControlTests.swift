@@ -71,6 +71,54 @@ struct MediaControlTests {
         try await waitForState([false, true, false], in: view)
     }
 
+    @Test func overlappingAdditionsDiscoverPlayersOnceAndMuteInTheSameCheckpoint() async throws {
+        try await withPlaybackPage { manager, tab, page in
+            let view = page.view
+            #expect(manager.setMuted(true, for: tab.id))
+            try await waitForState([true, true, true], in: view)
+            let scan = try #require(try await view.callAsyncJavaScript("""
+                const query = Element.prototype.querySelectorAll;
+                let scans = 0, visits = 0;
+                Element.prototype.querySelectorAll = function(selector) {
+                    const result = query.call(this, selector);
+                    if (selector === 'audio,video') { scans++; visits += result.length; }
+                    return result;
+                };
+                const players = [];
+                try {
+                    return await new Promise(resolve => {
+                        const checkpoint = new MutationObserver(() => {
+                            checkpoint.disconnect();
+                            resolve({scans, visits, muted: players.every(player => player.muted)});
+                        });
+                        checkpoint.observe(document.body, {childList:true, subtree:true});
+                        const root = document.body.appendChild(document.createElement('div'));
+                        let branch = root;
+                        for (let n = 0; n < 24; n++) branch = branch.appendChild(document.createElement('div'));
+                        for (let n = 0; n < 100; n++) {
+                            const player = document.createElement('audio');
+                            player.muted = n % 2 === 0;
+                            players.push(player);
+                            branch.append(player);
+                        }
+                        document.body.append(root); // The same subtree appears in more than one record.
+                        globalThis.addedPlayers = players;
+                    });
+                } finally { Element.prototype.querySelectorAll = query; }
+                """, arguments: [:], in: nil, contentWorld: .defaultClient) as? [String: Any])
+            let scans = try #require(scan["scans"] as? Int)
+            let visits = try #require(scan["visits"] as? Int)
+            #expect(scans == 1 && visits == 100, "Discovery performed \(scans) queries and visited \(visits) players")
+            #expect(scan["muted"] as? Bool == true)
+            #expect(manager.setMuted(false, for: tab.id))
+            try await waitForState([false, true, false], in: view)
+            let restored = try await view.callAsyncJavaScript("""
+                return addedPlayers.every((player, index) => player.muted === (index % 2 === 0));
+                """, arguments: [:], in: nil, contentWorld: .defaultClient)
+            #expect(restored as? Bool == true)
+        }
+    }
+
     @Test func playIntentIsNotActivityUntilPlaybackProgressesEvenInAnUnselectedView() async throws {
         try await withPlaybackPage { manager, tab, page in
             let view = page.view

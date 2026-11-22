@@ -614,6 +614,7 @@ struct PageFindBar: View {
     var body: some View {
         let tint = model.chromeTheme.focusBorder(isDark: colorScheme == .dark, increasedContrast: contrast == .increased).color
         let status = Self.status(for: state)
+        let canStep = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         HStack(spacing: 4) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12, weight: .semibold))
@@ -638,9 +639,9 @@ struct PageFindBar: View {
                 .accessibilityIdentifier("find.status")
             Divider().frame(height: 16).padding(.horizontal, 2)
             control("chevron.up", "Previous Match\(model.preferences.shortcutHint(.findPrevious))", identifier: "find.previous") { step(backwards: true) }
-                .disabled(state.matchCount == 0)
+                .disabled(!canStep)
             control("chevron.down", "Next Match\(model.preferences.shortcutHint(.findNext))", identifier: "find.next") { step(backwards: false) }
-                .disabled(state.matchCount == 0)
+                .disabled(!canStep)
             control("xmark", "Close Find (Escape)", identifier: "find.close") { model.closeFind(tabID) }
         }
         .padding(.horizontal, 8)

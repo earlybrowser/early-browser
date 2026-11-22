@@ -35,6 +35,7 @@ extension WebViewManager {
     static let translationWorld = WKContentWorld.world(name: "Early.Translate")
     static let translationBatchSize = 40
     static let translationLimits = (nodes: 3000, characters: 100_000, visited: 30_000)
+    static let languageSampleArguments = ["maxCharacters": 2_000, "maxRead": 8_000, "maxVisited": 4_000]
 
     public func canTranslate(_ id: UUID) -> Bool {
         translationTarget(for: id) != nil
@@ -51,10 +52,8 @@ extension WebViewManager {
     func detectPageLanguage(_ id: UUID) {
         guard let page = pages[id], page.view.url.flatMap({ try? input.validate($0) }) != nil else { return }
         let generation = page.navigationGeneration
-        page.view.callAsyncJavaScript("""
-            return { lang: document.documentElement.lang || '',
-                     text: (document.body ? document.body.innerText : '').slice(0, 2000) };
-            """, arguments: [:], in: nil, in: Self.translationWorld) { [weak self, weak page] result in
+        page.view.callAsyncJavaScript(Self.languageSample, arguments: Self.languageSampleArguments,
+            in: nil, in: Self.translationWorld) { [weak self, weak page] result in
                 guard let self, let page, self.pages[id] === page, page.navigationGeneration == generation,
                       let values = (try? result.get()) as? [String: Any] else { return }
                 let language = Self.dominantLanguage(text: values["text"] as? String ?? "", hint: values["lang"] as? String ?? "")
@@ -154,7 +153,72 @@ extension WebViewManager {
 
     private struct TranslationMismatch: Error {}
 
-    static let translationCollect = #"""
+    private static let visibleTextNodes = #"""
+    function* visibleTextNodes(excludeElement) {
+        const skipped = new Set(['head', 'script', 'style', 'noscript', 'template', 'textarea', 'input', 'select', 'option',
+            'code', 'pre', 'kbd', 'samp', 'var', 'svg', 'math', 'iframe', 'object', 'embed', 'canvas', 'audio', 'video']);
+        let visited = 0;
+        function* slotChildren(slot) {
+            const host = slot.getRootNode().host;
+            if (!host || host.childNodes.length <= maxVisited - visited) {
+                const assigned = slot.assignedNodes();
+                yield* (assigned.length ? assigned : slot.childNodes);
+                return;
+            }
+            // Charge oversized slot assignments to the same visit budget without copying the list.
+            let found = false;
+            for (const child of host.childNodes) {
+                if (++visited >= maxVisited) return;
+                if (child.assignedSlot === slot) { found = true; yield child; }
+            }
+            if (!found) yield* slot.childNodes;
+        }
+        const stack = [{ children: document.childNodes.values(), visible: true }];
+        while (stack.length && visited < maxVisited) {
+            const level = stack[stack.length - 1], next = level.children.next();
+            if (next.done) { stack.pop(); continue; }
+            const node = next.value;
+            visited++;
+            if (level.summaryOnly) {
+                if (node.localName !== 'summary') continue;
+                stack.pop(); // Only the first direct summary is rendered in closed details.
+            }
+            if (node.nodeType === Node.TEXT_NODE) {
+                if (level.visible && node.length) yield node;
+                continue;
+            }
+            if (node.nodeType !== Node.ELEMENT_NODE || skipped.has(node.localName) || node.hasAttribute('hidden')
+                || node.isContentEditable || excludeElement(node)) continue;
+            const style = getComputedStyle(node);
+            if (style.display === 'none' || style.contentVisibility === 'hidden' || style.opacity === '0') continue;
+            // Descendants can override inherited visibility. Their own styles decide.
+            const visible = style.visibility !== 'hidden' && style.visibility !== 'collapse';
+            const root = node.shadowRoot || node;
+            const children = node.localName === 'slot' ? slotChildren(node)
+                : (visible ? root.childNodes : root.children)[Symbol.iterator]();
+            stack.push({ children, visible, summaryOnly: node.localName === 'details' && !node.open });
+        }
+    }
+    """#
+
+    static let languageSample = visibleTextNodes + #"""
+
+    let text = '', read = 0;
+    for (const node of visibleTextNodes(() => false)) {
+        const separator = text ? ' ' : '';
+        const length = Math.min(node.length, maxCharacters - text.length - separator.length, maxRead - read);
+        if (length <= 0) break;
+        // Read only the needed prefix even when one node contains megabytes.
+        const part = node.substringData(0, length).trim();
+        read += length;
+        if (/\p{L}/u.test(part)) text += separator + part;
+        if (text.length >= maxCharacters || read >= maxRead) break;
+    }
+    return { lang: (document.documentElement?.lang || '').slice(0, 64), text };
+    """#
+
+    static let translationCollect = visibleTextNodes + #"""
+
     window.__earlyTranslation?.restore();
     const entries = [], texts = [];
     window.__earlyTranslation = { runID, entries, restore() {
@@ -165,56 +229,17 @@ extension WebViewManager {
         }
         entries.length = 0;
     }};
-    const skipped = new Set(['head', 'script', 'style', 'noscript', 'template', 'textarea', 'input', 'select', 'option',
-        'code', 'pre', 'kbd', 'samp', 'var', 'svg', 'math', 'iframe', 'object', 'embed', 'canvas', 'audio', 'video']);
-    let visited = 0, characters = 0;
-    function* slotChildren(slot) {
-        const host = slot.getRootNode().host;
-        if (!host || host.childNodes.length <= maxVisited - visited) {
-            const assigned = slot.assignedNodes();
-            yield* (assigned.length ? assigned : slot.childNodes);
-            return;
+    let characters = 0;
+    const exclude = node => node.getAttribute('translate')?.toLowerCase() === 'no' || node.classList.contains('notranslate');
+    for (const node of visibleTextNodes(exclude)) {
+        if (node.length > maxCharacters) continue;
+        const original = node.data, text = original.trim();
+        if (text.length <= maxCharacters - characters && /\p{L}/u.test(text)) {
+            entries.push({ node, parent: node.parentNode, original, written: null });
+            texts.push(text);
+            characters += text.length;
+            if (entries.length >= maxNodes || characters >= maxCharacters) break;
         }
-        // Avoid materializing an oversized assignment list. Charge the light
-        // children we inspect to the same traversal budget.
-        let found = false;
-        for (const child of host.childNodes) {
-            if (++visited >= maxVisited) return;
-            if (child.assignedSlot === slot) { found = true; yield child; }
-        }
-        if (!found) yield* slot.childNodes;
-    }
-    const stack = [{ children: document.childNodes.values(), visible: true }];
-    while (stack.length && visited < maxVisited && entries.length < maxNodes && characters < maxCharacters) {
-        const level = stack[stack.length - 1], next = level.children.next();
-        if (next.done) { stack.pop(); continue; }
-        const node = next.value;
-        visited++;
-        if (level.summaryOnly) {
-            if (node.localName !== 'summary') continue;
-            stack.pop(); // Only the first direct summary is rendered in closed details.
-        }
-        if (node.nodeType === Node.TEXT_NODE) {
-            if (!level.visible || node.length > maxCharacters) continue;
-            const original = node.data, text = original.trim();
-            if (text.length <= maxCharacters - characters && /\p{L}/u.test(text)) {
-                entries.push({ node, parent: node.parentNode, original, written: null });
-                texts.push(text);
-                characters += text.length;
-            }
-            continue;
-        }
-        if (node.nodeType !== Node.ELEMENT_NODE || skipped.has(node.localName) || node.hasAttribute('hidden')
-            || node.getAttribute('translate')?.toLowerCase() === 'no' || node.classList.contains('notranslate')
-            || node.isContentEditable) continue;
-        const style = getComputedStyle(node);
-        if (style.display === 'none' || style.contentVisibility === 'hidden' || style.opacity === '0') continue;
-        // Descendants can override inherited visibility. Their own styles decide.
-        const visible = style.visibility !== 'hidden' && style.visibility !== 'collapse';
-        const root = node.shadowRoot || node;
-        const children = node.localName === 'slot' ? slotChildren(node)
-            : (visible ? root.childNodes : root.children)[Symbol.iterator]();
-        stack.push({ children, visible, summaryOnly: node.localName === 'details' && !node.open });
     }
     return texts;
     """#

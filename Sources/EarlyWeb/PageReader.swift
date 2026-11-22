@@ -5,6 +5,7 @@ import WebKit
 
 /// A readable copy of an article, extracted by Mozilla Readability.
 public struct ReaderArticle: Equatable, Sendable {
+    static let maximumContentBytes = 4_000_000
     public let title: String
     public let byline: String?
     public let siteName: String?
@@ -18,7 +19,7 @@ public struct ReaderArticle: Equatable, Sendable {
 
     init?(_ value: Any?) {
         guard let values = value as? [String: Any], let content = values["content"] as? String,
-              !content.isEmpty, content.utf8.count <= 4_000_000 else { return nil }
+              !content.isEmpty, content.utf8.count <= Self.maximumContentBytes else { return nil }
         func text(_ key: String) -> String? {
             let value = (values[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             return value?.isEmpty == false ? String(value!.prefix(300)) : nil
@@ -141,6 +142,8 @@ extension WebViewManager {
     static let readerWorld = WKContentWorld.world(name: "Early.Reader")
     static let readabilitySource = readabilityResource("Readability")
     static let readerableSource = readabilityResource("Readability-readerable")
+    static let readerArguments = ["maxElements": 20_000, "maxNodes": 60_000, "maxDepth": 256,
+                                  "maxSourceCharacters": 4_000_000, "maxContentBytes": ReaderArticle.maximumContentBytes]
 
     private static func readabilityResource(_ name: String) -> String? {
         Bundle.module.url(forResource: name, withExtension: "js", subdirectory: "Readability")
@@ -160,8 +163,8 @@ extension WebViewManager {
             return
         }
         let generation = page.navigationGeneration
-        page.view.callAsyncJavaScript("\(source)\nreturn isProbablyReaderable(document);",
-            arguments: [:], in: nil, in: Self.readerWorld) { [weak self, weak page] result in
+        page.view.callAsyncJavaScript("\(Self.readerPreflight)\n\(source)\nreturn isProbablyReaderable(document);",
+            arguments: Self.readerArguments, in: nil, in: Self.readerWorld) { [weak self, weak page] result in
                 guard let self, let page, self.pages[id] === page, page.navigationGeneration == generation else { return }
                 let available = (try? result.get()) as? Bool ?? false
                 if page.isReaderAvailable != available { page.isReaderAvailable = available }
@@ -179,7 +182,7 @@ extension WebViewManager {
         defer { page.isPreparingReader = false }
         let generation = page.navigationGeneration
         let value = try? await page.view.callAsyncJavaScript("\(source)\n\(Self.readerExtraction)",
-            arguments: [:], in: nil, contentWorld: Self.readerWorld)
+            arguments: Self.readerArguments, in: nil, contentWorld: Self.readerWorld)
         guard pages[id] === page, page.navigationGeneration == generation, !page.isReaderShown,
               let article = ReaderArticle(value) else { return false }
         hideFind(id)
@@ -229,10 +232,53 @@ extension WebViewManager {
         }
     }
 
+    /// Check the live document without allocating a clone or a complete node list.
+    static let readerPreflight = #"""
+    const withinReaderBudget = () => {
+        let elements = 0, nodes = 0, characters = 0;
+        const stack = [document.childNodes.values()];
+        while (stack.length) {
+            const next = stack[stack.length - 1].next();
+            if (next.done) { stack.pop(); continue; }
+            if (++nodes > maxNodes || stack.length > maxDepth) return false;
+            const node = next.value;
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                if (++elements > maxElements || (nodes += node.attributes.length) > maxNodes) return false;
+                characters += node.localName.length;
+                for (const attribute of node.attributes) {
+                    characters += attribute.name.length + attribute.value.length;
+                    if (characters > maxSourceCharacters) return false;
+                }
+            } else if (node instanceof CharacterData) {
+                characters += node.length;
+            } else if (node.nodeType === Node.DOCUMENT_TYPE_NODE) {
+                characters += node.name.length + node.systemId.length + node.publicId.length;
+            }
+            if (characters > maxSourceCharacters) return false;
+            const container = node instanceof HTMLTemplateElement ? node.content : node;
+            const children = container.childNodes, childCount = children.length;
+            // Reject wide subtrees before crossing into JavaScript for each child.
+            if (childCount > maxNodes - nodes || (childCount > maxElements - elements
+                && container.childElementCount > maxElements - elements)) return false;
+            if (childCount) stack.push(children.values());
+            // A document clone also copies open roots marked as clonable.
+            const shadow = node.shadowRoot;
+            if (shadow?.clonable && shadow.firstChild) stack.push(shadow.childNodes.values());
+        }
+        return true;
+    };
+    if (!withinReaderBudget()) return null;
+    """#
+
     /// Appended to Readability in the same function body.
-    static let readerExtraction = #"""
-    const parsed = new Readability(document.cloneNode(true), { charThreshold: 500 }).parse();
-    if (!parsed || !parsed.content) return null;
+    static let readerExtraction = readerPreflight + #"""
+
+    const fitsContentBudget = content => !!content && content.length <= maxContentBytes
+        && (content.length <= maxContentBytes / 3 || new TextEncoder().encode(content).length <= maxContentBytes);
+    const parsed = new Readability(document.cloneNode(true), {
+        charThreshold: 500, maxElemsToParse: maxElements
+    }).parse();
+    if (!parsed || !fitsContentBudget(parsed.content)) return null;
     const holder = new DOMParser().parseFromString('<!doctype html><body></body>', 'text/html');
     holder.body.innerHTML = parsed.content;
     holder.querySelectorAll('script, style, link, meta, base, iframe, frame, frameset, object, embed, applet, '
@@ -250,14 +296,17 @@ extension WebViewManager {
             }
         }
     }
+    const content = holder.body.innerHTML;
+    if (!fitsContentBudget(content)) return null;
     const text = holder.body.textContent || '';
+    const metadata = value => typeof value === 'string' ? value.slice(0, 1200) : null;
     return {
-        title: parsed.title || document.title || '',
-        byline: parsed.byline || null,
-        siteName: parsed.siteName || null,
-        lang: parsed.lang || document.documentElement.lang || null,
-        dir: parsed.dir || null,
-        content: holder.body.innerHTML,
+        title: metadata(parsed.title || document.title),
+        byline: metadata(parsed.byline),
+        siteName: metadata(parsed.siteName),
+        lang: metadata(parsed.lang || document.documentElement.lang),
+        dir: metadata(parsed.dir),
+        content,
         words: (text.match(/\S+/g) || []).length
     };
     """#

@@ -78,6 +78,65 @@ struct PageReaderTests {
         #expect(try await fixture.evaluate("typeof Readability", in: tab) as? String == "undefined")
     }
 
+    @Test(arguments: ["elements", "depth", "attribute", "template"])
+    func oversizedPagesAreRejectedBeforeCloningEvenAfterReaderWasOffered(_ growth: String) async throws {
+        let (fixture, tab) = try await readerFixture()
+        defer { fixture.cleanup() }
+        let manager = fixture.manager, view = try fixture.page(tab).view
+        var arguments: [String: Any] = WebViewManager.readerArguments
+        arguments["growth"] = growth
+        _ = try await view.callAsyncJavaScript("""
+            const extra = document.body.appendChild(document.createElement('div'));
+            extra.id = 'extra';
+            if (growth === 'elements') {
+                for (let n = 0; n <= maxElements; n++) extra.append(document.createElement('span'));
+            } else if (growth === 'depth') {
+                let parent = extra;
+                for (let n = 0; n <= maxDepth; n++) parent = parent.appendChild(document.createElement('span'));
+            } else if (growth === 'attribute') {
+                extra.setAttribute('data-large', 'a'.repeat(maxSourceCharacters + 1));
+            } else {
+                const template = extra.appendChild(document.createElement('template'));
+                template.content.append(document.createComment('x'.repeat(maxSourceCharacters + 1)));
+            }
+            """, arguments: arguments, in: nil, contentWorld: WebViewManager.readerWorld)
+        _ = try await view.callAsyncJavaScript("""
+            globalThis.readerClones = 0;
+            const clone = Node.prototype.cloneNode;
+            Node.prototype.cloneNode = function(deep) {
+                if (this === document) readerClones++;
+                return clone.call(this, deep);
+            };
+            """, arguments: [:], in: nil, contentWorld: WebViewManager.readerWorld)
+        #expect(await !manager.showReader(tab.id, accent: accent))
+        #expect(try await view.callAsyncJavaScript("return readerClones;", arguments: [:], in: nil,
+            contentWorld: WebViewManager.readerWorld) as? Int == 0)
+        #expect(manager.readerView(for: tab.id) == nil && view.url == fixture.url("article"))
+        #expect(try await fixture.evaluate("!!document.querySelector('#extra') && !!document.querySelector('article iframe')", in: tab) as? Bool == true)
+    }
+
+    @Test func utf8LimitRejectsOversizedArticleHTMLBeforeReparsingIt() async throws {
+        let (fixture, tab) = try await readerFixture()
+        defer { fixture.cleanup() }
+        let view = try fixture.page(tab).view
+        let source = try #require(WebViewManager.readabilitySource)
+        let probe = try await view.callAsyncJavaScript("""
+            document.querySelector('article').appendChild(document.createElement('p')).textContent = '字'.repeat(2200);
+            const parse = DOMParser.prototype.parseFromString;
+            let parses = 0;
+            DOMParser.prototype.parseFromString = function(...args) {
+                parses++;
+                return parse.apply(this, args);
+            };
+            try {
+                const result = (() => { \(source)\n\(WebViewManager.readerExtraction) })();
+                return [result === null, parses === 0];
+            } finally { DOMParser.prototype.parseFromString = parse; }
+            """, arguments: WebViewManager.readerArguments.merging(["maxContentBytes": 6000]) { _, new in new },
+            in: nil, contentWorld: WebViewManager.readerWorld)
+        #expect(probe as? [Bool] == [true, true], "The result fits in UTF-16 length but exceeds the UTF-8 byte cap")
+    }
+
     @Test func readerSharesZoomAndFindAndLinksOrNavigationReturnToThePage() async throws {
         let (fixture, tab) = try await readerFixture()
         defer { fixture.cleanup() }

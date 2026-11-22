@@ -116,6 +116,15 @@ final class TestPages: NSObject, WKURLSchemeHandler {
             """)
             return
         }
+        if url.path == "/find" {
+            respond(to: task, url: url, html: """
+            <!doctype html><title>Page Find</title><body style="font:18px -apple-system;padding:32px">
+            <h1>Page Find</h1>
+            <button onclick="document.querySelectorAll('p').forEach(p => p.hidden = false)">Reveal matches</button>
+            <p hidden>Needle in the first paragraph.</p><p hidden>Needle in the second paragraph.</p></body>
+            """)
+            return
+        }
         if url.path == "/article" {
             // Long enough for Readability's article check; French for translation.
             let paragraph = url.query == "lang=fr"
