@@ -220,6 +220,25 @@ import Testing
         await fixture.cleanup(first, second)
     }
 
+    @Test func clearingFromSettingsWithNoWindowKeepsTheSavedSidebarIcons() async throws {
+        let fixture = Fixture(), model = try await fixture.start()
+        let profile = model.coordinator.profileID
+        let kept = URL(string: "https://kept.invalid")!, removed = URL(string: "https://removed.invalid")!
+        let pin = try #require(model.coordinator.navigate(to: kept, target: .newTab(spaceID: model.coordinator.activeSpaceID)))
+        #expect(model.coordinator.setPinned(pin, pinned: true))
+        let pixel = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")!
+        let icons = FaviconStore(appearance: .light, profileID: profile, ephemeral: true) { _, _, _ in pixel }
+        icons.request(kept)
+        icons.request(removed)
+        try await wait { icons.image(for: kept) != nil && icons.image(for: removed) != nil }
+        fixture.app.closeWindow(nil)
+        #expect(fixture.app.windowModel(nil) == nil)
+        #expect(await fixture.app.clearHistory(.all, profile: profile))
+        #expect(icons.image(for: kept) != nil && icons.image(for: removed) == nil)
+        await icons.shutdown()
+        await fixture.cleanup(model)
+    }
+
     @Test(arguments: [false, true])
     func terminationWaitsForAcceptedVisitsEvenAfterTheirWindowClosed(closeWindow: Bool) async throws {
         let fixture = Fixture(), model = try await fixture.start()

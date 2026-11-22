@@ -9,6 +9,13 @@ import Foundation
 final class BoundedResponse: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     /// Whether to follow a redirect to the new request.
     typealias Redirects = @Sendable (HTTPURLResponse, URLRequest) -> Bool
+    typealias Output = (Data, URLResponse)
+
+    private enum Completion {
+        case unregistered
+        case waiting(CheckedContinuation<Output, any Error>)
+        case finished(Result<Output, any Error>)
+    }
 
     private let limit: Int
     private let redirects: Redirects
@@ -16,55 +23,67 @@ final class BoundedResponse: NSObject, URLSessionDataDelegate, @unchecked Sendab
     private let lock = NSLock()
     private var body = Data()
     private var response: URLResponse?
-    private var continuation: CheckedContinuation<(Data, URLResponse), any Error>?
+    private var completion = Completion.unregistered
+    private var exceededLimit = false
 
-    private init(limit: Int, redirects: @escaping Redirects) {
+    init(limit: Int, redirects: @escaping Redirects = { _, _ in true }) {
         self.limit = limit
         self.redirects = redirects
     }
 
     static func load(_ request: URLRequest, in session: URLSession, limit: Int,
-                     redirects: @escaping Redirects = { _, _ in true }) async throws -> (Data, URLResponse) {
+                     redirects: @escaping Redirects = { _, _ in true }) async throws -> Output {
         let reader = BoundedResponse(limit: limit, redirects: redirects)
         let task = session.dataTask(with: request)
         task.delegate = reader
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                reader.lock.withLock { reader.continuation = continuation }
-                task.resume()
-            }
+            try await reader.waitForCompletion(starting: task.resume)
         } onCancel: {
             task.cancel()
         }
     }
 
-    private func finish(_ result: Result<(Data, URLResponse), any Error>) {
-        let waiting = lock.withLock { () -> CheckedContinuation<(Data, URLResponse), any Error>? in
-            defer { continuation = nil }
-            return continuation
+    func waitForCompletion(starting start: @Sendable () -> Void) async throws -> Output {
+        try await withCheckedThrowingContinuation { continuation in
+            let result = lock.withLock { () -> Result<Output, any Error>? in
+                switch completion {
+                case .finished(let result): return result
+                case .waiting: preconditionFailure("A response can have only one waiter")
+                case .unregistered:
+                    completion = .waiting(continuation)
+                    return nil
+                }
+            }
+            if let result { continuation.resume(with: result) }
+            else { start() }
         }
-        waiting?.resume(with: result)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
-        guard response.expectedContentLength <= limit else {
-            finish(.failure(URLError(.dataLengthExceedsMaximum)))
-            completionHandler(.cancel)
-            return
+        let allow = lock.withLock {
+            if case .finished = completion { return false }
+            guard !exceededLimit else { return false }
+            exceededLimit = response.expectedContentLength > limit
+            if exceededLimit { return false }
+            self.response = response
+            return true
         }
-        lock.withLock { self.response = response }
-        completionHandler(.allow)
+        completionHandler(allow ? .allow : .cancel)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         let tooLong = lock.withLock { () -> Bool in
+            if case .finished = completion { return false }
+            guard !exceededLimit else { return false }
+            if data.count > limit - body.count {
+                exceededLimit = true
+                return true
+            }
             body.append(data)
-            return body.count > limit
+            return false
         }
-        guard tooLong else { return }
-        finish(.failure(URLError(.dataLengthExceedsMaximum)))
-        dataTask.cancel()
+        if tooLong { dataTask.cancel() }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -73,12 +92,24 @@ final class BoundedResponse: NSObject, URLSessionDataDelegate, @unchecked Sendab
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
-        if let error {
-            finish(.failure(error))
-            return
+        let delivery = lock.withLock { () -> (CheckedContinuation<Output, any Error>, Result<Output, any Error>)? in
+            if case .finished = completion { return nil }
+            let result: Result<Output, any Error>
+            if exceededLimit { result = .failure(URLError(.dataLengthExceedsMaximum)) }
+            else if let error { result = .failure(error) }
+            else if let response { result = .success((body, response)) }
+            else { result = .failure(URLError(.badServerResponse)) }
+
+            // Cancellation can complete before the caller installs its waiter.
+            // Keep the result and wait for this callback even on size rejection,
+            // so callers don't free a network slot while the task is cancelling.
+            let previous = completion
+            completion = .finished(result)
+            body = Data()
+            response = nil
+            if case .waiting(let waiter) = previous { return (waiter, result) }
+            return nil
         }
-        let (body, response) = lock.withLock { (self.body, self.response) }
-        guard let response else { finish(.failure(URLError(.badServerResponse))); return }
-        finish(.success((body, response)))
+        if let (waiter, result) = delivery { waiter.resume(with: result) }
     }
 }
