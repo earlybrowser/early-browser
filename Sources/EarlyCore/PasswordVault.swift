@@ -5,6 +5,13 @@ import Foundation
 import Observation
 import Security
 
+/// Only a missing file means the vault or its development key has never been saved.
+private func readVaultFile(at url: URL) throws(PasswordVault.KeyError) -> Data? {
+    do { return try Data(contentsOf: url) }
+    catch CocoaError.fileReadNoSuchFile, CocoaError.fileNoSuchFile { return nil }
+    catch { throw .init(status: errSecIO) }
+}
+
 /// One saved sign-in for a website's origin (`scheme://host[:port]`). Logins
 /// saved from an HTTP sign-in prompt also keep the realm it asked for.
 public struct SavedLogin: Codable, Equatable, Hashable, Identifiable, Sendable {
@@ -156,8 +163,7 @@ public struct FileVaultKey: PasswordVaultKey {
     public func remove() throws {}
 
     private func read() throws -> Data? {
-        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        let data = try Data(contentsOf: file)
+        guard let data = try readVaultFile(at: file) else { return nil }
         guard data.count == 32 else { throw PasswordVault.KeyError(status: errSecDecode) }
         return data
     }
@@ -286,11 +292,8 @@ public final class PasswordVault {
         let started = generation
         let task = Task { @MainActor [weak self] () -> Bool in
             let result = await Task.detached { () -> Result<(contents: Contents?, key: Data?), KeyError> in
-                guard let data = try? Data(contentsOf: fileURL) else {
-                    // No file: nothing saved yet, and no reason to ask the Keychain.
-                    return FileManager.default.fileExists(atPath: fileURL.path) ? .failure(KeyError(status: errSecIO)) : .success((nil, nil))
-                }
                 do {
+                    guard let data = try readVaultFile(at: fileURL) else { return .success((nil, nil)) }
                     let current = try key.existing()
                     if let current, let contents = try? Self.decrypt(data, key: SymmetricKey(data: current)) {
                         return .success((contents, current))
@@ -658,8 +661,8 @@ public final class PasswordVault {
     public nonisolated static func remove(fileURL: URL?, key: (any PasswordVaultKey)?) async throws {
         try await Task.detached(priority: .utility) {
             let recoveryFiles = try fileURL.map { try Self.recoveryFiles(for: $0) } ?? []
-            try ProfileDataCleanup.removeItem(at: fileURL)
-            for recovery in recoveryFiles { try ProfileDataCleanup.removeItem(at: recovery) }
+            if let fileURL { try BackgroundFileIO.removeFileIfPresent(at: fileURL) }
+            for recovery in recoveryFiles { try BackgroundFileIO.removeFileIfPresent(at: recovery) }
             // Retry keys even when an earlier attempt already removed the file.
             // Shared key implementations deliberately keep other profiles' keys.
             try key?.remove()
@@ -671,20 +674,23 @@ public final class PasswordVault {
     /// belong to the exact vault stem. Similar names and other profiles stay.
     private nonisolated static func recoveryFiles(for file: URL) throws -> [URL] {
         let files: [URL]
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
         do {
-            files = try FileManager.default.contentsOfDirectory(at: file.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+            files = try FileManager.default.contentsOfDirectory(at: file.deletingLastPathComponent(), includingPropertiesForKeys: Array(keys))
         } catch CocoaError.fileReadNoSuchFile, CocoaError.fileNoSuchFile {
             return []
         }
         let prefix = file.deletingPathExtension().lastPathComponent + ".unreadable-"
-        return files.filter { candidate in
+        return try files.filter { candidate in
             let name = candidate.lastPathComponent
             guard name.hasPrefix(prefix), name.hasSuffix(".vault") else { return false }
-            let suffix = name.dropFirst(prefix.count).dropLast(".vault".count)
-            if Int(suffix) != nil { return true }
-            guard suffix.count > 37, suffix[suffix.index(suffix.endIndex, offsetBy: -37)] == "-",
-                  UUID(uuidString: String(suffix.suffix(36))) != nil else { return false }
-            return Int(suffix.dropLast(37)) != nil
+            var stamp = name.dropFirst(prefix.count).dropLast(".vault".count)
+            if stamp.count > 37, stamp.suffix(37).first == "-", UUID(uuidString: String(stamp.suffix(36))) != nil {
+                stamp = stamp.dropLast(37)
+            }
+            guard let seconds = Int(stamp), String(seconds) == stamp else { return false }
+            let values = try candidate.resourceValues(forKeys: keys)
+            return values.isRegularFile == true && values.isSymbolicLink == false
         }
     }
 

@@ -25,9 +25,21 @@ extension EarlyStateArchive {
         try BackgroundFileIO.writeSynchronously(data, to: url)
     }
 
+    public struct Backup: Sendable {
+        public let url: URL
+        public let retentionWarning: String?
+    }
+
     public static func backup(workspace: BrowserWorkspace, settings: PortableSettings?, in directory: URL,
                               retaining limit: Int = 5, id: UUID = UUID(),
                               using input: NavigationInput = NavigationInput()) throws -> URL {
+        try writeBackup(workspace: workspace, settings: settings, in: directory, retaining: limit, id: id, using: input).url
+    }
+
+    /// Once committed, the backup can be used even if an older file is locked.
+    public static func writeBackup(workspace: BrowserWorkspace, settings: PortableSettings?, in directory: URL,
+                                   retaining limit: Int = 5, id: UUID = UUID(),
+                                   using input: NavigationInput = NavigationInput()) throws -> Backup {
         let archive = EarlyStateArchive(workspace: workspace, settings: settings)
         let data = try archive.encoded(using: input)
         // Both import paths share one directory. Finish each write and prune
@@ -42,8 +54,11 @@ extension EarlyStateArchive {
             formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
             let file = directory.appendingPathComponent("Before Import \(formatter.string(from: archive.exportedAt)) \(id).json")
             try BackgroundFileIO.writeSynchronously(data, to: file)
-            try pruneBackups(in: directory, keeping: file, retaining: limit)
-            return file
+            do { try pruneBackups(in: directory, keeping: file, retaining: limit) }
+            catch {
+                return Backup(url: file, retentionWarning: "Early saved the new backup but couldn’t finish removing older backups. \(error.localizedDescription)")
+            }
+            return Backup(url: file, retentionWarning: nil)
         }
     }
 
@@ -56,12 +71,18 @@ extension EarlyStateArchive {
         let earlier = try files.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys))
             .compactMap { url -> (url: URL, modified: Date)? in
                 guard url.lastPathComponent != newest.lastPathComponent,
-                      url.lastPathComponent.range(of: namePattern, options: .regularExpression) != nil,
-                      let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true,
-                      values.isSymbolicLink == false, let modified = values.contentModificationDate else { return nil }
+                      url.lastPathComponent.range(of: namePattern, options: .regularExpression) != nil else { return nil }
+                let values = try url.resourceValues(forKeys: keys)
+                guard values.isRegularFile == true, values.isSymbolicLink == false,
+                      let modified = values.contentModificationDate else { return nil }
                 return (url, modified)
             }
             .sorted { ($0.modified, $0.url.lastPathComponent) > ($1.modified, $1.url.lastPathComponent) }
-        for backup in earlier.dropFirst(max(1, limit) - 1) { try? files.removeItem(at: backup.url) }
+        var removalError: (any Error)?
+        for backup in earlier.dropFirst(max(1, limit) - 1) {
+            do { try BackgroundFileIO.removeFileIfPresent(at: backup.url) }
+            catch { removalError = error }
+        }
+        if let removalError { throw removalError }
     }
 }

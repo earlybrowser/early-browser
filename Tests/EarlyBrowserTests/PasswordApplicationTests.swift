@@ -211,11 +211,10 @@ struct PasswordApplicationTests {
         let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswordImport-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A file where the passwords' folder should be: nothing can be written.
         let blocker = directory.appending(path: "Passwords")
-        try Data().write(to: blocker)
         let vault = PasswordVault(fileURL: blocker.appending(path: "profile.vault"), key: TestKey())
-        #expect(await vault.load())
+        try #require(await vault.load())
+        try Data().write(to: blocker)
         let file = directory.appending(path: "Passwords.csv")
         try Data("name,url,username,password,note\nExample,https://example.com/,ada,pw,\n".utf8).write(to: file)
 
@@ -279,11 +278,11 @@ struct PasswordApplicationTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let blocker = directory.appending(path: "Passwords")
-        try Data().write(to: blocker)
         let saved = PasswordVault(fileURL: directory.appending(path: "other.vault"), key: TestKey())
         let unsaved = PasswordVault(fileURL: blocker.appending(path: "profile.vault"), key: TestKey())
         let opened = await saved.load(), alsoOpened = await unsaved.load()
-        #expect(opened && alsoOpened)
+        try #require(opened && alsoOpened)
+        try Data().write(to: blocker)
         saved.save(origin: "https://example.com", username: "grace", password: "kept")
         unsaved.save(origin: "https://example.com", username: "ada", password: "draft")
 

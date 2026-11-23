@@ -433,13 +433,13 @@ struct PasswordVaultTests {
     @Test func failedSavesAreReportedAndCanBeTriedAgain() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "EarlyPasswords-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
-        // A file where the passwords' folder should be: nothing can be written.
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let blocker = directory.appending(path: "Passwords")
-        try Data().write(to: blocker)
         let url = blocker.appending(path: "profile.vault")
         let vault = PasswordVault(fileURL: url, key: MemoryVaultKey())
-        #expect(await vault.load())
+        try #require(await vault.load())
+        // Make the first write fail after the empty vault was successfully opened.
+        try Data().write(to: blocker)
         vault.save(origin: "https://example.com", username: "ada", password: "kept")
         #expect(await vault.flush() == false)
         #expect(vault.saveError?.contains("couldn’t be written") == true, "\(vault.saveError ?? "nil")")

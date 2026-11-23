@@ -86,6 +86,55 @@ final class EarlyUITests: XCTestCase {
         expectRuntime(app, tabs: 1, views: 1, created: 1)
     }
 
+    func testDroppingAFinderFileOntoALivePageOpensItInANewTab() throws {
+        let files = FileManager.default
+        let directory = files.temporaryDirectory.appendingPathComponent("Early Finder Drop \(UUID())", isDirectory: true)
+        try files.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? files.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("Drop Document.html")
+        try Data("<!doctype html><title>Dropped document</title><p>Opened from Finder</p>".utf8).write(to: file)
+
+        let app = launchFreshApp()
+        navigate(app, to: "early-test://fixture/one")
+        expectPage(app, "One")
+        let original = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
+        let viewport = app.webViews.firstMatch.frame.intersection(app.windows["browser"].frame)
+        XCTAssertFalse(viewport.isEmpty)
+        let drop = CGPoint(x: viewport.maxX - 32, y: viewport.midY)
+
+        let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
+        NSWorkspace.shared.activateFileViewerSelecting([file])
+        let window = finder.windows[directory.lastPathComponent]
+        XCTAssertTrue(window.waitForExistence(timeout: 10))
+        defer {
+            if window.exists {
+                finder.activate()
+                window.buttons["_XCUI:CloseWindow"].click()
+            }
+        }
+        finder.typeKey("2", modifierFlags: .command) // List view exposes the filename, including when extensions are hidden.
+        if window.frame.contains(drop) {
+            finder.typeKey(.leftArrow, modifierFlags: [.function, .control])
+        }
+        let names = [file.lastPathComponent, file.deletingPathExtension().lastPathComponent]
+        let item = window.descendants(matching: .any)
+            .matching(NSPredicate(format: "label IN %@ OR value IN %@ OR title IN %@", names, names, names)).firstMatch
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            item.exists && item.isHittable && !window.frame.contains(drop)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed, window.debugDescription)
+        // Anchor both coordinates to Finder so resolving the destination cannot raise Early over the source.
+        let source = item.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let point = source.screenPoint
+        source.click(forDuration: 0.2, thenDragTo: source.withOffset(CGVector(dx: drop.x - point.x, dy: drop.y - point.y)),
+                     withVelocity: .slow, thenHoldForDuration: 0.2)
+        app.activate()
+        XCTAssertTrue(app.webViews.staticTexts["Opened from Finder"].firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+        expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.buttons[original].click()
+        expectPage(app, "One")
+    }
+
     func testKeyboardCommandsLeaveEmptyWindowUsable() {
         let app = launchFreshApp()
         let query = app.textFields["commandBar.query"]
@@ -346,8 +395,8 @@ final class EarlyUITests: XCTestCase {
         pasteText("keep right", into: app.webViews.textFields["Saved text"], in: app)
         app.buttons[firstID].rightClick()
         // The Tab menu has a Split View submenu too; use the open context menu's.
-        visibleMenuItem("Split View")?.hover()
-        activateFirstSubmenuItem("Place on Left", in: app)
+        pressMenuKey(.rightArrow, on: "Split View", in: app)
+        pressMenuKey(.return, on: "Place on Left", in: app)
         let divider = app.descendants(matching: .any).matching(identifier: "split.divider").firstMatch
         XCTAssertTrue(divider.waitForExistence(timeout: 5))
         let left = app.descendants(matching: .any).matching(identifier: "browser.pane.\(firstID.dropFirst(4))").firstMatch
@@ -364,11 +413,11 @@ final class EarlyUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: initiallyResized, object: nil)], timeout: 5), .completed)
         for reversed in [true, false] {
             app.buttons[firstID].rightClick()
-            visibleMenuItem("Split View")?.hover()
+            pressMenuKey(.rightArrow, on: "Split View", in: app)
             XCTAssertTrue(app.menuItems["Swap Sides"].waitForExistence(timeout: 3))
             XCTAssertTrue(app.menuItems["Exit Split View"].exists)
             XCTAssertFalse(app.menuItems["Place on Left"].exists || app.menuItems["Place on Right"].exists)
-            activateFirstSubmenuItem("Swap Sides", in: app)
+            pressMenuKey(.return, on: "Swap Sides", in: app)
             let swapped = NSPredicate { _, _ in reversed ? left.frame.midX > right.frame.midX : left.frame.midX < right.frame.midX }
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: swapped, object: nil)], timeout: 5), .completed)
             XCTAssertEqual(left.textFields["Saved text"].value as? String, "keep left")
@@ -732,27 +781,21 @@ final class EarlyUITests: XCTestCase {
         target.item.click()
     }
 
-    /// Menu bar menus expose their items even while closed, so a title the
-    /// open menu shares with them must be found among the visible items.
-    private func visibleMenuItem(_ title: String) -> XCUIElement? {
-        visibleMenuTarget(title)?.item
-    }
-
-    /// Right Arrow selects the first enabled item of the highlighted submenu.
-    /// A mouse click can dismiss a nested AppKit menu while crossing to its child.
-    private func activateFirstSubmenuItem(_ title: String, in app: XCUIApplication,
-                                          file: StaticString = #filePath, line: UInt = #line) {
-        app.typeKey(.rightArrow, modifierFlags: [])
-        let selected = app.menuItems.matching(identifier: title)
-            .matching(NSPredicate(format: "selected == true AND enabled == true"))
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            selected.allElementsBoundByIndex.filter { self.usableMenuFrame($0.frame) }.count == 1
-        }, object: nil)
-        guard XCTWaiter.wait(for: [ready], timeout: 5) == .completed else {
-            XCTFail("Expected the open submenu to select \(title) before Return", file: file, line: line)
-            return
-        }
-        app.typeKey(.return, modifierFlags: [])
+    /// AppKit can leave the pointer over a submenu without highlighting it.
+    /// Select the named parent before entering it, and the named child before activating it.
+    private func pressMenuKey(_ key: XCUIKeyboardKey, on title: String, in app: XCUIApplication,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        guard let target = visibleMenuTarget(title, file: file, line: line) else { return }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        repeat {
+            guard let item = try? target.item.snapshot(), item.isEnabled, usableMenuFrame(item.frame) else { break }
+            if item.isSelected {
+                app.typeKey(key, modifierFlags: [])
+                return
+            }
+            app.typeKey(.downArrow, modifierFlags: [])
+        } while ContinuousClock.now < deadline
+        XCTFail("Couldn’t select the visible menu item “\(title)”. \(app.debugDescription)", file: file, line: line)
     }
 
     private func usableMenuFrame(_ frame: CGRect) -> Bool {
@@ -1188,10 +1231,8 @@ final class EarlyUITests: XCTestCase {
         saved.click()
         saved.typeText("keep through Space moves")
         func chooseDestination(_ name: String, from menu: String) {
-            let submenu = app.menuItems[menu]
-            XCTAssertTrue(submenu.waitForExistence(timeout: 3))
-            submenu.hover()
-            activateFirstSubmenuItem(name, in: app)
+            pressMenuKey(.rightArrow, on: menu, in: app)
+            pressMenuKey(.return, on: name, in: app)
         }
         func move(_ row: XCUIElement, to name: String) {
             let contextAction = row.identifier.hasPrefix("folder.") ? "Rename Folder…" : "Rename Tab…"

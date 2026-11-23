@@ -225,6 +225,39 @@ struct ProfileApplicationTests {
         await fixture.cleanup()
     }
 
+    @Test func websiteDataRemovalRequiresTheCurrentProfileSnapshot() async throws {
+        let fixture = Fixture()
+        _ = await fixture.start()
+        let app = fixture.application
+        let personal = try #require(app.windowModel(nil))
+        let workID = try #require(app.createProfile(name: "Work", color: .purple))
+        app.openProfile(workID)
+        let work = try #require(fixture.opened.last.flatMap { app.windowModel($0) })
+        let site = "example.com"
+        for (model, value) in [(personal, "personal"), (work, "work")] {
+            let cookie = try #require(HTTPCookie(properties: [.domain: site, .path: "/", .name: "login", .value: value]))
+            await model.webViews.websiteDataStore.httpCookieStore.setCookie(cookie)
+        }
+        let data = ProfileWebsiteData<WKWebsiteDataRecord>()
+        let personalID = personal.coordinator.profileID
+        await data.load(for: personalID, fetch: app.websiteData)
+        let old = try #require(data.records(for: personalID))
+        await data.load(for: workID, fetch: app.websiteData)
+        let current = try #require(data.records(for: workID))
+        try #require(old.records.contains { $0.displayName == site })
+        let record = try #require(current.records.first { $0.displayName == site })
+
+        await data.remove(old.records, from: old, using: app.removeWebsiteData, fetch: app.websiteData)
+        let workCookies = work.webViews.websiteDataStore.httpCookieStore
+        let personalCookies = personal.webViews.websiteDataStore.httpCookieStore
+        #expect(await workCookies.allCookies().map(\.value) == ["work"])
+        #expect(await personalCookies.allCookies().map(\.value) == ["personal"])
+        await data.remove([record], from: current, using: app.removeWebsiteData, fetch: app.websiteData)
+        #expect(await workCookies.allCookies().isEmpty)
+        #expect(await personalCookies.allCookies().map(\.value) == ["personal"])
+        await fixture.cleanup()
+    }
+
     @Test func defaultMigrationAndSharedWriterKeepProfileWindowsAndWebsiteStoresSeparate() async throws {
         let fixture = Fixture()
         let legacy = BrowserSession()

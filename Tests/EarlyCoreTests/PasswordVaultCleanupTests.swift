@@ -30,7 +30,8 @@ struct PasswordVaultCleanupTests {
         let owned = ["profile.unreadable-1700000000.vault",
                      "profile.unreadable-1700000001-\(UUID().uuidString).vault"]
         let preserved = ["profile-other.unreadable-1700000000.vault", "profile.unreadable-not-a-timestamp.vault",
-                         "profile.unreadable-1700000000-not-a-uuid.vault", "profile.unreadable-1700000000.vault.notes"]
+                         "profile.unreadable-1700000000-not-a-uuid.vault", "profile.unreadable-1700000000.vault.notes",
+                         "profile.unreadable-+12.vault", "profile.unreadable-00012-\(UUID()).vault"]
         for name in owned + preserved { try Data(name.utf8).write(to: directory.appendingPathComponent(name)) }
 
         if opened {
@@ -87,6 +88,27 @@ struct PasswordVaultCleanupTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let key = MemoryVaultKey(Data(repeating: 7, count: 32))
         try await PasswordVault.remove(fileURL: directory.appendingPathComponent("missing/profile.vault"), key: key)
+        #expect(key.key == nil)
+    }
+
+    @Test func cleanupNeverRecursivelyDeletesADirectoryNamedLikeAVault() async throws {
+        let files = FileManager.default
+        let directory = try directory()
+        defer { try? files.removeItem(at: directory) }
+        let vault = directory.appendingPathComponent("profile.vault")
+        let recovery = directory.appendingPathComponent("profile.unreadable-1700000000.vault")
+        for path in [vault, recovery] {
+            try files.createDirectory(at: path, withIntermediateDirectories: false)
+            try Data("keep".utf8).write(to: path.appendingPathComponent("document"))
+        }
+        let key = MemoryVaultKey(Data(repeating: 7, count: 32))
+        await #expect(throws: (any Error).self) { try await PasswordVault.remove(fileURL: vault, key: key) }
+        #expect(key.key != nil)
+        try #require(files.fileExists(atPath: vault.appendingPathComponent("document").path))
+
+        try files.moveItem(at: vault, to: directory.appendingPathComponent("relocated"))
+        try await PasswordVault.remove(fileURL: vault, key: key)
+        #expect(try Data(contentsOf: recovery.appendingPathComponent("document")) == Data("keep".utf8))
         #expect(key.key == nil)
     }
 }

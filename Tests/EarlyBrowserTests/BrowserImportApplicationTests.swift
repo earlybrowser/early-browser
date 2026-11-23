@@ -48,7 +48,8 @@ struct BrowserImportApplicationTests {
         return ["profile": .init(profileID: session.profileID, profileName: "Default", spaceID: session.activeSpaceID, spaceName: "Personal")]
     }
 
-    @Test func browserImportKeepsTheNewBackupAndFourEarlierBackupsByModificationTime() async throws {
+    @Test(arguments: [false, true], [false, true])
+    func importsKeepRecentBackupsAndReportLockedOlderFiles(stateArchive: Bool, locked: Bool) async throws {
         let fixture = Fixture()
         await fixture.start()
         let app = fixture.application, files = FileManager.default
@@ -74,13 +75,27 @@ struct BrowserImportApplicationTests {
         try files.createDirectory(at: folder, withIntermediateDirectories: false)
         let link = file(81)
         try files.createSymbolicLink(at: link, withDestinationURL: note)
+        if locked { try files.setAttributes([.immutable: true], ofItemAtPath: file(10).path) }
+        defer {
+            if locked {
+                try? files.setAttributes([.immutable: false], ofItemAtPath: file(10).path)
+                try? files.removeItem(at: fixture.directory)
+            }
+        }
 
-        let document = source()
-        let result = await app.importBrowser(document, selected: document.initiallySelected, destinations: destinations(app), flatten: false)
+        let result: EarlyAppDelegate.ImportOutcome
+        if stateArchive {
+            result = await app.importState(before, mode: .addProfiles, includeSettings: false)
+        } else {
+            let document = source()
+            result = await app.importBrowser(document, selected: document.initiallySelected, destinations: destinations(app), flatten: false)
+        }
         try #require(result.succeeded, "\(result.message)")
         let backup = try #require(result.backup)
-        let expected = Set(([95, 20, 30, 40].map(file) + [backup, note, folder, link]).map(\.lastPathComponent))
+        let retained = [95, 20, 30, 40] + (locked ? [10] : [])
+        let expected = Set((retained.map(file) + [backup, note, folder, link]).map(\.lastPathComponent))
         #expect(Set(try files.contentsOfDirectory(atPath: directory.path)) == expected)
+        #expect(result.message.contains("older backups") == locked)
         #expect(try await app.readStateArchive(at: backup).workspace == before.workspace)
         #expect(try Data(contentsOf: note) == Data("unrelated".utf8))
         await fixture.cleanup()
