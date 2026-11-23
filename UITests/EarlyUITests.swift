@@ -100,7 +100,6 @@ final class EarlyUITests: XCTestCase {
         let original = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab.'")).firstMatch.identifier
         let viewport = app.webViews.firstMatch.frame.intersection(app.windows["browser"].frame)
         XCTAssertFalse(viewport.isEmpty)
-        let drop = CGPoint(x: viewport.maxX - 32, y: viewport.midY)
 
         let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
         NSWorkspace.shared.activateFileViewerSelecting([file])
@@ -113,26 +112,42 @@ final class EarlyUITests: XCTestCase {
             }
         }
         finder.typeKey("2", modifierFlags: .command) // List view exposes the filename, including when extensions are hidden.
-        if window.frame.contains(drop) {
+        if unobstructedFileDropPoint(in: viewport, outside: window.frame) == nil {
             finder.typeKey(.leftArrow, modifierFlags: [.function, .control])
         }
         let names = [file.lastPathComponent, file.deletingPathExtension().lastPathComponent]
         let item = window.descendants(matching: .any)
             .matching(NSPredicate(format: "label IN %@ OR value IN %@ OR title IN %@", names, names, names)).firstMatch
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            item.exists && item.isHittable && !window.frame.contains(drop)
+            item.exists && item.isHittable && self.unobstructedFileDropPoint(in: viewport, outside: window.frame) != nil
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed, window.debugDescription)
+        let drop = try XCTUnwrap(unobstructedFileDropPoint(in: viewport, outside: window.frame))
         // Anchor both coordinates to Finder so resolving the destination cannot raise Early over the source.
         let source = item.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let point = source.screenPoint
         source.click(forDuration: 0.2, thenDragTo: source.withOffset(CGVector(dx: drop.x - point.x, dy: drop.y - point.y)),
-                     withVelocity: .slow, thenHoldForDuration: 0.2)
-        app.activate()
+                     withVelocity: .slow, thenHoldForDuration: 1)
         XCTAssertTrue(app.webViews.staticTexts["Opened from Finder"].firstMatch.waitForExistence(timeout: 10), app.debugDescription)
         expectRuntime(app, tabs: 2, views: 2, created: 2)
         app.buttons[original].click()
         expectPage(app, "One")
+    }
+
+    private func unobstructedFileDropPoint(in viewport: CGRect, outside finder: CGRect) -> CGPoint? {
+        // Leave room around Finder's shadow and inside Early's web view so
+        // the drag spends time over the destination before mouse-up.
+        let target = viewport.insetBy(dx: 24, dy: 24)
+        let covered = target.intersection(finder.insetBy(dx: -24, dy: -24))
+        let clearAreas = covered.isEmpty ? [target] : [
+            CGRect(x: target.minX, y: target.minY, width: covered.minX - target.minX, height: target.height),
+            CGRect(x: covered.maxX, y: target.minY, width: target.maxX - covered.maxX, height: target.height),
+            CGRect(x: target.minX, y: target.minY, width: target.width, height: covered.minY - target.minY),
+            CGRect(x: target.minX, y: covered.maxY, width: target.width, height: target.maxY - covered.maxY)
+        ]
+        guard let area = clearAreas.filter({ $0.width >= 80 && $0.height >= 80 })
+            .max(by: { $0.width * $0.height < $1.width * $1.height }) else { return nil }
+        return CGPoint(x: area.midX, y: area.midY)
     }
 
     func testKeyboardCommandsLeaveEmptyWindowUsable() {
