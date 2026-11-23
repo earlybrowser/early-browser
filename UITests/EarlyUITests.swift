@@ -130,6 +130,7 @@ final class EarlyUITests: XCTestCase {
                      withVelocity: .slow, thenHoldForDuration: 1)
         XCTAssertTrue(app.webViews.staticTexts["Opened from Finder"].firstMatch.waitForExistence(timeout: 10), app.debugDescription)
         expectRuntime(app, tabs: 2, views: 2, created: 2)
+        app.activate()
         app.buttons[original].click()
         expectPage(app, "One")
     }

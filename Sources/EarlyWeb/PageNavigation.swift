@@ -97,6 +97,22 @@ extension WebViewManager {
         }
     }
 
+    /// WebKit disables drop-to-navigate on macOS 10.13+ unless the UI delegate
+    /// opts in. Enable Load only for native file drags so pages still receive
+    /// HTML5 uploads and file inputs first, while unhandled Finder drops reach
+    /// decideLocalNavigation to open in a new tab.
+    @objc(_webView:dragDestinationActionMaskForDraggingInfo:)
+    public func webView(_ webView: WKWebView, dragDestinationActionMaskForDraggingInfo info: Any) -> UInt {
+        // WKDragDestinationAction: DHTML (1) | Edit (2) | Load (4).
+        let defaultMask: UInt = 1 | 2
+        guard webView is BrowserWebView,
+              let dragging = info as? any NSDraggingInfo,
+              BrowserWebView.containsDroppedFiles(in: dragging.draggingPasteboard) else {
+            return defaultMask
+        }
+        return defaultMask | 4
+    }
+
     /// Local documents load only from Early's own requests (Open File, drops,
     /// restoration, reload), from another local page, or through history. A
     /// web page can never open a local file.
@@ -104,6 +120,14 @@ extension WebViewManager {
                                decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         guard (try? input.validate(url)) != nil, let id = identities[ObjectIdentifier(webView)], let page = pages[id] else {
             decisionHandler(.cancel)
+            return
+        }
+        // Open an unhandled native drop in a new tab, leaving the current page in place.
+        if targetIsMainFrame == true, type == .other,
+           let file = (webView as? BrowserWebView)?.takeDroppedFile(matching: url) {
+            decisionHandler(.cancel)
+            cancelForPolicy(id, url: url, mainFrame: true, notice: nil)
+            onOpenFiles?([file])
             return
         }
         let mainFrame = targetIsMainFrame ?? true
@@ -115,11 +139,6 @@ extension WebViewManager {
         }
         decisionHandler(.cancel)
         cancelForPolicy(id, url: url, mainFrame: mainFrame, notice: nil)
-        // Open an unhandled native drop in a new tab, leaving the page in place.
-        if targetIsMainFrame == true, type == .other,
-           let file = (webView as? BrowserWebView)?.takeDroppedFile(matching: url) {
-            onOpenFiles?([file])
-        }
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,

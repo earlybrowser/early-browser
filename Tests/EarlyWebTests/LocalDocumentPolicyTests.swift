@@ -29,6 +29,33 @@ struct LocalDocumentPolicyTests {
         override var modifierFlags: NSEvent.ModifierFlags { [] }
     }
 
+    @MainActor
+    private final class DraggingInfo: NSObject, @MainActor NSDraggingInfo {
+        var draggingDestinationWindow: NSWindow?
+        var draggingSourceOperationMask: NSDragOperation = .copy
+        var draggingLocation: NSPoint
+        var draggedImageLocation: NSPoint = .zero
+        var draggedImage: NSImage?
+        var draggingPasteboard: NSPasteboard
+        var draggingSource: Any?
+        var draggingSequenceNumber = 1
+        var draggingFormation: NSDraggingFormation = .default
+        var animatesToDestination = false
+        var numberOfValidItemsForDrop = 1
+        var springLoadingHighlight: NSSpringLoadingHighlight = .none
+
+        init(window: NSWindow, location: NSPoint, pasteboard: NSPasteboard) {
+            self.draggingDestinationWindow = window
+            self.draggingLocation = location
+            self.draggingPasteboard = pasteboard
+        }
+        func slideDraggedImage(to screenPoint: NSPoint) {}
+        func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?,
+                                    classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+                                    using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+        func resetSpringLoading() {}
+    }
+
     private let input = NavigationInput(allowedSchemes: ["http", "https", "file"])
 
     private func fixture() -> (WebViewManager, BrowserTab, BrowserPage) {
@@ -102,6 +129,21 @@ struct LocalDocumentPolicyTests {
         #expect(opened == [[file]], "The file opens in a different tab")
         #expect(fileDecision(manager, page, file) == .cancel)
         #expect(opened == [[file]])
+
+        // Finder file-reference URLs under /var/folders resolve to /private/var/folders
+        // while coordinated paths may stay under /var/folders; both refer to the same file.
+        let tempDir = FileManager.default.temporaryDirectory.appending(path: "early-drop-alias-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let tempFile = tempDir.appending(path: "Drop Document.html")
+        try Data("<!doctype html><p>Alias</p>".utf8).write(to: tempFile)
+        let privateFile = URL(filePath: "/private" + tempFile.standardizedFileURL.resolvingSymlinksInPath().path)
+        let aliasPasteboard = NSPasteboard(name: .init("EarlyFileDropAlias-\(UUID())"))
+        defer { aliasPasteboard.releaseGlobally() }
+        try #require(aliasPasteboard.writeObjects([privateFile as NSURL]))
+        view.noteFileDrop(from: aliasPasteboard)
+        #expect(fileDecision(manager, page, tempFile) == .cancel)
+        #expect(opened.count == 2)
     }
 
     @Test func earlysOwnLocalLoadAndHistoryAreAllowed() {
@@ -167,5 +209,106 @@ struct LocalDocumentPolicyTests {
         #expect(WebViewManager.documentName(for: page.view, extension: "pdf") == "Quarterly- Report-2026.pdf")
         #expect(WebViewManager.imageName(for: URL(string: "https://example.com/a/photo.png")!) == "photo.png")
         #expect(WebViewManager.imageName(for: URL(string: "data:image/png;base64,AAAA")!) == "Image")
+    }
+
+    @Test func nativeFileDropAcceptsUnhandledPagesAndPreservesPageUploadZones() async throws {
+        let (manager, tab, page) = fixture()
+        defer { manager.discardAll() }
+        let view = try #require(page.view as? BrowserWebView)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        view.frame = NSRect(x: 0, y: 0, width: 400, height: 400)
+        window.contentView = view
+        defer { window.contentView = nil }
+
+        let folder = FileManager.default.temporaryDirectory.appending(path: "early-drop-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appending(path: "Drop Document.html")
+        try Data("<!doctype html><title>Dropped</title><p>Opened</p>".utf8).write(to: file)
+
+        // Finder puts a file reference URL alongside NSFilenamesPboardType; under /var/folders
+        // those resolve to /private/var/folders vs /var/folders unless symlinks are normalized.
+        let filePasteboard = NSPasteboard(name: .init("EarlyFinderDrop-\(UUID())"))
+        defer { filePasteboard.releaseGlobally() }
+        filePasteboard.clearContents()
+        let reference = try #require((file as NSURL).fileReferenceURL())
+        try #require(filePasteboard.writeObjects([reference as NSURL]))
+        filePasteboard.addTypes([NSPasteboard.PasteboardType("NSFilenamesPboardType")], owner: nil)
+        filePasteboard.setPropertyList([file.path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+
+        let linkPasteboard = NSPasteboard(name: .init("EarlyLinkDrop-\(UUID())"))
+        defer { linkPasteboard.releaseGlobally() }
+        linkPasteboard.clearContents()
+        try #require(linkPasteboard.writeObjects([URL(string: "https://example.com/other")! as NSURL]))
+
+        func loadHTML(_ html: String, title: String) async throws {
+            view.loadHTMLString(html, baseURL: tab.currentURL)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while view.isLoading || view.title != title {
+                guard ContinuousClock.now < deadline else { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(view.title == title)
+        }
+
+        func settleDragUpdated(_ info: DraggingInfo) async throws -> NSDragOperation {
+            _ = view.draggingEntered(info)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            var updated: NSDragOperation = []
+            while ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(50))
+                updated = view.draggingUpdated(info)
+                if !updated.isEmpty { break }
+            }
+            return updated
+        }
+
+        var opened: [[URL]] = []
+        manager.onOpenFiles = { opened.append($0) }
+
+        // 1. Plain page: WebKit accepts the file drag and routes the unhandled drop to onOpenFiles.
+        try await loadHTML("<!doctype html><title>Plain</title><p>Plain page</p>", title: "Plain")
+        let fileDrop = DraggingInfo(window: window, location: NSPoint(x: 200, y: 200), pasteboard: filePasteboard)
+        let plainUpdated = try await settleDragUpdated(fileDrop)
+        #expect(!plainUpdated.isEmpty, "Live pages must accept Finder file drops during draggingUpdated")
+        #expect(view.prepareForDragOperation(fileDrop))
+        #expect(view.performDragOperation(fileDrop))
+        let dropDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while opened.isEmpty, ContinuousClock.now < dropDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(opened.count == 1)
+        #expect(opened.first?.first?.standardizedFileURL.resolvingSymlinksInPath().path == file.standardizedFileURL.resolvingSymlinksInPath().path)
+
+        // 2. Non-file drag: do not opt into drop-to-navigate on a live page.
+        let linkDrop = DraggingInfo(window: window, location: NSPoint(x: 200, y: 200), pasteboard: linkPasteboard)
+        #expect(manager.webView(view, dragDestinationActionMaskForDraggingInfo: linkDrop) == (1 | 2))
+        #expect(manager.webView(view, dragDestinationActionMaskForDraggingInfo: fileDrop) == (1 | 2 | 4))
+
+        // 3. Page upload drop zone: the page handles the drop and Early does not open a new tab.
+        opened.removeAll()
+        try await loadHTML("""
+            <!doctype html><title>Upload</title>
+            <body style="margin:0;width:100vw;height:100vh">
+            <div id="zone" style="width:100%;height:100%">Drop files here</div>
+            <script>
+            window.droppedCount = 0;
+            const zone = document.getElementById('zone');
+            zone.addEventListener('dragover', e => { e.preventDefault(); });
+            zone.addEventListener('drop', e => { e.preventDefault(); window.droppedCount = e.dataTransfer.files.length; });
+            </script></body>
+            """, title: "Upload")
+        let uploadUpdated = try await settleDragUpdated(fileDrop)
+        #expect(!uploadUpdated.isEmpty)
+        #expect(view.performDragOperation(fileDrop))
+        let uploadDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        var droppedCount = 0
+        while droppedCount == 0, ContinuousClock.now < uploadDeadline {
+            try await Task.sleep(for: .milliseconds(30))
+            droppedCount = (try? await view.evaluateJavaScript("window.droppedCount") as? Int) ?? 0
+        }
+        #expect(droppedCount == 1, "HTML5 upload zones must still receive dropped files")
+        #expect(opened.isEmpty, "A file handled by the page must not also open in a new tab")
     }
 }
