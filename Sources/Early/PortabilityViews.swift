@@ -53,6 +53,7 @@ struct StatePortabilityCard: View {
     @Bindable var application: EarlyAppDelegate
     @State private var preview: StateImportPreview?
     @State private var outcome: EarlyAppDelegate.ImportOutcome?
+    @State private var sessionRecoveryFolder: URL?
     @State private var transfer: Task<Void, Never>?
     @State private var transferID: UUID?
 
@@ -86,6 +87,12 @@ struct StatePortabilityCard: View {
                     Button("Show Backup in Finder") { NSWorkspace.shared.activateFileViewerSelecting([backup]) }
                         .buttonStyle(.link).font(.caption)
                 }
+                if let folder = sessionRecoveryFolder {
+                    Text("For a local recovery copy, quit Early and copy this folder. Restore the folder to the same location with Early closed.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Show Session Folder") { NSWorkspace.shared.open(folder) }
+                        .buttonStyle(.link).font(.caption)
+                }
             }
         }
         .sheet(item: $preview) { preview in
@@ -116,12 +123,18 @@ struct StatePortabilityCard: View {
             transferID = request
             transfer = Task {
                 let result: EarlyAppDelegate.ImportOutcome
+                var recoveryFolder: URL?
                 do {
                     try await application.exportState(to: url)
                     result = .init(message: "Exported to “\(url.lastPathComponent)”.", succeeded: true)
                 } catch is CancellationError { return }
+                catch let problem as EarlyStateArchive.Problem where problem.isCapacityLimit {
+                    result = .init(message: "Couldn’t export. \(problem.message)", succeeded: false)
+                    recoveryFolder = application.storageURL?.deletingLastPathComponent()
+                }
                 catch { result = .init(message: "Couldn’t export. \(error.localizedDescription)", succeeded: false) }
                 guard transferID == request else { return }
+                sessionRecoveryFolder = recoveryFolder
                 outcome = result; transfer = nil; transferID = nil
             }
         }
@@ -135,6 +148,7 @@ struct StatePortabilityCard: View {
         panel.prompt = "Review"
         panel.message = "Choose a file exported from Early. You’ll see what it contains before anything changes."
         present(panel) { url in
+            sessionRecoveryFolder = nil
             let request = UUID()
             transferID = request
             transfer = Task {

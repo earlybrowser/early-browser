@@ -637,7 +637,10 @@ private struct ProfileEditorSheet: View {
         if let profile = request.profile {
             if application.editProfile(profile.id, name: name, color: color) { onSave(profile.id) }
             else { error = "This profile could not be saved. Please try again." }
-        } else if let id = application.createProfile(name: name, color: color) { onSave(id) }
+        } else if application.workspace?.canCreateProfile == false {
+            error = "You can create up to \(EarlyStateArchive.maximumProfiles) profiles."
+        }
+        else if let id = application.createProfile(name: name, color: color) { onSave(id) }
         else { error = "This profile could not be created. Please try again." }
     }
 }

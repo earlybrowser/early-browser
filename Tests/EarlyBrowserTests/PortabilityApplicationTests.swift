@@ -73,7 +73,7 @@ struct PortabilityApplicationTests {
         #expect(privateWindow.openLocations([two]))
         fixture.preferences.searchEngine = .bing
         let archive = try #require(app.stateArchive())
-        let text = try #require(String(data: try archive.encoded(), encoding: .utf8))
+        let text = try #require(String(data: try archive.encoded(using: input), encoding: .utf8))
         #expect(text.contains("fixture/one") && !text.contains("fixture/two"), "Private windows are never exported")
         #expect(archive.workspace.profiles.count == 1 && archive.settings?.searchEngine == "bing")
         fixture.preferences.searchEngine = .google

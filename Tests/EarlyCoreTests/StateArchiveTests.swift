@@ -58,6 +58,119 @@ struct StateArchiveTests {
         return ids
     }
 
+    private func workspace(withProfiles count: Int) throws -> BrowserWorkspace {
+        var workspace = BrowserWorkspace()
+        for index in 1..<count { try #require(workspace.createProfile(name: "Profile \(index)") != nil) }
+        return workspace
+    }
+
+    private func unvalidatedBytes(of workspace: BrowserWorkspace) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(EarlyStateArchive(workspace: workspace, settings: nil))
+    }
+
+    @Test(arguments: [32, 33, EarlyStateArchive.maximumProfiles])
+    func profileBoundsRoundTripThroughTheFileWriter(count: Int) throws {
+        var workspace = try workspace(withProfiles: count)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyProfiles-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try EarlyStateArchive.write(workspace: workspace, settings: nil, to: file)
+        #expect(try EarlyStateArchive.read(from: file, using: input).workspace == workspace)
+        if count == EarlyStateArchive.maximumProfiles {
+            #expect(workspace.createProfile(name: "One extra") == nil)
+            #expect(workspace.profiles.count == count)
+        }
+    }
+
+    @Test func aValidArchiveCannotMakeTheDestinationExceedTheProfileLimit() throws {
+        let source = try workspace(withProfiles: EarlyStateArchive.maximumProfiles)
+        let archive = try EarlyStateArchive.decode(EarlyStateArchive(workspace: source, settings: nil).encoded())
+        let current = BrowserWorkspace()
+        #expect(throws: EarlyStateArchive.Problem.tooManyProfiles) { try archive.merged(into: current, mode: .addProfiles) }
+        let replacement = try archive.merged(into: current, mode: .replaceMatching)
+        let bytes = try EarlyStateArchive(workspace: replacement.workspace, settings: nil).encoded()
+        #expect(try EarlyStateArchive.decode(bytes).workspace.profiles.count == EarlyStateArchive.maximumProfiles)
+        #expect(replacement.replaced == [current.defaultProfileID])
+    }
+
+    @Test func anOversizedLegacySessionCanBeRecoveredAndLeavesOlderBackupsIntact() async throws {
+        let files = FileManager.default
+        let directory = files.temporaryDirectory.appendingPathComponent("EarlyLegacySession-\(UUID())")
+        let live = directory.appendingPathComponent("Live"), recovered = directory.appendingPathComponent("Recovered")
+        let backups = directory.appendingPathComponent("Backups")
+        defer { try? files.removeItem(at: directory) }
+        let supported = try workspace(withProfiles: EarlyStateArchive.maximumProfiles)
+        var legacy = supported
+        let extra = BrowserSession()
+        legacy.profiles.append(BrowserProfile(id: extra.profileID, name: "Legacy profile"))
+        legacy.sessions.append(extra)
+        do {
+            let repository = SessionRepository(fileURL: live.appendingPathComponent("session.sqlite"))
+            try await repository.saveWorkspace(legacy, revision: 1)
+        }
+        try files.copyItem(at: live, to: recovered)
+        let repository = SessionRepository(fileURL: recovered.appendingPathComponent("session.sqlite"))
+        #expect(try await repository.loadWorkspace() == legacy)
+        #expect(throws: EarlyStateArchive.Problem.tooManyProfiles) { try EarlyStateArchive.decode(unvalidatedBytes(of: legacy)) }
+
+        var saved: [URL] = []
+        for _ in 0..<6 {
+            saved.append(try EarlyStateArchive.backup(workspace: supported, settings: nil, in: backups, retaining: 6))
+        }
+        #expect(throws: EarlyStateArchive.Problem.tooManyProfiles) {
+            try EarlyStateArchive.backup(workspace: legacy, settings: nil, in: backups, retaining: 5)
+        }
+        #expect(Set(try files.contentsOfDirectory(atPath: backups.path)) == Set(saved.map(\.lastPathComponent)))
+        #expect(try EarlyStateArchive.read(from: #require(saved.last), using: input).workspace == supported)
+    }
+
+    @Test func tabCapacityCountsEveryWindowAndRejectsGrowthAcrossTheLimit() throws {
+        var session = BrowserSession()
+        let limit = EarlyStateArchive.maximumTabs
+        func newTab() -> BrowserTab {
+            BrowserTab(spaceID: session.activeSpaceID, profileID: session.profileID, title: "Page", currentURL: docs)
+        }
+        session.tabs = (0..<(limit / 2)).map { _ in newTab() }
+        let siblingTabs = (session.tabs.count..<limit).map { _ in newTab() }
+        session.additionalWindows = [BrowserSession(profileID: session.profileID, activeSpaceID: session.activeSpaceID,
+                                               tabs: siblingTabs, spaces: session.spaces)]
+        var full = BrowserWorkspace(session: session)
+        let archive = EarlyStateArchive(workspace: full, settings: nil)
+        let loaded = try EarlyStateArchive.decode(archive.encoded())
+        #expect(loaded.workspace == full)
+
+        var single = BrowserSession()
+        single.tabs = [BrowserTab(spaceID: single.activeSpaceID, profileID: single.profileID, title: "Extra", currentURL: mail)]
+        let addition = EarlyStateArchive(workspace: BrowserWorkspace(session: single), settings: nil)
+        #expect(throws: EarlyStateArchive.Problem.tooManyTabs) { try addition.merged(into: full, mode: .addProfiles) }
+
+        full.sessions[0].additionalWindows[0].tabs.append(newTab())
+        #expect(throws: EarlyStateArchive.Problem.tooManyTabs) { try EarlyStateArchive(workspace: full, settings: nil).encoded() }
+        #expect(throws: EarlyStateArchive.Problem.tooManyTabs) { try EarlyStateArchive.decode(unvalidatedBytes(of: full)) }
+    }
+
+    @Test func archivesAtTheByteLimitReopenAndLargerWritesLeaveTheDestinationIntact() throws {
+        var root = BrowserSession()
+        root.tabs = [BrowserTab(spaceID: root.activeSpaceID, profileID: root.profileID, title: "Page", currentURL: docs)]
+        var workspace = BrowserWorkspace(session: root)
+        let base = try EarlyStateArchive(workspace: workspace, settings: nil).encoded().count
+        workspace.sessions[0].tabs[0].title += String(repeating: "x", count: EarlyStateArchive.maximumSize - base)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("EarlyFullArchive-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try EarlyStateArchive.write(workspace: workspace, settings: nil, to: file)
+        let previous = try Data(contentsOf: file)
+        #expect(previous.count == EarlyStateArchive.maximumSize)
+        let archive = try EarlyStateArchive.read(from: file, using: input)
+        #expect(archive.workspace == workspace)
+        #expect(throws: EarlyStateArchive.Problem.tooLarge) { try archive.merged(into: BrowserWorkspace(), mode: .addProfiles) }
+
+        workspace.sessions[0].tabs[0].title += "x"
+        #expect(throws: EarlyStateArchive.Problem.tooLarge) { try EarlyStateArchive.write(workspace: workspace, settings: nil, to: file) }
+        #expect(try Data(contentsOf: file) == previous)
+        #expect(throws: EarlyStateArchive.Problem.tooLarge) { try EarlyStateArchive.decode(previous + Data([0x20])) }
+    }
+
     @Test func anExportRoundTripsWithoutRecentlyClosedTabsOrUsage() throws {
         let original = try workspace()
         let preferences = BrowserPreferences(defaults: UserDefaults(suiteName: "local.early.tests.archive.\(UUID())")!)

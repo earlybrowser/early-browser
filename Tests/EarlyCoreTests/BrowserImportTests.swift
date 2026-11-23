@@ -16,6 +16,25 @@ struct BrowserImportTests {
         ["profile": .init(profileID: workspace.defaultProfileID, profileName: "Default",
                           spaceID: workspace.sessions[0].activeSpaceID, spaceName: "Personal")]
     }
+
+    @Test func aPreparedBrowserImportChecksCapacityAgainWhenRebased() throws {
+        let document = try document()
+        let selected = document.initiallySelected
+        let destinations: [String: BrowserImportDestination] = ["profile": .init(profileName: "Imported", spaceName: "Reading")]
+        var current = BrowserWorkspace()
+        let prepared = try document.candidate(into: current, selecting: selected, destinations: destinations)
+        for index in 1..<(EarlyStateArchive.maximumProfiles - 1) {
+            try #require(current.createProfile(name: "Local \(index)") != nil)
+        }
+        #expect(try prepared.adding(to: current).profiles.count == EarlyStateArchive.maximumProfiles)
+
+        try #require(current.createProfile(name: "Last profile") != nil)
+        #expect(throws: BrowserImportProblem.capacity) { try prepared.adding(to: current) }
+        #expect(throws: BrowserImportProblem.capacity) {
+            try document.candidate(into: current, selecting: selected, destinations: destinations)
+        }
+    }
+
     @Test func htmlAndChromiumPreserveLooseItemsFoldersEmptyFoldersAndIntentionalCopies() throws {
         for name in ["Bookmarks.html", "ChromiumBookmarks.json"] {
             let doc = try BrowserImportReaders.read(fixture(name), name: "Test")

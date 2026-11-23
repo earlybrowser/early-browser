@@ -190,7 +190,7 @@ struct BrowserImportContextTests {
     }
     @Test func profileCapacityIsCheckedWithoutCombiningContextsOrChangingInput() throws {
         var doc = BrowserImportDocument(source: "Many contexts")
-        for number in 0..<36 {
+        for number in 0..<EarlyStateArchive.maximumProfiles {
             doc.nodes += [.init(id: "p\(number)", kind: .profile, title: "Context \(number)"),
                 .init(id: "t\(number)", parentID: "p\(number)", kind: .pin, title: "Page", url: URL(string: "https://example.invalid/")!)]
         }

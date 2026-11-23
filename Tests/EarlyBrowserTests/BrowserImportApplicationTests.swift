@@ -47,6 +47,45 @@ struct BrowserImportApplicationTests {
         let session = app.workspace!.sessions[0]
         return ["profile": .init(profileID: session.profileID, profileName: "Default", spaceID: session.activeSpaceID, spaceName: "Personal")]
     }
+
+    @Test func browserImportKeepsTheNewBackupAndFourEarlierBackupsByModificationTime() async throws {
+        let fixture = Fixture()
+        await fixture.start()
+        let app = fixture.application, files = FileManager.default
+        let directory = try #require(app.backupsDirectory)
+        try files.createDirectory(at: directory, withIntermediateDirectories: true)
+        let before = try #require(app.stateArchive())
+        let bytes = try before.encoded(using: app.browserImportValidation())
+        let timestamp = Date().addingTimeInterval(600)
+        func file(_ number: Int) -> URL {
+            let suffix = String(format: "%012d", number)
+            return directory.appendingPathComponent("Before Import 9999-01-01 at 10.20.30 00000000-0000-0000-0000-\(suffix).json")
+        }
+        // All six filenames have the same displayed second. The UUID order
+        // differs from disk recency, and the retention cutoff has a tie.
+        for (number, offset) in [(90, 0.0), (95, 0.1), (10, 0.1), (20, 0.2), (30, 0.3), (40, 0.4)] {
+            let path = file(number)
+            try bytes.write(to: path)
+            try files.setAttributes([.modificationDate: timestamp.addingTimeInterval(offset)], ofItemAtPath: path.path)
+        }
+        let note = directory.appendingPathComponent("Before Import notes.json")
+        try Data("unrelated".utf8).write(to: note)
+        let folder = file(80)
+        try files.createDirectory(at: folder, withIntermediateDirectories: false)
+        let link = file(81)
+        try files.createSymbolicLink(at: link, withDestinationURL: note)
+
+        let document = source()
+        let result = await app.importBrowser(document, selected: document.initiallySelected, destinations: destinations(app), flatten: false)
+        try #require(result.succeeded, "\(result.message)")
+        let backup = try #require(result.backup)
+        let expected = Set(([95, 20, 30, 40].map(file) + [backup, note, folder, link]).map(\.lastPathComponent))
+        #expect(Set(try files.contentsOfDirectory(atPath: directory.path)) == expected)
+        #expect(try await app.readStateArchive(at: backup).workspace == before.workspace)
+        #expect(try Data(contentsOf: note) == Data("unrelated".utf8))
+        await fixture.cleanup()
+    }
+
     @Test func importingPreservesLiveWebViewsSelectionsMediaAndSiblingWindows() async throws {
         let fixture = Fixture(); await fixture.start()
         let app = fixture.application, model = try #require(fixture.application.model)
