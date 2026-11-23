@@ -28,18 +28,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Read the release
+      - name: Validate the stable release
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          gh release download "$tag" --pattern SHA256SUMS --dir build
-          sha256="$(awk -v zip="Early-$version.zip" '$2 == zip { print $1 }' build/SHA256SUMS)"
-          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No checksum for Early-$version.zip"; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+        run: python3 Scripts/validate-release.py >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: earlybrowser/homebrew-tap

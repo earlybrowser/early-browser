@@ -726,11 +726,14 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         captureWorkspace()
         guard let workspace else { throw EarlyStateArchive.Problem.invalid }
         let settings = preferences?.portableSettings
-        try await BackgroundFileIO.run { try EarlyStateArchive.write(workspace: workspace, settings: settings, to: url) }
+        let input = input
+        try await BackgroundFileIO.run { try EarlyStateArchive.write(workspace: workspace, settings: settings, to: url, using: input) }
     }
 
-    @ObservationIgnored var archiveBackupWriter: @Sendable (BrowserWorkspace, PortableSettings?, URL) async throws -> URL = { workspace, settings, directory in
-        try await BackgroundFileIO.run { try EarlyStateArchive.backup(workspace: workspace, settings: settings, in: directory, retaining: 5) }
+    @ObservationIgnored var archiveBackupWriter: @Sendable (BrowserWorkspace, PortableSettings?, URL, NavigationInput) async throws -> URL = { workspace, settings, directory, input in
+        try await BackgroundFileIO.run {
+            try EarlyStateArchive.backup(workspace: workspace, settings: settings, in: directory, using: input)
+        }
     }
 
     /// The password, privacy and update settings a file would change here.
@@ -772,32 +775,18 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             captureWorkspace()
             guard let current = workspace else { throw BrowserImportProblem.invalid }
             guard try await journal.entries().count < 128 else { throw BrowserImportProblem.capacity }
-            let validationInput = input
-            var candidate = try await Task.detached {
+            let validationInput = input, settings = preferences?.portableSettings
+            var candidate = try await BackgroundFileIO.run {
                 try document.candidate(into: current, selecting: selected, destinations: destinations, flattenDeepFolders: flatten,
-                    collectionTargets: collectionTargets, using: validationInput)
-            }.value
+                    collectionTargets: collectionTargets, resultSettings: settings, using: validationInput)
+            }
             try Task.checkCancellation()
             // A recoverable backup must be durable before the first history insertion.
-            let backupDirectory = backupsDirectory!
+            guard let backupDirectory = backupsDirectory else { throw CocoaError(.fileWriteUnknown) }
             let backupBatchID = candidate.batch.id
-            let backup = try await Task.detached {
-                try FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                let formatter = DateFormatter()
-                formatter.locale = Locale(identifier: "en_US_POSIX")
-                formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-                let url = backupDirectory.appendingPathComponent("Before Import \(formatter.string(from: Date())) \(backupBatchID).json")
-                try EarlyStateArchive(workspace: current, settings: nil).encoded().write(to: url, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-                let file = try FileHandle(forWritingTo: url)
-                defer { try? file.close() }
-                try file.synchronize()
-                let backups = try FileManager.default.contentsOfDirectory(at: backupDirectory, includingPropertiesForKeys: nil)
-                    .filter { $0.lastPathComponent.hasPrefix("Before Import ") && $0.pathExtension == "json" }
-                    .sorted { $0.lastPathComponent < $1.lastPathComponent }
-                for old in backups.dropLast(5) where old != url { try FileManager.default.removeItem(at: old) }
-                return url
-            }.value
+            let backup = try await BackgroundFileIO.run {
+                try EarlyStateArchive.backup(workspace: current, settings: nil, in: backupDirectory, id: backupBatchID, using: validationInput)
+            }
             try await journal.write(.init(batch: candidate.batch, state: .importing))
             batch = candidate.batch
             var importedVisits = 0
@@ -808,9 +797,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             }
             try Task.checkCancellation()
             // Incorporate any page metadata/selection changes that arrived while reading.
-            captureWorkspace()
-            guard let latest = workspace else { throw BrowserImportProblem.invalid }
-            let rebased = try candidate.adding(to: latest, using: input)
+            let rebased = try await rebaseBrowserImport(candidate)
             candidate.batch = candidate.batch.adjustedPositions(in: rebased)
             try await journal.write(.init(batch: candidate.batch, state: .importing))
             batch = candidate.batch
@@ -818,8 +805,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             guard await persistence?.flush() == true else { throw SessionError.database(persistence?.error ?? "Couldn’t save the import.") }
             // The marker and organization are now durable. Never roll history back after this point.
             batch = nil
-            captureWorkspace()
-            let live = (try? candidate.adding(to: workspace ?? latest, using: input)) ?? rebased
+            let live = (try? await rebaseBrowserImport(candidate)) ?? rebased
             workspace = live
             for session in live.sessions {
                 let owners = visibleModels.filter { $0.coordinator.profileID == session.profileID }
@@ -849,6 +835,19 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             }
             return .init(message: "Import could not finish. \(error.localizedDescription)", succeeded: false)
         }
+    }
+
+    private func rebaseBrowserImport(_ candidate: BrowserImportCandidate) async throws -> BrowserWorkspace {
+        let input = input
+        for _ in 0..<8 {
+            captureWorkspace()
+            guard let current = workspace else { throw BrowserImportProblem.invalid }
+            let settings = preferences?.portableSettings
+            let merged = try await BackgroundFileIO.run { try candidate.adding(to: current, resultSettings: settings, using: input) }
+            captureWorkspace()
+            if workspace == current, preferences?.portableSettings == settings { return merged }
+        }
+        throw BrowserImportProblem.unsupported("Your browsing setup kept changing during the import. Try again in a moment.")
     }
 
     func undoBrowserImport(_ requested: BrowserImportBatch) async -> ImportOutcome {
@@ -934,12 +933,12 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             captureWorkspace()
             guard let current = workspace else { return .init(message: EarlyStateArchive.Problem.invalid.message, succeeded: false) }
             let settings = preferences.portableSettings
+            let importedSettings = includeSettings ? archive.settings : nil
+            let resultSettings = importedSettings.map { preferences.portableSettings(applying: $0, includingSensitive: includeSensitiveSettings) } ?? settings
             let result: EarlyStateArchive.ImportResult
             do {
                 result = try await BackgroundFileIO.run {
-                    let result = try archive.merged(into: current, mode: mode, using: validation)
-                    try Task.checkCancellation()
-                    return result
+                    try archive.merged(into: current, mode: mode, resultSettings: resultSettings, using: validation)
                 }
             } catch is CancellationError { return .init(message: "Import cancelled. Nothing was changed.", succeeded: false) }
             catch { return .init(message: (error as? EarlyStateArchive.Problem ?? .invalid).message, succeeded: false) }
@@ -949,7 +948,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             let backup: URL
             do {
                 guard let directory = backupsDirectory else { throw CocoaError(.fileWriteUnknown) }
-                backup = try await archiveBackupWriter(current, settings, directory)
+                backup = try await archiveBackupWriter(current, settings, directory, validation)
             } catch is CancellationError { return .init(message: "Import cancelled. Nothing was changed.", succeeded: false) }
             catch {
                 return .init(message: "Nothing was imported, because a backup of what you have couldn’t be saved. \(error.localizedDescription)", succeeded: false)

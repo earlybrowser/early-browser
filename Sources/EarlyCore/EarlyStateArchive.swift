@@ -69,17 +69,30 @@ public extension BrowserPreferences {
         }
     }
 
-    /// Uses what the file has that Early knows, leaving everything else as it
-    /// is: the sensitive settings too only when `includingSensitive`.
-    func apply(_ settings: PortableSettings, includingSensitive: Bool = false) {
+    /// The settings an import will leave, including the size of the next archive.
+    func portableSettings(applying settings: PortableSettings, includingSensitive: Bool = false) -> PortableSettings {
+        var result = portableSettings
         let sensitive = Set(Self.sensitiveToggles.map(\.name))
-        for (name, path) in Self.portableToggles where includingSensitive || !sensitive.contains(name) {
-            if let value = settings.toggles[name], self[keyPath: path] != value { self[keyPath: path] = value }
+        for (name, _) in Self.portableToggles where includingSensitive || !sensitive.contains(name) {
+            if let value = settings.toggles[name] { result.toggles[name] = value }
         }
-        if let value = settings.appearance.flatMap(Appearance.init(rawValue:)), value != appearance { appearance = value }
-        if let value = settings.searchEngine.flatMap(SearchEngine.init(rawValue:)), value != searchEngine { searchEngine = value }
-        if let value = settings.sidebarWidth, value.isFinite { sidebarWidth = value }
-        if let value = settings.shortcuts, value.isUsable, value != shortcuts { shortcuts = value }
+        if let value = settings.appearance.flatMap(Appearance.init(rawValue:)) { result.appearance = value.rawValue }
+        if let value = settings.searchEngine.flatMap(SearchEngine.init(rawValue:)) { result.searchEngine = value.rawValue }
+        if let value = settings.sidebarWidth, value.isFinite { result.sidebarWidth = SidebarWidth.clamped(value) }
+        if let value = settings.shortcuts, value.isUsable { result.shortcuts = value }
+        return result
+    }
+
+    /// Uses the same allowlist when previewing and when applying an import.
+    func apply(_ settings: PortableSettings, includingSensitive: Bool = false) {
+        let result = portableSettings(applying: settings, includingSensitive: includingSensitive)
+        for (name, path) in Self.portableToggles {
+            if let value = result.toggles[name], self[keyPath: path] != value { self[keyPath: path] = value }
+        }
+        if let value = result.appearance.flatMap(Appearance.init(rawValue:)), value != appearance { appearance = value }
+        if let value = result.searchEngine.flatMap(SearchEngine.init(rawValue:)), value != searchEngine { searchEngine = value }
+        if let value = result.sidebarWidth, value != sidebarWidth { sidebarWidth = value }
+        if let value = result.shortcuts, value != shortcuts { shortcuts = value }
     }
 }
 
@@ -91,7 +104,7 @@ public struct EarlyStateArchive: Codable, Equatable, Sendable {
     public static let formatName = "early-state"
     public static let currentVersion = 1
     public static let maximumSize = 16 * 1024 * 1024
-    public static let maximumProfiles = 32
+    public static let maximumProfiles = 64
     public static let maximumTabs = 20_000
 
     public var format: String
@@ -100,12 +113,17 @@ public struct EarlyStateArchive: Codable, Equatable, Sendable {
     public var settings: PortableSettings?
     public var workspace: BrowserWorkspace
 
-    public enum Problem: Error, Equatable, Sendable {
-        case tooLarge, notAnArchive, newerVersion, invalid
+    public enum Problem: LocalizedError, Equatable, Sendable {
+        case tooLarge, tooManyProfiles, tooManyTabs, notAnArchive, newerVersion, invalid
+
+        public var isCapacityLimit: Bool { self == .tooLarge || self == .tooManyProfiles || self == .tooManyTabs }
+        public var errorDescription: String? { message }
 
         public var message: String {
             switch self {
-            case .tooLarge: "The file is too large to be an Early export."
+            case .tooLarge: "Early archives can be up to \(EarlyStateArchive.maximumSize / (1024 * 1024)) MiB."
+            case .tooManyProfiles: "Early archives can hold up to \(EarlyStateArchive.maximumProfiles) profiles."
+            case .tooManyTabs: "Early archives can hold up to \(EarlyStateArchive.maximumTabs.formatted()) tab records across windows."
             case .notAnArchive: "The file isn’t an Early export."
             case .newerVersion: "The file was exported by a newer version of Early. Update Early to import it."
             case .invalid: "The file is damaged or incomplete, so nothing was imported."
@@ -129,11 +147,29 @@ public struct EarlyStateArchive: Codable, Equatable, Sendable {
         self.workspace = copy
     }
 
-    public func encoded() throws -> Data {
+    public func encoded(using input: NavigationInput = NavigationInput()) throws -> Data {
+        try Task.checkCancellation()
+        try Self.validateWorkspace(workspace, using: input)
+        guard format == Self.formatName, version >= 1 else { throw Problem.notAnArchive }
+        guard version <= Self.currentVersion else { throw Problem.newerVersion }
+        try Task.checkCancellation()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(self)
+        let data = try encoder.encode(self)
+        guard data.count <= Self.maximumSize else { throw Problem.tooLarge }
+        try Task.checkCancellation()
+        return data
+    }
+
+    private static func validateWorkspace(_ workspace: BrowserWorkspace, using input: NavigationInput) throws {
+        guard workspace.profiles.count <= maximumProfiles else { throw Problem.tooManyProfiles }
+        let tabCount = workspace.sessions.reduce(into: 0) { count, root in
+            count += root.tabs.count
+            for window in root.additionalWindows { count += window.tabs.count }
+        }
+        guard tabCount <= maximumTabs else { throw Problem.tooManyTabs }
+        guard (try? workspace.validate(using: input)) != nil else { throw Problem.invalid }
     }
 
     /// Reads a file, checking its size, format, version, structure and
@@ -147,10 +183,7 @@ public struct EarlyStateArchive: Codable, Equatable, Sendable {
               let version = header.version, version >= 1 else { throw Problem.notAnArchive }
         guard version <= currentVersion else { throw Problem.newerVersion }
         guard let archive = try? decoder.decode(Self.self, from: data) else { throw Problem.invalid }
-        let windows = archive.workspace.sessions.flatMap { [$0] + $0.additionalWindows }
-        guard archive.workspace.profiles.count <= maximumProfiles,
-              windows.reduce(0, { $0 + $1.tabs.count }) <= maximumTabs,
-              (try? archive.workspace.validate(using: input)) != nil else { throw Problem.invalid }
+        try validateWorkspace(archive.workspace, using: input)
         return archive
     }
 
@@ -223,11 +256,15 @@ public struct EarlyStateArchive: Codable, Equatable, Sendable {
     /// The workspace after importing, checked in full. Every Space, folder,
     /// tab and split gets a new identity, so nothing can collide with what is
     /// already here; no tab is selected, so nothing loads until it's chosen.
-    public func merged(into current: BrowserWorkspace, mode: ImportMode,
+    public func merged(into current: BrowserWorkspace, mode: ImportMode, resultSettings: PortableSettings? = nil,
                        using input: NavigationInput = NavigationInput()) throws -> ImportResult {
-        guard (try? workspace.validate(using: input)) != nil else { throw Problem.invalid }
+        try Self.validateWorkspace(workspace, using: input)
+        guard current.profiles.count <= Self.maximumProfiles else { throw Problem.tooManyProfiles }
         var draft = current
         let matches = mode == .replaceMatching ? self.matches(in: current) : [:]
+        guard current.profiles.count + workspace.profiles.count - matches.count <= Self.maximumProfiles else {
+            throw Problem.tooManyProfiles
+        }
         var map = IdentityMap()
         var result = ImportResult(workspace: current, profiles: [], replaced: [], openProfiles: [])
         for profile in workspace.profiles {
@@ -249,6 +286,7 @@ public struct EarlyStateArchive: Codable, Equatable, Sendable {
             if workspace.openProfileIDs.contains(profile.id) { result.openProfiles.append(target) }
         }
         guard (try? draft.validate(using: input)) != nil else { throw Problem.invalid }
+        _ = try EarlyStateArchive(workspace: draft, settings: resultSettings).encoded(using: input)
         result.workspace = draft
         return result
     }

@@ -73,9 +73,9 @@ struct BackgroundArchiveApplicationTests {
         _ = try await open("one", in: model)
         let archive = try #require(app.stateArchive())
         let writer = app.archiveBackupWriter
-        app.archiveBackupWriter = { workspace, settings, directory in
+        app.archiveBackupWriter = { workspace, settings, directory, input in
             await gate.pauseFirst()
-            return try await writer(workspace, settings, directory)
+            return try await writer(workspace, settings, directory, input)
         }
         let operation = Task { await app.importState(archive, mode: .addProfiles, includeSettings: false) }
         try await wait(gate)
@@ -102,9 +102,9 @@ struct BackgroundArchiveApplicationTests {
         let tab = try await open("one", in: model)
         let view = try #require(model.webViews.existingView(for: tab)), archive = try #require(app.stateArchive())
         let writer = app.archiveBackupWriter
-        app.archiveBackupWriter = { workspace, settings, directory in
+        app.archiveBackupWriter = { workspace, settings, directory, input in
             await gate.pauseFirst()
-            return try await writer(workspace, settings, directory)
+            return try await writer(workspace, settings, directory, input)
         }
         let operation = Task { await app.importState(archive, mode: .replaceMatching, includeSettings: true) }
         try await wait(gate)

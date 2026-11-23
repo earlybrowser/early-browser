@@ -76,9 +76,11 @@ public struct BrowserWorkspace: Codable, Equatable, Sendable {
         return result
     }
 
+    public var canCreateProfile: Bool { profiles.count < EarlyStateArchive.maximumProfiles }
+
     @discardableResult
     public mutating func createProfile(name: String, color: BrowserSpace.Color = .blue) -> UUID? {
-        guard let name = BrowserSpace.normalizedName(name),
+        guard canCreateProfile, let name = BrowserSpace.normalizedName(name),
               !profiles.contains(where: { $0.name.lowercased() == name.lowercased() }) else { return nil }
         let profile = BrowserProfile(name: name, color: color)
         let space = BrowserSpace(profileID: profile.id, name: name, color: color)

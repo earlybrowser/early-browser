@@ -41,7 +41,8 @@ public struct BrowserImportCandidate: Sendable {
 
     /// Rebase the additive delta onto live state after disk I/O. Page metadata,
     /// selections and unrelated windows may have changed while saving.
-    public func adding(to current: BrowserWorkspace, using input: NavigationInput = NavigationInput()) throws -> BrowserWorkspace {
+    public func adding(to current: BrowserWorkspace, resultSettings: PortableSettings? = nil,
+                       using input: NavigationInput = NavigationInput()) throws -> BrowserWorkspace {
         var merged = current
         let existingProfiles = Set(current.profiles.map(\.id))
         for profile in workspace.profiles where !existingProfiles.contains(profile.id) {
@@ -74,8 +75,15 @@ public struct BrowserImportCandidate: Sendable {
             merged.sessions[index] = root
         }
         merged.browserImportBatchIDs = (current.browserImportBatchIDs ?? []) + [batch.id]
-        try merged.validate(using: input); return merged
+        try validateImportedWorkspace(merged, settings: resultSettings, using: input)
+        return merged
     }
+}
+
+private func validateImportedWorkspace(_ workspace: BrowserWorkspace, settings: PortableSettings?, using input: NavigationInput) throws {
+    try workspace.validate(using: input)
+    do { _ = try EarlyStateArchive(workspace: workspace, settings: settings).encoded(using: input) }
+    catch let problem as EarlyStateArchive.Problem where problem.isCapacityLimit { throw BrowserImportProblem.capacity }
 }
 
 public extension BrowserImportDocument {
@@ -97,13 +105,13 @@ public extension BrowserImportDocument {
 
     func candidate(into current: BrowserWorkspace, selecting selected: Set<String>,
                    destinations: [String: BrowserImportDestination], flattenDeepFolders: Bool = false,
-                   collectionTargets: [String: Set<String>] = [:],
+                   collectionTargets: [String: Set<String>] = [:], resultSettings: PortableSettings? = nil,
                    using input: NavigationInput = NavigationInput()) throws -> BrowserImportCandidate {
         try validate()
         if !collections.isEmpty {
             let resolved = try resolvingCollections(selecting: selected, targets: collectionTargets, destinations: destinations)
             return try resolved.document.candidate(into: current, selecting: resolved.selected, destinations: destinations,
-                flattenDeepFolders: flattenDeepFolders, using: input)
+                flattenDeepFolders: flattenDeepFolders, resultSettings: resultSettings, using: input)
         }
         let included = included(selected)
         guard !selected.isEmpty else { throw BrowserImportProblem.invalid }
@@ -161,7 +169,7 @@ public extension BrowserImportDocument {
                 profile = id
             } else if let id = profileMap[profileKey] { profile = id }
             else {
-                guard result.workspace.profiles.count < EarlyStateArchive.maximumProfiles else { throw BrowserImportProblem.capacity }
+                guard result.workspace.canCreateProfile else { throw BrowserImportProblem.capacity }
                 let name = EarlyStateArchive.uniqueName(destination.profileName, in: result.workspace.profiles)
                 guard let id = result.workspace.createProfile(name: name, color: sourceProfile.color ?? .blue) else { throw BrowserImportProblem.invalid }
                 profileMap[profileKey] = id; profile = id
@@ -243,14 +251,7 @@ public extension BrowserImportDocument {
         guard result.history.values.allSatisfy({ $0.count <= Self.maximumVisits }) else { throw BrowserImportProblem.capacity }
         result.batch.historyProfiles = result.history.keys.sorted { $0.uuidString < $1.uuidString }
         result.workspace.browserImportBatchIDs = (current.browserImportBatchIDs ?? []) + [result.batch.id]
-        try result.workspace.validate(using: input)
-        let windows = result.workspace.sessions.flatMap { [$0] + $0.additionalWindows }
-        guard result.workspace.profiles.count <= EarlyStateArchive.maximumProfiles,
-              windows.reduce(0, { $0 + $1.tabs.count }) <= EarlyStateArchive.maximumTabs else { throw BrowserImportProblem.capacity }
-        let archive = EarlyStateArchive(workspace: result.workspace, settings: nil)
-        let encoded = try archive.encoded()
-        guard encoded.count <= EarlyStateArchive.maximumSize else { throw BrowserImportProblem.capacity }
-        _ = try EarlyStateArchive.decode(encoded, using: input)
+        try validateImportedWorkspace(result.workspace, settings: resultSettings, using: input)
         return result
     }
 
