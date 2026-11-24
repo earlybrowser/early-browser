@@ -63,6 +63,11 @@ public enum BackgroundFileIO {
         }
     }
 
+    /// A matching filename never authorizes recursively deleting a directory.
+    static func removeFileIfPresent(at url: URL) throws {
+        guard Darwin.unlink(url.path) == 0 || errno == ENOENT else { throw fileError() }
+    }
+
     public static func copySynchronously(_ source: URL, to destination: URL) throws {
         try withAccess([source]) {
             try Task.checkCancellation()

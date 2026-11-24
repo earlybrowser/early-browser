@@ -125,6 +125,28 @@ struct StateArchiveTests {
         #expect(try EarlyStateArchive.read(from: #require(saved.last), using: input).workspace == supported)
     }
 
+    @Test func backupReportsALockedObsoleteFileAndRetentionRecoversOnRetry() throws {
+        let files = FileManager.default
+        let directory = files.temporaryDirectory.appendingPathComponent("EarlyLockedBackup-\(UUID())")
+        let workspace = BrowserWorkspace()
+        let old = try EarlyStateArchive.backup(workspace: workspace, settings: nil, in: directory, retaining: 1)
+        defer {
+            try? files.setAttributes([.immutable: false], ofItemAtPath: old.path)
+            try? files.removeItem(at: directory)
+        }
+        try files.setAttributes([.immutable: true], ofItemAtPath: old.path)
+        let saved = try EarlyStateArchive.writeBackup(workspace: workspace, settings: nil, in: directory, retaining: 1)
+        #expect(saved.retentionWarning != nil && saved.url != old)
+        let both = try files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        #expect(both.count == 2)
+        for file in both { #expect(try EarlyStateArchive.read(from: file, using: input).workspace == workspace) }
+
+        try files.setAttributes([.immutable: false], ofItemAtPath: old.path)
+        let newest = try EarlyStateArchive.writeBackup(workspace: workspace, settings: nil, in: directory, retaining: 1)
+        #expect(newest.retentionWarning == nil)
+        #expect(try files.contentsOfDirectory(atPath: directory.path) == [newest.url.lastPathComponent])
+    }
+
     @Test func tabCapacityCountsEveryWindowAndRejectsGrowthAcrossTheLimit() throws {
         var session = BrowserSession()
         let limit = EarlyStateArchive.maximumTabs

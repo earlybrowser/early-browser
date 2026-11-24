@@ -755,12 +755,13 @@ struct PasswordAutofillTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let blocker = directory.appending(path: "Passwords")
-        try Data().write(to: blocker)
         let fixture = makeFixture(["app": Self.app])
         defer { fixture.cleanup() }
         let manager = fixture.manager
         let vault = PasswordVault(fileURL: blocker.appending(path: "profile.vault"), key: TestKey())
         manager.passwords = vault
+        try #require(await vault.load())
+        try Data().write(to: blocker)
         var notices: [String] = []
         manager.onNotice = { notices.append($0) }
         let tab = try await fixture.open("app")

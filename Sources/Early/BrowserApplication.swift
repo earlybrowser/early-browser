@@ -730,9 +730,9 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         try await BackgroundFileIO.run { try EarlyStateArchive.write(workspace: workspace, settings: settings, to: url, using: input) }
     }
 
-    @ObservationIgnored var archiveBackupWriter: @Sendable (BrowserWorkspace, PortableSettings?, URL, NavigationInput) async throws -> URL = { workspace, settings, directory, input in
+    @ObservationIgnored var archiveBackupWriter: @Sendable (BrowserWorkspace, PortableSettings?, URL, NavigationInput) async throws -> EarlyStateArchive.Backup = { workspace, settings, directory, input in
         try await BackgroundFileIO.run {
-            try EarlyStateArchive.backup(workspace: workspace, settings: settings, in: directory, using: input)
+            try EarlyStateArchive.writeBackup(workspace: workspace, settings: settings, in: directory, using: input)
         }
     }
 
@@ -770,6 +770,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         applyingWorkspace = true
         defer { applyingWorkspace = false; profileOperationInProgress = false; saveAll(); deliverExternalLinks() }
         var batch: BrowserImportBatch?
+        var backup: EarlyStateArchive.Backup?
         do {
             guard await persistence?.flush() == true else { throw SessionError.database(persistence?.error ?? "Couldn’t save the current session.") }
             captureWorkspace()
@@ -784,8 +785,8 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             // A recoverable backup must be durable before the first history insertion.
             guard let backupDirectory = backupsDirectory else { throw CocoaError(.fileWriteUnknown) }
             let backupBatchID = candidate.batch.id
-            let backup = try await BackgroundFileIO.run {
-                try EarlyStateArchive.backup(workspace: current, settings: nil, in: backupDirectory, id: backupBatchID, using: validationInput)
+            backup = try await BackgroundFileIO.run {
+                try EarlyStateArchive.writeBackup(workspace: current, settings: nil, in: backupDirectory, id: backupBatchID, using: validationInput)
             }
             try await journal.write(.init(batch: candidate.batch, state: .importing))
             batch = candidate.batch
@@ -833,7 +834,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
                     browserImportError = "Import recovery is pending. Early will retry safely at its next launch. \(error.localizedDescription)"
                 }
             }
-            return .init(message: "Import could not finish. \(error.localizedDescription)", succeeded: false)
+            return .init(message: "Import could not finish. \(error.localizedDescription)", succeeded: false, backup: backup)
         }
     }
 
@@ -907,7 +908,13 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
         let message: String
         let succeeded: Bool
         /// What was here before, to import again if needed.
-        var backup: URL?
+        let backup: URL?
+
+        init(message: String, succeeded: Bool, backup: EarlyStateArchive.Backup? = nil) {
+            self.message = [message, backup?.retentionWarning].compactMap { $0 }.joined(separator: " ")
+            self.succeeded = succeeded
+            self.backup = backup?.url
+        }
     }
 
     /// The whole result is checked, a backup of what's here is saved, then
@@ -923,7 +930,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             return ImportOutcome(message: "Close any open website dialogs, then import again.", succeeded: false)
         }
         let validation = input
-        var prepared: (EarlyStateArchive.ImportResult, URL)?
+        var prepared: (EarlyStateArchive.ImportResult, EarlyStateArchive.Backup)?
         // Preparation deliberately leaves browsing usable. Rebase if a title,
         // tab, profile or settings change arrived while the worker was busy.
         // The finite retry bound avoids holding an import open indefinitely.
@@ -945,7 +952,7 @@ final class EarlyAppDelegate: NSObject, NSApplicationDelegate {
             guard canEditProfiles else { return .init(message: "Early can’t import right now. Try again in a moment.", succeeded: false) }
             captureWorkspace()
             guard workspace == current, preferences.portableSettings == settings else { continue }
-            let backup: URL
+            let backup: EarlyStateArchive.Backup
             do {
                 guard let directory = backupsDirectory else { throw CocoaError(.fileWriteUnknown) }
                 backup = try await archiveBackupWriter(current, settings, directory, validation)

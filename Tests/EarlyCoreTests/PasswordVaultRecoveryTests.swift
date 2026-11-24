@@ -126,4 +126,70 @@ struct PasswordVaultRecoveryTests {
         #expect(await vault.load(retry: true))
         #expect(vault.logins.isEmpty)
     }
+
+    @Test(arguments: [false, true])
+    func anInaccessibleVaultDirectoryCannotBeMistakenForAnEmptyVault(blockedByFile: Bool) async throws {
+        let files = FileManager.default
+        let root = try directory()
+        let directory = root.appendingPathComponent("Passwords")
+        let preserved = root.appendingPathComponent("Original")
+        try files.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            try? files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            try? files.removeItem(at: root)
+        }
+        let file = directory.appendingPathComponent("profile.vault")
+        let key = MemoryVaultKey()
+        let original = PasswordVault(fileURL: file, key: key)
+        try #require(await original.load())
+        original.save(origin: "https://example.com", username: "original", password: "synthetic")
+        try #require(await original.flush())
+        let bytes = try Data(contentsOf: file)
+
+        if blockedByFile {
+            try files.moveItem(at: directory, to: preserved)
+            try Data().write(to: directory)
+        } else {
+            try files.setAttributes([.posixPermissions: 0], ofItemAtPath: directory.path)
+        }
+        let reopened = PasswordVault(fileURL: file, key: key)
+        #expect(await reopened.load() == false)
+        reopened.resetUnreadable()
+        #expect(!reopened.isReady)
+        if blockedByFile {
+            try files.removeItem(at: directory)
+            try files.moveItem(at: preserved, to: directory)
+        } else {
+            try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+        #expect(reopened.save(origin: "https://example.com", username: "new", password: "synthetic") == nil)
+        await reopened.flush()
+        #expect(try Data(contentsOf: file) == bytes)
+        try #require(await reopened.load(retry: true))
+        #expect(reopened.logins.map(\.username) == ["original"])
+    }
+
+    @Test func anInaccessibleDevelopmentKeyCannotOfferToResetARecoverableVault() async throws {
+        let files = FileManager.default
+        let directory = try directory()
+        let keys = directory.appendingPathComponent("Keys", isDirectory: true)
+        defer {
+            try? files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: keys.path)
+            try? files.removeItem(at: directory)
+        }
+        let key = FileVaultKey(file: keys.appendingPathComponent("Key"), profile: UUID())
+        let file = directory.appendingPathComponent("profile.vault")
+        let original = PasswordVault(fileURL: file, key: key)
+        try #require(await original.load())
+        original.save(origin: "https://example.com", username: "original", password: "synthetic")
+        try #require(await original.flush())
+        try files.setAttributes([.posixPermissions: 0], ofItemAtPath: keys.path)
+        let reopened = PasswordVault(fileURL: file, key: key)
+        #expect(await reopened.load() == false)
+        reopened.resetUnreadable()
+        #expect(!reopened.isReady && files.fileExists(atPath: file.path))
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: keys.path)
+        try #require(await reopened.load(retry: true))
+        #expect(reopened.logins.map(\.username) == ["original"])
+    }
 }

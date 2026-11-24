@@ -41,6 +41,14 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
         return accepted
     }
 
+    static func containsDroppedFiles(in pasteboard: NSPasteboard) -> Bool {
+        pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
+
+    private static func normalizedFilePath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     func noteFileDrop(from pasteboard: NSPasteboard, now: ContinuousClock.Instant = .now) {
         let files = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         fileDrop = files.isEmpty ? nil : (files, now.advanced(by: .seconds(5)))
@@ -53,8 +61,8 @@ final class BrowserWebView: WKWebView, @preconcurrency NSSharingServicePickerDel
     func takeDroppedFile(matching url: URL, now: ContinuousClock.Instant = .now) -> URL? {
         guard let fileDrop else { return nil }
         guard now < fileDrop.expires else { clearFileDrop(); return nil }
-        let path = url.standardizedFileURL.path
-        guard let file = fileDrop.urls.first(where: { $0.standardizedFileURL.path == path }) else { return nil }
+        let path = Self.normalizedFilePath(url)
+        guard let file = fileDrop.urls.first(where: { Self.normalizedFilePath($0) == path }) else { return nil }
         clearFileDrop()
         return file
     }
